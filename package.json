@@ -1,0 +1,24 @@
+{
+  "name": "lattice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "格物 Lattice —— 本地优先的双链笔记知识库（类 Obsidian 全栈实现）",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix web install",
+    "db:migrate": "npm --prefix server run db:migrate",
+    "db:seed": "npm --prefix server run db:seed",
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "npm --prefix server run dev",
+    "dev:web": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "start": "npm --prefix server run start",
+    "test": "npm --prefix server test",
+    "test:api": "node scripts/smoke.mjs",
+    "test:web": "npm --prefix web run test",
+    "verify": "npm --prefix server test && node scripts/smoke.mjs && npm --prefix web run test"
+  }
+}

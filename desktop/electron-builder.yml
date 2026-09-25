@@ -1,0 +1,58 @@
+appId: com.lattice.desktop
+productName: 格物 Lattice
+copyright: Copyright © 2026 Lattice
+
+directories:
+  output: release
+  buildResources: build
+
+# 不用 asar：后端要保持 ESM 的 import 语义、运行时还要读 migrations/*.sql，
+# 以普通文件分发最确定，也省掉「Node 的 ESM 加载器能否穿透 asar」这类不确定性。
+# 代价是启动略慢一点、源码可见 —— 对本地优先的自用工具来说是划算的。
+asar: false
+
+files:
+  - package.json
+  - src/**/*
+  - from: ../server/src
+    to: server/src
+    filter:
+      - '**/*'
+  # server 的 package.json 必须一并带上：它声明了 "type": "module"。
+  # 少了它，Node 找不到最近的模块类型声明，会对每个后端文件先按 CommonJS 解析失败、
+  # 再按 ES module 重新解析（启动变慢，并刷 MODULE_TYPELESS_PACKAGE_JSON 警告）。
+  - from: ../server
+    to: server
+    filter:
+      - 'src/**/*'
+      - 'package.json'
+  - from: ../web/dist
+    to: web
+    filter:
+      - '**/*'
+
+# exe 文件名保持 ASCII，避开各类工具链的路径编码问题；
+# 用户看到的快捷方式、窗口标题、安装向导仍然是中文 productName。
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  executableName: lattice
+  icon: build/icon.ico
+  artifactName: Lattice-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 格物 Lattice
+  # 卸载时保留用户数据，避免误删笔记库
+  deleteAppDataOnUninstall: false
+  artifactName: Lattice-${version}-setup.${ext}
+
+portable:
+  artifactName: Lattice-${version}-portable.${ext}

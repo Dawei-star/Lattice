@@ -1,0 +1,28 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# 冒烟测试的临时打包产物
+web/test/.build/
+
+# Vite 构建中断时残留的临时配置文件
+vite.config.js.timestamp-*
+
+# 桌面端打包产物
+desktop/release/
+# 图标生成脚本的预览图，图标本身（build/icon.ico）需要入库
+desktop/build/icon-preview.png
+
+# SQLite 数据库文件（本地数据，不入库）
+server/data/
+*.db
+*.db-wal
+*.db-shm
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

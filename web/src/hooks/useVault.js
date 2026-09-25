@@ -1,0 +1,444 @@
+/**
+ * 知识库中心状态。
+ *
+ * 职责：把后端的资源接口收敛成一个可用的数据模型，并统一处理
+ * 加载态、错误提示、连接状态与缓存失效。组件只消费这里暴露的状态与动作，
+ * 不直接调用 API 层，也不自己拼查询参数。
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ApiError } from '../api/client.js';
+import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi, versionsApi } from '../api/resources.js';
+import { useDebouncedValue } from './useDebouncedValue.js';
+import { useToast } from './useToast.jsx';
+
+const DEFAULT_FILTER = { kind: 'all', folderId: null, tagId: null };
+const PAGE_SIZE = 60;
+const SEARCH_DEBOUNCE_MS = 280;
+
+/** 未分类笔记在查询里的特殊标记，与后端约定一致 */
+const UNFILED = '__none__';
+
+export function useVault() {
+  const toast = useToast();
+
+  const [folders, setFolders] = useState([]);
+  const [tags, setTags] = useState([]);
+  const [overview, setOverview] = useState(null);
+  const [noteIndex, setNoteIndex] = useState([]);
+
+  const [filter, setFilter] = useState(DEFAULT_FILTER);
+  const [sort, setSort] = useState('updated');
+  const [notes, setNotes] = useState([]);
+  const [notesTotal, setNotesTotal] = useState(0);
+
+  const [query, setQuery] = useState('');
+  const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
+  const [search, setSearch] = useState({ loading: false, items: [], strategy: '', query: '' });
+
+  const [activeNote, setActiveNote] = useState(null);
+  const [graph, setGraph] = useState(null);
+  const [graphStale, setGraphStale] = useState(true);
+  const [loading, setLoading] = useState({ sidebar: true, notes: true, note: false, graph: false });
+  const [connectionDown, setConnectionDown] = useState(false);
+
+  /** 编辑器未保存内容的重载保护：切换笔记前由编辑区注册拦截器 */
+  const navigationGuard = useRef(null);
+
+  const handleError = useCallback(
+    (error, fallbackMessage) => {
+      if (error?.name === 'AbortError') return;
+
+      if (error instanceof ApiError) {
+        if (error.isOffline || error.isTimeout) {
+          setConnectionDown(true);
+          toast.error(error.message);
+          return;
+        }
+        toast.error(error.message, {
+          detail: error.requestId ? `请求编号 ${error.requestId}` : undefined,
+        });
+        return;
+      }
+
+      toast.error(fallbackMessage ?? '操作失败，请重试');
+      // 非预期异常保留在控制台，便于排查
+      console.error('[lattice] 未预期的错误', error);
+    },
+    [toast],
+  );
+
+  // ── 数据加载 ────────────────────────────────────────────────────
+  const refreshSidebar = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!silent) setLoading((current) => ({ ...current, sidebar: true }));
+      try {
+        const [folderTree, tagList, stats, index] = await Promise.all([
+          foldersApi.list(),
+          tagsApi.list(),
+          metaApi.overview(),
+          notesApi.index(),
+        ]);
+        setFolders(folderTree ?? []);
+        setTags(tagList ?? []);
+        setOverview(stats ?? null);
+        setNoteIndex(index ?? []);
+        setConnectionDown(false);
+      } catch (error) {
+        handleError(error, '加载侧边栏数据失败');
+      } finally {
+        if (!silent) setLoading((current) => ({ ...current, sidebar: false }));
+      }
+    },
+    [handleError],
+  );
+
+  const refreshNotes = useCallback(async () => {
+    setLoading((current) => ({ ...current, notes: true }));
+    try {
+      const params = { sort, limit: PAGE_SIZE, offset: 0 };
+      if (filter.kind === 'folder') params.folderId = filter.folderId ?? UNFILED;
+      if (filter.kind === 'tag') params.tagId = filter.tagId;
+
+      const result = await notesApi.list(params);
+      setNotes(result.items);
+      setNotesTotal(result.total);
+      setConnectionDown(false);
+    } catch (error) {
+      handleError(error, '加载笔记列表失败');
+    } finally {
+      setLoading((current) => ({ ...current, notes: false }));
+    }
+  }, [filter, sort, handleError]);
+
+  const refreshGraph = useCallback(async () => {
+    setLoading((current) => ({ ...current, graph: true }));
+    try {
+      const data = await graphApi.get();
+      setGraph(data);
+      setGraphStale(false);
+    } catch (error) {
+      handleError(error, '加载关系图谱失败');
+    } finally {
+      setLoading((current) => ({ ...current, graph: false }));
+    }
+  }, [handleError]);
+
+  useEffect(() => {
+    refreshSidebar();
+  }, [refreshSidebar]);
+
+  useEffect(() => {
+    refreshNotes();
+  }, [refreshNotes]);
+
+  // ── 全文检索（防抖 + 竞态保护） ─────────────────────────────────
+  useEffect(() => {
+    const keyword = debouncedQuery.trim();
+    if (!keyword) {
+      setSearch({ loading: false, items: [], strategy: '', query: '' });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setSearch((current) => ({ ...current, loading: true, query: keyword }));
+
+    searchApi
+      .query(keyword, { limit: 40 })
+      .then((result) => {
+        if (cancelled) return;
+        setSearch({ loading: false, items: result.items, strategy: result.strategy, query: keyword });
+        setConnectionDown(false);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSearch({ loading: false, items: [], strategy: '', query: keyword });
+        handleError(error, '检索失败');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery, handleError]);
+
+  // ── 标题索引：双链解析、快速切换、嵌入目标定位都依赖它 ─────────
+  const titleIndex = useMemo(() => {
+    const map = new Map();
+    // noteIndex 已按更新时间倒序，同名笔记因此自然保留最近更新的那篇
+    for (const entry of noteIndex) {
+      const key = entry.title.trim().toLowerCase();
+      if (!map.has(key)) map.set(key, entry);
+    }
+    return map;
+  }, [noteIndex]);
+
+  const resolveTitle = useCallback(
+    (title) => titleIndex.get(String(title ?? '').trim().toLowerCase()) ?? null,
+    [titleIndex],
+  );
+
+  // ── 动作 ────────────────────────────────────────────────────────
+  const registerNavigationGuard = useCallback((guard) => {
+    navigationGuard.current = guard;
+  }, []);
+
+  /** 返回 true 表示切换被拦下（有未保存内容且用户选择留下） */
+  const confirmNavigation = useCallback(() => {
+    const guard = navigationGuard.current;
+    if (typeof guard !== 'function') return true;
+    return guard() !== false;
+  }, []);
+
+  const openNote = useCallback(
+    async (id) => {
+      if (!id) {
+        setActiveNote(null);
+        return null;
+      }
+      setLoading((current) => ({ ...current, note: true }));
+      try {
+        const note = await notesApi.get(id);
+        setActiveNote(note);
+        setConnectionDown(false);
+        return note;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          setActiveNote(null);
+          toast.info('这篇笔记已经不存在了，列表已刷新');
+          refreshNotes();
+          refreshSidebar({ silent: true });
+        } else {
+          handleError(error, '打开笔记失败');
+        }
+        return null;
+      } finally {
+        setLoading((current) => ({ ...current, note: false }));
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar, toast],
+  );
+
+  /** 按标题打开；标题不存在时返回 null，由调用方决定是否创建 */
+  const openByTitle = useCallback(
+    async (title) => {
+      const hit = resolveTitle(title);
+      if (!hit) return null;
+      return openNote(hit.id);
+    },
+    [openNote, resolveTitle],
+  );
+
+  const createNote = useCallback(
+    async (input = {}) => {
+      try {
+        const note = await notesApi.create(input);
+        setActiveNote(note);
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        setGraphStale(true);
+        return note;
+      } catch (error) {
+        handleError(error, '新建笔记失败');
+        return null;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar],
+  );
+
+  /**
+   * 保存笔记。成功后直接用返回体更新编辑区，省掉一次回读请求。
+   * 错误会继续向上抛，让编辑区保留未保存状态并给出内联提示。
+   */
+  const saveNote = useCallback(
+    async (id, patch) => {
+      try {
+        const saved = await notesApi.update(id, patch);
+        setActiveNote((current) => (current && current.id === saved.id ? saved : current));
+        setGraphStale(true);
+        refreshNotes();
+        refreshSidebar({ silent: true });
+        return saved;
+      } catch (error) {
+        handleError(error, '保存失败');
+        throw error;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar],
+  );
+
+  const deleteNote = useCallback(
+    async (id) => {
+      try {
+        await notesApi.remove(id);
+        setActiveNote((current) => (current && current.id === id ? null : current));
+        setGraphStale(true);
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        toast.success('笔记已删除');
+        return true;
+      } catch (error) {
+        handleError(error, '删除笔记失败');
+        return false;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar, toast],
+  );
+
+  const createFolder = useCallback(
+    async (name, parentId = null) => {
+      try {
+        const folder = await foldersApi.create({ name, parentId });
+        await refreshSidebar({ silent: true });
+        toast.success(`已创建目录「${folder.name}」`);
+        return folder;
+      } catch (error) {
+        handleError(error, '创建目录失败');
+        return null;
+      }
+    },
+    [handleError, refreshSidebar, toast],
+  );
+
+  const deleteFolder = useCallback(
+    async (id) => {
+      try {
+        const result = await foldersApi.remove(id);
+        setFilter((current) => (current.kind === 'folder' && current.folderId === id ? DEFAULT_FILTER : current));
+        await Promise.all([refreshSidebar({ silent: true }), refreshNotes()]);
+        toast.success(
+          result?.affectedNoteCount > 0
+            ? `目录已删除，其中 ${result.affectedNoteCount} 篇笔记已移至未分类`
+            : '目录已删除',
+        );
+        return true;
+      } catch (error) {
+        handleError(error, '删除目录失败');
+        return false;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar, toast],
+  );
+
+  const renameFolder = useCallback(
+    async (id, name) => {
+      try {
+        await foldersApi.update(id, { name });
+        await refreshSidebar({ silent: true });
+        return true;
+      } catch (error) {
+        handleError(error, '重命名目录失败');
+        return false;
+      }
+    },
+    [handleError, refreshSidebar],
+  );
+
+  const moveNote = useCallback(
+    async (id, folderId) => {
+      try {
+        const saved = await notesApi.update(id, { folderId });
+        setActiveNote((current) => (current && current.id === id ? saved : current));
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        setGraphStale(true);
+        return true;
+      } catch (error) {
+        handleError(error, '移动笔记失败');
+        return false;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar],
+  );
+
+  const togglePin = useCallback(
+    async (note) => {
+      try {
+        const saved = await notesApi.update(note.id, { isPinned: !note.isPinned });
+        setActiveNote((current) => (current && current.id === saved.id ? saved : current));
+        await refreshNotes();
+        return true;
+      } catch (error) {
+        handleError(error, '更新置顶状态失败');
+        return false;
+      }
+    },
+    [handleError, refreshNotes],
+  );
+
+  /** 恢复历史版本：落库后刷新当前笔记与派生列表，返回恢复后的完整笔记供编辑区同步草稿 */
+  const restoreVersion = useCallback(
+    async (id, versionId) => {
+      try {
+        const payload = await versionsApi.restore(id, versionId);
+        const restored = payload?.data?.note;
+        if (!restored) throw new Error('恢复失败');
+        setActiveNote((current) => (current && current.id === restored.id ? restored : current));
+        setGraphStale(true);
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        if (payload?.data?.noop) toast.info('当前内容已是该版本');
+        else toast.success('已恢复到所选版本');
+        return restored;
+      } catch (error) {
+        handleError(error, '恢复版本失败');
+        throw error;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar, toast],
+  );
+
+  const selectFolder = useCallback((folderId) => {
+    setFilter({ kind: 'folder', folderId });
+    setQuery('');
+  }, []);
+
+  const selectTag = useCallback((tagId) => {
+    setFilter({ kind: 'tag', tagId });
+    setQuery('');
+  }, []);
+
+  const clearFilter = useCallback(() => {
+    setFilter(DEFAULT_FILTER);
+  }, []);
+
+  return {
+    // 数据
+    folders,
+    tags,
+    overview,
+    notes,
+    notesTotal,
+    noteIndex,
+    activeNote,
+    graph,
+    graphStale,
+    search,
+    filter,
+    sort,
+    query,
+    loading,
+    connectionDown,
+
+    // 状态设置
+    setQuery,
+    setSort,
+    selectFolder,
+    selectTag,
+    clearFilter,
+    setActiveNote,
+
+    // 动作
+    openNote,
+    openByTitle,
+    createNote,
+    saveNote,
+    deleteNote,
+    createFolder,
+    renameFolder,
+    deleteFolder,
+    moveNote,
+    togglePin,
+    restoreVersion,
+    resolveTitle,
+    refreshNotes,
+    refreshSidebar,
+    refreshGraph,
+    registerNavigationGuard,
+    confirmNavigation,
+  };
+}

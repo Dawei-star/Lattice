@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="格物 Lattice —— 本地优先的双链笔记知识库" />
+    <meta name="theme-color" content="#1c4b63" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1a21" media="(prefers-color-scheme: dark)" />
+    <!-- PWA：清单与 iOS 独立运行元信息 -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="格物" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%231c4b63'/%3E%3Ctext x='16' y='22' font-size='17' font-family='serif' font-weight='700' fill='%23fff' text-anchor='middle'%3E%E6%A0%BC%3C/text%3E%3C/svg%3E"
+    />
+    <title>格物 Lattice · 本地知识库</title>
+    <!-- 首屏定主题，避免浅色/深色闪烁。
+         必须是「同源外链 + 非 module」：内联脚本会被生产环境的 script-src 'self' CSP 拦掉，
+         而 module 脚本是延迟执行的，赶不上首次绘制。 -->
+    <script src="/theme-init.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

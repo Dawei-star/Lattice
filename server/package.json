@@ -1,0 +1,22 @@
+{
+  "name": "@lattice/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.9.0"
+  },
+  "scripts": {
+    "dev": "node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/index.js",
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/index.js",
+    "db:migrate": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/db/migrate.js",
+    "db:seed": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/db/seed.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "marked": "^14.1.4",
+    "zod": "^3.25.76"
+  }
+}
