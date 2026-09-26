@@ -12,7 +12,6 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { requestContext, requestLogger } from './middleware/requestContext.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
 import { healthRouter } from './modules/health/health.routes.js';
-import { ensureDir } from './modules/attachments/attachments.service.js';
 import { apiRouter } from './routes/index.js';
 
 /** 单页应用的 CSP：只允许加载同源资源，禁止被嵌入 iframe */
@@ -40,19 +39,13 @@ export function createApp() {
   app.use(securityHeaders);
   app.use(cors);
 
-  // 请求体上限：笔记正文由 zod 限到 200 万字符，这里主要给附件 base64 上传留空间
-  app.use(express.json({ limit: config.maxBodyBytes }));
+  // 请求体上限 2MB：单篇笔记正文上限 200 万字符，留出 JSON 转义余量
+  app.use(express.json({ limit: '2mb' }));
 
   // 探针放在鉴权与业务路由之前，保证永远可达
   app.use(healthRouter);
 
   app.use('/api', apiRouter);
-
-  // 附件目录：以 UUID 文件名对外提供，内容不可变，可长期强缓存
-  mountAttachments(app);
-
-  // 导出的静态站点：只读托管，便于导出后在浏览器里本地预览
-  mountExport(app);
 
   // 若前端已构建，则由同一进程托管，实现「一条命令跑生产」
   mountWebApp(app);
@@ -73,52 +66,13 @@ function mountWebApp(app) {
       maxAge: '1h',
       setHeaders(res, filePath) {
         if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
-        // 部分环境 mime 表不含 .webmanifest，会退化成 octet-stream 而被浏览器拒收
-        if (filePath.endsWith('.webmanifest')) {
-          res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
-        }
       },
     }),
   );
 
-  // SPA 回退：非 /api、非探针、非附件、非导出预览的 GET 一律交给前端路由
-  app.get(/^\/(?!api\/|health$|ready$|attachments\/|export\/).*/, (_req, res) => {
+  // SPA 回退：非 /api、非探针的 GET 一律交给前端路由
+  app.get(/^\/(?!api\/|health$|ready$).*/, (_req, res) => {
     res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
     res.sendFile(indexHtml);
   });
-}
-
-/**
- * 只读托管导出的静态站点（EXPORT_DIR），供本地预览。
- * 每个导出是独立时间戳目录，HTML 不缓存、其余按普通静态资源处理。
- */
-function mountExport(app) {
-  fs.mkdirSync(config.exportDir, { recursive: true });
-  app.use(
-    '/export',
-    express.static(config.exportDir, {
-      index: 'index.html',
-      dotfiles: 'ignore',
-      setHeaders(res, filePath) {
-        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
-      },
-    }),
-  );
-}
-
-/**
- * 托管附件目录。文件名是不可变的 UUID，可长期强缓存；
- * 缺失文件向下穿过（SPA 路由已排除 /attachments），最终落到 404 处理。
- */
-function mountAttachments(app) {
-  ensureDir();
-  app.use(
-    '/attachments',
-    express.static(config.attachmentsDir, {
-      index: false,
-      dotfiles: 'ignore',
-      maxAge: '365d',
-      immutable: true,
-    }),
-  );
 }

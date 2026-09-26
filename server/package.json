@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "express": "^5.1.0",
-    "marked": "^14.1.4",
     "zod": "^3.25.76"
   }
 }

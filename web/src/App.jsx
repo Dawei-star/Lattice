@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { notesApi, exportsApi } from './api/resources.js';
-import AppRail from './components/AppRail.jsx';
+import { notesApi } from './api/resources.js';
 import EditorPane from './components/EditorPane.jsx';
-import AttachmentsView from './components/AttachmentsView.jsx';
 import GraphView from './components/GraphView.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
 import NoteListPane from './components/NoteListPane.jsx';
@@ -11,14 +9,15 @@ import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import { useToast } from './hooks/useToast.jsx';
 import { useVault } from './hooks/useVault.js';
+import Ribbon from './shell/Ribbon.jsx';
+import TabBar from './shell/TabBar.jsx';
+import StatusBar from './shell/StatusBar.jsx';
+import SettingsModal from './settings/SettingsModal.jsx';
+import { loadImportedTheme } from './lib/theme.js';
 
 const THEME_STORAGE_KEY = 'lattice-theme';
 
-const VIEW_LABELS = {
-  notes: '笔记',
-  graph: '关系图谱',
-  attachments: '附件管理',
-};
+const revealFolder = (relativePath) => window.latticeDesktop?.revealVaultPath?.(relativePath);
 
 export default function App() {
   const toast = useToast();
@@ -48,7 +47,6 @@ export default function App() {
     selectTag,
     clearFilter,
     openNote,
-    openByTitle,
     createNote,
     saveNote,
     deleteNote,
@@ -57,7 +55,6 @@ export default function App() {
     deleteFolder,
     moveNote,
     togglePin,
-    restoreVersion,
     resolveTitle,
     refreshNotes,
     refreshSidebar,
@@ -68,14 +65,23 @@ export default function App() {
 
   const [view, setView] = useState('notes');
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [exportResult, setExportResult] = useState(null);
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'light');
-  // 窄屏下的两件事：导航抽屉是否展开、当前停在「列表」还是「正文」
-  const [navOpen, setNavOpen] = useState(false);
-  const [mobilePane, setMobilePane] = useState('list');
+  const [shellMode] = useState(() => new URLSearchParams(window.location.search).get('shell') === 'topbar' ? 'topbar' : 'obsidian');
+
+  // ── 多标签页：tabs 记录打开了哪些笔记，vault.activeNote 即当前标签的内容 ──
+  const [tabs, setTabs] = useState(() => [{ id: 1, noteId: null }]);
+  const [activeTabId, setActiveTabId] = useState(1);
+  const tabSeq = useRef(2);
+
+  const noteTitles = useMemo(() => new Map((noteIndex ?? []).map((n) => [n.id, n.title])), [noteIndex]);
+
+  useEffect(() => {
+    loadImportedTheme();
+  }, []);
 
   // ── 主题 ────────────────────────────────────────────────────
   useEffect(() => {
@@ -127,14 +133,97 @@ export default function App() {
   );
 
   // ── 导航（切换前先过一遍未保存内容的守卫） ─────────────────
-  const handleOpenNote = useCallback(
-    async (id) => {
-      if (!confirmNavigation()) return null;
-      setMobilePane('focus');
-      setNavOpen(false);
-      return openNote(id);
+  const activateTab = useCallback(
+    (tab) => {
+      setActiveTabId(tab.id);
+      if (!tab.noteId) vault.setActiveNote(null);
+      else if (tab.noteId !== activeNote?.id) openNote(tab.noteId);
     },
-    [confirmNavigation, openNote],
+    [activeNote?.id, openNote, vault],
+  );
+
+  /** 打开笔记：已有标签直接激活，否则新开一个标签 */
+  const openInTab = useCallback(
+    async (id) => {
+      if (!id || !confirmNavigation()) return null;
+      const existing = tabs.find((t) => t.noteId === id);
+      if (existing) {
+        if (existing.id !== activeTabId) activateTab(existing);
+        return existing;
+      }
+      const tab = { id: tabSeq.current++, noteId: id };
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+      if (activeNote?.id !== id) return openNote(id);
+      return tab;
+    },
+    [tabs, activeTabId, activeNote?.id, confirmNavigation, openNote, activateTab],
+  );
+
+  const handleOpenNote = openInTab;
+
+  const handleTabSelect = useCallback(
+    (tabId) => {
+      if (tabId === activeTabId || !confirmNavigation()) return;
+      const tab = tabs.find((t) => t.id === tabId);
+      if (tab) activateTab(tab);
+    },
+    [tabs, activeTabId, confirmNavigation, activateTab],
+  );
+
+  const handleTabNew = useCallback(() => {
+    const active = tabs.find((t) => t.id === activeTabId);
+    if (active && !active.noteId) return;
+    if (!confirmNavigation()) return;
+    const tab = { id: tabSeq.current++, noteId: null };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+    vault.setActiveNote(null);
+  }, [tabs, activeTabId, confirmNavigation, vault]);
+
+  const handleTabClose = useCallback(
+    (tabId) => {
+      const index = tabs.findIndex((t) => t.id === tabId);
+      if (index === -1) return;
+      const closingActive = tabId === activeTabId;
+      if (closingActive && !confirmNavigation()) return;
+      const remaining = tabs.filter((t) => t.id !== tabId);
+      if (!remaining.length) {
+        const fresh = { id: tabSeq.current++, noteId: null };
+        setTabs([fresh]);
+        setActiveTabId(fresh.id);
+        vault.setActiveNote(null);
+        return;
+      }
+      setTabs(remaining);
+      if (closingActive) activateTab(remaining[Math.max(0, index - 1)]);
+    },
+    [tabs, activeTabId, confirmNavigation, activateTab, vault],
+  );
+
+  /** 删除笔记后：移除其标签，并把激活位挪到相邻标签 */
+  const handleDeleteNote = useCallback(
+    async (id) => {
+      const ok = await deleteNote(id);
+      if (!ok) return false;
+      const closedIndex = tabs.findIndex((t) => t.noteId === id);
+      if (closedIndex === -1) return true;
+      const remaining = tabs.filter((t) => t.noteId !== id);
+      if (!remaining.length) {
+        const fresh = { id: tabSeq.current++, noteId: null };
+        setTabs([fresh]);
+        setActiveTabId(fresh.id);
+        return true;
+      }
+      setTabs(remaining);
+      if (tabs.find((t) => t.id === activeTabId)?.noteId === id) {
+        const next = remaining[Math.max(0, closedIndex - 1)];
+        setActiveTabId(next.id);
+        if (next.noteId) openNote(next.noteId);
+      }
+      return true;
+    },
+    [deleteNote, tabs, activeTabId, openNote],
   );
 
   const handleOpenFromGraph = useCallback(
@@ -147,16 +236,15 @@ export default function App() {
 
   const handleOpenWikiLink = useCallback(
     async (title) => {
-      if (!confirmNavigation()) return;
-      const opened = await openByTitle(title);
-      if (opened) {
-        setView('notes');
-        setMobilePane('focus');
+      const hit = resolveTitle(title);
+      if (hit) {
+        const opened = await openInTab(hit.id);
+        if (opened) setView('notes');
         return;
       }
       toast.info(`「${title}」还不存在，可在右侧出链或图谱里一键创建`);
     },
-    [confirmNavigation, openByTitle, toast],
+    [resolveTitle, openInTab, toast],
   );
 
   /** 由悬空链接 / 图谱触发：按标题创建缺失的笔记并打开 */
@@ -165,22 +253,22 @@ export default function App() {
       const created = await createNote({ title, folderId: targetFolderId });
       if (created) {
         setSwitcherOpen(false);
+        openInTab(created.id);
         setView('notes');
-        setMobilePane('focus');
         toast.success(`已创建「${created.title}」`);
       }
     },
-    [createNote, targetFolderId, toast],
+    [createNote, openInTab, targetFolderId, toast],
   );
 
-  const handleCreateNote = useCallback(async () => {
-    const created = await createNote({ folderId: targetFolderId });
+  const handleCreateNote = useCallback(async (folderId = targetFolderId) => {
+    const created = await createNote({ folderId });
     if (created) {
+      openInTab(created.id);
       setView('notes');
-      setMobilePane('focus');
       toast.success('已新建笔记');
     }
-  }, [createNote, targetFolderId, toast]);
+  }, [createNote, openInTab, targetFolderId, toast]);
 
   const handleRefreshAll = useCallback(async () => {
     setRefreshing(true);
@@ -188,44 +276,6 @@ export default function App() {
     setRefreshing(false);
     toast.success('数据已重新加载');
   }, [refreshGraph, refreshNotes, refreshSidebar, toast]);
-
-  const handleExportSite = useCallback(async () => {
-    setExporting(true);
-    try {
-      const result = await exportsApi.staticSite();
-      setExportResult(result);
-      toast.success(`已导出 ${result.noteCount} 篇笔记（含 ${result.attachmentCount} 个附件）`);
-    } catch (error) {
-      toast.error(error?.message ?? '导出失败');
-    } finally {
-      setExporting(false);
-    }
-  }, [toast]);
-
-  // ── 侧栏动作统一收口：窄屏选中后自动收起抽屉 ───────────────
-  const handleSelectFolder = useCallback(
-    (id) => {
-      selectFolder(id);
-      setNavOpen(false);
-      setMobilePane('list');
-    },
-    [selectFolder],
-  );
-
-  const handleSelectTag = useCallback(
-    (id) => {
-      selectTag(id);
-      setNavOpen(false);
-      setMobilePane('list');
-    },
-    [selectTag],
-  );
-
-  const handleClearFilter = useCallback(() => {
-    clearFilter();
-    setNavOpen(false);
-    setMobilePane('list');
-  }, [clearFilter]);
 
   // ── 快捷键 ──────────────────────────────────────────────────
   useEffect(() => {
@@ -245,12 +295,27 @@ export default function App() {
         return;
       }
 
-      if (event.key === 'Escape') setNavOpen(false);
+      if (meta && key === 't') {
+        event.preventDefault();
+        handleTabNew();
+        return;
+      }
+
+      if (meta && key === 'b') {
+        event.preventDefault();
+        setSidebarOpen((value) => !value);
+        return;
+      }
+
+      if (meta && event.key === ',') {
+        event.preventDefault();
+        setSettingsOpen(true);
+      }
     };
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleCreateNote]);
+  }, [handleCreateNote, handleTabNew]);
 
   // ── 切到图谱视图时按需加载（数据被改动过才重新拉取） ───────
   useEffect(() => {
@@ -266,126 +331,154 @@ export default function App() {
   const handleOpenSwitcher = useCallback(() => setSwitcherOpen(true), []);
   const handleCloseSwitcher = useCallback(() => setSwitcherOpen(false), []);
   const handleTogglePanel = useCallback(() => setPanelOpen((value) => !value), []);
-  const handleOpenNav = useCallback(() => setNavOpen(true), []);
-  const handleCloseNav = useCallback(() => setNavOpen(false), []);
-  const handleBackToList = useCallback(() => setMobilePane('list'), []);
-
-  // 窄屏只显示一屏内容：非笔记视图时直接让出整个宽度给工作区
-  const mobilePaneState = view === 'notes' && mobilePane === 'list' ? 'list' : 'focus';
 
   return (
-    <div className="app">
-      <AppRail view={view} onViewChange={setView} theme={theme} onToggleTheme={handleToggleTheme} />
-
-      <div className="app__main">
-        <TopBar
-          query={query}
-          onQueryChange={setQuery}
+    <div className={`app app--${shellMode}`}>
+      {shellMode === 'obsidian' ? (
+        <Ribbon
           view={view}
-          viewLabel={VIEW_LABELS[view] ?? '笔记'}
-          onCreateNote={handleCreateNote}
+          onViewChange={setView}
           onOpenSwitcher={handleOpenSwitcher}
+          onCreateNote={handleCreateNote}
           onRefresh={handleRefreshAll}
           refreshing={refreshing}
-          panelOpen={panelOpen}
           onTogglePanel={handleTogglePanel}
-          onToggleNav={handleOpenNav}
-          onBack={handleBackToList}
-          backVisible={mobilePaneState === 'focus'}
+          onToggleTheme={handleToggleTheme}
+          onOpenSettings={() => setSettingsOpen(true)}
+          theme={theme}
         />
+      ) : null}
+      {shellMode === 'topbar' ? <TopBar
+        query={query}
+        onQueryChange={setQuery}
+        view={view}
+        onViewChange={setView}
+        onCreateNote={handleCreateNote}
+        onOpenSwitcher={handleOpenSwitcher}
+        onRefresh={handleRefreshAll}
+        refreshing={refreshing}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+        panelOpen={panelOpen}
+        onTogglePanel={handleTogglePanel}
+        onOpenSettings={() => setSettingsOpen(true)}
+      /> : null}
 
-        {connectionDown ? (
-          <div className="banner banner--error banner--global">
-            <span>与后端服务的连接中断了。请确认服务已启动（默认 http://localhost:5177），然后重新加载。</span>
-            <button type="button" className="btn btn--sm" onClick={handleRefreshAll} disabled={refreshing}>
-              重新连接
-            </button>
-          </div>
-        ) : null}
+      <TabBar
+        tabs={tabs}
+        activeTabId={activeTabId}
+        noteTitles={noteTitles}
+        onSelect={handleTabSelect}
+        onClose={handleTabClose}
+        onNew={handleTabNew}
+      />
 
-        <div className="app__body" data-pane={mobilePaneState}>
+      {connectionDown ? (
+        <div className="banner banner--error banner--global">
+          <span>与后端服务的连接中断了。请确认服务已启动（默认 http://localhost:5177），然后重新加载。</span>
+          <button type="button" className="btn btn--sm" onClick={handleRefreshAll} disabled={refreshing}>
+            重新连接
+          </button>
+        </div>
+      ) : null}
+
+      <div className={`app__body ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'}`}>
+        {sidebarOpen ? (
           <Sidebar
             folders={folders}
             tags={tags}
             overview={overview}
             filter={filter}
+            sort={sort}
             loading={loading.sidebar}
-            onSelectFolder={handleSelectFolder}
-            onSelectTag={handleSelectTag}
-            onClearFilter={handleClearFilter}
+            onSelectFolder={selectFolder}
+            onSelectTag={selectTag}
+            onClearFilter={clearFilter}
+            onSortChange={setSort}
             onCreateFolder={createFolder}
             onDeleteFolder={deleteFolder}
             onRenameFolder={renameFolder}
-            onExportSite={handleExportSite}
-            exporting={exporting}
-            exportResult={exportResult}
-            open={navOpen}
-            onClose={handleCloseNav}
-          />
-
-          <NoteListPane
-            notes={notes}
-            notesTotal={notesTotal}
-            search={search}
-            filter={filter}
-            sort={sort}
-            folderLookup={folderLookup}
-            tagLookup={tagLookup}
-            activeNoteId={activeNote?.id ?? null}
-            loading={loading.notes}
-            onSortChange={setSort}
-            onOpenNote={handleOpenNote}
-            onTogglePin={togglePin}
             onCreateNote={handleCreateNote}
+            onRevealFolder={revealFolder}
+            onRefresh={handleRefreshAll}
+            refreshing={refreshing}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onCollapseSidebar={() => setSidebarOpen(false)}
           />
+        ) : (
+          <button
+            type="button"
+            className="sidebar-rail"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="展开侧边栏"
+            title="展开侧边栏（Ctrl / Cmd + B）"
+          >
+            ⟩
+          </button>
+        )}
 
-          <main className="workspace">
-            {view === 'attachments' ? (
-              <AttachmentsView
-                onOpenNote={(id) => {
-                  setView('notes');
-                  handleOpenNote(id);
-                }}
+        <NoteListPane
+          notes={notes}
+          notesTotal={notesTotal}
+          search={search}
+          filter={filter}
+          sort={sort}
+          query={query}
+          onQueryChange={setQuery}
+          showSearch={shellMode === 'obsidian'}
+          folderLookup={folderLookup}
+          tagLookup={tagLookup}
+          activeNoteId={activeNote?.id ?? null}
+          loading={loading.notes}
+          onSortChange={setSort}
+          onOpenNote={handleOpenNote}
+          onTogglePin={togglePin}
+          onDeleteNote={handleDeleteNote}
+          onCreateNote={handleCreateNote}
+        />
+
+        <main className="workspace">
+          {view === 'graph' ? (
+            <GraphView
+              graph={graph}
+              loading={loading.graph}
+              activeNoteId={activeNote?.id ?? null}
+              onOpenNote={handleOpenFromGraph}
+              onCreateNoteByTitle={handleCreateByTitle}
+              onRefresh={refreshGraph}
+            />
+          ) : (
+            <div className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}>
+              <EditorPane
+                note={activeNote}
+                folders={folders}
+                resolveTitle={resolveTitle}
+                resolveEmbed={resolveEmbed}
+                onSave={saveNote}
+                onDelete={handleDeleteNote}
+                onTogglePin={togglePin}
+                onMove={moveNote}
+                onOpenWikiLink={handleOpenWikiLink}
+                onCreateWikiLink={handleCreateByTitle}
+                registerNavigationGuard={registerNavigationGuard}
               />
-            ) : view === 'graph' ? (
-              <GraphView
-                graph={graph}
-                loading={loading.graph}
-                activeNoteId={activeNote?.id ?? null}
-                onOpenNote={handleOpenFromGraph}
-                onCreateNoteByTitle={handleCreateByTitle}
-                onRefresh={refreshGraph}
-              />
-            ) : (
-              <div className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}>
-                <EditorPane
+
+              {panelOpen ? (
+                <LinkPanel
                   note={activeNote}
-                  folders={folders}
-                  resolveTitle={resolveTitle}
-                  resolveEmbed={resolveEmbed}
-                  onSave={saveNote}
-                  onDelete={deleteNote}
-                  onTogglePin={togglePin}
-                  onMove={moveNote}
-                  onOpenWikiLink={handleOpenWikiLink}
+                  folderLookup={folderLookup}
+                  onOpenNote={handleOpenNote}
                   onCreateWikiLink={handleCreateByTitle}
-                  onRestoreVersion={restoreVersion}
-                  registerNavigationGuard={registerNavigationGuard}
                 />
-
-                {panelOpen ? (
-                  <LinkPanel
-                    note={activeNote}
-                    folderLookup={folderLookup}
-                    onOpenNote={handleOpenNote}
-                    onCreateWikiLink={handleCreateByTitle}
-                  />
-                ) : null}
-              </div>
-            )}
-          </main>
-        </div>
+              ) : null}
+            </div>
+          )}
+        </main>
       </div>
+
+      {shellMode === 'obsidian' ? (
+        <StatusBar overview={overview} connectionDown={connectionDown} note={activeNote} />
+      ) : null}
 
       <QuickSwitcher
         open={switcherOpen}
@@ -396,6 +489,12 @@ export default function App() {
           handleOpenNote(note.id);
         }}
         onCreate={handleCreateByTitle}
+      />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme}
+        onThemeChange={setTheme}
       />
     </div>
   );

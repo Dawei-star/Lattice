@@ -14,6 +14,9 @@ asar: false
 files:
   - package.json
   - src/**/*
+  # 运行时窗口图标。build/ 是 buildResources，不会被拷进应用，
+  # 所以 make-icon.py 会另存一份到 assets/（见 src/main.js 的 ICON_PATH）。
+  - assets/icon.ico
   - from: ../server/src
     to: server/src
     filter:

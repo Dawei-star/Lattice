@@ -1,11 +1,13 @@
 #!/usr/bin/env node
+import fs from 'node:fs/promises';
+import path from 'node:path';
 /**
  * 端到端冒烟测试：对运行中的后端逐项验证接口契约。
  *
  *   node scripts/smoke.mjs
  *   SMOKE_BASE_URL=http://127.0.0.1:5177 node scripts/smoke.mjs
  *
- * 覆盖：探针 / 笔记 CRUD / 目录 / 标签 / 全文检索（中英文、长短词）/ 图谱 / 附件上传托管 /
+ * 覆盖：探针 / 笔记 CRUD / 目录 / 标签 / 全文检索（中英文、长短词）/ 图谱 /
  *       参数校验错误契约 / 404 契约 / CORS 白名单 / 创建幂等性 / 双向链接解析。
  */
 const BASE = process.env.SMOKE_BASE_URL ?? 'http://127.0.0.1:5177';
@@ -54,6 +56,10 @@ async function main() {
   check('GET /ready 数据库可用', ready.body?.data?.database === 'up');
 
   section('目录');
+  const initialFolder = await api('/api/folders', {
+    method: 'POST',
+    body: JSON.stringify({ name: `smoke-initial-${Date.now()}` }),
+  });
   const folders = await api('/api/folders');
   check('GET /api/folders 返回 200', folders.status === 200);
   check('GET /api/folders 返回数组', Array.isArray(folders.body?.data));
@@ -79,6 +85,15 @@ async function main() {
   check('校验错误体含 requestId', typeof emptyName.body?.error?.requestId === 'string');
 
   section('笔记 CRUD 与幂等');
+  const target = await api('/api/notes', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: crypto.randomUUID(),
+      title: '欢迎使用格物',
+      content: '# 双向链接是什么\n\n知识检索示例，FTS5 可用于全文索引。',
+    }),
+  });
+  check('测试目标笔记创建成功', target.status === 201);
   const noteId = crypto.randomUUID();
   const created = await api('/api/notes', {
     method: 'POST',
@@ -94,6 +109,16 @@ async function main() {
   check('创建后自动解析出 2 条出链', created.body?.data?.outgoing?.length === 2, `实际 ${created.body?.data?.outgoing?.length}`);
   check('指向已存在笔记的链接被解析', created.body?.data?.outgoing?.some((l) => l.resolved === true));
   check('指向不存在笔记的链接为悬空', created.body?.data?.outgoing?.some((l) => l.resolved === false));
+
+  const vaultInfo = await api('/api/vault/info');
+  check('Vault 信息接口返回 Markdown 模式', vaultInfo.status === 200 && vaultInfo.body?.data?.mode === 'markdown');
+  const createdMarkdown = path.join(vaultInfo.body?.data?.vaultDir ?? '', createdFolder.body?.data?.name ?? '', '冒烟测试笔记.md');
+  try {
+    await fs.access(createdMarkdown);
+    check('创建笔记后磁盘出现 Markdown 文件', true, createdMarkdown);
+  } catch {
+    check('创建笔记后磁盘出现 Markdown 文件', false, createdMarkdown);
+  }
 
   const replay = await api('/api/notes', {
     method: 'POST',
@@ -176,6 +201,10 @@ async function main() {
     typeof overview.body?.data?.folderCount === 'number' &&
     typeof overview.body?.data?.linkCount === 'number');
 
+  const migration = await api('/api/vault/migrate', { method: 'POST', body: '{}' });
+  check('SQLite 到 Markdown 迁移接口返回 200', migration.status === 200, `实际 ${migration.status}`);
+  check('迁移结果包含冲突报告', Array.isArray(migration.body?.data?.conflicts));
+
   section('错误契约');
   const missing = await api(`/api/notes/${crypto.randomUUID()}`);
   check('不存在的笔记返回 404', missing.status === 404, `实际 ${missing.status}`);
@@ -212,207 +241,6 @@ async function main() {
   check('响应带 X-Request-Id', typeof ready.headers.get('x-request-id') === 'string');
   check('未暴露 X-Powered-By', ready.headers.get('x-powered-by') === null);
 
-  section('附件上传与托管');
-  // 1x1 透明 PNG
-  const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-  const uploaded = await api('/api/attachments', {
-    method: 'POST',
-    body: JSON.stringify({ name: '冒烟点.png', mime: 'image/png', data: PNG_B64 }),
-  });
-  check('POST /api/attachments 返回 201', uploaded.status === 201, `实际 ${uploaded.status}`);
-  const attachmentUrl = uploaded.body?.data?.url;
-  check('上传返回同源可访问 URL', typeof attachmentUrl === 'string' && attachmentUrl.startsWith('/attachments/'));
-  check('上传登记原始文件名与大小', uploaded.body?.data?.name === '冒烟点.png' && uploaded.body?.data?.size > 0);
-
-  const served = await api(attachmentUrl ?? '/attachments/none');
-  check('附件可按 URL 取回', served.status === 200, `实际 ${served.status}`);
-  check('附件下发正确 Content-Type', served.headers.get('content-type') === 'image/png', `实际 ${served.headers.get('content-type')}`);
-  check('附件响应带 nosniff', served.headers.get('x-content-type-options') === 'nosniff');
-
-  const svgRejected = await api('/api/attachments', {
-    method: 'POST',
-    body: JSON.stringify({ name: 'x.svg', mime: 'image/svg+xml', data: PNG_B64 }),
-  });
-  check('不支持的类型（svg）返回 422', svgRejected.status === 422, `实际 ${svgRejected.status}`);
-
-  const listed = await api('/api/attachments');
-  check('GET /api/attachments 列表包含新附件', Array.isArray(listed.body?.data) && listed.body.data.some((a) => a.url === attachmentUrl));
-  check('未被正文引用的附件 refCount 为 0', listed.body?.data.find((a) => a.url === attachmentUrl)?.refCount === 0);
-
-  // 被笔记正文引用后：refCount 变 1，且引用者指向该笔记
-  const refd = await api('/api/attachments', {
-    method: 'POST',
-    body: JSON.stringify({ name: '被引用.png', mime: 'image/png', data: PNG_B64 }),
-  });
-  const refdUrl = refd.body?.data?.url;
-  await api(`/api/notes/${noteId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ content: `引用一张图：![配图](${refdUrl})` }),
-  });
-  const listed2 = await api('/api/attachments');
-  const refdRow = listed2.body?.data?.find((a) => a.url === refdUrl);
-  check('被正文引用后 refCount 为 1', refdRow?.refCount === 1, `实际 ${refdRow?.refCount}`);
-  check('引用者指向该笔记', refdRow?.referrers?.[0]?.id === noteId);
-
-  const missingAttachment = await api('/attachments/definitely-missing.png');
-  check('不存在的附件返回 404', missingAttachment.status === 404, `实际 ${missingAttachment.status}`);
-
-  // cleanup 只回收孤儿：uploaded 未被引用应删除，refd 被笔记引用应保留
-  const cleanup = await api('/api/attachments/cleanup', { method: 'POST', body: '{}' });
-  const removedIds = (cleanup.body?.data?.removed ?? []).map((r) => r.id);
-  check(
-    'POST /api/attachments/cleanup 回收孤儿附件',
-    removedIds.includes(uploaded.body?.data?.id),
-    `removed=${JSON.stringify(removedIds)}`,
-  );
-  check('cleanup 保留被引用的附件', !removedIds.includes(refd.body?.data?.id));
-  const servedAfterCleanup = await api(attachmentUrl ?? '/attachments/none');
-  check('清理后孤儿附件不可再取回', servedAfterCleanup.status === 404, `实际 ${servedAfterCleanup.status}`);
-  const refdAfterCleanup = await api(refdUrl ?? '/attachments/none');
-  check('被引用的附件在清理后仍可取回', refdAfterCleanup.status === 200, `实际 ${refdAfterCleanup.status}`);
-  // 让 refd 也变成孤儿：删除引用它的笔记的正文，随后清掉，避免残留
-  await api(`/api/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify({ content: '（已移除配图引用）' }) });
-  await api('/api/attachments/cleanup', { method: 'POST', body: '{}' });
-
-  // 单附件删除路径（DELETE）：再传一个，按 id 删除
-  const second = await api('/api/attachments', {
-    method: 'POST',
-    body: JSON.stringify({ name: '冒烟点2.png', mime: 'image/png', data: PNG_B64 }),
-  });
-  const secondUrl = second.body?.data?.url;
-  const attachmentId = second.body?.data?.id;
-  const deletedAttachment = await api(`/api/attachments/${attachmentId}`, { method: 'DELETE' });
-  check('DELETE /api/attachments/:id 返回 deleted=true', deletedAttachment.body?.data?.deleted === true);
-  const servedAfterDelete = await api(secondUrl ?? '/attachments/none');
-  check('删除后附件不可再取回', servedAfterDelete.status === 404, `实际 ${servedAfterDelete.status}`);
-
-  section('静态站点导出');
-  // 上传一张会被导出复制的附件，并把冒烟笔记正文改成含嵌入/双链/悬空/裸 HTML 的复合样本
-  const expAtt = await api('/api/attachments', {
-    method: 'POST',
-    body: JSON.stringify({ name: '导出配图.png', mime: 'image/png', data: PNG_B64 }),
-  });
-  const expAttUrl = expAtt.body?.data?.url;
-  await api(`/api/notes/${noteId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      content: [
-        '# 导出复合样本',
-        `![配图](${expAttUrl})`,
-        '链接 [[欢迎使用格物]]，悬空 [[不存在的目标]]。',
-        '',
-        '![[双向链接是什么]]',
-        '',
-        '<script>alert(1)</script>',
-        '[坏](javascript:alert(1))',
-      ].join('\n'),
-    }),
-  });
-
-  const exp = await api('/api/export/static', { method: 'POST', body: '{}' });
-  check('POST /api/export/static 返回 200', exp.status === 200, `实际 ${exp.status}`);
-  const site = exp.body?.data ?? {};
-  check('导出返回预览入口与统计', typeof site.entry === 'string' && site.entry.startsWith('/export/') && site.noteCount > 0);
-  check('导出复制了被引用的附件', (site.attachmentCount ?? 0) >= 1, `实际 ${site.attachmentCount}`);
-
-  const indexRes = await fetch(`${BASE}${site.entry}`);
-  const indexHtml = await indexRes.text();
-  check('导出的 index.html 可 HTTP 取回', indexRes.status === 200, `实际 ${indexRes.status}`);
-  check('首页含站点标题与笔记卡片', indexHtml.includes('格物 · 知识库') && indexHtml.includes('class="card"'));
-  check('首页含标签索引锚点', indexHtml.includes('id="tag-'));
-
-  const cssRes = await fetch(`${BASE}/export/${site.run}/assets/style.css`);
-  check('导出样式表以 text/css 下发', cssRes.status === 200 && (cssRes.headers.get('content-type') ?? '').includes('text/css'));
-
-  // 直接取回复合样本笔记页，验证链接解析 / 内联 / 附件改写 / 安全转义
-  // 文件名由笔记标题（非正文 h1）决定
-  const sampleHref = `notes/${encodeURIComponent('冒烟测试笔记')}-${noteId.slice(0, 8)}.html`;
-  const pageRes = await fetch(`${BASE}/export/${site.run}/${sampleHref}`);
-  const pageHtml = await pageRes.text();
-  check('笔记页可 HTTP 取回', pageRes.status === 200, `实际 ${pageRes.status}`);
-  check('双链解析为兄弟页相对链接', /<a class="wiki-link" href="欢迎使用格物-[0-9a-f]{8}\.html">/.test(pageHtml));
-  check('悬空双链渲染为不可点 span', /<span class="wiki-link is-dangling"/.test(pageHtml));
-  check('块级嵌入被内联', /<div class="note-embed">/.test(pageHtml));
-  check('附件改写为相对 ../attachments/', new RegExp('<img src="\\.\\./attachments/').test(pageHtml));
-  check('裸 <script> 被转义', pageHtml.includes('&lt;script&gt;') && !/<script>alert\(1\)<\/script>/.test(pageHtml));
-  check('javascript: 链接被丢弃', !/href="javascript/i.test(pageHtml));
-  check('标题生成锚点 id', /<h1 id="/.test(pageHtml));
-
-  section('笔记版本历史');
-  // 上面对 noteId 做过多次 PATCH：首条快照诞生于第一次实质改动，
-  // 其后改动落在默认 5 分钟节流窗口内被压制，故此处 noteId 恰好有历史。
-  const versions = await api(`/api/notes/${noteId}/versions`);
-  check('GET /api/notes/:id/versions 返回 200', versions.status === 200, `实际 ${versions.status}`);
-  check('版本列表为数组且非空', Array.isArray(versions.body?.data) && versions.body.data.length >= 1);
-  const v0 = versions.body?.data?.[0];
-  check('版本条目含 id/title/createdAt/size', !!v0 && typeof v0.id === 'string' && typeof v0.size === 'number');
-  check('版本列表不返回正文', v0 && v0.content === undefined);
-
-  const oneVer = await api(`/api/notes/${noteId}/versions/${v0.id}`);
-  check('GET /api/notes/:id/versions/:versionId 返回 200', oneVer.status === 200, `实际 ${oneVer.status}`);
-  check('单条版本返回全文', typeof oneVer.body?.data?.content === 'string' && oneVer.body.data.id === v0.id);
-
-  const ghostVer = await api(`/api/notes/${noteId}/versions/${crypto.randomUUID()}`);
-  check('读取不存在的版本返回 404', ghostVer.status === 404, `实际 ${ghostVer.status}`);
-  const missingOwner = await api(`/api/notes/${crypto.randomUUID()}/versions`);
-  check('笔记不存在时列表返回 404', missingOwner.status === 404, `实际 ${missingOwner.status}`);
-  const badVerUuid = await api('/api/notes/not-a-uuid/versions');
-  check('非法笔记 UUID 的版本路由返回 422', badVerUuid.status === 422, `实际 ${badVerUuid.status}`);
-
-  const restoreRes = await api(`/api/notes/${noteId}/versions/${v0.id}/restore`, { method: 'POST', body: '{}' });
-  check('POST /api/notes/:id/versions/:versionId/restore 返回 200', restoreRes.status === 200, `实际 ${restoreRes.status}`);
-  check('恢复响应带回当前笔记与来源版本', restoreRes.body?.data?.note?.id === noteId && restoreRes.body?.data?.restoredFrom === v0.id);
-  const afterRestore = await api(`/api/notes/${noteId}`);
-  check('恢复后正文等于所选版本', afterRestore.body?.data?.content === oneVer.body?.data?.content);
-  const versionsAfter = await api(`/api/notes/${noteId}/versions`);
-  check('恢复会先快照旧态（历史增加且可再次撤销）', versionsAfter.body.data.length === versions.body.data.length + 1,
-    `${versions.body.data.length} → ${versionsAfter.body.data.length}`);
-
-  section('PWA 资产与外壳');
-  // 仅在已构建前端（web/dist 存在）时，后端才托管这些；未构建则整体跳过，不误报。
-  const shell = await api('/');
-  const shellIsApp = shell.status === 200 && typeof shell.body === 'string' && shell.body.includes('<div id="root">');
-  if (!shellIsApp) {
-    console.log('  \x1b[33m·\x1b[0m 前端未构建，跳过 PWA 托管检查（先 npm run build 再复测）');
-  } else {
-    check('GET / 返回应用外壳', shell.status === 200);
-    check('外壳声明了 manifest 链接', /rel="manifest"/.test(shell.body) && shell.body.includes('manifest.webmanifest'));
-    check('外壳带 theme-color', /name="theme-color"/.test(shell.body));
-    check(
-      '外壳仍受 script-src \'self\' CSP 约束（PWA 未削弱安全头）',
-      (shell.headers.get('content-security-policy') || '').includes("script-src 'self'"),
-      shell.headers.get('content-security-policy') ?? '（无 CSP）',
-    );
-
-    const manifest = await api('/manifest.webmanifest');
-    check('GET /manifest.webmanifest 返回 200', manifest.status === 200, `实际 ${manifest.status}`);
-    check(
-      '清单以 application/manifest+json 下发',
-      (manifest.headers.get('content-type') || '').includes('application/manifest+json'),
-      `实际 ${manifest.headers.get('content-type')}`,
-    );
-    check('清单可解析且含安装必需字段', (() => {
-      try {
-        const json = typeof manifest.body === 'string' ? JSON.parse(manifest.body) : manifest.body;
-        return Boolean(json.name && json.start_url && json.display === 'standalone' && Array.isArray(json.icons) && json.icons.length >= 1);
-      } catch {
-        return false;
-      }
-    })());
-
-    const sw = await api('/sw.js');
-    check('GET /sw.js 返回 200', sw.status === 200, `实际 ${sw.status}`);
-    check('SW 以 JS 类型下发（非回退成 HTML）', (sw.headers.get('content-type') || '').includes('javascript'), `实际 ${sw.headers.get('content-type')}`);
-    check('SW 源码含缓存策略关键字', typeof sw.body === 'string' && sw.body.includes('addEventListener') && sw.body.includes('fetch'));
-
-    const icon = await api('/pwa-512.png');
-    check('GET /pwa-512.png 以 image/png 下发', icon.status === 200 && (icon.headers.get('content-type') || '').includes('image/png'));
-
-    // 未知客户端路由仍回退到外壳（SPA 深链在离线时可被 SW 命中）
-    const deep = await api('/notes/deeplink-not-an-api');
-    check('未知前端路由回退到外壳', deep.status === 200 && typeof deep.body === 'string' && deep.body.includes('<div id="root">'));
-  }
-
   section('清理');
   const deleted = await api(`/api/notes/${noteId}`, { method: 'DELETE' });
   check('DELETE /api/notes/:id 返回 200', deleted.status === 200);
@@ -423,6 +251,13 @@ async function main() {
   check('DELETE /api/folders/:id 返回 200', deletedFolder.status === 200);
 
   console.log(`\n${'─'.repeat(56)}`);
+  if (initialFolder.body?.data?.id) {
+    await api(`/api/folders/${initialFolder.body.data.id}`, { method: 'DELETE' });
+  }
+  if (target.body?.data?.id) {
+    await api(`/api/notes/${target.body.data.id}`, { method: 'DELETE' });
+  }
+
   if (failures.length === 0) {
     console.log(`\x1b[32m全部通过：${passed} 项检查\x1b[0m\n`);
   } else {

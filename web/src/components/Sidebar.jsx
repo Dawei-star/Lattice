@@ -1,38 +1,46 @@
 import { useState } from 'react';
 import FolderTree from './FolderTree.jsx';
 import TagCloud from './TagCloud.jsx';
-import { CloseIcon, PlusIcon } from './icons.jsx';
 import { formatNumber } from '../lib/format.js';
+import { SORT_LABELS } from './NoteListPane.jsx';
+
+const SORT_ORDER = Object.keys(SORT_LABELS);
 
 /**
- * 左侧栏：目录树 / 标签 / 统计 / 导出。
- *
- * 宽屏（≥1024px）下是常驻的一栏；窄屏下退化为左侧抽屉，
- * 由顶栏的菜单按钮唤起，避免小屏直接丢掉目录与标签的入口。
+ * 左侧栏：Obsidian 式文件列表。
+ * 顶部纯图标工具栏，下面依次是目录树 / 标签 / 统计（后两块可折叠）。
  */
 export default function Sidebar({
   folders,
   tags,
   overview,
   filter,
+  sort,
   onSelectFolder,
   onSelectTag,
   onClearFilter,
+  onSortChange,
   onCreateFolder,
   onDeleteFolder,
   onRenameFolder,
-  onExportSite,
-  exporting,
-  exportResult,
   loading,
-  open = false,
-  onClose,
+  onCreateNote,
+  onRevealFolder,
+  onRefresh,
+  refreshing,
+  onOpenSettings,
+  onCollapseSidebar,
 }) {
-  const [collapsed, setCollapsed] = useState({ folders: false, tags: false, stats: false });
+  const [collapsed, setCollapsed] = useState({ tags: false, stats: false });
   const [newFolderName, setNewFolderName] = useState('');
   const [creating, setCreating] = useState(false);
 
   const toggle = (key) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
+
+  const cycleSort = () => {
+    const index = SORT_ORDER.indexOf(sort);
+    onSortChange(SORT_ORDER[(index + 1) % SORT_ORDER.length]);
+  };
 
   const submitNewFolder = async (event) => {
     event.preventDefault();
@@ -46,136 +54,113 @@ export default function Sidebar({
   };
 
   return (
-    <>
-      <div
-        className={`nav-backdrop ${open ? 'is-open' : ''}`}
-        onClick={onClose}
-        role="presentation"
-      />
-
-      <aside className={`sidebar ${open ? 'is-open' : ''}`} aria-label="知识库导航">
-        <div className="sidebar__head">
-          <span className="sidebar__head-title">知识库</span>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭导航">
-            <CloseIcon />
-          </button>
-        </div>
-
-        <Section
-          title="目录"
-          count={folders.length}
-          collapsed={collapsed.folders}
-          onToggle={() => toggle('folders')}
-          action={
-            <button
-              type="button"
-              className="icon-btn"
-              title="新建目录"
-              aria-label="新建目录"
-              onClick={() => setCreating((value) => !value)}
-            >
-              <PlusIcon />
-            </button>
-          }
+    <aside className="sidebar" aria-label="知识库导航">
+      <div className="sidebar__toolbar" role="toolbar" aria-label="文件列表操作">
+        <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记" title="新建笔记">
+          <span aria-hidden="true">✎</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar__toolbtn ${creating ? 'is-active' : ''}`}
+          onClick={() => setCreating((value) => !value)}
+          aria-label="新建目录"
+          title="新建目录"
         >
-          {creating ? (
-            <form className="inline-form" onSubmit={submitNewFolder}>
-              <input
-                autoFocus
-                value={newFolderName}
-                maxLength={120}
-                placeholder="目录名称，回车确认"
-                onChange={(event) => setNewFolderName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    setCreating(false);
-                    setNewFolderName('');
-                  }
-                }}
-              />
-            </form>
-          ) : null}
+          <span aria-hidden="true">＋</span>
+        </button>
+        <button type="button" className="sidebar__toolbtn" onClick={cycleSort} aria-label="切换排序" title={`排序：${SORT_LABELS[sort] ?? sort}（点击切换）`}>
+          <span aria-hidden="true">⇅</span>
+        </button>
+        <button type="button" className="sidebar__toolbtn" onClick={onRefresh} disabled={refreshing} aria-label="刷新" title="刷新">
+          <span aria-hidden="true">↻</span>
+        </button>
+        <span className="sidebar__toolbar-space" aria-hidden="true" />
+        <button type="button" className="sidebar__toolbtn" onClick={onCollapseSidebar} aria-label="收起侧边栏" title="收起侧边栏（Ctrl / Cmd + B）">
+          <span aria-hidden="true">⟨</span>
+        </button>
+      </div>
 
-          <button
-            type="button"
-            className={`nav-item ${filter.kind === 'all' ? 'is-active' : ''}`}
-            onClick={onClearFilter}
-          >
-            <span className="nav-item__label">全部笔记</span>
-            <span className="nav-item__badge">{formatNumber(overview?.noteCount ?? 0)}</span>
-          </button>
+      <div className="sidebar__explorer">
+        {creating ? (
+          <form className="inline-form" onSubmit={submitNewFolder}>
+            <input
+              autoFocus
+              value={newFolderName}
+              maxLength={120}
+              placeholder="目录名称，回车确认"
+              onChange={(event) => setNewFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setCreating(false);
+                  setNewFolderName('');
+                }
+              }}
+            />
+          </form>
+        ) : null}
 
-          <FolderTree
-            nodes={folders}
-            filter={filter}
-            loading={loading}
-            onSelectFolder={onSelectFolder}
-            onDeleteFolder={onDeleteFolder}
-            onRenameFolder={onRenameFolder}
-          />
-        </Section>
-
-        <Section
-          title="标签"
-          count={tags.length}
-          collapsed={collapsed.tags}
-          onToggle={() => toggle('tags')}
+        <button
+          type="button"
+          className={`nav-item ${filter.kind === 'all' ? 'is-active' : ''}`}
+          onClick={onClearFilter}
         >
-          <TagCloud tags={tags} filter={filter} onSelectTag={onSelectTag} />
-        </Section>
+          <span className="nav-item__label">全部笔记</span>
+          <span className="nav-item__badge">{formatNumber(overview?.noteCount ?? 0)}</span>
+        </button>
 
-        <Section title="统计" collapsed={collapsed.stats} onToggle={() => toggle('stats')}>
-          <dl className="stats">
-            <Stat label="笔记" value={overview?.noteCount} />
-            <Stat label="目录" value={overview?.folderCount} />
-            <Stat label="标签" value={overview?.tagCount} />
-            <Stat label="链接" value={overview?.linkCount} />
-            <Stat label="总字数" value={overview?.totalWords} />
-          </dl>
+        <FolderTree
+          nodes={folders}
+          filter={filter}
+          loading={loading}
+          onSelectFolder={onSelectFolder}
+          onCreateFolder={onCreateFolder}
+          onCreateNote={onCreateNote}
+          onRevealFolder={onRevealFolder}
+          onDeleteFolder={onDeleteFolder}
+          onRenameFolder={onRenameFolder}
+        />
+      </div>
 
-          {overview?.danglingLinks?.length ? (
-            <div className="dangling">
-              <div className="dangling__title">待补全的引用（{overview.danglingLinks.length}）</div>
-              <ul className="dangling__list">
-                {overview.danglingLinks.slice(0, 6).map((item) => (
-                  <li key={item.targetTitle}>
-                    <span className="dangling__name">{item.targetTitle}</span>
-                    <span className="dangling__count">×{item.referenceCount}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+      <Section title="标签" count={tags.length} collapsed={collapsed.tags} onToggle={() => toggle('tags')}>
+        <TagCloud tags={tags} filter={filter} onSelectTag={onSelectTag} />
+      </Section>
 
-          <div className="export-block">
-            <button
-              type="button"
-              className="btn btn--sm export-block__btn"
-              onClick={onExportSite}
-              disabled={exporting || (overview?.noteCount ?? 0) === 0}
-            >
-              {exporting ? '导出中…' : '导出静态站点'}
-            </button>
-            {exportResult ? (
-              <div className="export-block__done">
-                <a className="export-block__link" href={exportResult.entry} target="_blank" rel="noopener noreferrer">
-                  查看预览（{exportResult.noteCount} 篇）→
-                </a>
-                <div className="export-block__dir" title={exportResult.dir}>
-                  已存到 {exportResult.run}/
-                </div>
-              </div>
-            ) : (
-              <div className="export-block__hint">生成自包含 HTML 站点，可离线打开或发布</div>
-            )}
+      <Section title="统计" collapsed={collapsed.stats} onToggle={() => toggle('stats')}>
+        <dl className="stats">
+          <Stat label="笔记" value={overview?.noteCount} />
+          <Stat label="目录" value={overview?.folderCount} />
+          <Stat label="标签" value={overview?.tagCount} />
+          <Stat label="链接" value={overview?.linkCount} />
+          <Stat label="总字数" value={overview?.totalWords} />
+        </dl>
+
+        {overview?.danglingLinks?.length ? (
+          <div className="dangling">
+            <div className="dangling__title">待补全的引用（{overview.danglingLinks.length}）</div>
+            <ul className="dangling__list">
+              {overview.danglingLinks.slice(0, 6).map((item) => (
+                <li key={item.targetTitle}>
+                  <span className="dangling__name">{item.targetTitle}</span>
+                  <span className="dangling__count">×{item.referenceCount}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-        </Section>
-      </aside>
-    </>
+        ) : null}
+      </Section>
+
+      <div className="sidebar__footer">
+        <button type="button" className="sidebar__settings" onClick={onOpenSettings}>
+          <span className="sidebar__settings-icon" aria-hidden="true">⚙</span>
+          <span>设置</span>
+          <span className="kbd">⌘ ,</span>
+        </button>
+      </div>
+    </aside>
   );
 }
 
-function Section({ title, count, collapsed, onToggle, action, children }) {
+function Section({ title, count, collapsed, onToggle, children }) {
   return (
     <section className="panel">
       <div className="panel__head">
@@ -184,7 +169,6 @@ function Section({ title, count, collapsed, onToggle, action, children }) {
           <span className="panel__title">{title}</span>
           {count === undefined ? null : <span className="panel__count">{count}</span>}
         </button>
-        {action}
       </div>
       {collapsed ? null : <div className="panel__body">{children}</div>}
     </section>

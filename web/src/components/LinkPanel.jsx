@@ -32,6 +32,7 @@ export default function LinkPanel({
           type="button"
           role="tab"
           aria-selected={tab === 'links'}
+          tabIndex={tab === 'links' ? 0 : -1}
           className={tab === 'links' ? 'is-active' : ''}
           onClick={() => setTab('links')}
         >
@@ -42,6 +43,7 @@ export default function LinkPanel({
           type="button"
           role="tab"
           aria-selected={tab === 'info'}
+          tabIndex={tab === 'info' ? 0 : -1}
           className={tab === 'info' ? 'is-active' : ''}
           onClick={() => setTab('info')}
         >

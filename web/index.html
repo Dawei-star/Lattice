@@ -2,21 +2,16 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <meta name="description" content="格物 Lattice —— 本地优先的双链笔记知识库" />
-    <meta name="theme-color" content="#1c4b63" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0e1a21" media="(prefers-color-scheme: dark)" />
-    <!-- PWA：清单与 iOS 独立运行元信息 -->
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="格物" />
+    <!-- 图标是「晶面层叠」：四层圆角方块沿 45° 逐层错位、每层带一条厚度边，
+         明度自下而上等距递增 —— 格物就是一层层读进去。
+         这里用它的 16–24px 三层简化版，小尺寸下才不糊。
+         由 desktop/build/make-icon.py 生成，改标记时两处要一起改。 -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%231c4b63'/%3E%3Ctext x='16' y='22' font-size='17' font-family='serif' font-weight='700' fill='%23fff' text-anchor='middle'%3E%E6%A0%BC%3C/text%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='89 89 846 846'%3E%3Crect x='89' y='89' width='846' height='846' rx='166' fill='%23162585'/%3E%3Crect x='162' y='162' width='589' height='589' rx='114' fill='%233B50DF'/%3E%3Crect x='234' y='234' width='331' height='331' rx='52' fill='%23C6D6FF'/%3E%3C/svg%3E"
     />
     <title>格物 Lattice · 本地知识库</title>
     <!-- 首屏定主题，避免浅色/深色闪烁。

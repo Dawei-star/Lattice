@@ -1,22 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { attachmentsApi } from '../api/resources.js';
 import MarkdownPreview from './MarkdownPreview.jsx';
-import VersionHistory from './VersionHistory.jsx';
-import { PinIcon } from './NoteListPane.jsx';
-import { ClockIcon, ImageIcon, TrashIcon } from './icons.jsx';
 import { formatDateTime, formatNumber } from '../lib/format.js';
+import ContextMenu from '../ui/ContextMenu.jsx';
 
 const AUTOSAVE_DELAY_MS = 900;
-// 与后端 attachments.service 的白名单保持一致
-const ACCEPTED_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/bmp',
-  'image/avif',
-  'application/pdf',
-]);
 const MODES = [
   { key: 'edit', label: '编辑' },
   { key: 'split', label: '分栏' },
@@ -40,21 +27,17 @@ export default function EditorPane({
   onMove,
   onOpenWikiLink,
   onCreateWikiLink,
-  onRestoreVersion,
   registerNavigationGuard,
 }) {
   const [draft, setDraft] = useState(() => ({ title: note?.title ?? '', content: note?.content ?? '' }));
   const [mode, setMode] = useState('split');
   const [status, setStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
-  const [attaching, setAttaching] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
 
   const noteIdRef = useRef(note?.id ?? null);
   const draftRef = useRef(draft);
   const textareaRef = useRef(null);
   const previewRef = useRef(null);
-  const fileInputRef = useRef(null);
 
   draftRef.current = draft;
 
@@ -68,7 +51,6 @@ export default function EditorPane({
     setDraft({ title: note?.title ?? '', content: note?.content ?? '' });
     setStatus('idle');
     setErrorMessage('');
-    setHistoryOpen(false);
   }, [note]);
 
   const commit = useCallback(
@@ -95,24 +77,6 @@ export default function EditorPane({
       }
     },
     [note, onSave],
-  );
-
-  /**
-   * 恢复某个历史版本。App 层负责落库并刷新列表/图谱，返回恢复后的完整笔记。
-   * 这里必须把编辑器草稿同步成恢复后的内容——因为笔记 id 没变，
-   * 上方「按 id 变化重置草稿」的 effect 不会触发，不手动同步就会停在旧草稿。
-   */
-  const handleRestoreVersion = useCallback(
-    async (versionId) => {
-      const restored = await onRestoreVersion?.(note.id, versionId);
-      if (!restored) return;
-      setDraft({ title: restored.title ?? '', content: restored.content ?? '' });
-      draftRef.current = { title: restored.title ?? '', content: restored.content ?? '' };
-      setStatus('saved');
-      setErrorMessage('');
-      setHistoryOpen(false);
-    },
-    [note, onRestoreVersion],
   );
 
   // 防抖自动保存
@@ -192,74 +156,6 @@ export default function EditorPane({
     });
   };
 
-  /** 在光标处插入 Markdown 图片/链接语法，并把光标移到其后 */
-  const insertAtCursor = useCallback((snippet) => {
-    const area = textareaRef.current;
-    const start = area?.selectionStart ?? draftRef.current.content.length;
-    const end = area?.selectionEnd ?? start;
-    const value = draftRef.current.content;
-    const next = `${value.slice(0, start)}${snippet}${value.slice(end)}`;
-    setDraft((current) => ({ ...current, content: next }));
-    draftRef.current = { ...draftRef.current, content: next };
-    const caret = start + snippet.length;
-    requestAnimationFrame(() => {
-      if (!area) return;
-      area.focus();
-      area.selectionStart = area.selectionEnd = caret;
-    });
-  }, []);
-
-  /**
-   * 处理一批待插入的文件：过滤到受支持类型 → 逐个上传 → 插入 Markdown 图片语法。
-   * PDF 用普通链接语法，图片用 ![..](..) 以便预览内嵌渲染。
-   */
-  const handleFiles = useCallback(
-    async (fileList) => {
-      const files = Array.from(fileList ?? []).filter((file) => ACCEPTED_TYPES.has(file.type));
-      if (files.length === 0) return;
-
-      setAttaching(true);
-      setErrorMessage('');
-      try {
-        for (const file of files) {
-          const attachment = await attachmentsApi.upload(file);
-          const safeName = (attachment.name ?? '').replace(/[[\]()]/g, '');
-          const snippet =
-            attachment.mime === 'application/pdf'
-              ? `[${safeName}](${attachment.url})`
-              : `![${safeName}](${attachment.url})`;
-          insertAtCursor(snippet);
-        }
-      } catch (error) {
-        setErrorMessage(error?.message ?? '附件上传失败，请重试');
-      } finally {
-        setAttaching(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-    },
-    [insertAtCursor],
-  );
-
-  const handlePaste = useCallback(
-    (event) => {
-      const files = Array.from(event.clipboardData?.files ?? []);
-      if (files.length === 0) return;
-      event.preventDefault();
-      handleFiles(files);
-    },
-    [handleFiles],
-  );
-
-  const handleDrop = useCallback(
-    (event) => {
-      const files = Array.from(event.dataTransfer?.files ?? []);
-      if (files.length === 0) return;
-      event.preventDefault();
-      handleFiles(files);
-    },
-    [handleFiles],
-  );
-
   const stats = useMemo(() => {
     const content = draft.content ?? '';
     const cjk = content.match(/[\u3400-\u4dbf\u4e00-\u9fff]/g)?.length ?? 0;
@@ -285,6 +181,17 @@ export default function EditorPane({
   }
 
   return (
+    <ContextMenu
+      label={`笔记「${note.title}」操作`}
+      getItems={() => [
+        { id: 'pin', label: note.isPinned ? '取消置顶' : '置顶', onSelect: () => onTogglePin(note) },
+        { id: 'save', label: '立即保存', shortcut: 'Ctrl+S', onSelect: () => commit({ silent: false }) },
+        { separator: true },
+        { id: 'delete', label: '删除笔记', danger: true, onSelect: () => {
+          if (window.confirm(`确定删除「${note.title}」吗？此操作不可撤销。`)) onDelete(note.id);
+        } },
+      ]}
+    >
     <section className="editor" aria-label="笔记编辑区">
       <div className="editor__toolbar">
         <div className="segmented segmented--sm" role="tablist" aria-label="编辑模式">
@@ -303,35 +210,6 @@ export default function EditorPane({
         </div>
 
         <div className="editor__toolbar-right">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/avif,application/pdf"
-            multiple
-            hidden
-            onChange={(event) => handleFiles(event.target.files)}
-          />
-          <button
-            type="button"
-            className="btn btn--sm"
-            title="插入图片或附件（也可直接粘贴 / 拖拽）"
-            disabled={attaching}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <ImageIcon />
-            {attaching ? '上传中' : '图片'}
-          </button>
-
-          <button
-            type="button"
-            className="btn btn--sm"
-            title="查看这篇笔记的历史版本"
-            onClick={() => setHistoryOpen(true)}
-          >
-            <ClockIcon />
-            历史
-          </button>
-
           <span className={`savestate savestate--${status}`}>
             {status === 'saving' && '保存中…'}
             {status === 'saved' && '已保存'}
@@ -342,11 +220,11 @@ export default function EditorPane({
 
           <button
             type="button"
-            className={`icon-btn ${note.isPinned ? 'is-pin-on' : ''}`}
+            className={`icon-btn ${note.isPinned ? 'is-on' : ''}`}
             title={note.isPinned ? '取消置顶' : '置顶'}
             onClick={() => onTogglePin(note)}
           >
-            <PinIcon filled={note.isPinned} />
+            ★
           </button>
 
           <select
@@ -365,13 +243,12 @@ export default function EditorPane({
 
           <button
             type="button"
-            className="btn btn--sm btn--danger"
+            className="icon-btn icon-btn--danger"
             title="删除这篇笔记"
             onClick={() => {
               if (window.confirm(`确定删除「${note.title}」吗？此操作不可撤销。`)) onDelete(note.id);
             }}
           >
-            <TrashIcon />
             删除
           </button>
         </div>
@@ -395,7 +272,7 @@ export default function EditorPane({
         onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
       />
 
-      <div className={`editor__body mode-${mode}`} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+      <div className={`editor__body mode-${mode}`}>
         {mode !== 'preview' ? (
           <textarea
             ref={textareaRef}
@@ -407,7 +284,6 @@ export default function EditorPane({
             onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))}
             onScroll={handleScroll}
             onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
           />
         ) : null}
 
@@ -432,14 +308,8 @@ export default function EditorPane({
         <span>创建于 {formatDateTime(note.createdAt)}</span>
         <span>更新于 {formatDateTime(note.updatedAt)}</span>
       </div>
-
-      <VersionHistory
-        open={historyOpen}
-        note={note}
-        onClose={() => setHistoryOpen(false)}
-        onRestore={handleRestoreVersion}
-      />
     </section>
+    </ContextMenu>
   );
 }
 

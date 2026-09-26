@@ -1,24 +1,24 @@
 import { useState } from 'react';
-import { CloseIcon, PencilIcon } from './icons.jsx';
+import ContextMenu from '../ui/ContextMenu.jsx';
 
 /**
  * 目录树。递归渲染任意层级，支持就地重命名与删除。
  * 点「未分类」可筛选出没有归属目录的笔记。
  */
-export default function FolderTree({ nodes, filter, onSelectFolder, onDeleteFolder, onRenameFolder }) {
-  if (!nodes?.length) {
-    return <p className="empty-hint">还没有目录，点上方 + 新建一个。</p>;
-  }
-
+export default function FolderTree({ nodes, filter, onSelectFolder, onCreateFolder, onCreateNote, onRevealFolder, onDeleteFolder, onRenameFolder }) {
   return (
     <ul className="tree" role="tree">
-      {nodes.map((node) => (
+      {(nodes ?? []).map((node) => (
         <FolderNode
           key={node.id}
           node={node}
           depth={0}
+          path={node.name}
           filter={filter}
           onSelectFolder={onSelectFolder}
+          onCreateFolder={onCreateFolder}
+          onCreateNote={onCreateNote}
+          onRevealFolder={onRevealFolder}
           onDeleteFolder={onDeleteFolder}
           onRenameFolder={onRenameFolder}
         />
@@ -32,11 +32,12 @@ export default function FolderTree({ nodes, filter, onSelectFolder, onDeleteFold
           <span className="nav-item__label">未分类</span>
         </button>
       </li>
+      {!nodes?.length ? <li className="empty-hint">还没有文件夹，点击上方 + 新建一个。</li> : null}
     </ul>
   );
 }
 
-function FolderNode({ node, depth, filter, onSelectFolder, onDeleteFolder, onRenameFolder }) {
+function FolderNode({ node, depth, path, filter, onSelectFolder, onCreateFolder, onCreateNote, onRevealFolder, onDeleteFolder, onRenameFolder }) {
   const [expanded, setExpanded] = useState(depth < 2);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -65,6 +66,37 @@ function FolderNode({ node, depth, filter, onSelectFolder, onDeleteFolder, onRen
     }
   };
 
+  const createChild = (kind) => {
+    if (kind === 'note') {
+      onCreateNote?.(node.id);
+      return;
+    }
+    const name = window.prompt('子文件夹名称');
+    if (name?.trim()) {
+      setExpanded(true);
+      onCreateFolder?.(name.trim(), node.id);
+    }
+  };
+
+  const getMenuItems = () => [
+    { id: 'new-note', label: '新建笔记', onSelect: () => createChild('note') },
+    { id: 'new-folder', label: '新建子目录', onSelect: () => createChild('folder') },
+    {
+      id: 'reveal',
+      label: '在系统资源管理器中显示',
+      onSelect: () => {
+        if (window.latticeDesktop?.revealVaultPath) {
+          onRevealFolder?.(path);
+        } else {
+          window.alert('当前是浏览器开发模式，请切换到格物 Lattice 桌面版后使用此功能。');
+        }
+      },
+    },
+    { separator: true },
+    { id: 'rename', label: '重命名', onSelect: () => setRenaming(true) },
+    { id: 'delete', label: '删除目录', danger: true, onSelect: confirmDelete },
+  ];
+
   return (
     <li role="treeitem" aria-expanded={hasChildren ? expanded : undefined}>
       {renaming ? (
@@ -90,7 +122,8 @@ function FolderNode({ node, depth, filter, onSelectFolder, onDeleteFolder, onRen
           />
         </form>
       ) : (
-        <div className={`nav-item ${isActive ? 'is-active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }}>
+        <ContextMenu getItems={getMenuItems} label={`目录「${node.name}」操作`}>
+          <div className={`nav-item ${isActive ? 'is-active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }}>
           <button
             type="button"
             className={`tree__caret ${hasChildren ? '' : 'is-hidden'}`}
@@ -98,7 +131,7 @@ function FolderNode({ node, depth, filter, onSelectFolder, onDeleteFolder, onRen
             aria-label={expanded ? '折叠' : '展开'}
             tabIndex={hasChildren ? 0 : -1}
           >
-            <span className={`caret ${expanded ? '' : 'is-collapsed'}`} aria-hidden="true">▾</span>
+            <span className={`chevron ${expanded ? 'is-open' : ''}`} aria-hidden="true">›</span>
           </button>
 
           <button type="button" className="nav-item__main" onClick={() => onSelectFolder(node.id)}>
@@ -108,13 +141,14 @@ function FolderNode({ node, depth, filter, onSelectFolder, onDeleteFolder, onRen
 
           <span className="nav-item__tools">
             <button type="button" className="icon-btn" title="重命名" onClick={() => setRenaming(true)}>
-              <PencilIcon />
+              ✎
             </button>
             <button type="button" className="icon-btn icon-btn--danger" title="删除目录" onClick={confirmDelete}>
-              <CloseIcon />
+              ×
             </button>
           </span>
-        </div>
+          </div>
+        </ContextMenu>
       )}
 
       {hasChildren && expanded ? (
@@ -124,8 +158,12 @@ function FolderNode({ node, depth, filter, onSelectFolder, onDeleteFolder, onRen
               key={child.id}
               node={child}
               depth={depth + 1}
+              path={`${path}/${child.name}`}
               filter={filter}
               onSelectFolder={onSelectFolder}
+              onCreateFolder={onCreateFolder}
+              onCreateNote={onCreateNote}
+              onRevealFolder={onRevealFolder}
               onDeleteFolder={onDeleteFolder}
               onRenameFolder={onRenameFolder}
             />

@@ -16,10 +16,12 @@ import * as foldersRepository from '../folders/folders.repository.js';
 import * as linksService from '../links/links.service.js';
 import * as tagsRepository from '../tags/tags.repository.js';
 import * as tagsService from '../tags/tags.service.js';
-import * as versionsService from '../versions/versions.service.js';
 import * as repository from './notes.repository.js';
+import { config } from '../../config/index.js';
+import { VaultAdapter } from '../../vault/vault.adapter.js';
 
 const MAX_TITLE_LENGTH = 200;
+const vault = new VaultAdapter(config.vaultDir);
 
 function normalizeTitle(rawTitle, fallbackContent) {
   const title = (rawTitle ?? '').trim() || inferTitle(fallbackContent);
@@ -30,6 +32,42 @@ function assertFolderExists(folderId) {
   if (folderId && !foldersRepository.findById(folderId)) {
     throw new ValidationError('指定的目录不存在', [{ in: 'body', field: 'folderId', message: '目录不存在' }]);
   }
+}
+
+function safeFilePart(value) {
+  return String(value || '未命名笔记')
+    .replace(/[<>:"/\\|?*\u0000]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .trim() || '未命名笔记';
+}
+
+function folderPath(folderId) {
+  const parts = [];
+  const visited = new Set();
+  let current = folderId ? foldersRepository.findById(folderId) : null;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    parts.unshift(safeFilePart(current.name));
+    current = current.parentId ? foldersRepository.findById(current.parentId) : null;
+  }
+  return parts.join('/');
+}
+
+function noteFilePath(note) {
+  const directory = folderPath(note.folderId);
+  return `${directory ? `${directory}/` : ''}${safeFilePart(note.title)}.md`;
+}
+
+function writeMarkdown(note) {
+  vault.writeSync({
+    id: note.id,
+    title: note.title,
+    content: note.content,
+    filePath: noteFilePath(note),
+    isPinned: note.isPinned,
+    createdAt: note.createdAt,
+    updatedAt: note.updatedAt,
+  });
 }
 
 /**
@@ -68,12 +106,15 @@ export function create({ id, title, content = '', folderId = null }) {
     return created;
   });
 
-  return getDetail(note.id);
+  const detail = getDetail(note.id);
+  writeMarkdown(detail);
+  return detail;
 }
 
 export function update(id, patch) {
   const current = repository.findById(id);
   if (!current) throw new NotFoundError('笔记不存在');
+  const oldFilePath = noteFilePath(current);
 
   const nextTitle =
     patch.title === undefined ? current.title : normalizeTitle(patch.title, patch.content ?? current.content);
@@ -94,12 +135,6 @@ export function update(id, patch) {
   }
 
   withTransaction(() => {
-    // 内容/标题发生实质变化时，先把「将被覆盖的旧状态」存成一条历史快照，
-    // 再落库。快照内部按最小间隔节流并对旧版本淘汰，避免自动保存刷屏。
-    if (titleChanged || contentChanged) {
-      versionsService.snapshot(current);
-    }
-
     repository.update(id, {
       title: nextTitle,
       content: nextContent,
@@ -119,7 +154,11 @@ export function update(id, patch) {
     }
   });
 
-  return getDetail(id);
+  const detail = getDetail(id);
+  writeMarkdown(detail);
+  const nextFilePath = noteFilePath(detail);
+  if (oldFilePath !== nextFilePath) vault.removeSync(oldFilePath);
+  return detail;
 }
 
 /**
@@ -127,7 +166,9 @@ export function update(id, patch) {
  * 这样 5xx 触发的客户端自动重试不会给用户抛出假错误。
  */
 export function remove(id) {
-  if (!repository.findById(id)) return { id, deleted: false };
+  const current = repository.findById(id);
+  if (!current) return { id, deleted: false };
+  const oldFilePath = noteFilePath(current);
 
   withTransaction(() => {
     // notes 的删除会级联清理 note_tags 与以本笔记为源头的 links；
@@ -136,6 +177,7 @@ export function remove(id) {
     tagsService.pruneOrphans();
   });
 
+  vault.removeSync(oldFilePath);
   return { id, deleted: true };
 }
 

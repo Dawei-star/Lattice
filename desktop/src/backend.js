@@ -78,9 +78,9 @@ const importModule = (absPath) => import(pathToFileURL(absPath).href);
 
 /**
  * 启动内嵌后端。
- * @param {{ appRoot: string, userDataDir: string, log?: (msg: string) => void }} options
+ * @param {{ appRoot: string, userDataDir: string, vaultDir?: string, log?: (msg: string) => void }} options
  */
-async function startBackend({ appRoot, userDataDir, log = () => {} }) {
+async function startBackend({ appRoot, userDataDir, vaultDir, log = () => {} }) {
   const serverRoot = resolveServerRoot(appRoot);
   if (!serverRoot) {
     throw new Error(`未能在 ${appRoot} 下找到后端源码（server/src/app.js）`);
@@ -100,6 +100,7 @@ async function startBackend({ appRoot, userDataDir, log = () => {} }) {
   process.env.HOST = '127.0.0.1';
   process.env.PORT = String(port);
   process.env.DB_FILE = dbFile;
+  if (vaultDir) process.env.VAULT_DIR = vaultDir;
   process.env.WEB_DIST_DIR = webDistDir;
   process.env.AUTO_MIGRATE = 'true';
   process.env.LOG_LEVEL = process.env.LATTICE_LOG_LEVEL || 'info';
@@ -113,12 +114,6 @@ async function startBackend({ appRoot, userDataDir, log = () => {} }) {
   log(`数据库就绪：${dbFile}（本次应用迁移 ${applied.length} 个）`);
 
   // 首次启动灌入示例知识库，避免用户面对一个空白库
-  if (firstRun) {
-    const { seedSampleVault } = await importModule(path.join(serverRoot, 'src', 'db', 'seed.js'));
-    const result = seedSampleVault();
-    log(`首次启动，已写入示例知识库：${result.created} 篇笔记、${result.folders} 个目录`);
-  }
-
   const expressApp = createApp();
   const httpServer = await listen(expressApp, port);
   const url = `http://127.0.0.1:${port}`;

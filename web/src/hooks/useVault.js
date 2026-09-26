@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../api/client.js';
-import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi, versionsApi } from '../api/resources.js';
+import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
 
@@ -361,27 +361,6 @@ export function useVault() {
     [handleError, refreshNotes],
   );
 
-  /** 恢复历史版本：落库后刷新当前笔记与派生列表，返回恢复后的完整笔记供编辑区同步草稿 */
-  const restoreVersion = useCallback(
-    async (id, versionId) => {
-      try {
-        const payload = await versionsApi.restore(id, versionId);
-        const restored = payload?.data?.note;
-        if (!restored) throw new Error('恢复失败');
-        setActiveNote((current) => (current && current.id === restored.id ? restored : current));
-        setGraphStale(true);
-        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
-        if (payload?.data?.noop) toast.info('当前内容已是该版本');
-        else toast.success('已恢复到所选版本');
-        return restored;
-      } catch (error) {
-        handleError(error, '恢复版本失败');
-        throw error;
-      }
-    },
-    [handleError, refreshNotes, refreshSidebar, toast],
-  );
-
   const selectFolder = useCallback((folderId) => {
     setFilter({ kind: 'folder', folderId });
     setQuery('');
@@ -433,7 +412,6 @@ export function useVault() {
     deleteFolder,
     moveNote,
     togglePin,
-    restoreVersion,
     resolveTitle,
     refreshNotes,
     refreshSidebar,

@@ -1,8 +1,9 @@
-import { memo, useMemo } from 'react';
+import { useMemo } from 'react';
 import { formatNumber, formatRelativeTime } from '../lib/format.js';
 import { highlightText } from '../lib/markdown.js';
+import ContextMenu from '../ui/ContextMenu.jsx';
 
-const SORT_LABELS = {
+export const SORT_LABELS = {
   updated: '最近更新',
   created: '创建时间',
   title: '标题',
@@ -18,6 +19,9 @@ export default function NoteListPane({
   search,
   filter,
   sort,
+  query,
+  onQueryChange,
+  showSearch,
   folderLookup,
   tagLookup,
   activeNoteId,
@@ -25,6 +29,7 @@ export default function NoteListPane({
   onSortChange,
   onOpenNote,
   onTogglePin,
+  onDeleteNote,
   onCreateNote,
 }) {
   const isSearching = search.query.length > 0;
@@ -39,6 +44,28 @@ export default function NoteListPane({
 
   return (
     <section className="listpane" aria-label="笔记列表">
+      {showSearch ? (
+        <div className="listpane__search">
+          <svg viewBox="0 0 16 16" aria-hidden="true" className="icon">
+            <path
+              d="M7 1a6 6 0 1 0 3.7 10.7l3.3 3.3 1.4-1.4-3.3-3.3A6 6 0 0 0 7 1Zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"
+              fill="currentColor"
+            />
+          </svg>
+          <input
+            type="search"
+            value={query}
+            placeholder="全文检索笔记内容与标题…"
+            aria-label="全文检索"
+            onChange={(event) => onQueryChange(event.target.value)}
+          />
+          {query ? (
+            <button type="button" className="listpane__search-clear" onClick={() => onQueryChange('')} aria-label="清空检索">
+              ×
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="listpane__head">
         <div className="listpane__title">
           <span>{isSearching ? '检索结果' : filterLabel}</span>
@@ -90,8 +117,9 @@ export default function NoteListPane({
                 note={note}
                 query={isSearching ? search.query : ''}
                 active={note.id === activeNoteId}
-                onOpenNote={onOpenNote}
-                onTogglePin={onTogglePin}
+                onOpen={() => onOpenNote(note.id)}
+                onTogglePin={() => onTogglePin(note)}
+                onDelete={() => onDeleteNote(note.id)}
               />
             ))}
           </ul>
@@ -101,39 +129,26 @@ export default function NoteListPane({
   );
 }
 
-export function PinIcon({ filled }) {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" className="icon icon--sm">
-      <path
-        d="M4 2.5h8a.5.5 0 0 1 .5.5v10.2a.5.5 0 0 1-.8.4L8 11.5l-3.7 2.1a.5.5 0 0 1-.8-.4V3a.5.5 0 0 1 .5-.5Z"
-        fill={filled ? 'currentColor' : 'none'}
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/**
- * 单张笔记卡片。
- *
- * memo 化的前提是 props 全部稳定：父层不再传 `() => onOpenNote(note.id)` 这类
- * 每次渲染都新建的闭包，而是把稳定回调与 note 一起传下来，命中变化时才重渲染。
- */
-const NoteCard = memo(function NoteCard({ note, query, active, onOpenNote, onTogglePin }) {
+function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete }) {
   const excerpt = note.excerpt ?? '';
 
   return (
     <li>
+      <ContextMenu
+        label={`笔记「${note.title}」操作`}
+        getItems={() => [
+          { id: 'open', label: '打开笔记', onSelect: onOpen },
+          { id: 'pin', label: note.isPinned ? '取消置顶' : '置顶', onSelect: onTogglePin },
+          { separator: true },
+          { id: 'delete', label: '删除笔记', danger: true, onSelect: () => {
+            if (window.confirm(`确定删除笔记「${note.title}」吗？`)) onDelete();
+          } },
+        ]}
+      >
       <article className={`notecard ${active ? 'is-active' : ''}`}>
-        <button type="button" className="notecard__main" onClick={() => onOpenNote(note.id)}>
+        <button type="button" className="notecard__main" onClick={onOpen}>
           <div className="notecard__row">
-            {note.isPinned ? (
-              <span className="notecard__pin" title="已置顶">
-                <PinIcon filled />
-              </span>
-            ) : null}
+            {note.isPinned ? <span className="notecard__pin" title="已置顶">★</span> : null}
             <h3 className="notecard__title">{note.title}</h3>
           </div>
 
@@ -166,17 +181,18 @@ const NoteCard = memo(function NoteCard({ note, query, active, onOpenNote, onTog
 
         <button
           type="button"
-          className={`icon-btn notecard__pinbtn ${note.isPinned ? 'is-pin-on' : ''}`}
+          className={`icon-btn notecard__pinbtn ${note.isPinned ? 'is-on' : ''}`}
           title={note.isPinned ? '取消置顶' : '置顶'}
           aria-label={note.isPinned ? '取消置顶' : '置顶'}
-          onClick={() => onTogglePin(note)}
+          onClick={onTogglePin}
         >
-          <PinIcon filled={note.isPinned} />
+          ★
         </button>
       </article>
+      </ContextMenu>
     </li>
   );
-});
+}
 
 function SkeletonList() {
   return (

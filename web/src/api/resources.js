@@ -102,32 +102,6 @@ export const notesApi = {
   remove: (id, options = {}) => http.delete(`/notes/${id}`, options),
 };
 
-export const versionsApi = {
-  /**
-   * @typedef {Object} VersionSummary
-   * @property {string} id
-   * @property {string} noteId
-   * @property {string} title
-   * @property {number} wordCount
-   * @property {number} size 正文字符长度（列表不含正文）
-   * @property {string} createdAt
-   *
-   * @typedef {Object} Version VersionSummary 的超集，额外含 content
-   */
-  /** @returns {Promise<VersionSummary[]>} */
-  list: (noteId, options = {}) => http.get(`/notes/${noteId}/versions`, options),
-
-  /** @returns {Promise<VersionSummary & { content: string }>} */
-  get: (noteId, versionId, options = {}) => http.get(`/notes/${noteId}/versions/${versionId}`, options),
-
-  /**
-   * 恢复某条历史为当前内容。非幂等（每次会快照旧态），关闭重试。
-   * @returns {Promise<{ note: NoteDetail, restoredFrom: string, noop: boolean }>}
-   */
-  restore: (noteId, versionId, options = {}) =>
-    http.postFull(`/notes/${noteId}/versions/${versionId}/restore`, {}, { retries: 0, ...options }),
-};
-
 export const foldersApi = {
   /** @returns {Promise<FolderNode[]>} */
   list: (options = {}) => http.get('/folders', options),
@@ -140,47 +114,6 @@ export const tagsApi = {
   /** @returns {Promise<Tag[]>} */
   list: (options = {}) => http.get('/tags', options),
   remove: (id, options = {}) => http.delete(`/tags/${id}`, options),
-};
-
-/** 把浏览器 File 读成纯 base64（去掉 data URL 前缀） */
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? '');
-      resolve(result.slice(result.indexOf(',') + 1));
-    };
-    reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
-export const attachmentsApi = {
-  /**
-   * 上传一个附件，返回可直接写进正文的同源 URL。
-   * 上传非幂等（同一文件两次会得到两个存储名），因此关闭自动重试并放宽超时。
-   * @param {File} file
-   * @returns {Promise<{ id: string, name: string, mime: string, size: number, url: string, createdAt: string }>}
-   */
-  async upload(file, options = {}) {
-    const data = await fileToBase64(file);
-    return http.post(
-      '/attachments',
-      { name: file.name, mime: file.type, data },
-      { retries: 0, timeout: 60_000, ...options },
-    );
-  },
-
-  /**
-   * @returns {Promise<Array<{ id: string, name: string, mime: string, size: number, url: string, createdAt: string, refCount: number, referrers: Array<{ id: string, title: string }> }>>}
-   */
-  list: (options = {}) => http.get('/attachments', options),
-
-  /** 清理未被任何笔记引用的附件 @returns {Promise<{ removed: Array<{ id: string, name: string }> }>} */
-  cleanup: (options = {}) => http.postFull('/attachments/cleanup', {}, { retries: 0, ...options }).then((p) => p?.data),
-
-  /** @returns {Promise<{ id: string, deleted: boolean }>} */
-  remove: (id, options = {}) => http.delete(`/attachments/${id}`, options),
 };
 
 export const searchApi = {
@@ -198,16 +131,6 @@ export const searchApi = {
 export const graphApi = {
   /** @returns {Promise<{ nodes: Array<{ id: string, title: string, folderId: string | null, degree: number, wordCount: number }>, edges: Array<{ source: string, target: string }>, dangling: Array<{ targetTitle: string, referenceCount: number }>, stats: { nodeCount: number, edgeCount: number, isolatedCount: number } }>} */
   get: (options = {}) => http.get('/graph', options),
-};
-
-export const exportsApi = {
-  /**
-   * 导出整个知识库为自包含静态站点（落盘到服务端 EXPORT_DIR），返回预览入口。
-   * 非幂等（每次生成新目录），关闭重试；全量渲染可能偏慢，放宽超时。
-   * @returns {Promise<{ dir: string, run: string, entry: string, noteCount: number, attachmentCount: number, generatedAt: string }>}
-   */
-  staticSite: (options = {}) =>
-    http.post('/export/static', {}, { retries: 0, timeout: 120_000, ...options }),
 };
 
 export const metaApi = {

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
-import { versionsRouter } from '../versions/versions.routes.js';
 import * as controller from './notes.controller.js';
 
 const idParam = z.object({ id: z.string().uuid('笔记 ID 必须是合法 UUID') });
@@ -38,8 +37,6 @@ notesRouter.get('/', validate({ query: listQuery }), controller.listNotes);
 notesRouter.post('/', validate({ body: createBody }), controller.createNote);
 // 必须注册在 /:id 之前，否则 "index" 会被当成 id 处理
 notesRouter.get('/index', controller.getNoteIndex);
-// 版本历史子路由：必须先于 /:id 注册，否则 "xxx/versions" 会被 /:id 抢占
-notesRouter.use('/:id/versions', versionsRouter);
 notesRouter.get('/:id', validate({ params: idParam }), controller.getNote);
 notesRouter.patch('/:id', validate({ params: idParam, body: updateBody }), controller.updateNote);
 notesRouter.delete('/:id', validate({ params: idParam }), controller.deleteNote);

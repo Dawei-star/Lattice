@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatRelativeTime } from '../lib/format.js';
+import Modal from '../ui/Modal.jsx';
 
 /**
  * 快速切换器（Ctrl / Cmd + K）。
@@ -90,15 +91,8 @@ export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCr
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <div
-        className="switcher"
-        role="dialog"
-        aria-modal="true"
-        aria-label="快速切换笔记"
-        onMouseDown={(event) => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
-      >
+    <Modal open={open} onClose={onClose} ariaLabel="快速切换笔记" className="switcher" >
+      <div onKeyDown={handleKeyDown}>
         <div className="switcher__search">
           <svg viewBox="0 0 16 16" aria-hidden="true" className="icon">
             <path d="M7 1a6 6 0 1 0 3.7 10.7l3.3 3.3 1.4-1.4-3.3-3.3A6 6 0 0 0 7 1Zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" fill="currentColor" />
@@ -160,7 +154,7 @@ export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCr
           <span><span className="kbd">Esc</span> 关闭</span>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

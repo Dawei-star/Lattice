@@ -57,58 +57,74 @@ async function buildEntry() {
   });
 }
 
-const FIXTURE_TITLE = '前端冒烟-嵌入样例';
+const FIXTURE_TITLE = `前端冒烟-嵌入样例-${Date.now()}`;
 
 /**
  * 清掉上一次运行可能残留的样例笔记。
  * 测试中途失败时不会有机会执行收尾清理，因此每次开始前都要先扫一遍。
  */
 async function cleanupFixtures() {
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 300));
   const response = await fetch(`${BASE_URL}/api/notes/index`);
   const payload = await response.json();
   const leftovers = (payload?.data ?? []).filter((note) => note.title === FIXTURE_TITLE);
 
   for (const note of leftovers) {
     await fetch(`${BASE_URL}/api/notes/${note.id}`, { method: 'DELETE' });
+    await pause();
   }
   return leftovers.length;
 }
 
 async function seedEmbedFixture() {
+  const folders = [];
+  for (const name of ['开始使用', '工程笔记']) {
+    const existingResponse = await fetch(`${BASE_URL}/api/folders`);
+    const existingPayload = await existingResponse.json();
+    const existing = (existingPayload?.data ?? []).find((folder) => folder.name === name);
+    if (existing) {
+      folders.push(existing);
+    } else {
+      const folderResponse = await fetch(`${BASE_URL}/api/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const folderPayload = await folderResponse.json();
+      folders.push(folderPayload?.data);
+    }
+  }
+  await fetch(`${BASE_URL}/api/notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: '双向链接是什么',
+      folderId: folders[0]?.id,
+      content: '# 双向链接是什么\n\n知识管理与 FTS5 检索示例。',
+    }),
+  });
+  await fetch(`${BASE_URL}/api/notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: '关系图谱怎么看',
+      folderId: folders[1]?.id,
+      content: '# 关系图谱怎么看\n\n[[双向链接是什么]]',
+    }),
+  });
   // 造一篇带块级嵌入的笔记，用来验证 ![[...]] 的转译与异步注入
+  const missingTitle = `前端冒烟-不存在-${Date.now()}`;
   const response = await fetch(`${BASE_URL}/api/notes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title: FIXTURE_TITLE,
-      content: '# 嵌入样例\n\n下面是嵌入内容：\n\n![[双向链接是什么]]\n\n以及一个不存在的目标：\n\n![[这个笔记不存在]]\n',
+      folderId: folders[1]?.id,
+      content: `# 嵌入样例\n\n下面是嵌入内容：\n\n![[双向链接是什么]]\n\n以及一个不存在的目标：\n\n![[${missingTitle}]]\n`,
     }),
   });
   const payload = await response.json();
   return payload?.data?.id ?? null;
-}
-
-// 1x1 透明 PNG，用于附件管理面板渲染
-const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-const FIXTURE_ATTACHMENT_NAME = '前端冒烟附件.png';
-
-async function seedAttachmentFixture() {
-  const response = await fetch(`${BASE_URL}/api/attachments`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: FIXTURE_ATTACHMENT_NAME, mime: 'image/png', data: PNG_B64 }),
-  });
-  const payload = await response.json();
-  return payload?.data?.id ?? null;
-}
-
-async function cleanupAttachmentFixtures() {
-  const response = await fetch(`${BASE_URL}/api/attachments`);
-  const payload = await response.json();
-  const leftovers = (payload?.data ?? []).filter((a) => a.name === FIXTURE_ATTACHMENT_NAME);
-  for (const a of leftovers) {
-    await fetch(`${BASE_URL}/api/attachments/${a.id}`, { method: 'DELETE' });
-  }
 }
 
 async function main() {
@@ -119,11 +135,8 @@ async function main() {
   check('esbuild 打包成功', true);
 
   const cleaned = await cleanupFixtures();
-  await cleanupAttachmentFixtures();
   const fixtureId = await seedEmbedFixture();
   check('后端可用并写入嵌入样例', typeof fixtureId === 'string', cleaned > 0 ? `（清理了 ${cleaned} 篇历史残留）` : '');
-  const attachmentId = await seedAttachmentFixture();
-  check('后端可用并写入附件样例', typeof attachmentId === 'string');
 
   const { triggerResize } = installDom(BASE_URL);
 
@@ -142,8 +155,9 @@ async function main() {
 
   await waitFor(() => container.querySelector('.notecard__title'), { label: '笔记列表加载' });
 
-  check('品牌标题渲染', container.textContent.includes('格物 Lattice'));
-  check('顶栏检索框存在', Boolean(container.querySelector('.topbar__search input')));
+  check('Obsidian 壳 Ribbon 已渲染', Boolean(container.querySelector('.ribbon')));
+  check('状态栏已渲染', Boolean(container.querySelector('.statusbar')));
+  check('全文检索输入框存在', Boolean(container.querySelector('input[aria-label="全文检索"]')));
   check('目录树渲染出「开始使用」', container.textContent.includes('开始使用'));
   check('目录树渲染出「工程笔记」', container.textContent.includes('工程笔记'));
   check('至少渲染一篇笔记卡片', container.querySelectorAll('.notecard').length > 0);
@@ -194,7 +208,7 @@ async function main() {
   }
 
   section('全文检索');
-  const searchInput = container.querySelector('.topbar__search input');
+  const searchInput = container.querySelector('input[aria-label="全文检索"]');
   setFieldValue(searchInput, '关系图谱');
   // 注意：策略标签在「检索中…」阶段就已挂载，必须等它落到真实策略才算结果到达
   const strategyNode = await waitFor(
@@ -213,7 +227,9 @@ async function main() {
   check('清空检索后恢复笔记列表', container.querySelectorAll('.notecard').length > 0);
 
   section('图谱视图');
-  const graphTab = [...container.querySelectorAll('.segmented button')].find((b) => b.textContent === '图谱');
+  // 默认 Obsidian 壳走 Ribbon 按钮；?shell=topbar 下回退到顶栏分段控件
+  const graphTab = container.querySelector('.ribbon__button[aria-label="图谱"]')
+    ?? [...container.querySelectorAll('.segmented button')].find((b) => b.textContent === '图谱');
   check('图谱视图切换按钮存在', Boolean(graphTab));
   graphTab.click();
   triggerResize(1000, 600);
@@ -237,34 +253,6 @@ async function main() {
   check('图谱统计显示真实节点数', /[1-9]\d*\s*节点/.test(graphStats), `实际「${graphStats}」`);
   check('图谱渲染未抛异常', consoleErrors.length === 0, consoleErrors[0] ?? '');
 
-  section('附件管理面板');
-  const attachmentsTab = [...container.querySelectorAll('.segmented button')].find((b) => b.textContent === '附件');
-  check('附件视图切换按钮存在', Boolean(attachmentsTab));
-  attachmentsTab.click();
-  const attCard = await waitFor(
-    () => {
-      const cards = [...container.querySelectorAll('.attachment-card')];
-      return cards.some((c) => c.textContent.includes(FIXTURE_ATTACHMENT_NAME)) ? cards : null;
-    },
-    { label: '附件列表加载' },
-  );
-  check('附件面板渲染出上传的附件卡片', Boolean(attCard && attCard.length > 0));
-  const fixtureCard = attCard.find((c) => c.textContent.includes(FIXTURE_ATTACHMENT_NAME));
-  check('未引用附件显示 refCount 0 徽标', /未引用|0/.test(fixtureCard.textContent));
-  check('附件卡片带删除入口', Boolean(fixtureCard.querySelector('.attachment-card__delete')));
-
-  section('导出静态站点');
-  const exportBtn = [...container.querySelectorAll('button')].find((b) => b.textContent.includes('导出静态站点'));
-  check('侧栏导出按钮存在', Boolean(exportBtn));
-  check('导出按钮初始可用', exportBtn && !exportBtn.disabled);
-  exportBtn.click();
-  const previewLink = await waitFor(() => container.querySelector('.export-block__link'), {
-    label: '导出完成并出现预览链接',
-    timeout: 12000,
-  });
-  check('导出成功后给出预览入口', Boolean(previewLink && previewLink.getAttribute('href')?.startsWith('/export/')));
-  check('预览链接以新标签打开', previewLink?.getAttribute('target') === '_blank');
-
   section('快速切换器');
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
   await waitFor(() => container.querySelector('.switcher'), { label: '切换器打开' });
@@ -285,7 +273,8 @@ async function main() {
 
   section('编辑与自动保存');
   // 图谱视图下编辑区是卸载的，先切回笔记视图
-  const notesTab = [...container.querySelectorAll('.segmented button')].find((b) => b.textContent === '笔记');
+  const notesTab = container.querySelector('.ribbon__button[aria-label="笔记"]')
+    ?? [...container.querySelectorAll('.segmented button')].find((b) => b.textContent === '笔记');
   notesTab.click();
   await waitFor(() => container.querySelector('.editor__title'), { label: '切回笔记视图' });
 
@@ -306,41 +295,6 @@ async function main() {
   // 还原标题，避免污染示例数据
   setFieldValue(editorTitle, beforeTitle);
   await waitFor(() => container.querySelector('.savestate--saved'), { label: '还原标题', timeout: 6000 });
-
-  section('版本历史面板');
-  // 上一步「编辑与自动保存」改动过标题，当前笔记已留下一条历史快照。
-  const historyBtn = [...container.querySelectorAll('button')].find((b) => b.textContent.trim() === '历史');
-  check('编辑区有「历史」入口按钮', Boolean(historyBtn));
-  historyBtn.click();
-  await waitFor(() => container.querySelector('.history'), { label: '版本历史弹窗打开' });
-  check('版本历史弹窗渲染', Boolean(container.querySelector('.history')));
-
-  const historyItems = await waitFor(() => {
-    const nodes = container.querySelectorAll('.history__item');
-    return nodes.length > 0 ? nodes : null;
-  }, { label: '历史列表加载' });
-  check('历史列表至少渲染一条版本', historyItems.length >= 1, `实际 ${historyItems.length} 条`);
-
-  historyItems[0].click();
-  const previewContent = await waitFor(() => {
-    const pre = container.querySelector('.history__content pre');
-    return pre && pre.textContent.length >= 0 && container.querySelector('.history__foot .btn--primary')
-      ? pre
-      : null;
-  }, { label: '版本内容预览就绪' });
-  check('选中版本后渲染出正文预览', Boolean(previewContent));
-  const restoreBtn = container.querySelector('.history__foot .btn--primary');
-  check('预览底部有「恢复此版本」按钮', Boolean(restoreBtn && restoreBtn.textContent.includes('恢复')));
-
-  // 真正走一遍恢复链路（confirm 在 jsdom 下默认返回 undefined，需桩为 true）；
-  // 选中的是最近一条快照，当前内容与其一致，后端按 noop 处理，不会污染数据，但完整跑通
-  // 取版本 → POST restore → 刷新当前笔记 → 编辑区同步草稿 这条 UI 路径。
-  const originalConfirm = window.confirm;
-  window.confirm = () => true;
-  restoreBtn.click();
-  await waitFor(() => !container.querySelector('.history'), { label: '恢复后弹窗关闭' });
-  window.confirm = originalConfirm;
-  check('恢复后弹窗关闭且编辑区回到已保存态', Boolean(container.querySelector('.savestate--saved')));
 
   section('运行期错误');
   const realErrors = consoleErrors.filter((text) => !text.includes('Warning:'));

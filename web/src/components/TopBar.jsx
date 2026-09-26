@@ -1,33 +1,22 @@
 import { useEffect, useRef } from 'react';
-import {
-  ArrowLeftIcon,
-  CloseIcon,
-  MenuIcon,
-  PanelIcon,
-  RefreshIcon,
-  SearchIcon,
-} from './icons.jsx';
 
 /**
- * 顶栏（命令栏）：当前视图上下文 + 全局检索 + 高频操作。
- *
- * 视图切换与主题切换已移交左侧导航栏，顶栏只保留「左右手不改姿势」能按到的动作。
- * 窄屏下会依次退化为：抽屉入口 → 返回列表 → 折叠检索框。
+ * 顶栏：品牌、全局检索入口、视图切换、新建、主题与手动刷新。
  */
 export default function TopBar({
   query,
   onQueryChange,
   view,
-  viewLabel,
+  onViewChange,
   onCreateNote,
   onOpenSwitcher,
   onRefresh,
   refreshing,
+  theme,
+  onToggleTheme,
   panelOpen,
   onTogglePanel,
-  onToggleNav,
-  onBack,
-  backVisible,
+  onOpenSettings,
 }) {
   const inputRef = useRef(null);
 
@@ -38,65 +27,64 @@ export default function TopBar({
 
   return (
     <header className="topbar">
-      <button
-        type="button"
-        className="icon-btn topbar__nav-toggle"
-        onClick={onToggleNav}
-        title="知识库导航"
-        aria-label="打开知识库导航"
-      >
-        <MenuIcon className="icon" />
-      </button>
-
-      {backVisible ? (
-        <button type="button" className="icon-btn topbar__back" onClick={onBack} aria-label="返回笔记列表">
-          <ArrowLeftIcon className="icon" />
-        </button>
-      ) : null}
-
-      <div className="topbar__context">
-        <span className="topbar__eyebrow">格物 Lattice</span>
-        <h1 className="topbar__view">{viewLabel}</h1>
+      <div className="topbar__brand">
+        <span className="topbar__logo" aria-hidden="true">格</span>
+        <div className="topbar__titles">
+          <strong>格物 Lattice</strong>
+          <span>本地优先的双链笔记</span>
+        </div>
       </div>
 
       <div className="topbar__search">
-        <SearchIcon className="icon" />
+        <svg viewBox="0 0 16 16" aria-hidden="true" className="icon">
+          <path
+            d="M7 1a6 6 0 1 0 3.7 10.7l3.3 3.3 1.4-1.4-3.3-3.3A6 6 0 0 0 7 1Zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"
+            fill="currentColor"
+          />
+        </svg>
         <input
           ref={inputRef}
           type="search"
           value={query}
-          placeholder="检索标题与正文…"
+          placeholder="全文检索笔记内容与标题…"
           aria-label="全文检索"
           onChange={(event) => onQueryChange(event.target.value)}
         />
         {query ? (
           <button type="button" className="topbar__clear" onClick={() => onQueryChange('')} aria-label="清空检索">
-            <CloseIcon />
+            ×
           </button>
-        ) : (
-          <span className="topbar__search-hint">
-            <span className="kbd">Ctrl</span>
-            <span className="kbd">K</span>
-          </span>
-        )}
+        ) : null}
       </div>
 
       <div className="topbar__actions">
-        <button
-          type="button"
-          className="btn topbar__switcher"
-          onClick={onOpenSwitcher}
-          title="快速切换笔记（Ctrl / Cmd + K）"
-        >
-          快速切换
+        <div className="segmented" role="tablist" aria-label="视图切换">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'notes'}
+            className={view === 'notes' ? 'is-active' : ''}
+            onClick={() => onViewChange('notes')}
+          >
+            笔记
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'graph'}
+            className={view === 'graph' ? 'is-active' : ''}
+            onClick={() => onViewChange('graph')}
+          >
+            图谱
+          </button>
+        </div>
+
+        <button type="button" className="btn" onClick={onOpenSwitcher} title="快速切换（Ctrl / Cmd + K）">
+          <span className="kbd">Ctrl</span>
+          <span className="kbd">K</span>
         </button>
 
-        <button
-          type="button"
-          className="btn btn--primary topbar__new"
-          onClick={onCreateNote}
-          title="新建笔记（Ctrl / Cmd + N）"
-        >
+        <button type="button" className="btn btn--primary" onClick={onCreateNote} title="新建笔记（Ctrl / Cmd + N）">
           新建笔记
         </button>
 
@@ -108,18 +96,35 @@ export default function TopBar({
           title="重新加载全部数据"
           aria-label="重新加载"
         >
-          <RefreshIcon className={`icon ${refreshing ? 'is-spinning' : ''}`} />
+          <svg viewBox="0 0 16 16" aria-hidden="true" className={`icon ${refreshing ? 'is-spinning' : ''}`}>
+            <path
+              d="M8 2a6 6 0 1 0 5.2 3H11a4.5 4.5 0 1 1-1.3-1.7V6h4V2h-1.6v1.1A6 6 0 0 0 8 2Z"
+              fill="currentColor"
+            />
+          </svg>
         </button>
 
         <button
           type="button"
-          className={`btn btn--icon topbar__panel ${panelOpen ? 'is-on' : ''}`}
+          className={`btn btn--icon ${panelOpen ? 'is-on' : ''}`}
           onClick={onTogglePanel}
           title={panelOpen ? '收起关系面板' : '展开关系面板'}
           aria-pressed={panelOpen}
           aria-label="切换关系面板"
         >
-          <PanelIcon className="icon" />
+          <svg viewBox="0 0 16 16" aria-hidden="true" className="icon">
+            <path d="M2 3h12v1.6H2V3Zm0 4.2h12v1.6H2V7.2Zm0 4.2h12V13H2v-1.6Z" fill="currentColor" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          className="btn btn--icon"
+          onClick={onToggleTheme}
+          title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+          aria-label="切换主题"
+        >
+          {theme === 'dark' ? '☾' : '☀'}
         </button>
       </div>
     </header>

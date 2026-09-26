@@ -6,6 +6,10 @@ import { randomUUID } from 'node:crypto';
 import { ConflictError, NotFoundError } from '../../lib/errors.js';
 import { nowIso } from '../../lib/time.js';
 import * as repository from './folders.repository.js';
+import { config } from '../../config/index.js';
+import { VaultAdapter } from '../../vault/vault.adapter.js';
+
+const vault = new VaultAdapter(config.vaultDir);
 
 /**
  * 返回嵌套目录树，每个节点带上直接归属的笔记数量。
@@ -44,7 +48,7 @@ export function create({ name, parentId = null, sortOrder = 0 }) {
   }
 
   const timestamp = nowIso();
-  return repository.insert({
+  const folder = repository.insert({
     id: randomUUID(),
     name,
     parentId,
@@ -52,10 +56,13 @@ export function create({ name, parentId = null, sortOrder = 0 }) {
     createdAt: timestamp,
     updatedAt: timestamp,
   });
+  vault.ensureDirectorySync(getPath(folder));
+  return folder;
 }
 
 export function update(id, patch) {
   const current = getById(id);
+  const oldPath = getPath(current);
 
   const name = patch.name ?? current.name;
   const parentId = patch.parentId === undefined ? current.parentId : patch.parentId;
@@ -76,7 +83,12 @@ export function update(id, patch) {
     throw new ConflictError(`同级下已存在名为「${name}」的目录`);
   }
 
-  return repository.update(id, { name, parentId, sortOrder, updatedAt: nowIso() });
+  const updated = repository.update(id, { name, parentId, sortOrder, updatedAt: nowIso() });
+  const newPath = getPath(updated);
+  if (oldPath !== newPath) {
+    vault.moveDirectorySync(oldPath, newPath);
+  }
+  return updated;
 }
 
 /**
@@ -84,8 +96,30 @@ export function update(id, patch) {
  * @returns {{ deletedFolderCount: number, affectedNoteCount: number }}
  */
 export function remove(id) {
-  getById(id);
+  const current = getById(id);
+  const oldPath = getPath(current);
   const affectedNoteCount = repository.countNotes(id);
   repository.remove(id);
+  vault.relocatePrefixToRootSync(oldPath);
+  vault.removeDirectorySync(oldPath);
   return { deletedFolderCount: 1, affectedNoteCount };
+}
+
+function getPath(folder) {
+  const parts = [safeFilePart(folder.name)];
+  const visited = new Set([folder.id]);
+  let current = folder.parentId ? repository.findById(folder.parentId) : null;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    parts.unshift(safeFilePart(current.name));
+    current = current.parentId ? repository.findById(current.parentId) : null;
+  }
+  return parts.join('/');
+}
+
+function safeFilePart(value) {
+  return String(value || '未命名目录')
+    .replace(/[<>:"/\\|?*\u0000]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .trim() || '未命名目录';
 }

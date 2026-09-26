@@ -1,6 +1,6 @@
 # 格物 Lattice
 
-一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现，包含完整的后端、前端与数据库。
+一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现。用户选择本地 Vault 文件夹，笔记以 Markdown 文件保存，SQLite 仅作为可重建索引。
 
 所有数据都在你自己的机器上，不需要注册、不需要联网。
 
@@ -12,8 +12,10 @@
 | --- | --- | --- |
 | 本文 | 开发者 / 二次开发 | 架构、技术选型、API、数据模型、测试、构建与打包 |
 | [`docs/使用说明书.md`](docs/使用说明书.md) | 最终使用者 | 安装启动、界面导览、日常操作、快捷键、备份迁移、升卸载、故障排查 |
+| `../tools/packer/README.md` | 打包维护者 | winpack 打包器的命令行、配置字段与验收说明（在仓库外，与 `lattice/` 平级） |
 
-两份文档的定位不同：本文假设你愿意读代码，说明书假设你只想把笔记写好。
+三份文档的定位不同：本文假设你愿意读代码，说明书假设你只想把笔记写好，
+打包器文档假设你只关心怎么把产物打出来。
 
 ---
 
@@ -22,9 +24,6 @@
 | 能力 | 说明 |
 | --- | --- |
 | Markdown 编辑 | 编辑 / 分栏 / 预览三种模式，900ms 静默自动保存，滚动同步 |
-| 附件与图片 | 图片 / PDF 存进本地附件文件夹（默认数据库同级 `data/attachments`），通过工具栏按钮、粘贴或拖拽插入正文，预览内嵌渲染；独立的「附件」面板列出全部文件、显示被哪篇笔记引用、一键清理未引用的孤儿 |
-| 导出静态站点 | 一键把整库预渲染成自包含静态 HTML 站点（首页按目录/标签分组，双链转相对链接、嵌入内联、附件随带），落盘 `data/export` 并可本地预览，整体拷走即可发布 |
-| 版本历史 | 每次实质改动前自动快照被覆盖的旧内容（按最小间隔节流、每篇限量保留），编辑区「历史」面板可预览任一版本正文并一键回滚；回滚本身也会先存一条，故可再次撤销 |
 | 双向链接 | `[[标题]]`、`[[标题\|别名]]`、`[[标题#小节]]`，自动解析并生成反向链接面板 |
 | 嵌入引用 | 独占一行的 `![[标题]]` 会展开为内嵌卡片，支持两级嵌套并检测循环引用 |
 | 关系图谱 | Canvas 手写力导向布局，按度数缩放节点，支持拖拽 / 缩放 / 点击跳转 |
@@ -34,7 +33,6 @@
 | 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建 |
 | 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
 | 主题 | 浅色 / 深色双主题，首屏渲染前定主题，无闪烁 |
-| PWA 可安装 / 离线 | Web 应用清单 + 手写 Service Worker：可安装为独立窗口应用；外壳与哈希资源缓存优先、笔记数据网络优先并回写，后端不可达时离线仍能打开界面并回看上次读过的内容 |
 
 快捷键：`Ctrl+K` 快速切换 · `Ctrl+N` 新建笔记 · `Ctrl+S` 立即保存 · `Ctrl+E` 切换编辑/预览
 
@@ -46,7 +44,7 @@
 # 1. 安装依赖（后端 + 前端）
 npm run setup
 
-# 2. 初始化数据库
+# 2. 初始化索引数据库（仅开发模式需要）
 npm run db:migrate
 
 # 3. 可选：写入一套互相关联的示例知识库
@@ -68,6 +66,21 @@ npm start         # 后端同时托管 API 与前端静态资源
 访问 <http://127.0.0.1:5177>。这条路径下前端与 API 同源，不涉及任何 CORS。
 
 ### 打包成 Windows 桌面应用
+
+项目里有**两条互相独立**的打包链路。它们跑起来的是同一个后端、同一份前端，差别只在
+「谁来当那个壳」；但配置、输出目录、产物文件名都不一样，别把一方的产物当成另一方的：
+
+| 链路 | 配置在哪 | 输出目录 | 典型产物 |
+| --- | --- | --- | --- |
+| 项目自带桌面壳 | `desktop/electron-builder.yml` | `desktop/release/` | `Lattice-<版本>-setup.exe`、`Lattice-<版本>-portable.exe` |
+| winpack 通用打包器 | `packaging/winpack/winpack.config.jsonc` | `dist/winpack/` | `lattice-<版本>-x64-setup.exe`、`lattice-<版本>-x64-portable.exe` |
+
+命名里的 `Lattice` 与 `lattice` 不是笔误，两边各有各的来源：路线一的 `Lattice-` 前缀写在
+`electron-builder.yml` 的 `artifactName` 里；路线二的 `lattice` 来自 winpack 的 `name`
+（**必须 ASCII 小写** —— 它同时充当 exe 文件名与数据目录名）。两条链路都把中文展示名
+留给 `productName`，那两个都是「格物 Lattice」。
+
+#### 路线一：`desktop/` 自带桌面壳
 
 `desktop/` 是一个独立的 Electron 包，把后端直接跑在 Electron 主进程里（Electron 44 自带
 Node 24，内置 `node:sqlite` 可用），因此不需要给用户装 Node，也不需要额外打包一份 node.exe。
@@ -95,18 +108,18 @@ npm run dist             # 产出安装包 + 绿色版到 desktop/release/
 | `Lattice-<版本>-setup.exe` | NSIS 安装程序，可选安装目录，带开始菜单与桌面快捷方式 |
 | `Lattice-<版本>-portable.exe` | 免安装绿色版，双击即用 |
 
-数据存放位置：
+路线一的数据存放位置：
 
-- 安装版：`%APPDATA%\Lattice\data\lattice.db`
-- 绿色版：exe 同级的 `LatticeData\data\lattice.db`（拷走整个目录即可带走全部笔记；
-  若所在目录不可写，自动回退到 `%APPDATA%`）
+- 首次启动会选择一个本地 Vault 文件夹，所有笔记以 `.md` 文件保存在该文件夹中。
+- SQLite 索引位于安装版 `%APPDATA%\Lattice\data\lattice.db`，绿色版位于 exe 同级的 `LatticeData\data\lattice.db`。
+- 复制 Vault 文件夹即可备份和迁移笔记；SQLite 文件属于可重建索引，不是笔记的唯一来源。
 - 运行日志：数据目录下的 `logs/lattice.log`（超过 2MB 自动轮转为 `lattice.log.1`）
 
 桌面端有一个可选环境变量 `LATTICE_LOG_LEVEL`（`debug` / `info` / `warn` / `error`，默认 `info`），
 排查时用它提升日志详细度。它不属于 `server/.env` 的一部分 —— 桌面端全程不需要配置文件，
 所有运行参数都由主进程在启动内嵌后端前注入。
 
-首次启动若数据库不存在，会自动灌入一套互相关联的示例知识库（仅此一次，之后不再干预）。
+首次启动若 Vault 为空，会保持为空；你可以直接把现有 Markdown 文件放入该文件夹，应用会自动建立索引。
 
 **卸载不会删除笔记**：`deleteAppDataOnUninstall: false` 刻意保留数据目录，避免手滑卸载
 把知识库一起删掉。绿色版直接删目录即可，删之前记得先把 `LatticeData\` 挪走。
@@ -118,6 +131,60 @@ npm run dist             # 产出安装包 + 绿色版到 desktop/release/
 > Electron 默认从 GitHub 拉二进制，**下载失败却不报错**，只留下一个空的 `dist/` 目录，
 > 直到启动时才发现跑不起来。换机器时不要删掉这个文件。
 
+#### 路线二：winpack 通用打包器
+
+`packaging/winpack/` 里放的不是代码，是一份**声明式打包配置** —— 它驱动仓库外的通用打包器
+（`../tools/packer`，与 `lattice/` 平级，不属于本仓库）。打包器本身不认识 Lattice，
+所有项目相关的信息都由这份配置提供。
+
+打包器和 `lattice/` 平级，都在 `FCNode/` 下：
+
+```bash
+cd ../tools/packer            # 从仓库根出发；打包器在任何目录下都能驱动
+
+# 可视化界面：填表单、看实时日志、直接看验收报告
+node bin/winpack.mjs ui --cwd ../../lattice/packaging/winpack
+
+# 或者纯命令行
+node bin/winpack.mjs build  -c ../../lattice/packaging/winpack/winpack.config.jsonc
+node bin/winpack.mjs verify ../../lattice/dist/winpack/win-unpacked
+```
+
+`packaging/winpack/` 里只有两个文件，各管一头 —— 这个分工是理解这条链路的关键：
+
+| 文件 | 什么时候起作用 | 干什么 |
+| --- | --- | --- |
+| `winpack.config.jsonc` | 构建时（只被打包器读） | 收哪些文件、用什么图标、出哪些分发目标、依赖从哪来 |
+| `entry.mjs` | 运行时（会被烤进包里） | 导出 `start({ port, dataDir })`，运行壳靠它拉起后端 |
+
+**为什么非要一个 `entry.mjs`**：打包器的运行壳只认「入口模块导出 `start()`」这一个契约，
+而 `server/src/index.js` 是**自启动脚本** —— 没有导出，配置非法时直接 `process.exit`，
+没法被别的进程 import。这一层适配做的事和 `desktop/src/backend.js` 完全一样：
+置环境变量 → 打开库 → 跑迁移 → 首次灌示例数据 → 监听 → 等 `/ready` 就绪，只是宿主换了一个。
+
+两条已经在 `entry.mjs` 注释里记下的约束，改动时别绕过去：
+
+- 所有环境变量必须在**动态 import 之前**落地。`server/src/config` 在首次 import 时就读取并
+  冻结 `process.env`，晚一步设置会静默用上默认值。
+- 端口**不能传 0**。zod 校验要求 `PORT ∈ [1, 65535]`，传 0 会让进程在 import 阶段直接
+  fail fast 退出。正确做法是先探一个空闲端口（首选 5188），再把探测结果同时交给
+  `listen()` 和 `PORT` 环境变量。
+
+winpack 产物的数据与日志位置：
+
+| 形态 | 数据目录 |
+| --- | --- |
+| 绿色版（`-portable.exe`） | exe 同级的 `lattice\data\lattice.db`，拷走整个目录即带走全部笔记 |
+| 安装版（`-setup.exe`） | 同样优先放 exe 同级（即安装目录下），不可写时回退 `%APPDATA%\lattice\data\lattice.db` |
+
+日志在数据目录下的 `logs\main.log`，超过 5MB 自动轮转为 `main.log.1`。
+
+> **数据安全提醒**：安装版的数据默认落在**安装目录**下（`portable.preferExecutableDir`
+> 默认为 `true`），而 `deleteAppDataOnUninstall: false` 保护的是 `%APPDATA%` 那一份。
+> 所以卸载前**建议先把 `lattice\` 数据目录挪出来**；若更看重卸载安全，把
+> `portable.preferExecutableDir` 设为 `false`，数据就会统一落到 `%APPDATA%\lattice\`
+> —— 代价是绿色版不再「拷走即带走数据」。两者只能取一个。
+
 ### 配置
 
 复制 `server/.env.example` 为 `server/.env` 后按需修改。所有配置在进程启动时集中校验，
@@ -127,15 +194,11 @@ npm run dist             # 产出安装包 + 绿色版到 desktop/release/
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `5177` | API 监听地址 |
 | `DB_FILE` | `./data/lattice.db` | SQLite 文件路径 |
+| `VAULT_DIR` | `./data/vault` | Markdown Vault 文件夹路径 |
 | `CORS_ORIGINS` | `http://localhost:5173,...` | 允许的前端来源，生产环境禁止写 `*` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `AUTO_MIGRATE` | `true` | 启动时自动应用未执行的迁移 |
-| `ATTACHMENTS_DIR` | 数据库同级 `data/attachments` | 附件（图片/PDF）落盘目录；整体拷走数据目录即带走附件 |
-| `MAX_UPLOAD_MB` | `15` | 单个附件上传体积上限（base64 传输） |
 | `WEB_DIST_DIR` | `../web/dist` | 前端产物目录；桌面端打包后指向解包目录 |
-| `EXPORT_DIR` | 数据库同级 `data/export` | 静态站点导出根目录；每次导出在其下建 `site-<时间戳>` 子目录，整体拷走即可发布 |
-| `VERSION_INTERVAL_MINUTES` | `5` | 版本快照的最小时间间隔（分钟）；间隔内的连续自动保存被节流，不重复留快照。`0` 表示每次实质改动都存 |
-| `VERSION_RETENTION` | `50` | 每篇笔记保留的历史版本条数上限，超出即淘汰最旧的 |
 
 ---
 
@@ -148,12 +211,9 @@ npm run dist             # 产出安装包 + 绿色版到 desktop/release/
 | 短词检索 | `LIKE` 兜底 | trigram 需要至少 3 个字符，两字查询（如「笔记」）必须回退；FTS 空结果时也会用 LIKE 复核一遍，避免分词边界漏召回 |
 | 图谱渲染 | 原生 Canvas，不用 d3 | 需求只有画点、画线、拖拽、缩放，一个图表库的体积与抽象成本高于收益 |
 | Markdown 消毒 | 自研白名单消毒器 | 正文可能来自剪藏网页，直接 `innerHTML` 是一条真实的 XSS 路径。用 DOMParser 解析后按白名单裁剪，省掉一个依赖 |
-| 附件上传 | base64 over JSON，不引入 multer | 延续「后端零多余依赖」的调性；附件以 UUID 文件名落盘，只接受位图与 PDF，刻意排除含脚本的 SVG（同源直开即 XSS 路径） |
-| 静态站点导出 | 后端用 `marked` 预渲染成自包含 HTML | 导出页需脱离运行时把双链解析成相对 `.html` 链接、块级嵌入内联正文，与前端实时管线是「同源不同用」，故后端独立渲染。`marked` 是纯 JS、与前端同版本，是唯一新增后端运行时依赖。导出页覆写 `html/link/image` 钩子转义裸 HTML、丢弃 `javascript:` 地址，杜绝被发布站点携带可执行内容 |
 | 实时协作 | 不实现 | 单机单用户场景没有协作需求，用自动保存 + 本地状态足够，不做过度设计 |
 | 认证 | 不实现 | 单机版无需登录。数据表已预留 `user_id` 扩展位，后续升级多用户不必重构表结构 |
 | 前端路由 | 不用 react-router | 只有「笔记 / 图谱」两个视图，内部状态即可，少一个依赖 |
-| PWA | 手写清单 + Service Worker，不引入 `vite-plugin-pwa` / Workbox | 延续项目「能自己写清楚就不加依赖」的调性。SW 只在生产构建注册（开发期由 Vite 托管，缓存反而碍事），并在 Electron 桌面端跳过——它本就是原生安装、后端随进程常驻，再叠一层缓存只会给热更新添乱。API 走「网络优先 + 回写缓存」，保证在线永远取最新、离线才降级读旧数据 |
 
 ---
 
@@ -172,7 +232,7 @@ lattice/
 │   │   ├── lib/                     错误体系、结构化日志、Markdown 语义解析
 │   │   ├── middleware/              请求 ID、访问日志、CORS、安全头、校验、错误处理
 │   │   ├── modules/                 按功能组织，每个模块四层
-│   │   │   └── notes|folders|links|tags|search|graph|meta|health|attachments|versions|export/
+│   │   │   └── notes|folders|links|tags|search|graph|meta|health/
 │   │   │       ├── *.routes.js      路由 + zod 边界校验
 │   │   │       ├── *.controller.js  只做请求/响应转换
 │   │   │       ├── *.service.js     业务规则与事务编排
@@ -182,8 +242,6 @@ lattice/
 │   └── test/                        纯函数单元测试
 ├── web/                             前端（React 18 + Vite 5）
 │   ├── public/theme-init.js         首屏定主题（必须是同源外链，见下方 CSP 说明）
-│   ├── public/sw.js                 手写 Service Worker（PWA 离线缓存，见技术选型）
-│   ├── public/manifest.webmanifest  PWA 应用清单（名称 / 图标 / standalone / 主题色）
 │   └── src/
 │       ├── api/                     类型化 HTTP 客户端 + 资源访问层
 │       ├── hooks/                   知识库中心状态、防抖、轻提示
@@ -196,10 +254,50 @@ lattice/
 │   ├── src/menu.js                  中文应用菜单
 │   ├── electron-builder.yml         安装包 / 绿色版打包配置
 │   ├── .npmrc                       Electron 二进制走 npmmirror 镜像（勿删）
-│   └── build/make-icon.py           图标生成脚本（换成品为 build/icon.ico）
+│   ├── assets/icon.ico              运行时窗口图标（随包分发）
+│   ├── build/make-icon.py           图标生成脚本（产出上面两份 .ico）
+│   ├── build/archive/               历代废弃图标方案（按代分目录）
+│   ├── build/concepts*/             图标设计过程稿（每轮的候选与配色对照）
+│   └── build/                       icon.ico + 各档 PNG + 矢量源 + 尺寸对照图
+├── packaging/winpack/               winpack 打包配置（见「打包成 Windows 桌面应用」）
+│   ├── winpack.config.jsonc         收哪些文件、什么图标、出哪些目标
+│   └── entry.mjs                    运行壳入口适配层，导出 start({ port, dataDir })
+├── dist/winpack/                    winpack 产物（gitignored）
 ├── docs/使用说明书.md               面向使用者的操作手册
 └── scripts/                         零依赖开发启动器、接口冒烟测试
 ```
+
+### 应用图标
+
+标记是「晶面层叠」：四层圆角方块沿 45° 逐层错位、逐层收缩，每层自带一条向下的
+厚度边 —— 八块平色堆出体积，不描边、不用渐变。`desktop/build/make-icon.py` 是
+唯一事实源，`web/index.html` 的 favicon 是同一套几何的 ≤24px 简化版，
+**改标记时两处要一起改**。
+
+脚本产出**两份** `.ico`，别搞混：
+
+| 产物 | 用途 | 引用它的地方 |
+|---|---|---|
+| `build/icon.ico` | 打包时写进 exe 资源段（文件管理器 / 快捷方式 / 安装向导） | `electron-builder.yml` 的 `win.icon` |
+| `assets/icon.ico` | 运行时窗口与任务栏图标 | `src/main.js` 的 `ICON_PATH` |
+
+为什么必须两份：`build/` 是 electron-builder 的 `buildResources` 目录，
+**不会被拷进应用**。只留一份的话，开发模式（跑的是 `electron.exe`）会顶着
+Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未必对。
+两份由脚本用 `copyfile` 生成，字节完全一致。
+
+改图标后要重出安装包，新的 exe 图标才会生效 —— 跑 `npm run dist`，
+然后**重新装一次**；旧安装留在系统里的 exe 不会自己变。
+
+三点容易踩：
+
+- **色阶要在 OKLab 里按明度等距生成，不要手工挑。** 八个色手工挑必然出现某两层
+  挤在一起、另两层拉太开，缩小后读成「两组两层」。推导规则与参数见
+  `build/concepts-v6/palette-oklch.py`，零依赖、可直接跑。
+- **≤24px 必须换简化几何。** 完整几何每层的 L 形露出只有 66 单位（16px 下 1.0px），
+  缩下去必糊。简化版减到三层并拉大明度跨度，保住「错位层叠」这个识别特征。
+- 交付时几何整体按 `MARK_SCALE = 0.92` 缩放。错位会让左上角与右下角分别顶到更外，
+  按 1.0 交付显得「顶格」。这个系数只做整体缩放，几何一字不动。
 
 ### 一个容易踩的坑：CSP 会拦掉自己的内联脚本
 
@@ -277,15 +375,6 @@ lattice/
 | `GET` | `/api/search?q=` | 全文检索，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
 | `GET` | `/api/graph` | 图谱节点、边、悬空引用与统计 |
 | `GET` | `/api/meta/overview` | 知识库总览统计 |
-| `GET` `POST` | `/api/attachments` | 附件列表（含引用计数与引用者）/ 上传（JSON 携带 base64） |
-| `POST` | `/api/attachments/cleanup` | 清理未被任何笔记引用的孤儿附件（逐个删台账行 + 磁盘文件） |
-| `DELETE` | `/api/attachments/:id` | 删除附件（移除台账行 + 磁盘文件，幂等） |
-| `GET` | `/attachments/<file>` | 取回附件本体（同源静态托管，UUID 文件名可长期强缓存） |
-| `POST` | `/api/export/static` | 导出整个知识库为自包含静态站点，落盘并返回预览入口与统计 |
-| `GET` | `/export/<run>/…` | 只读托管每次导出的站点，供本地预览（HTML 不缓存） |
-| `GET` | `/api/notes/:id/versions` | 某篇笔记的历史版本列表（时间倒序，不含正文，带字数与字符长度） |
-| `GET` | `/api/notes/:id/versions/:versionId` | 读取单条历史的完整正文（校验归属，越权返回 404） |
-| `POST` | `/api/notes/:id/versions/:versionId/restore` | 恢复该历史为当前内容；先把当前态强制快照，故恢复可再次撤销 |
 
 ---
 
@@ -304,11 +393,7 @@ notes ──┬─< note_tags >── tags
 `links.target_note_id` 为 `NULL` 表示**悬空链接**：被 `[[引用]]` 但目标笔记还不存在。
 删除被引用的笔记时，指向它的链接会自动退回悬空状态，而不是被整条抹掉 —— 这样引用关系不会凭空消失。
 
-`attachments` 是一张独立台账表（`002_attachments`）：文件本体落在 `ATTACHMENTS_DIR`，表里记 `stored_name`（UUID 文件名）、原始名、MIME、大小。正文用标准 Markdown 图片语法 `![alt](/attachments/<stored_name>)` 引用它。**引用计数不落库**——列表面板在读取时扫描全部笔记正文统计每张图片被谁引用，避免多表漂移。删除笔记不会级联删文件（附件可能被多篇复用）；未被任何笔记引用的孤儿，通过面板「清理未引用」或 `/api/attachments/cleanup` 显式回收。
-
 迁移文件记录 sha256 校验和，历史迁移被改动时会直接报错，强制「只新增、不改写」。
-
-`note_versions`（`003_note_versions`）存的是「被覆盖前的旧状态」快照：`notes` 行始终是最新态，历史另表保存，删除笔记时随外键 `ON DELETE CASCADE` 一并清理。快照由 `notes.service.update` 在写库前于同一事务内触发，并按 `VERSION_INTERVAL_MINUTES` 节流、按 `VERSION_RETENTION` 淘汰最旧的，避免自动保存把历史刷成一片噪声。恢复某版本时先把当前态强制快照（令恢复可撤销），再写回并同步重建标签与双链等派生数据。
 
 ---
 
@@ -316,8 +401,8 @@ notes ──┬─< note_tags >── tags
 
 ```bash
 npm test            # 后端单元测试（Markdown 语义解析，25 项）
-npm run test:api    # 接口冒烟测试，需后端已启动（126 项）
-npm run test:web    # 前端渲染冒烟测试，需后端已启动（47 项）
+npm run test:api    # 接口冒烟测试，需后端已启动（68 项）
+npm run test:web    # 前端渲染冒烟测试，需后端已启动（32 项）
 npm run verify      # 依次执行以上全部
 ```
 
@@ -337,13 +422,14 @@ npm run verify      # 依次执行以上全部
 
 当前实现刻意划定了边界，以下是明确未做的部分：
 
-- **附件删除非级联**：删除笔记不自动删其图片（可能被多篇复用），需在「附件」面板手动删除或一键「清理未引用」；引用计数按正文实时扫描，不落库
-- **版本历史是快照而非增量**：只保存被覆盖前的完整正文，按节流与限量保留，不是逐字符 diff，也不记录是谁改的（单机单用户）
+- **无附件上传**：图片目前只能引用外部 URL，尚未接入文件存储
+- **无版本历史**：每次保存覆盖，没有快照与回滚
 - **无实时协作**：单机单用户，未引入 WebSocket / CRDT
 - **图谱规模**：力导向是 O(n²)，数百到数千节点流畅；上万节点需要换 Barnes-Hut 近似
 - **`node:sqlite` 的稳定性**：它仍被 Node 标记为实验特性（虽已可直接使用）。若追求绝对稳定，
   可换 `better-sqlite3`，接口几乎一一对应，迁移成本很低
-- **离线是「越用越有缓存」**：PWA 缓存的是应用外壳与「上次联网读过的」数据，首次联网打开后离线才可读；未缓存过的新接口在离线时会如实触发前端的「连接中断」提示，不做后台写入队列
-- **移动端**：窄屏已做响应式降级，并可作为 PWA 安装到桌面 / 主屏；但尚未经过真机触屏的深度适配
+- **未做代码签名**：exe 没有签名证书，首次运行时 Windows SmartScreen 会拦一下
+  （「未知发布者」）。内网 / 自用分发可接受，要公开发布就得买证书
+- **移动端**：窄屏已做响应式降级，但还不是 PWA
 
-本轮规划的四项能力已全部落地：附件管理面板、静态站点导出、笔记版本历史、PWA（离线与可安装）。后续可按需推进：真机触屏深度适配、写入操作的离线队列、可选的多设备同步。
+下一步建议按此顺序推进：附件上传 → 导出静态站点 → 笔记版本历史 → PWA。

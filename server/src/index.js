@@ -6,8 +6,14 @@ import { config } from './config/index.js';
 import { closeDatabase, openDatabase } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
 import { logger } from './lib/logger.js';
+import { resolveVaultDir } from './vault/config.js';
+import { VaultAdapter } from './vault/vault.adapter.js';
+import { rebuildProjection } from './vault/indexer.js';
+import { watchVault } from './vault/watcher.js';
 
-function bootstrap() {
+let stopVaultWatcher = null;
+
+async function bootstrap() {
   openDatabase();
   logger.info('database_opened', { file: config.dbFile });
 
@@ -15,6 +21,11 @@ function bootstrap() {
     const { applied } = runMigrations();
     logger.info('migrations_checked', { newlyApplied: applied.length });
   }
+
+  await syncMarkdownVault();
+  stopVaultWatcher = watchVault(resolveVaultDir(config.vaultDir), {
+    log: (event) => logger.info('markdown_vault_changed', event),
+  });
 
   const app = createApp();
   const server = app.listen(config.port, config.host, () => {
@@ -33,6 +44,19 @@ function bootstrap() {
   installShutdownHandlers(server);
 }
 
+async function syncMarkdownVault() {
+  const vaultDir = resolveVaultDir(config.vaultDir);
+  const vault = new VaultAdapter(vaultDir);
+  try {
+    const notes = await vault.scan();
+    const result = rebuildProjection(notes);
+    logger.info('markdown_vault_indexed', { vaultDir, ...result });
+  } catch (error) {
+    logger.error('markdown_vault_index_failed', { vaultDir, err: error });
+    throw error;
+  }
+}
+
 function installShutdownHandlers(server) {
   let closing = false;
 
@@ -47,6 +71,8 @@ function installShutdownHandlers(server) {
       else logger.info('shutdown_server_closed');
 
       try {
+        stopVaultWatcher?.();
+        stopVaultWatcher = null;
         closeDatabase();
         logger.info('shutdown_database_closed');
       } catch (dbError) {

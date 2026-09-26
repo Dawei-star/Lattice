@@ -14,8 +14,6 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': { target: API_TARGET, changeOrigin: false },
-      '/attachments': { target: API_TARGET, changeOrigin: false },
-      '/export': { target: API_TARGET, changeOrigin: false },
       '/health': { target: API_TARGET, changeOrigin: false },
       '/ready': { target: API_TARGET, changeOrigin: false },
     },

@@ -141,14 +141,6 @@ export function listIndex() {
     }));
 }
 
-/** 供附件引用扫描使用：一次取回全部笔记的正文（id + title + content） */
-export function listContents() {
-  return getDb()
-    .prepare('SELECT id, title, content FROM notes')
-    .all()
-    .map((row) => ({ id: row.id, title: row.title, content: row.content }));
-}
-
 export function statistics() {
   const db = getDb();
   return {

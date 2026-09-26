@@ -97,9 +97,9 @@ export default function GraphView({
     const styles = getComputedStyle(canvas);
     const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
     const colorEdge = color('--graph-edge', '#c9d1da');
-    const colorEdgeActive = color('--graph-edge-active', '#0f6153');
+    const colorEdgeActive = color('--graph-edge-active', '#4a6cf7');
     const colorNode = color('--graph-node', '#8b95a1');
-    const colorNodeActive = color('--graph-node-active', '#0f6153');
+    const colorNodeActive = color('--graph-node-active', '#4a6cf7');
     const colorLabel = color('--graph-label', '#3d4653');
     const colorSurface = color('--bg-panel', '#ffffff');
 

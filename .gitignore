@@ -7,9 +7,6 @@ dist/
 # 冒烟测试的临时打包产物
 web/test/.build/
 
-# Vite 构建中断时残留的临时配置文件
-vite.config.js.timestamp-*
-
 # 桌面端打包产物
 desktop/release/
 # 图标生成脚本的预览图，图标本身（build/icon.ico）需要入库
