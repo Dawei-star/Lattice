@@ -20,8 +20,8 @@ export function normalizeVaultRelativePath(input, extension = '.md') {
   return result.endsWith(extension) ? result : `${result}${extension}`;
 }
 
-export function resolveVaultPath(vaultDir, relativePath) {
-  const safeRelative = normalizeVaultRelativePath(relativePath);
+export function resolveVaultPath(vaultDir, relativePath, extension = '.md') {
+  const safeRelative = normalizeVaultRelativePath(relativePath, extension);
   const root = path.resolve(vaultDir);
   const target = path.resolve(root, safeRelative);
   const relative = path.relative(root, target);

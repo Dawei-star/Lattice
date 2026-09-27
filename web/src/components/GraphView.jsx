@@ -3,7 +3,9 @@ import { computeFit, createForceLayout } from '../lib/forceGraph.js';
 
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 3.5;
-const LABEL_ALWAYS_LIMIT = 45;
+// Showing every title for a medium-sized graph turns the canvas into an unreadable
+// block. Larger graphs reveal labels for important nodes and on hover instead.
+const LABEL_ALWAYS_LIMIT = 18;
 const ALPHA_REHEAT = { drag: 0.5, hover: 0, click: 0.35 };
 
 /**
@@ -37,6 +39,8 @@ export default function GraphView({
 
   const [hovered, setHovered] = useState(null);
   const [settled, setSettled] = useState(false);
+  const [danglingOpen, setDanglingOpen] = useState(true);
+  const [zoomPercent, setZoomPercent] = useState(100);
 
   // graph 为 null 时 `?? []` 每次渲染都会产生新数组，会让布局 effect 反复重建，
   // 必须 memo 化以保证引用稳定
@@ -124,6 +128,7 @@ export default function GraphView({
     ctx.globalAlpha = 1;
 
     const showAllLabels = layout.nodes.length <= LABEL_ALWAYS_LIMIT;
+    const occupiedLabels = [];
 
     for (const node of layout.nodes) {
       const point = toScreen(node);
@@ -145,10 +150,19 @@ export default function GraphView({
         ctx.stroke();
       }
 
-      if (isFocus || isActive || showAllLabels || node.degree >= 3) {
+      const shouldShowLabel = isFocus || isActive || showAllLabels || node.degree >= 3;
+      if (shouldShowLabel) {
         const label = node.title.length > 14 ? `${node.title.slice(0, 14)}…` : node.title;
         const fontSize = Math.max(10, Math.min(14, 11 + scale));
         ctx.font = `${isFocus ? 600 : 400} ${fontSize}px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif`;
+        const labelWidth = Math.min(180, Math.max(24, ctx.measureText(label).width));
+        const labelTop = point.y + radius + 3;
+        const labelBox = { left: point.x - labelWidth / 2, right: point.x + labelWidth / 2, top: labelTop, bottom: labelTop + fontSize + 4 };
+        const collides = occupiedLabels.some((box) => (
+          labelBox.left < box.right && labelBox.right > box.left && labelBox.top < box.bottom && labelBox.bottom > box.top
+        ));
+        if (collides && !isFocus && !isActive) continue;
+        occupiedLabels.push(labelBox);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
 
@@ -156,9 +170,9 @@ export default function GraphView({
         // 先描白边再填字，避免标签压在连线上读不清
         ctx.lineWidth = 3;
         ctx.strokeStyle = colorSurface;
-        ctx.strokeText(label, point.x, point.y + radius + 3);
+        ctx.strokeText(label, point.x, labelTop);
         ctx.fillStyle = colorLabel;
-        ctx.fillText(label, point.x, point.y + radius + 3);
+        ctx.fillText(label, point.x, labelTop);
       }
     }
 
@@ -187,8 +201,9 @@ export default function GraphView({
       const stillMoving = layout.step();
 
       // 等节点散开一点再适配视图，否则会贴着初始的紧凑布局缩放
-      if (needFitRef.current && layout.alpha < 0.35) {
+      if (needFitRef.current && layout.alpha < 0.08) {
         applyFit();
+        setZoomPercent(Math.round(viewRef.current.scale * 100));
         needFitRef.current = false;
       }
 
@@ -357,6 +372,7 @@ export default function GraphView({
     view.offsetX = pointerX - ((pointerX - view.offsetX) / view.scale) * nextScale;
     view.offsetY = pointerY - ((pointerY - view.offsetY) / view.scale) * nextScale;
     view.scale = nextScale;
+    setZoomPercent(Math.round(nextScale * 100));
 
     draw();
   };
@@ -380,6 +396,11 @@ export default function GraphView({
         </div>
 
         <div className="graph__actions">
+          <span className="graph__zoom" aria-label={`当前缩放 ${zoomPercent}%`}>{zoomPercent}%</span>
+          <span className="graph__legend" aria-label="图谱图例">
+            <span><i className="graph__legend-dot graph__legend-dot--active" />当前/聚焦</span>
+            <span><i className="graph__legend-dot" />普通节点</span>
+          </span>
           <span className="graph__hint">拖动节点 · 滚轮缩放 · 点击打开</span>
           <button type="button" className="btn btn--sm" onClick={resetView}>重置视图</button>
           <button type="button" className="btn btn--sm" onClick={onRefresh} disabled={loading}>
@@ -415,22 +436,32 @@ export default function GraphView({
         ) : null}
 
         {dangling.length ? (
-          <div className="graph__dangling">
-            <div className="graph__dangling-title">悬空引用</div>
-            <ul>
-              {dangling.slice(0, 8).map((item) => (
-                <li key={item.targetTitle}>
-                  <button
-                    type="button"
-                    title="点击创建这篇笔记"
-                    onClick={() => onCreateNoteByTitle(item.targetTitle)}
-                  >
-                    <span>{item.targetTitle}</span>
-                    <span className="graph__dangling-count">×{item.referenceCount}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+          <div className={`graph__dangling ${danglingOpen ? 'is-open' : 'is-collapsed'}`}>
+            <button
+              type="button"
+              className="graph__dangling-toggle"
+              aria-expanded={danglingOpen}
+              onClick={() => setDanglingOpen((current) => !current)}
+            >
+              <span className="graph__dangling-title">悬空引用 <strong>{dangling.length}</strong></span>
+              <span aria-hidden="true">{danglingOpen ? '收起' : '展开'}</span>
+            </button>
+            {danglingOpen ? (
+              <ul>
+                {dangling.slice(0, 8).map((item) => (
+                  <li key={item.targetTitle}>
+                    <button
+                      type="button"
+                      title="点击创建这篇笔记"
+                      onClick={() => onCreateNoteByTitle(item.targetTitle)}
+                    >
+                      <span>{item.targetTitle}</span>
+                      <span className="graph__dangling-count">×{item.referenceCount}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         ) : null}
       </div>

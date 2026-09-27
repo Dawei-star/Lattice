@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 /** Shared modal shell with Escape, backdrop close, and a small focus trap. */
-export default function Modal({ open, title, ariaLabel, onClose, children, className = '' }) {
+export default function Modal({ open, title, ariaLabel, onClose, children, className = '', initialFocusRef }) {
   const dialogRef = useRef(null);
   const previousFocusRef = useRef(null);
 
@@ -12,7 +12,7 @@ export default function Modal({ open, title, ariaLabel, onClose, children, class
     document.body.style.overflow = 'hidden';
     const dialog = dialogRef.current;
     const focusable = getFocusable(dialog);
-    focusable[0]?.focus();
+    (initialFocusRef?.current ?? focusable[0])?.focus();
 
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') {
@@ -40,7 +40,7 @@ export default function Modal({ open, title, ariaLabel, onClose, children, class
       document.body.style.overflow = previousOverflow;
       previousFocusRef.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [initialFocusRef, onClose, open]);
 
   if (!open) return null;
 

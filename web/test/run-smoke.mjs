@@ -59,6 +59,30 @@ async function buildEntry() {
 
 const FIXTURE_TITLE = `前端冒烟-嵌入样例-${Date.now()}`;
 
+async function seedFolderTreeFixture() {
+  const parentName = `__codex-folder-tree-parent-${Date.now()}`;
+  const childName = `__codex-folder-tree-child-${Date.now()}`;
+  const parentResponse = await fetch(`${BASE_URL}/api/folders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: parentName }),
+  });
+  const parentPayload = await parentResponse.json();
+  const parent = parentPayload?.data;
+  const childResponse = await fetch(`${BASE_URL}/api/folders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: childName, parentId: parent?.id }),
+  });
+  const childPayload = await childResponse.json();
+  return {
+    parent,
+    child: childPayload?.data,
+    parentName,
+    childName,
+  };
+}
+
 /**
  * 清掉上一次运行可能残留的样例笔记。
  * 测试中途失败时不会有机会执行收尾清理，因此每次开始前都要先扫一遍。
@@ -136,6 +160,7 @@ async function main() {
 
   const cleaned = await cleanupFixtures();
   const fixtureId = await seedEmbedFixture();
+  const folderTreeFixture = await seedFolderTreeFixture();
   check('后端可用并写入嵌入样例', typeof fixtureId === 'string', cleaned > 0 ? `（清理了 ${cleaned} 篇历史残留）` : '');
 
   const { triggerResize } = installDom(BASE_URL);
@@ -158,9 +183,67 @@ async function main() {
   check('Obsidian 壳 Ribbon 已渲染', Boolean(container.querySelector('.ribbon')));
   check('状态栏已渲染', Boolean(container.querySelector('.statusbar')));
   check('全文检索输入框存在', Boolean(container.querySelector('input[aria-label="全文检索"]')));
-  check('目录树渲染出「开始使用」', container.textContent.includes('开始使用'));
-  check('目录树渲染出「工程笔记」', container.textContent.includes('工程笔记'));
+  const folderButtons = await waitFor(
+    () => {
+      const buttons = [...container.querySelectorAll('.nav-item__main')];
+      return buttons.filter((button) => button.textContent.includes('开始使用') || button.textContent.includes('工程笔记')).length >= 2
+        ? buttons
+        : null;
+    },
+    { label: '目录树加载' },
+  );
+  check('目录树渲染出「开始使用」', folderButtons.some((button) => button.textContent.includes('开始使用')));
+  check('目录树渲染出「工程笔记」', folderButtons.some((button) => button.textContent.includes('工程笔记')));
+  const nestedFolderButtons = await waitFor(
+    () => {
+      const buttons = [...container.querySelectorAll('.nav-item__main')];
+      return buttons.filter((button) => button.textContent.includes(folderTreeFixture.parentName) || button.textContent.includes(folderTreeFixture.childName)).length >= 2
+        ? buttons
+        : null;
+    },
+    { label: '嵌套目录树加载' },
+  );
+  const parentFolderButton = nestedFolderButtons.find((button) => button.textContent.includes(folderTreeFixture.parentName));
+  const childFolderButton = nestedFolderButtons.find((button) => button.textContent.includes(folderTreeFixture.childName));
+  check('父目录渲染为明确的目录节点', Boolean(parentFolderButton?.querySelector('.tree__folder-icon')));
+  check('子目录渲染为明确的目录节点', Boolean(childFolderButton?.querySelector('.tree__folder-icon')));
+  check(
+    '子目录保留父子路径和层级缩进',
+    childFolderButton?.dataset.folderPath === `${folderTreeFixture.parentName}/${folderTreeFixture.childName}`
+      && Number.parseInt(childFolderButton?.closest('[role="treeitem"]')?.dataset.folderDepth ?? '0', 10) > Number.parseInt(parentFolderButton?.closest('[role="treeitem"]')?.dataset.folderDepth ?? '0', 10),
+  );
   check('至少渲染一篇笔记卡片', container.querySelectorAll('.notecard').length > 0);
+
+  section('目录右键菜单');
+  const folderTrigger = folderButtons
+    .find((button) => button.textContent.includes('工程笔记'));
+  folderTrigger?.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 120,
+    clientY: 120,
+  }));
+  await waitFor(() => document.querySelector('.context-menu'), { label: '目录右键菜单打开' });
+  const folderMenuText = document.querySelector('.context-menu')?.textContent ?? '';
+  check('目录菜单包含 Obsidian 常用动作', ['新建笔记', '新建文件夹', '新建白板', '创建副本', '将文件夹移动到', '在文件夹中查找', '收藏', '复制路径', '重命名', '删除'].every((label) => folderMenuText.includes(label)));
+  check('数据库入口明确为暂未支持', Boolean(document.querySelector('.context-menu .menu__item:disabled')));
+  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await waitFor(() => !document.querySelector('.context-menu'), { label: '目录右键菜单关闭' });
+
+  section('文件右键菜单');
+  const treeNote = await waitFor(() => container.querySelector('.tree__note'), { label: '目录树文件加载' });
+  treeNote.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 160,
+    clientY: 160,
+  }));
+  await waitFor(() => document.querySelector('.context-menu'), { label: '文件右键菜单打开' });
+  const noteMenuText = document.querySelector('.context-menu')?.textContent ?? '';
+  check('文件菜单包含文件操作', ['在新标签页中打开', '创建副本', '将文件移动到', '收藏', '复制路径', '重命名', '删除'].every((label) => noteMenuText.includes(label)));
+  check('文件菜单保留暂未支持功能的明确状态', Boolean(document.querySelector('.context-menu .menu__item:disabled')));
+  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await waitFor(() => !document.querySelector('.context-menu'), { label: '文件右键菜单关闭' });
 
   const overviewStats = container.querySelectorAll('.stats__item dd');
   check('统计区块渲染出数据', overviewStats.length >= 5);
@@ -253,6 +336,27 @@ async function main() {
   check('图谱统计显示真实节点数', /[1-9]\d*\s*节点/.test(graphStats), `实际「${graphStats}」`);
   check('图谱渲染未抛异常', consoleErrors.length === 0, consoleErrors[0] ?? '');
 
+  section('画布资源选择');
+  const canvasTab = container.querySelector('.ribbon__button[aria-label="画布"]')
+    ?? [...container.querySelectorAll('.segmented button')].find((b) => b.textContent === '画布');
+  check('画布视图切换按钮存在', Boolean(canvasTab));
+  canvasTab.click();
+  await waitFor(() => container.querySelector('.canvas-view'), { label: '画布组件挂载' });
+  check('画布提供图片入口', Boolean([...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('添加图片'))));
+  const addCanvasNoteButton = [...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('添加笔记'));
+  addCanvasNoteButton.click();
+  await waitFor(() => container.querySelector('.canvas-picker-modal'), { label: '笔记选择器打开' });
+  check('笔记选择器提供标题搜索', Boolean(container.querySelector('input[aria-label="搜索笔记标题"]')));
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await waitFor(() => !container.querySelector('.canvas-picker-modal'), { label: '笔记选择器关闭' });
+
+  const addCanvasImageButton = [...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('添加图片'));
+  addCanvasImageButton.click();
+  await waitFor(() => container.querySelector('.canvas-picker-modal'), { label: '图片选择器打开' });
+  check('图片选择器提供路径搜索', Boolean(container.querySelector('input[aria-label="搜索图片路径"]')));
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await waitFor(() => !container.querySelector('.canvas-picker-modal'), { label: '图片选择器关闭' });
+
   section('快速切换器');
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
   await waitFor(() => container.querySelector('.switcher'), { label: '切换器打开' });
@@ -303,6 +407,9 @@ async function main() {
   // 清理冒烟产生的样例笔记
   if (fixtureId) {
     await fetch(`${BASE_URL}/api/notes/${fixtureId}`, { method: 'DELETE' });
+  }
+  if (folderTreeFixture.parent?.id) {
+    await fetch(`${BASE_URL}/api/folders/${folderTreeFixture.parent.id}`, { method: 'DELETE' });
   }
 
   console.error = originalError;

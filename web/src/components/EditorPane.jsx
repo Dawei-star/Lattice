@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownPreview from './MarkdownPreview.jsx';
 import { formatDateTime, formatNumber } from '../lib/format.js';
 import ContextMenu from '../ui/ContextMenu.jsx';
+import { loadSettings, subscribeSettings } from '../settings/settings.js';
 
-const AUTOSAVE_DELAY_MS = 900;
 const MODES = [
   { key: 'edit', label: '编辑' },
   { key: 'split', label: '分栏' },
@@ -13,7 +13,7 @@ const MODES = [
 /**
  * 编辑区。
  *
- * 保存策略：本地草稿 + 防抖自动保存（900ms 静默即存），并额外提供 Ctrl/Cmd + S 立即保存。
+ * 保存策略：本地草稿 + 可配置的防抖自动保存，并额外提供 Ctrl/Cmd + S 立即保存。
  * 只有 title / content 与当前笔记不同才会发请求，避免自动保存空转刷新 updated_at。
  */
 export default function EditorPane({
@@ -28,9 +28,16 @@ export default function EditorPane({
   onOpenWikiLink,
   onCreateWikiLink,
   registerNavigationGuard,
+  onCreateNote,
+  onOpenSwitcher,
+  onCloseTab,
+  onDuplicate,
+  onCopyPath,
+  onCopyWikiLink,
 }) {
   const [draft, setDraft] = useState(() => ({ title: note?.title ?? '', content: note?.content ?? '' }));
-  const [mode, setMode] = useState('split');
+  const [settings, setSettings] = useState(() => loadSettings());
+  const [mode, setMode] = useState(() => loadSettings().editorMode);
   const [status, setStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -42,6 +49,11 @@ export default function EditorPane({
   draftRef.current = draft;
 
   const dirty = Boolean(note) && (draft.title !== note.title || draft.content !== note.content);
+
+  useEffect(() => subscribeSettings((next) => {
+    setSettings(next);
+    setMode(next.editorMode);
+  }), []);
 
   /** 切换笔记时重置草稿；同一篇笔记的回写不覆盖用户正在输入的内容 */
   useEffect(() => {
@@ -81,12 +93,12 @@ export default function EditorPane({
 
   // 防抖自动保存
   useEffect(() => {
-    if (!dirty) return undefined;
+    if (!dirty || !settings.autoSave) return undefined;
     setStatus((current) => (current === 'saving' ? current : 'dirty'));
 
-    const timer = setTimeout(() => commit(), AUTOSAVE_DELAY_MS);
+    const timer = setTimeout(() => commit(), Number(settings.autoSaveDelay));
     return () => clearTimeout(timer);
-  }, [draft.title, draft.content, dirty, commit]);
+  }, [draft.title, draft.content, dirty, commit, settings.autoSave, settings.autoSaveDelay]);
 
   // 离开页面前提醒（自动保存已覆盖绝大多数情况，这里兜住关标签页）
   useEffect(() => {
@@ -148,11 +160,11 @@ export default function EditorPane({
     if (event.key !== 'Tab') return;
     event.preventDefault();
     const { selectionStart, selectionEnd, value } = event.currentTarget;
-    const next = `${value.slice(0, selectionStart)}  ${value.slice(selectionEnd)}`;
+    const next = `${value.slice(0, selectionStart)}${' '.repeat(Number(settings.tabSize))}${value.slice(selectionEnd)}`;
     setDraft((current) => ({ ...current, content: next }));
     requestAnimationFrame(() => {
       const target = textareaRef.current;
-      if (target) target.selectionStart = target.selectionEnd = selectionStart + 2;
+      if (target) target.selectionStart = target.selectionEnd = selectionStart + Number(settings.tabSize);
     });
   };
 
@@ -171,10 +183,21 @@ export default function EditorPane({
     return (
       <section className="editor editor--empty">
         <div className="empty-state empty-state--large">
-          <p className="empty-state__title">选择一篇笔记开始</p>
-          <p className="empty-state__hint">
-            从左侧挑选一篇，或者直接新建。用 <code>[[双链]]</code> 连接笔记，用 <code>#标签</code> 归类。
-          </p>
+          <p className="empty-state__title">新标签页</p>
+          <div className="empty-state__actions" role="group" aria-label="新标签页操作">
+            <button type="button" className="empty-state__action" onClick={onCreateNote}>
+              <span>创建新文件</span>
+              <kbd>Ctrl + N</kbd>
+            </button>
+            <button type="button" className="empty-state__action" onClick={onOpenSwitcher}>
+              <span>打开文件</span>
+              <kbd>Ctrl + K</kbd>
+            </button>
+            <button type="button" className="empty-state__action empty-state__action--quiet" onClick={onCloseTab}>
+              关闭标签页
+            </button>
+          </div>
+          <p className="empty-state__hint">也可以从左侧目录选择笔记，或使用双链和标签组织知识。</p>
         </div>
       </section>
     );
@@ -186,6 +209,9 @@ export default function EditorPane({
       getItems={() => [
         { id: 'pin', label: note.isPinned ? '取消置顶' : '置顶', onSelect: () => onTogglePin(note) },
         { id: 'save', label: '立即保存', shortcut: 'Ctrl+S', onSelect: () => commit({ silent: false }) },
+        { id: 'duplicate', label: '创建副本', onSelect: () => onDuplicate?.(note) },
+        { id: 'copy-path', label: '复制路径', onSelect: () => onCopyPath?.(note) },
+        { id: 'copy-link', label: '复制双链', onSelect: () => onCopyWikiLink?.(note) },
         { separator: true },
         { id: 'delete', label: '删除笔记', danger: true, onSelect: () => {
           if (window.confirm(`确定删除「${note.title}」吗？此操作不可撤销。`)) onDelete(note.id);
@@ -210,7 +236,7 @@ export default function EditorPane({
         </div>
 
         <div className="editor__toolbar-right">
-          <span className={`savestate savestate--${status}`}>
+          <span className={`savestate savestate--${status}`} role="status" aria-live="polite">
             {status === 'saving' && '保存中…'}
             {status === 'saved' && '已保存'}
             {status === 'dirty' && '有未保存修改'}

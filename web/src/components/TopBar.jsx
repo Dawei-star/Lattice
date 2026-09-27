@@ -77,6 +77,15 @@ export default function TopBar({
           >
             图谱
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'canvas'}
+            className={view === 'canvas' ? 'is-active' : ''}
+            onClick={() => onViewChange('canvas')}
+          >
+            画布
+          </button>
         </div>
 
         <button type="button" className="btn" onClick={onOpenSwitcher} title="快速切换（Ctrl / Cmd + K）">

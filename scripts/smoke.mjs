@@ -112,6 +112,10 @@ async function main() {
 
   const vaultInfo = await api('/api/vault/info');
   check('Vault 信息接口返回 Markdown 模式', vaultInfo.status === 200 && vaultInfo.body?.data?.mode === 'markdown');
+  const vaultAssets = await api('/api/vault/assets');
+  check('Vault 图片列表接口返回数组', vaultAssets.status === 200 && Array.isArray(vaultAssets.body?.data));
+  const invalidAsset = await api('/api/vault/asset?path=../outside.png');
+  check('Vault 图片接口拒绝越界路径', invalidAsset.status === 422);
   const createdMarkdown = path.join(vaultInfo.body?.data?.vaultDir ?? '', createdFolder.body?.data?.name ?? '', '冒烟测试笔记.md');
   try {
     await fs.access(createdMarkdown);
@@ -141,6 +145,12 @@ async function main() {
   const pinned = await api(`/api/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify({ isPinned: true }) });
   check('PATCH isPinned 生效', pinned.body?.data?.isPinned === true);
 
+  const duplicate = await api(`/api/notes/${noteId}/duplicate`, { method: 'POST', body: '{}' });
+  const duplicateId = duplicate.body?.data?.id;
+  check('POST /api/notes/:id/duplicate 返回 201', duplicate.status === 201, `实际 ${duplicate.status}`);
+  check('创建副本生成新 id 与副本标题', duplicateId !== noteId && duplicate.body?.data?.title?.includes('副本'));
+  check('创建副本保留正文与目录', duplicate.body?.data?.content?.includes('双向链接') && duplicate.body?.data?.folderId === folderId);
+
   const list = await api('/api/notes?limit=3&sort=updated');
   check('GET /api/notes 返回 200', list.status === 200);
   check('列表带 meta.total', typeof list.body?.meta?.total === 'number');
@@ -162,6 +172,10 @@ async function main() {
   check('中文长词检索命中', fts.body?.data?.length > 0, `策略 ${fts.body?.meta?.strategy}`);
   check('中文长词走 FTS 策略', fts.body?.meta?.strategy === 'fts', `实际 ${fts.body?.meta?.strategy}`);
   check('检索结果带上下文片段', (fts.body?.data?.[0]?.excerpt ?? '').length > 0);
+
+  const scopedSearch = await api(`/api/search?q=${encodeURIComponent('冒烟测试')}&folderId=${folderId}`);
+  check('按目录限制全文检索', scopedSearch.status === 200 && scopedSearch.body?.data?.length > 0);
+  check('目录检索结果均属于当前目录', scopedSearch.body?.data?.every((n) => n.folderId === folderId));
 
   const shortQuery = await api(`/api/search?q=${encodeURIComponent('知识')}`);
   check('两字中文检索命中（LIKE 兜底）', shortQuery.body?.data?.length > 0, `策略 ${shortQuery.body?.meta?.strategy}`);
@@ -247,6 +261,10 @@ async function main() {
   check('删除返回 deleted=true', deleted.body?.data?.deleted === true);
   const deletedAgain = await api(`/api/notes/${noteId}`, { method: 'DELETE' });
   check('重复删除幂等（不报错）', deletedAgain.status === 200 && deletedAgain.body?.data?.deleted === false);
+  if (duplicateId) {
+    const deletedDuplicate = await api(`/api/notes/${duplicateId}`, { method: 'DELETE' });
+    check('清理创建的副本', deletedDuplicate.status === 200 && deletedDuplicate.body?.data?.deleted === true);
+  }
   const deletedFolder = await api(`/api/folders/${folderId}`, { method: 'DELETE' });
   check('DELETE /api/folders/:id 返回 200', deletedFolder.status === 200);
 

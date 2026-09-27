@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../api/client.js';
 import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
+import { noteFilePath, vaultFiles } from '../api/vault-files.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
 
@@ -17,6 +18,14 @@ const SEARCH_DEBOUNCE_MS = 280;
 
 /** 未分类笔记在查询里的特殊标记，与后端约定一致 */
 const UNFILED = '__none__';
+
+function flattenFolderTree(nodes, result = []) {
+  for (const node of nodes ?? []) {
+    result.push(node);
+    flattenFolderTree(node.children, result);
+  }
+  return result;
+}
 
 export function useVault() {
   const toast = useToast();
@@ -142,8 +151,10 @@ export function useVault() {
     let cancelled = false;
     setSearch((current) => ({ ...current, loading: true, query: keyword }));
 
+    const searchFolderId = filter.kind === 'folder' ? (filter.folderId ?? UNFILED) : undefined;
+
     searchApi
-      .query(keyword, { limit: 40 })
+      .query(keyword, { limit: 40, folderId: searchFolderId })
       .then((result) => {
         if (cancelled) return;
         setSearch({ loading: false, items: result.items, strategy: result.strategy, query: keyword });
@@ -158,7 +169,7 @@ export function useVault() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, handleError]);
+  }, [debouncedQuery, filter.folderId, filter.kind, handleError]);
 
   // ── 标题索引：双链解析、快速切换、嵌入目标定位都依赖它 ─────────
   const titleIndex = useMemo(() => {
@@ -197,6 +208,10 @@ export function useVault() {
       setLoading((current) => ({ ...current, note: true }));
       try {
         const note = await notesApi.get(id);
+        if (vaultFiles.isAvailable() && note.filePath) {
+          const content = await vaultFiles.readMarkdown(note.filePath);
+          if (content !== null) note.content = content;
+        }
         setActiveNote(note);
         setConnectionDown(false);
         return note;
@@ -230,6 +245,36 @@ export function useVault() {
   const createNote = useCallback(
     async (input = {}) => {
       try {
+        if (vaultFiles.isAvailable()) {
+          const timestamp = new Date().toISOString();
+          const note = {
+            id: input.id ?? crypto.randomUUID(),
+            title: input.title?.trim() || '未命名笔记',
+            content: input.content ?? '',
+            folderId: input.folderId ?? null,
+            isPinned: false,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
+          const filePath = noteFilePath(note, folders);
+          const written = await vaultFiles.writeMarkdown(filePath, { ...note, filePath });
+          if (!written) throw new Error('无法创建 Markdown 文件');
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            try {
+              const indexed = await notesApi.get(note.id);
+              if (vaultFiles.isAvailable() && indexed.filePath) {
+                indexed.content = await vaultFiles.readMarkdown(indexed.filePath) ?? indexed.content;
+              }
+              setActiveNote(indexed);
+              await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+              setGraphStale(true);
+              return indexed;
+            } catch (error) {
+              if (attempt === 3) throw error;
+            }
+          }
+        }
         const note = await notesApi.create(input);
         setActiveNote(note);
         await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
@@ -240,7 +285,7 @@ export function useVault() {
         return null;
       }
     },
-    [handleError, refreshNotes, refreshSidebar],
+    [folders, handleError, refreshNotes, refreshSidebar],
   );
 
   /**
@@ -249,6 +294,25 @@ export function useVault() {
    */
   const saveNote = useCallback(
     async (id, patch) => {
+      const current = activeNote?.id === id ? activeNote : null;
+      if (current && vaultFiles.isAvailable() && current.filePath) {
+        const saved = {
+          ...current,
+          ...patch,
+          updatedAt: new Date().toISOString(),
+        };
+        const nextPath = noteFilePath(saved, folders);
+        const written = nextPath === current.filePath
+          ? await vaultFiles.writeMarkdown(current.filePath, saved)
+          : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved);
+        if (!written) throw new Error('无法写入 Markdown 文件');
+        saved.filePath = nextPath;
+        setActiveNote(saved);
+        setGraphStale(true);
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        return saved;
+      }
       try {
         const saved = await notesApi.update(id, patch);
         setActiveNote((current) => (current && current.id === saved.id ? saved : current));
@@ -261,13 +325,20 @@ export function useVault() {
         throw error;
       }
     },
-    [handleError, refreshNotes, refreshSidebar],
+    [activeNote, folders, handleError, refreshNotes, refreshSidebar],
   );
 
   const deleteNote = useCallback(
     async (id) => {
       try {
-        await notesApi.remove(id);
+        const current = activeNote?.id === id ? activeNote : null;
+        if (vaultFiles.isAvailable() && current?.filePath) {
+          const removed = await vaultFiles.removeMarkdown(current.filePath);
+          if (!removed) throw new Error('无法删除 Markdown 文件');
+          await new Promise((resolve) => setTimeout(resolve, 260));
+        } else {
+          await notesApi.remove(id);
+        }
         setActiveNote((current) => (current && current.id === id ? null : current));
         setGraphStale(true);
         await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
@@ -278,7 +349,57 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshNotes, refreshSidebar, toast],
+    [activeNote, handleError, refreshNotes, refreshSidebar, toast],
+  );
+
+  const duplicateNote = useCallback(
+    async (source) => {
+      if (!source?.id) return null;
+      try {
+        // Desktop mode reads the authoritative Markdown before creating the copy.
+        // This keeps the duplicate path identical to a normal note creation.
+        const detail = await notesApi.get(source.id);
+        if (vaultFiles.isAvailable() && detail.filePath) {
+          const content = await vaultFiles.readMarkdown(detail.filePath);
+          if (content !== null) detail.content = content;
+        }
+        const base = `${detail.title}（副本）`;
+        const existingTitles = new Set(noteIndex.map((note) => note.title));
+        let title = base;
+        let suffix = 2;
+        while (existingTitles.has(title)) {
+          title = `${base} ${suffix}`;
+          suffix += 1;
+        }
+        const created = await createNote({
+          title,
+          content: detail.content ?? '',
+          folderId: detail.folderId ?? null,
+        });
+        if (created) toast.success(`已创建副本「${created.title}」`);
+        return created;
+      } catch (error) {
+        handleError(error, '创建副本失败');
+        return null;
+      }
+    },
+    [createNote, handleError, noteIndex, toast],
+  );
+
+  const renameNote = useCallback(
+    async (id, title) => {
+      try {
+        const saved = await notesApi.update(id, { title });
+        setActiveNote((current) => (current && current.id === id ? { ...current, ...saved } : current));
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        setGraphStale(true);
+        return saved;
+      } catch (error) {
+        handleError(error, '重命名笔记失败');
+        return null;
+      }
+    },
+    [handleError, refreshNotes, refreshSidebar],
   );
 
   const createFolder = useCallback(
@@ -294,6 +415,69 @@ export function useVault() {
       }
     },
     [handleError, refreshSidebar, toast],
+  );
+
+  const moveFolder = useCallback(
+    async (id, parentId) => {
+      try {
+        await foldersApi.update(id, { parentId });
+        await refreshSidebar({ silent: true });
+        toast.success(parentId ? '文件夹已移动' : '文件夹已移至根目录');
+        return true;
+      } catch (error) {
+        handleError(error, '移动文件夹失败');
+        return false;
+      }
+    },
+    [handleError, refreshSidebar, toast],
+  );
+
+  const duplicateFolder = useCallback(
+    async (source) => {
+      if (!source?.id) return false;
+      try {
+        const siblingNames = new Set(
+          flattenFolderTree(folders)
+            .filter((folder) => folder.parentId === source.parentId)
+            .map((folder) => folder.name),
+        );
+        const baseName = `${source.name}（副本）`;
+        let name = baseName;
+        let suffix = 2;
+        while (siblingNames.has(name)) {
+          name = `${baseName} ${suffix}`;
+          suffix += 1;
+        }
+
+        const folderIds = new Map();
+        const rootCopy = await foldersApi.create({ name, parentId: source.parentId ?? null });
+        folderIds.set(source.id, rootCopy.id);
+
+        const copyChildren = async (original, parentId) => {
+          for (const child of original.children ?? []) {
+            const copy = await foldersApi.create({ name: child.name, parentId });
+            folderIds.set(child.id, copy.id);
+            await copyChildren(child, copy.id);
+          }
+        };
+        await copyChildren(source, rootCopy.id);
+
+        for (const note of noteIndex) {
+          const targetFolderId = folderIds.get(note.folderId);
+          if (!targetFolderId) continue;
+          await notesApi.duplicate(note.id, { folderId: targetFolderId });
+        }
+
+        setGraphStale(true);
+        await Promise.all([refreshSidebar({ silent: true }), refreshNotes()]);
+        toast.success(`已创建文件夹副本「${name}」`);
+        return true;
+      } catch (error) {
+        handleError(error, '创建文件夹副本失败');
+        return false;
+      }
+    },
+    [folders, handleError, noteIndex, refreshNotes, refreshSidebar, toast],
   );
 
   const deleteFolder = useCallback(
@@ -333,9 +517,8 @@ export function useVault() {
   const moveNote = useCallback(
     async (id, folderId) => {
       try {
-        const saved = await notesApi.update(id, { folderId });
+        const saved = await saveNote(id, { folderId });
         setActiveNote((current) => (current && current.id === id ? saved : current));
-        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
         setGraphStale(true);
         return true;
       } catch (error) {
@@ -343,22 +526,21 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshNotes, refreshSidebar],
+    [handleError, saveNote],
   );
 
   const togglePin = useCallback(
     async (note) => {
       try {
-        const saved = await notesApi.update(note.id, { isPinned: !note.isPinned });
+        const saved = await saveNote(note.id, { isPinned: !note.isPinned });
         setActiveNote((current) => (current && current.id === saved.id ? saved : current));
-        await refreshNotes();
         return true;
       } catch (error) {
         handleError(error, '更新置顶状态失败');
         return false;
       }
     },
-    [handleError, refreshNotes],
+    [handleError, saveNote],
   );
 
   const selectFolder = useCallback((folderId) => {
@@ -407,7 +589,11 @@ export function useVault() {
     createNote,
     saveNote,
     deleteNote,
+    duplicateNote,
+    renameNote,
     createFolder,
+    moveFolder,
+    duplicateFolder,
     renameFolder,
     deleteFolder,
     moveNote,

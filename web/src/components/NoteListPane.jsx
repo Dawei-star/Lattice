@@ -31,6 +31,9 @@ export default function NoteListPane({
   onTogglePin,
   onDeleteNote,
   onCreateNote,
+  onDuplicateNote,
+  onCopyPath,
+  onCopyWikiLink,
 }) {
   const isSearching = search.query.length > 0;
 
@@ -120,6 +123,9 @@ export default function NoteListPane({
                 onOpen={() => onOpenNote(note.id)}
                 onTogglePin={() => onTogglePin(note)}
                 onDelete={() => onDeleteNote(note.id)}
+                onDuplicate={() => onDuplicateNote?.(note)}
+                onCopyPath={() => onCopyPath?.(note)}
+                onCopyWikiLink={() => onCopyWikiLink?.(note)}
               />
             ))}
           </ul>
@@ -129,7 +135,7 @@ export default function NoteListPane({
   );
 }
 
-function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete }) {
+function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplicate, onCopyPath, onCopyWikiLink }) {
   const excerpt = note.excerpt ?? '';
 
   return (
@@ -139,6 +145,9 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete }) {
         getItems={() => [
           { id: 'open', label: '打开笔记', onSelect: onOpen },
           { id: 'pin', label: note.isPinned ? '取消置顶' : '置顶', onSelect: onTogglePin },
+          { id: 'duplicate', label: '创建副本', onSelect: onDuplicate },
+          { id: 'copy-path', label: '复制路径', onSelect: onCopyPath },
+          { id: 'copy-link', label: '复制双链', onSelect: onCopyWikiLink },
           { separator: true },
           { id: 'delete', label: '删除笔记', danger: true, onSelect: () => {
             if (window.confirm(`确定删除笔记「${note.title}」吗？`)) onDelete();

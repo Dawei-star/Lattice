@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Menu } from './Menu.jsx';
 
 /** Position-aware context menu. The caller supplies menu items for the target. */
-export default function ContextMenu({ children, getItems, label = '上下文菜单' }) {
+export default function ContextMenu({ children, getItems, label = '上下文菜单', className = '' }) {
   const [state, setState] = useState(null);
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
@@ -44,11 +44,21 @@ export default function ContextMenu({ children, getItems, label = '上下文菜�
       ? event.target.closest('button, input, textarea, select, [tabindex]')
       : null;
     triggerRef.current = target ?? event.currentTarget;
-    const items = (getItems?.(event) ?? []).map((item) =>
-      item.separator
-        ? item
-        : { ...item, onSelect: () => { close(); item.onSelect?.(); } },
-    );
+    const wrapItems = (source) => source.map((item) => {
+      if (item.separator) return item;
+      const wrapped = {
+        ...item,
+        submenuItems: item.submenuItems ? wrapItems(item.submenuItems) : undefined,
+      };
+      if (typeof item.onSelect === 'function') {
+        wrapped.onSelect = () => {
+          close();
+          item.onSelect();
+        };
+      }
+      return wrapped;
+    });
+    const items = wrapItems(getItems?.(event) ?? []);
     setState({
       items,
       x: event.clientX,
@@ -58,11 +68,11 @@ export default function ContextMenu({ children, getItems, label = '上下文菜�
 
   return (
     <>
-      <div onContextMenu={handleContextMenu}>{children}</div>
+      <div className={className} onContextMenu={handleContextMenu}>{children}</div>
       {state && typeof document !== 'undefined'
         ? createPortal(
             <div ref={menuRef} className="context-menu" role="presentation" style={{ left: state.x, top: state.y }}>
-              <Menu items={state.items} label={label} />
+              <Menu items={state.items} label={label} className="menu--context" />
             </div>,
             document.body,
           )

@@ -18,17 +18,23 @@ function mapRow(row, excerpt) {
  * @param {string} phrase 已转义并加引号的短语
  * @param {number} limit
  */
-export function searchFullText(phrase, limit) {
+export function searchFullText(phrase, limit, folderId) {
+  const folderFilter = folderId === '__none__'
+    ? 'AND n.folder_id IS NULL'
+    : folderId
+      ? 'AND n.folder_id = ?'
+      : '';
+  const params = folderId && folderId !== '__none__' ? [phrase, folderId, limit] : [phrase, limit];
   return getDb()
     .prepare(
       `SELECT n.id, n.title, n.folder_id, n.is_pinned, n.updated_at, n.content
          FROM notes_fts
          JOIN notes n ON n.id = notes_fts.note_id
-        WHERE notes_fts MATCH ?
+        WHERE notes_fts MATCH ? ${folderFilter}
         ORDER BY bm25(notes_fts) ASC, n.updated_at DESC
         LIMIT ?`,
     )
-    .all(phrase, limit);
+    .all(...params);
 }
 
 /**
@@ -36,16 +42,24 @@ export function searchFullText(phrase, limit) {
  * @param {string} pattern 已转义的通配模式
  * @param {number} limit
  */
-export function searchLike(pattern, limit) {
+export function searchLike(pattern, limit, folderId) {
+  const folderFilter = folderId === '__none__'
+    ? 'AND folder_id IS NULL'
+    : folderId
+      ? 'AND folder_id = ?'
+      : '';
+  const params = folderId && folderId !== '__none__'
+    ? [pattern, pattern, folderId, limit]
+    : [pattern, pattern, limit];
   return getDb()
     .prepare(
       `SELECT id, title, folder_id, is_pinned, updated_at, content
          FROM notes
-        WHERE title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'
+        WHERE (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\') ${folderFilter}
         ORDER BY is_pinned DESC, updated_at DESC
         LIMIT ?`,
     )
-    .all(pattern, pattern, limit);
+    .all(...params);
 }
 
 export { mapRow };

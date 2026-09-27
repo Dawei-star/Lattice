@@ -5,6 +5,10 @@ import * as controller from './notes.controller.js';
 
 const idParam = z.object({ id: z.string().uuid('笔记 ID 必须是合法 UUID') });
 
+const duplicateBody = z.object({
+  folderId: z.string().uuid('目标目录 ID 必须是合法 UUID').nullish().transform((v) => v ?? undefined),
+}).default({});
+
 /** folderId 支持特殊值 __none__，表示「未分类」 */
 const listQuery = z.object({
   folderId: z.string().max(64).nullish(),
@@ -37,6 +41,7 @@ notesRouter.get('/', validate({ query: listQuery }), controller.listNotes);
 notesRouter.post('/', validate({ body: createBody }), controller.createNote);
 // 必须注册在 /:id 之前，否则 "index" 会被当成 id 处理
 notesRouter.get('/index', controller.getNoteIndex);
+notesRouter.post('/:id/duplicate', validate({ params: idParam, body: duplicateBody }), controller.duplicateNote);
 notesRouter.get('/:id', validate({ params: idParam }), controller.getNote);
 notesRouter.patch('/:id', validate({ params: idParam, body: updateBody }), controller.updateNote);
 notesRouter.delete('/:id', validate({ params: idParam }), controller.deleteNote);

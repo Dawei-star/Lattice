@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notesApi } from './api/resources.js';
 import EditorPane from './components/EditorPane.jsx';
 import GraphView from './components/GraphView.jsx';
+import CanvasView from './components/CanvasView.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
 import NoteListPane from './components/NoteListPane.jsx';
 import QuickSwitcher from './components/QuickSwitcher.jsx';
@@ -13,9 +14,13 @@ import Ribbon from './shell/Ribbon.jsx';
 import TabBar from './shell/TabBar.jsx';
 import StatusBar from './shell/StatusBar.jsx';
 import SettingsModal from './settings/SettingsModal.jsx';
+import Modal from './ui/Modal.jsx';
 import { loadImportedTheme } from './lib/theme.js';
+import { noteFilePath } from './api/vault-files.js';
+import { applySettings, loadSettings, subscribeSettings } from './settings/settings.js';
 
 const THEME_STORAGE_KEY = 'lattice-theme';
+const FAVORITE_FOLDERS_STORAGE_KEY = 'lattice-favorite-folders';
 
 const revealFolder = (relativePath) => window.latticeDesktop?.revealVaultPath?.(relativePath);
 
@@ -55,6 +60,10 @@ export default function App() {
     deleteFolder,
     moveNote,
     togglePin,
+    duplicateNote,
+    renameNote,
+    duplicateFolder,
+    moveFolder,
     resolveTitle,
     refreshNotes,
     refreshSidebar,
@@ -70,17 +79,31 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'light');
+  const [settings, setSettings] = useState(() => loadSettings());
+  const [favoriteFolderIds, setFavoriteFolderIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(FAVORITE_FOLDERS_STORAGE_KEY) ?? '[]');
+      return Array.isArray(saved) ? saved.filter((id) => typeof id === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
   const [shellMode] = useState(() => new URLSearchParams(window.location.search).get('shell') === 'topbar' ? 'topbar' : 'obsidian');
 
   // ── 多标签页：tabs 记录打开了哪些笔记，vault.activeNote 即当前标签的内容 ──
   const [tabs, setTabs] = useState(() => [{ id: 1, noteId: null }]);
   const [activeTabId, setActiveTabId] = useState(1);
+  const [lockedTabIds, setLockedTabIds] = useState([]);
+  const [renameDialog, setRenameDialog] = useState(null);
+  const [renameSaving, setRenameSaving] = useState(false);
   const tabSeq = useRef(2);
 
   const noteTitles = useMemo(() => new Map((noteIndex ?? []).map((n) => [n.id, n.title])), [noteIndex]);
 
   useEffect(() => {
     loadImportedTheme();
+    applySettings(loadSettings());
+    return subscribeSettings(setSettings);
   }, []);
 
   // ── 主题 ────────────────────────────────────────────────────
@@ -92,6 +115,14 @@ export default function App() {
       // 隐私模式下 localStorage 可能不可写，静默忽略
     }
   }, [theme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FAVORITE_FOLDERS_STORAGE_KEY, JSON.stringify(favoriteFolderIds));
+    } catch {
+      // 隐私模式下 localStorage 可能不可写，收藏仍在当前会话有效
+    }
+  }, [favoriteFolderIds]);
 
   // ── 派生数据 ────────────────────────────────────────────────
   const folderLookup = useMemo(() => {
@@ -181,8 +212,20 @@ export default function App() {
     vault.setActiveNote(null);
   }, [tabs, activeTabId, confirmNavigation, vault]);
 
+  const handleToggleTabLock = useCallback((tabId) => {
+    setLockedTabIds((current) => {
+      const locked = current.includes(tabId);
+      toast.info(locked ? '标签页已解锁' : '标签页已锁定');
+      return locked ? current.filter((id) => id !== tabId) : [...current, tabId];
+    });
+  }, [toast]);
+
   const handleTabClose = useCallback(
     (tabId) => {
+      if (lockedTabIds.includes(tabId)) {
+        toast.info('标签页已锁定，请先解锁后关闭');
+        return;
+      }
       const index = tabs.findIndex((t) => t.id === tabId);
       if (index === -1) return;
       const closingActive = tabId === activeTabId;
@@ -192,16 +235,72 @@ export default function App() {
         const fresh = { id: tabSeq.current++, noteId: null };
         setTabs([fresh]);
         setActiveTabId(fresh.id);
+        setLockedTabIds([]);
         vault.setActiveNote(null);
         return;
       }
       setTabs(remaining);
+      setLockedTabIds((current) => current.filter((id) => id !== tabId));
       if (closingActive) activateTab(remaining[Math.max(0, index - 1)]);
     },
-    [tabs, activeTabId, confirmNavigation, activateTab, vault],
+    [tabs, activeTabId, confirmNavigation, activateTab, lockedTabIds, toast, vault],
   );
 
+  const handleRenameTab = useCallback((tabId) => {
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab?.noteId) return;
+    const note = activeNote?.id === tab.noteId
+      ? activeNote
+      : noteIndex.find((item) => item.id === tab.noteId);
+    if (!note) return;
+    setRenameDialog({ tabId, noteId: note.id, title: note.title });
+  }, [activeNote, noteIndex, tabs]);
+
+  const handleRenameNote = useCallback((note) => {
+    if (!note?.id) return;
+    const tab = tabs.find((item) => item.noteId === note.id);
+    setRenameDialog({ tabId: tab?.id ?? null, noteId: note.id, title: note.title });
+  }, [tabs]);
+
+  const handleRenameDialogSubmit = useCallback(async (event) => {
+    event.preventDefault();
+    if (!renameDialog || renameSaving) return;
+    const title = renameDialog.title.trim();
+    if (!title) {
+      toast.error('文件名不能为空');
+      return;
+    }
+    if (title === noteTitles.get(renameDialog.noteId)) {
+      setRenameDialog(null);
+      return;
+    }
+
+    setRenameSaving(true);
+    const saved = await renameNote(renameDialog.noteId, title);
+    setRenameSaving(false);
+    if (saved) setRenameDialog(null);
+  }, [noteTitles, renameDialog, renameSaving, renameNote, toast]);
+
+  const handleMoveTabNote = useCallback(async (tabId, folderId) => {
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab?.noteId) return;
+    const moved = await moveNote(tab.noteId, folderId);
+    if (moved) toast.success(folderId ? '笔记已移动' : '笔记已移至未分类');
+  }, [moveNote, tabs, toast]);
+
   /** 删除笔记后：移除其标签，并把激活位挪到相邻标签 */
+  const handleToggleNotePin = useCallback(async (note) => {
+    const saved = await togglePin(note);
+    if (saved) toast.success(saved.isPinned ? '笔记已收藏' : '已取消笔记收藏');
+    return saved;
+  }, [toast, togglePin]);
+
+  const handleMoveNote = useCallback(async (id, folderId) => {
+    const moved = await moveNote(id, folderId);
+    if (moved) toast.success(folderId ? '笔记已移动' : '笔记已移至未分类');
+    return moved;
+  }, [moveNote, toast]);
+
   const handleDeleteNote = useCallback(
     async (id) => {
       const ok = await deleteNote(id);
@@ -209,6 +308,7 @@ export default function App() {
       const closedIndex = tabs.findIndex((t) => t.noteId === id);
       if (closedIndex === -1) return true;
       const remaining = tabs.filter((t) => t.noteId !== id);
+      setLockedTabIds((current) => current.filter((tabId) => remaining.some((tab) => tab.id === tabId)));
       if (!remaining.length) {
         const fresh = { id: tabSeq.current++, noteId: null };
         setTabs([fresh]);
@@ -280,10 +380,17 @@ export default function App() {
   // ── 快捷键 ──────────────────────────────────────────────────
   useEffect(() => {
     const handler = (event) => {
+      if (settingsOpen) return;
       const meta = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
 
-      if (meta && key === 'k') {
+      if (settings.quickSwitcher && meta && key === 'k') {
+        event.preventDefault();
+        setSwitcherOpen(true);
+        return;
+      }
+
+      if (meta && key === 'o') {
         event.preventDefault();
         setSwitcherOpen(true);
         return;
@@ -301,6 +408,12 @@ export default function App() {
         return;
       }
 
+      if (meta && key === 'w') {
+        event.preventDefault();
+        handleTabClose(activeTabId);
+        return;
+      }
+
       if (meta && key === 'b') {
         event.preventDefault();
         setSidebarOpen((value) => !value);
@@ -315,7 +428,7 @@ export default function App() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleCreateNote, handleTabNew]);
+  }, [activeTabId, handleCreateNote, handleTabClose, handleTabNew, settings.quickSwitcher, settingsOpen]);
 
   // ── 切到图谱视图时按需加载（数据被改动过才重新拉取） ───────
   useEffect(() => {
@@ -331,6 +444,117 @@ export default function App() {
   const handleOpenSwitcher = useCallback(() => setSwitcherOpen(true), []);
   const handleCloseSwitcher = useCallback(() => setSwitcherOpen(false), []);
   const handleTogglePanel = useCallback(() => setPanelOpen((value) => !value), []);
+
+  const copyText = useCallback(async (value, label) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(`${label}已复制`);
+    } catch {
+      toast.error(`无法复制${label}`);
+    }
+  }, [toast]);
+
+  const handleCopyPath = useCallback((note) => {
+    if (!note) return;
+    copyText(noteFilePath(note, folders), '路径');
+  }, [copyText, folders]);
+
+  const handleCopyNotePath = useCallback(async (note, mode = 'relative') => {
+    if (!note) return;
+    const relativePath = note.filePath ?? noteFilePath(note, folders);
+    if (mode === 'relative') {
+      await copyText(relativePath, '路径');
+      return;
+    }
+
+    const info = await window.latticeDesktop?.getVaultInfo?.();
+    if (!info?.path) {
+      toast.error('浏览器开发模式无法获取完整路径');
+      return;
+    }
+    const separator = info.path.includes('\\') ? '\\' : '/';
+    const absolutePath = `${info.path.replace(/[\\/]+$/, '')}${separator}${relativePath.split('/').join(separator)}`;
+    await copyText(absolutePath, '完整路径');
+  }, [copyText, folders, toast]);
+
+  const handleCopyFolderPath = useCallback(async (relativePath, mode = 'relative') => {
+    if (mode === 'relative') {
+      copyText(relativePath, '路径');
+      return;
+    }
+
+    const info = await window.latticeDesktop?.getVaultInfo?.();
+    if (!info?.path) {
+      toast.error('浏览器开发模式无法获取完整路径');
+      return;
+    }
+    const separator = info.path.includes('\\') ? '\\' : '/';
+    const absolutePath = `${info.path.replace(/[\\/]+$/, '')}${separator}${relativePath.split('/').join(separator)}`;
+    copyText(absolutePath, '完整路径');
+  }, [copyText, toast]);
+
+  const handleToggleFavorite = useCallback((folderId) => {
+    setFavoriteFolderIds((current) => {
+      const isFavorite = current.includes(folderId);
+      toast.success(isFavorite ? '已取消收藏文件夹' : '已收藏文件夹');
+      return isFavorite ? current.filter((id) => id !== folderId) : [...current, folderId];
+    });
+  }, [toast]);
+
+  const handleFindInFolder = useCallback((folderId) => {
+    selectFolder(folderId);
+    requestAnimationFrame(() => {
+      document.querySelector('input[aria-label="全文检索"], .topbar input[type="search"]')?.focus();
+    });
+  }, [selectFolder]);
+
+  const handleCopyWikiLink = useCallback((note) => {
+    if (!note) return;
+    copyText(`[[${note.title}]]`, '双链');
+  }, [copyText]);
+
+  const handleOpenDefault = useCallback(async (note) => {
+    if (!note) return;
+    const relativePath = note.filePath ?? noteFilePath(note, folders);
+    if (!window.latticeDesktop?.openVaultFile) {
+      toast.info('浏览器开发模式不支持使用系统默认应用打开');
+      return;
+    }
+    const opened = await window.latticeDesktop.openVaultFile(relativePath);
+    if (!opened) toast.error('无法使用默认应用打开文件');
+  }, [folders, toast]);
+
+  const handleRevealFile = useCallback(async (note) => {
+    if (!note) return;
+    const relativePath = note.filePath ?? noteFilePath(note, folders);
+    if (!window.latticeDesktop?.revealVaultPath) {
+      toast.info('浏览器开发模式不支持在资源管理器中显示文件');
+      return;
+    }
+    const revealed = await window.latticeDesktop.revealVaultPath(relativePath);
+    if (!revealed) toast.error('无法在资源管理器中定位文件');
+  }, [folders, toast]);
+
+  const handleShowInFileList = useCallback((note) => {
+    if (!note) return;
+    setView('notes');
+    setSidebarOpen(true);
+    selectFolder(note.folderId ?? null);
+  }, [selectFolder]);
+
+  const handleOpenLinkedNote = useCallback(async (id) => {
+    if (!id) return;
+    setView('notes');
+    await openInTab(id);
+  }, [openInTab]);
+
+  const handleDuplicateNote = useCallback(async (note) => {
+    const created = await duplicateNote(note);
+    if (created) {
+      await openInTab(created.id);
+      setView('notes');
+    }
+  }, [duplicateNote, openInTab]);
 
   return (
     <div className={`app app--${shellMode}`}>
@@ -368,9 +592,24 @@ export default function App() {
         tabs={tabs}
         activeTabId={activeTabId}
         noteTitles={noteTitles}
+        noteIndex={noteIndex}
+        folders={folders}
+        activeNote={activeNote}
+        lockedTabIds={lockedTabIds}
         onSelect={handleTabSelect}
         onClose={handleTabClose}
         onNew={handleTabNew}
+        onToggleLock={handleToggleTabLock}
+        onTogglePin={togglePin}
+        onRename={handleRenameTab}
+        onMoveNote={handleMoveTabNote}
+        onCopyPath={handleCopyNotePath}
+        onCopyWikiLink={handleCopyWikiLink}
+        onOpenDefault={handleOpenDefault}
+        onRevealFile={handleRevealFile}
+        onShowInFileList={handleShowInFileList}
+        onDeleteNote={handleDeleteNote}
+        onOpenLinkedNote={handleOpenLinkedNote}
       />
 
       {connectionDown ? (
@@ -382,16 +621,19 @@ export default function App() {
         </div>
       ) : null}
 
-      <div className={`app__body ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'}`}>
+      <div className={`app__body app__body--${view} ${activeNote ? 'app__body--has-active-note' : ''} ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'} ${view === 'canvas' ? 'app__body--canvas' : ''} ${view === 'graph' ? 'app__body--graph' : ''}`}>
         {sidebarOpen ? (
           <Sidebar
             folders={folders}
+            noteIndex={noteIndex}
             tags={tags}
             overview={overview}
             filter={filter}
+            activeNoteId={activeNote?.id ?? null}
             sort={sort}
             loading={loading.sidebar}
             onSelectFolder={selectFolder}
+            onOpenNote={handleOpenNote}
             onSelectTag={selectTag}
             onClearFilter={clearFilter}
             onSortChange={setSort}
@@ -404,6 +646,21 @@ export default function App() {
             refreshing={refreshing}
             onOpenSettings={() => setSettingsOpen(true)}
             onCollapseSidebar={() => setSidebarOpen(false)}
+            onOpenCanvas={() => setView('canvas')}
+            favoriteFolderIds={favoriteFolderIds}
+            onDuplicateFolder={duplicateFolder}
+            onMoveFolder={moveFolder}
+            onFindInFolder={handleFindInFolder}
+            onToggleFavorite={handleToggleFavorite}
+            onCopyFolderPath={handleCopyFolderPath}
+            onToggleNotePin={handleToggleNotePin}
+            onDuplicateNote={handleDuplicateNote}
+            onMoveNote={handleMoveNote}
+            onCopyNotePath={handleCopyNotePath}
+            onOpenDefault={handleOpenDefault}
+            onRevealNote={handleRevealFile}
+            onRenameNote={handleRenameNote}
+            onDeleteNote={handleDeleteNote}
           />
         ) : (
           <button
@@ -417,7 +674,7 @@ export default function App() {
           </button>
         )}
 
-        <NoteListPane
+        {view === 'notes' ? <NoteListPane
           notes={notes}
           notesTotal={notesTotal}
           search={search}
@@ -434,8 +691,11 @@ export default function App() {
           onOpenNote={handleOpenNote}
           onTogglePin={togglePin}
           onDeleteNote={handleDeleteNote}
-          onCreateNote={handleCreateNote}
-        />
+           onCreateNote={handleCreateNote}
+           onDuplicateNote={handleDuplicateNote}
+           onCopyPath={handleCopyPath}
+           onCopyWikiLink={handleCopyWikiLink}
+         /> : null}
 
         <main className="workspace">
           {view === 'graph' ? (
@@ -447,6 +707,8 @@ export default function App() {
               onCreateNoteByTitle={handleCreateByTitle}
               onRefresh={refreshGraph}
             />
+          ) : view === 'canvas' ? (
+            <CanvasView noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateNote} />
           ) : (
             <div className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}>
               <EditorPane
@@ -461,6 +723,12 @@ export default function App() {
                 onOpenWikiLink={handleOpenWikiLink}
                 onCreateWikiLink={handleCreateByTitle}
                 registerNavigationGuard={registerNavigationGuard}
+                onCreateNote={handleCreateNote}
+                onOpenSwitcher={handleOpenSwitcher}
+                onCloseTab={() => handleTabClose(activeTabId)}
+                onDuplicate={handleDuplicateNote}
+                onCopyPath={handleCopyPath}
+                onCopyWikiLink={handleCopyWikiLink}
               />
 
               {panelOpen ? (
@@ -496,6 +764,61 @@ export default function App() {
         theme={theme}
         onThemeChange={setTheme}
       />
+      <RenameDialog
+        open={Boolean(renameDialog)}
+        title={renameDialog?.title ?? ''}
+        saving={renameSaving}
+        onChange={(title) => setRenameDialog((current) => current ? { ...current, title } : current)}
+        onClose={() => {
+          if (!renameSaving) setRenameDialog(null);
+        }}
+        onSubmit={handleRenameDialogSubmit}
+      />
     </div>
+  );
+}
+
+function RenameDialog({ open, title, saving, onChange, onClose, onSubmit }) {
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
+  return (
+    <Modal open={open} onClose={onClose} title="文件名" ariaLabel="重命名笔记" className="rename-modal" initialFocusRef={inputRef}>
+      <form className="rename-dialog" onSubmit={onSubmit}>
+        <header className="rename-dialog__header">
+          <div>
+            <span className="rename-dialog__eyebrow">NOTE / FILE</span>
+            <h2>文件名</h2>
+          </div>
+          <button type="button" className="icon-btn rename-dialog__close" onClick={onClose} aria-label="关闭重命名">
+            ×
+          </button>
+        </header>
+        <div className="rename-dialog__body">
+          <label htmlFor="rename-file-name">文件名</label>
+          <input
+            ref={inputRef}
+            id="rename-file-name"
+            value={title}
+            maxLength={160}
+            autoComplete="off"
+            onChange={(event) => onChange(event.target.value)}
+            disabled={saving}
+          />
+        </div>
+        <footer className="rename-dialog__actions">
+          <button type="button" className="btn" onClick={onClose} disabled={saving}>取消</button>
+          <button type="submit" className="btn btn--primary" disabled={saving}>{saving ? '保存中…' : '保存'}</button>
+        </footer>
+      </form>
+    </Modal>
   );
 }

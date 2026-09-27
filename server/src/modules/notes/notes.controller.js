@@ -20,6 +20,11 @@ export async function createNote(req, res) {
   res.status(201).json({ data: note });
 }
 
+export async function duplicateNote(req, res) {
+  const note = service.duplicate(req.valid.params.id, req.valid.body);
+  res.status(201).json({ data: note });
+}
+
 export async function updateNote(req, res) {
   const note = service.update(req.valid.params.id, req.valid.body);
   res.json({ data: note });

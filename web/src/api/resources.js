@@ -26,6 +26,7 @@ import { http } from './client.js';
  * @property {number} wordCount
  * @property {string} createdAt
  * @property {string} updatedAt
+ * @property {string} filePath
  * @property {string} excerpt
  * @property {Tag[]} tags
  * @property {number} outgoingCount
@@ -91,6 +92,8 @@ export const notesApi = {
       folderId: input.folderId ?? null,
     }, options),
 
+  duplicate: (id, input = {}, options = {}) => http.post(`/notes/${id}/duplicate`, input, options),
+
   /**
    * @param {string} id
    * @param {{ title?: string, content?: string, folderId?: string | null, isPinned?: boolean }} patch
@@ -123,7 +126,7 @@ export const searchApi = {
    * @returns {Promise<{ items: Array<{ id: string, title: string, excerpt: string, folderId: string | null, updatedAt: string }>, strategy: string }>}
    */
   async query(q, options = {}) {
-    const payload = await http.getFull('/search', { query: { q, limit: options.limit } });
+    const payload = await http.getFull('/search', { query: { q, limit: options.limit, folderId: options.folderId } });
     return { items: payload?.data ?? [], strategy: payload?.meta?.strategy ?? 'unknown' };
   },
 };

@@ -23,3 +23,18 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# 本地工具与验证临时目录（匹配任意层级）
+.playwright-cli/
+.verify-tmp/
+.workbuddy/
+
+# 浏览器自动化（Playwright）截图与参考产物
+output/
+
+# Vite 临时文件
+*.timestamp-*
+
+# 图标设计过程稿与历史归档（正式图标 desktop/build/icon.ico 已入库）
+desktop/build/archive/
+desktop/build/concepts*/

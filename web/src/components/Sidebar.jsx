@@ -12,11 +12,14 @@ const SORT_ORDER = Object.keys(SORT_LABELS);
  */
 export default function Sidebar({
   folders,
+  noteIndex,
   tags,
   overview,
   filter,
+  activeNoteId,
   sort,
   onSelectFolder,
+  onOpenNote,
   onSelectTag,
   onClearFilter,
   onSortChange,
@@ -30,6 +33,21 @@ export default function Sidebar({
   refreshing,
   onOpenSettings,
   onCollapseSidebar,
+  onOpenCanvas,
+  favoriteFolderIds,
+  onDuplicateFolder,
+  onMoveFolder,
+  onFindInFolder,
+  onToggleFavorite,
+  onCopyFolderPath,
+  onToggleNotePin,
+  onDuplicateNote,
+  onMoveNote,
+  onCopyNotePath,
+  onOpenDefault,
+  onRevealNote,
+  onRenameNote,
+  onDeleteNote,
 }) {
   const [collapsed, setCollapsed] = useState({ tags: false, stats: false });
   const [newFolderName, setNewFolderName] = useState('');
@@ -110,14 +128,32 @@ export default function Sidebar({
 
         <FolderTree
           nodes={folders}
+          notes={noteIndex}
           filter={filter}
+          activeNoteId={activeNoteId}
           loading={loading}
           onSelectFolder={onSelectFolder}
+          onOpenNote={onOpenNote}
           onCreateFolder={onCreateFolder}
           onCreateNote={onCreateNote}
           onRevealFolder={onRevealFolder}
           onDeleteFolder={onDeleteFolder}
           onRenameFolder={onRenameFolder}
+          onOpenCanvas={onOpenCanvas}
+          favoriteFolderIds={favoriteFolderIds}
+          onDuplicateFolder={onDuplicateFolder}
+          onMoveFolder={onMoveFolder}
+          onFindInFolder={onFindInFolder}
+          onToggleFavorite={onToggleFavorite}
+          onCopyFolderPath={onCopyFolderPath}
+          onToggleNotePin={onToggleNotePin}
+          onDuplicateNote={onDuplicateNote}
+          onMoveNote={onMoveNote}
+          onCopyNotePath={onCopyNotePath}
+          onOpenDefault={onOpenDefault}
+          onRevealNote={onRevealNote}
+          onRenameNote={onRenameNote}
+          onDeleteNote={onDeleteNote}
         />
       </div>
 

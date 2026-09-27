@@ -58,6 +58,17 @@ function noteFilePath(note) {
   return `${directory ? `${directory}/` : ''}${safeFilePart(note.title)}.md`;
 }
 
+function duplicateTitle(title, folderId) {
+  const base = `${title}（副本）`;
+  let candidate = base;
+  let suffix = 2;
+  while (repository.findByTitle(candidate).some((note) => note.folderId === folderId)) {
+    candidate = `${base} ${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function writeMarkdown(note) {
   vault.writeSync({
     id: note.id,
@@ -109,6 +120,21 @@ export function create({ id, title, content = '', folderId = null }) {
   const detail = getDetail(note.id);
   writeMarkdown(detail);
   return detail;
+}
+
+/** 复制笔记本体，标签与双链从 Markdown 正文重新派生。 */
+export function duplicate(id, { folderId } = {}) {
+  const current = repository.findById(id);
+  if (!current) throw new NotFoundError('笔记不存在');
+
+  const targetFolderId = folderId === undefined ? current.folderId : folderId;
+  assertFolderExists(targetFolderId);
+
+  return create({
+    title: duplicateTitle(current.title, targetFolderId),
+    content: current.content,
+    folderId: targetFolderId,
+  });
 }
 
 export function update(id, patch) {
@@ -189,7 +215,7 @@ export function getDetail(id) {
   const tags = tagsRepository.findTagsForNotes([id]).get(id) ?? [];
   const { outgoing, backlinks } = linksService.describeForNote(id);
 
-  return { ...note, tags, outgoing, backlinks };
+  return { ...note, filePath: noteFilePath({ ...note, folderId: note.folderId }), tags, outgoing, backlinks };
 }
 
 export function list(options) {

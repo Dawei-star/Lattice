@@ -39,20 +39,21 @@ function buildExcerpt(content, query, radius = 60) {
 /**
  * @param {string} query 已 trim 的检索词
  * @param {number} limit
+ * @param {string | undefined} folderId
  */
-export function search(query, limit) {
+export function search(query, limit, folderId) {
   const useFullText = [...query].length >= MIN_TRIGRAM_LENGTH;
 
   let rows = [];
   let strategy = 'like';
 
   if (useFullText) {
-    rows = repository.searchFullText(toFtsPhrase(query), limit);
+    rows = repository.searchFullText(toFtsPhrase(query), limit, folderId);
     strategy = 'fts';
   }
 
   if (rows.length === 0) {
-    rows = repository.searchLike(toLikePattern(query), limit);
+    rows = repository.searchLike(toLikePattern(query), limit, folderId);
     strategy = strategy === 'fts' ? 'like-fallback' : 'like';
   }
 

@@ -201,6 +201,13 @@ function registerVaultIpc() {
   ipcMain.removeHandler('vault:select');
   ipcMain.removeHandler('vault:reveal');
   ipcMain.removeHandler('vault:reveal-path');
+  ipcMain.removeHandler('vault:open-file');
+  ipcMain.removeHandler('vault:read-file');
+  ipcMain.removeHandler('vault:write-file');
+  ipcMain.removeHandler('vault:read-markdown');
+  ipcMain.removeHandler('vault:write-markdown');
+  ipcMain.removeHandler('vault:move-markdown');
+  ipcMain.removeHandler('vault:remove-markdown');
 
   ipcMain.handle('vault:info', () => ({ path: vaultDir }));
   ipcMain.handle('vault:select', async () => {
@@ -233,6 +240,80 @@ function registerVaultIpc() {
     shell.showItemInFolder(target);
     return true;
   });
+  ipcMain.handle('vault:open-file', (_event, relativePath) => {
+    const target = resolveVaultFile(relativePath, '.md');
+    if (!target || !fs.existsSync(target)) return false;
+    shell.openPath(target);
+    return true;
+  });
+  ipcMain.handle('vault:read-file', (_event, relativePath) => {
+    const target = resolveVaultFile(relativePath, '.canvas');
+    if (!target || !fs.existsSync(target)) return null;
+    return fs.readFileSync(target, 'utf8');
+  });
+  ipcMain.handle('vault:write-file', (_event, relativePath, content) => {
+    const target = resolveVaultFile(relativePath, '.canvas');
+    if (!target || typeof content !== 'string' || content.length > 2 * 1024 * 1024) return false;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, content, 'utf8');
+      fs.renameSync(temporary, target);
+      return true;
+    } finally {
+      if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+    }
+  });
+  ipcMain.handle('vault:read-markdown', (_event, relativePath) => {
+    const target = resolveVaultFile(relativePath, '.md');
+    if (!target || !fs.existsSync(target)) return null;
+    return fs.readFileSync(target, 'utf8');
+  });
+  ipcMain.handle('vault:write-markdown', (_event, relativePath, content) => {
+    const target = resolveVaultFile(relativePath, '.md');
+    if (!target || typeof content !== 'string' || content.length > 2 * 1024 * 1024) return false;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, content, 'utf8');
+      fs.renameSync(temporary, target);
+      return true;
+    } finally {
+      if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+    }
+  });
+  ipcMain.handle('vault:move-markdown', (_event, fromPath, toPath, content) => {
+    const source = resolveVaultFile(fromPath, '.md');
+    const target = resolveVaultFile(toPath, '.md');
+    if (!source || !target || typeof content !== 'string' || content.length > 2 * 1024 * 1024) return false;
+    if (source !== target && fs.existsSync(target)) return false;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, content, 'utf8');
+      fs.renameSync(temporary, target);
+      if (source !== target) fs.rmSync(source, { force: true });
+      return true;
+    } finally {
+      if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+    }
+  });
+  ipcMain.handle('vault:remove-markdown', (_event, relativePath) => {
+    const target = resolveVaultFile(relativePath, '.md');
+    if (!target) return false;
+    fs.rmSync(target, { force: true });
+    return true;
+  });
+}
+
+function resolveVaultFile(relativePath, extension) {
+  if (!vaultDir || typeof relativePath !== 'string') return null;
+  const normalized = relativePath.trim().replaceAll('\\', '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized) || normalized.split('/').some((part) => !part || part === '.' || part === '..' || /[<>:"|?*\u0000]/.test(part)) || !normalized.toLowerCase().endsWith(extension)) return null;
+  const root = path.resolve(vaultDir);
+  const target = path.resolve(root, normalized);
+  const relative = path.relative(root, target);
+  return relative.startsWith('..') || path.isAbsolute(relative) ? null : target;
 }
 
 function createWindow(url) {
