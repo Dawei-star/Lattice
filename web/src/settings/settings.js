@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'lattice-settings-v1';
+const SAFE_BACKGROUND_IMAGE = /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/]+={0,2}$/i;
 
 export const DEFAULT_SETTINGS = Object.freeze({
   fontSize: '14',
@@ -9,6 +10,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoSaveDelay: '900',
   autoSave: true,
   quickSwitcher: true,
+  backgroundImage: '',
 });
 
 const OPTIONS = {
@@ -53,6 +55,7 @@ export function applySettings(settings = loadSettings()) {
   root.style.setProperty('--interface-font-size', `${settings.fontSize}px`);
   root.style.setProperty('--content-font-size', `${settings.fontSize}px`);
   root.style.setProperty('--content-max-width', `${settings.contentWidth}px`);
+  root.style.setProperty('--app-background-image', settings.backgroundImage ? `url("${settings.backgroundImage}")` : 'none');
   root.dataset.density = settings.density;
 }
 
@@ -70,5 +73,8 @@ function normalizeSettings(value) {
   }
   if (typeof value?.autoSave === 'boolean') next.autoSave = value.autoSave;
   if (typeof value?.quickSwitcher === 'boolean') next.quickSwitcher = value.quickSwitcher;
+  if (value?.backgroundImage === '' || (typeof value?.backgroundImage === 'string' && SAFE_BACKGROUND_IMAGE.test(value.backgroundImage))) {
+    next.backgroundImage = value.backgroundImage;
+  }
   return next;
 }

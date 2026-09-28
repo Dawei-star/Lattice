@@ -120,6 +120,7 @@ export function listBrief() {
       id: row.id,
       title: row.title,
       folderId: row.folder_id,
+      filePath: `${safeFilePart(row.title)}.md`,
       isPinned: row.is_pinned === 1,
       wordCount: row.word_count,
       updatedAt: row.updated_at,
@@ -135,10 +136,18 @@ export function listIndex() {
       id: row.id,
       title: row.title,
       folderId: row.folder_id,
+      filePath: `${safeFilePart(row.title)}.md`,
       isPinned: row.is_pinned === 1,
       wordCount: row.word_count,
       updatedAt: row.updated_at,
     }));
+}
+
+function safeFilePart(value) {
+  return String(value || '未命名笔记')
+    .replace(/[<>:"/\\|?*\u0000]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .trim() || '未命名笔记';
 }
 
 export function statistics() {

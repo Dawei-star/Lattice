@@ -22,6 +22,7 @@ import { http } from './client.js';
  * @property {string} id
  * @property {string} title
  * @property {string | null} folderId
+ * @property {string} filePath
  * @property {boolean} isPinned
  * @property {number} wordCount
  * @property {string} createdAt

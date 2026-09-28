@@ -13,6 +13,7 @@ const SORT_ORDER = Object.keys(SORT_LABELS);
 export default function Sidebar({
   folders,
   noteIndex,
+  canvasFiles = [],
   tags,
   overview,
   filter,
@@ -34,6 +35,8 @@ export default function Sidebar({
   onOpenSettings,
   onCollapseSidebar,
   onOpenCanvas,
+  onCreateCanvas,
+  canvasPath,
   favoriteFolderIds,
   onDuplicateFolder,
   onMoveFolder,
@@ -43,6 +46,7 @@ export default function Sidebar({
   onToggleNotePin,
   onDuplicateNote,
   onMoveNote,
+  onMoveCanvas,
   onCopyNotePath,
   onOpenDefault,
   onRevealNote,
@@ -129,6 +133,7 @@ export default function Sidebar({
         <FolderTree
           nodes={folders}
           notes={noteIndex}
+          canvasFiles={canvasFiles}
           filter={filter}
           activeNoteId={activeNoteId}
           loading={loading}
@@ -140,6 +145,8 @@ export default function Sidebar({
           onDeleteFolder={onDeleteFolder}
           onRenameFolder={onRenameFolder}
           onOpenCanvas={onOpenCanvas}
+          onCreateCanvas={onCreateCanvas}
+          canvasPath={canvasPath}
           favoriteFolderIds={favoriteFolderIds}
           onDuplicateFolder={onDuplicateFolder}
           onMoveFolder={onMoveFolder}
@@ -149,6 +156,7 @@ export default function Sidebar({
           onToggleNotePin={onToggleNotePin}
           onDuplicateNote={onDuplicateNote}
           onMoveNote={onMoveNote}
+          onMoveCanvas={onMoveCanvas}
           onCopyNotePath={onCopyNotePath}
           onOpenDefault={onOpenDefault}
           onRevealNote={onRevealNote}

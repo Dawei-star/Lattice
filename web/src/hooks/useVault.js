@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../api/client.js';
+import { canvasApi } from '../api/canvas.js';
 import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
 import { noteFilePath, vaultFiles } from '../api/vault-files.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
@@ -18,6 +19,7 @@ const SEARCH_DEBOUNCE_MS = 280;
 
 /** 未分类笔记在查询里的特殊标记，与后端约定一致 */
 const UNFILED = '__none__';
+const DEFAULT_CANVAS_PATH = '画板.canvas';
 
 function flattenFolderTree(nodes, result = []) {
   for (const node of nodes ?? []) {
@@ -27,6 +29,28 @@ function flattenFolderTree(nodes, result = []) {
   return result;
 }
 
+function ensureDefaultCanvas(files) {
+  const normalized = Array.isArray(files) ? files : [];
+  if (normalized.some((file) => file?.path === DEFAULT_CANVAS_PATH)) return normalized;
+  return [
+    ...normalized,
+    { path: DEFAULT_CANVAS_PATH, name: DEFAULT_CANVAS_PATH, folderPath: '', exists: false },
+  ];
+}
+
+function nextCanvasPath(files, folderPath = '') {
+  const normalizedFolder = String(folderPath ?? '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
+  const existing = new Set((files ?? []).map((file) => String(file?.path ?? '')));
+  let suffix = 0;
+  let candidate;
+  do {
+    const name = suffix === 0 ? '未命名.canvas' : `未命名 ${suffix + 1}.canvas`;
+    candidate = normalizedFolder ? `${normalizedFolder}/${name}` : name;
+    suffix += 1;
+  } while (existing.has(candidate));
+  return candidate;
+}
+
 export function useVault() {
   const toast = useToast();
 
@@ -34,6 +58,7 @@ export function useVault() {
   const [tags, setTags] = useState([]);
   const [overview, setOverview] = useState(null);
   const [noteIndex, setNoteIndex] = useState([]);
+  const [canvasFiles, setCanvasFiles] = useState([]);
 
   const [filter, setFilter] = useState(DEFAULT_FILTER);
   const [sort, setSort] = useState('updated');
@@ -81,16 +106,18 @@ export function useVault() {
     async ({ silent = false } = {}) => {
       if (!silent) setLoading((current) => ({ ...current, sidebar: true }));
       try {
-        const [folderTree, tagList, stats, index] = await Promise.all([
+        const [folderTree, tagList, stats, index, canvasList] = await Promise.all([
           foldersApi.list(),
           tagsApi.list(),
           metaApi.overview(),
           notesApi.index(),
+          canvasApi.list(),
         ]);
         setFolders(folderTree ?? []);
         setTags(tagList ?? []);
         setOverview(stats ?? null);
         setNoteIndex(index ?? []);
+        setCanvasFiles(ensureDefaultCanvas(canvasList));
         setConnectionDown(false);
       } catch (error) {
         handleError(error, '加载侧边栏数据失败');
@@ -432,6 +459,35 @@ export function useVault() {
     [handleError, refreshSidebar, toast],
   );
 
+  const moveCanvas = useCallback(
+    async (fromPath, toPath) => {
+      try {
+        await canvasApi.move(fromPath, toPath);
+        await refreshSidebar({ silent: true });
+        return true;
+      } catch (error) {
+        handleError(error, '移动画布文件失败');
+        return false;
+      }
+    },
+    [handleError, refreshSidebar],
+  );
+
+  const createCanvas = useCallback(
+    async (folderPath = '') => {
+      const filePath = nextCanvasPath(canvasFiles, folderPath);
+      try {
+        await canvasApi.save(filePath, { nodes: [], edges: [] });
+        await refreshSidebar({ silent: true });
+        return filePath;
+      } catch (error) {
+        handleError(error, '新建白板失败');
+        return null;
+      }
+    },
+    [canvasFiles, handleError, refreshSidebar],
+  );
+
   const duplicateFolder = useCallback(
     async (source) => {
       if (!source?.id) return false;
@@ -565,6 +621,7 @@ export function useVault() {
     notes,
     notesTotal,
     noteIndex,
+    canvasFiles,
     activeNote,
     graph,
     graphStale,
@@ -593,6 +650,8 @@ export function useVault() {
     renameNote,
     createFolder,
     moveFolder,
+    moveCanvas,
+    createCanvas,
     duplicateFolder,
     renameFolder,
     deleteFolder,

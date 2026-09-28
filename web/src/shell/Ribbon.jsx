@@ -1,4 +1,4 @@
-export default function Ribbon({ view, onViewChange, onOpenSwitcher, onCreateNote, onRefresh, refreshing, onTogglePanel, onToggleTheme, onOpenSettings, theme }) {
+export default function Ribbon({ view, onViewChange, onOpenSwitcher, onCreateNote, onCreateCanvas, onRefresh, refreshing, onTogglePanel, onToggleTheme, onOpenSettings, theme }) {
   return (
     <nav className="ribbon" aria-label="主导航">
       <div className="ribbon__group">
@@ -11,7 +11,7 @@ export default function Ribbon({ view, onViewChange, onOpenSwitcher, onCreateNot
         <button type="button" className={`ribbon__button ${view === 'graph' ? 'is-active' : ''}`} onClick={() => onViewChange('graph')} aria-label="图谱" title="关系图谱视图">
           <span aria-hidden="true">⌘</span>
         </button>
-        <button type="button" className={`ribbon__button ${view === 'canvas' ? 'is-active' : ''}`} onClick={() => onViewChange('canvas')} aria-label="画布" title="自由画布视图">
+        <button type="button" className="ribbon__button" onClick={() => onCreateCanvas?.()} aria-label="新建白板" title="新建白板">
           <span aria-hidden="true">▦</span>
         </button>
         <button type="button" className="ribbon__button" onClick={onOpenSwitcher} aria-label="快速切换" title="快速切换（Ctrl / Cmd + K）">

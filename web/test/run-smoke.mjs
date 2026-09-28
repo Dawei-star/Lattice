@@ -385,10 +385,15 @@ async function main() {
   const editorTitle = container.querySelector('.editor__title');
   check('编辑器仍处于打开状态', Boolean(editorTitle));
   const beforeTitle = editorTitle.value;
-  setFieldValue(editorTitle, `${beforeTitle}（已改）`);
+  // 不拿原标题拼后缀：示例数据的标题可能已被历史运行拉长到接近服务端 200 字上限，
+  // 再拼一段就会 422，保存永远到不了 saved。用一个独立且唯一的标题，改完再还原。
+  const editedTitle = `冒烟测试-自动保存-${Date.now()}`;
+  setFieldValue(editorTitle, editedTitle);
+  // 必须先等状态离开 saved：改完标题的一瞬间 DOM 里仍是上一次的 .savestate--saved，
+  // 直接等它就会假通过 —— 测试会立刻往下走，还原的那次防抖保存根本来不及发出。
   await waitFor(
-    () => container.querySelector('.savestate--saved') || container.querySelector('.savestate--dirty'),
-    { label: '触发自动保存状态' },
+    () => !container.querySelector('.savestate--saved'),
+    { label: '进入待保存状态' },
   );
   await waitFor(
     () => container.querySelector('.savestate--saved'),
@@ -398,6 +403,10 @@ async function main() {
 
   // 还原标题，避免污染示例数据
   setFieldValue(editorTitle, beforeTitle);
+  await waitFor(
+    () => !container.querySelector('.savestate--saved'),
+    { label: '进入还原保存状态' },
+  );
   await waitFor(() => container.querySelector('.savestate--saved'), { label: '还原标题', timeout: 6000 });
 
   section('运行期错误');

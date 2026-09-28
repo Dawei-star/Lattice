@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 5173",
-    "test": "node test/run-smoke.mjs"
+    "test": "node test/theme.test.mjs && node test/run-smoke.mjs"
   },
   "dependencies": {
     "marked": "^14.1.4",

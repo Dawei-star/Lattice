@@ -2,13 +2,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from '../../config/index.js';
+import { ConflictError, NotFoundError } from '../../lib/errors.js';
 import { resolveVaultPath } from '../../vault/path.js';
 
 const FILE_PATH = '画板.canvas';
-const vaultFile = () => resolveVaultPath(config.vaultDir, FILE_PATH, '.canvas');
+const vaultFile = (filePath = FILE_PATH) => resolveVaultPath(config.vaultDir, filePath, '.canvas');
 
-export function read() {
-  const file = vaultFile();
+export function list() {
+  const files = [];
+  walkCanvasFiles(config.vaultDir, '', files);
+  return files.sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'));
+}
+
+export function read(filePath = FILE_PATH) {
+  const file = vaultFile(filePath);
   if (!fs.existsSync(file)) return { nodes: [], edges: [] };
   try {
     const value = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -18,8 +25,8 @@ export function read() {
   }
 }
 
-export function write(document) {
-  const file = vaultFile();
+export function write(document, filePath = FILE_PATH) {
+  const file = vaultFile(filePath);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
@@ -29,4 +36,34 @@ export function write(document) {
     if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
   }
   return document;
+}
+
+export function move(fromPath, toPath) {
+  const source = vaultFile(fromPath);
+  const target = vaultFile(toPath);
+  if (!fs.existsSync(source)) throw new NotFoundError('画布文件不存在');
+  if (source !== target && fs.existsSync(target)) throw new ConflictError('目标位置已存在同名画布文件');
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  if (source !== target) fs.renameSync(source, target);
+  return { fromPath, toPath };
+}
+
+function walkCanvasFiles(root, relativeDir, result) {
+  if (!fs.existsSync(root)) return;
+  const absoluteDir = path.join(root, relativeDir);
+  for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true })) {
+    if (entry.name === '.lattice' || entry.name.startsWith('.')) continue;
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      walkCanvasFiles(root, relativePath, result);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.canvas')) {
+      const folderPath = relativeDir.replaceAll('\\', '/');
+      result.push({
+        path: relativePath.replaceAll('\\', '/'),
+        name: entry.name,
+        folderPath,
+      });
+    }
+  }
 }

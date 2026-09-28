@@ -38,3 +38,9 @@ output/
 # 图标设计过程稿与历史归档（正式图标 desktop/build/icon.ico 已入库）
 desktop/build/archive/
 desktop/build/concepts*/
+
+#计划
+docs/
+
+#desktop
+desktop/

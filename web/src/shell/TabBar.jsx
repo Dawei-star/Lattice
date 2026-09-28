@@ -10,6 +10,9 @@ export default function TabBar({
   lockedTabIds = [],
   onSelect,
   onClose,
+  onCloseToLeft,
+  onCloseToRight,
+  onCloseOthers,
   onNew,
   onToggleLock,
   onTogglePin,
@@ -29,8 +32,17 @@ export default function TabBar({
     <div className="tabbar" role="tablist" aria-label="已打开笔记">
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
+        const tabIndex = tabs.findIndex((item) => item.id === tab.id);
         const title = tab.noteId ? (noteTitles.get(tab.noteId) ?? '加载中…') : '新标签页';
         const locked = lockedTabIds.includes(tab.id);
+        const hasClosableLeft = tabs
+          .slice(0, tabIndex)
+          .some((item) => !lockedTabIds.includes(item.id));
+        const hasClosableRight = tabs
+          .slice(tabIndex + 1)
+          .some((item) => !lockedTabIds.includes(item.id));
+        const hasClosableOthers = tabs
+          .some((item) => item.id !== tab.id && !lockedTabIds.includes(item.id));
         const note = tab.noteId
           ? (activeNote?.id === tab.noteId ? activeNote : noteIndex.find((item) => item.id === tab.noteId))
           : null;
@@ -45,9 +57,15 @@ export default function TabBar({
               note,
               active,
               locked,
+              hasClosableLeft,
+              hasClosableRight,
+              hasClosableOthers,
               folderItems,
               activeNote,
               onCloseTab: onClose,
+              onCloseToLeft,
+              onCloseToRight,
+              onCloseOthers,
               onToggleLock,
               onTogglePin,
               onRename,
@@ -114,9 +132,15 @@ function buildTabMenu({
   note,
   active,
   locked,
+  hasClosableLeft,
+  hasClosableRight,
+  hasClosableOthers,
   folderItems,
   activeNote,
   onCloseTab,
+  onCloseToLeft,
+  onCloseToRight,
+  onCloseOthers,
   onToggleLock,
   onTogglePin,
   onRename,
@@ -156,6 +180,9 @@ function buildTabMenu({
 
   return [
     { id: 'close', label: '关闭', icon: '×', disabled: locked, onSelect: () => onCloseTab?.(tab.id) },
+    { id: 'close-left', label: '关闭左侧', icon: '←', disabled: !hasClosableLeft, onSelect: () => onCloseToLeft?.(tab.id) },
+    { id: 'close-right', label: '关闭右侧', icon: '→', disabled: !hasClosableRight, onSelect: () => onCloseToRight?.(tab.id) },
+    { id: 'close-others', label: '关闭其他', icon: '×', disabled: !hasClosableOthers, onSelect: () => onCloseOthers?.(tab.id) },
     { id: 'lock', label: locked ? '解锁' : '锁定', icon: locked ? '⌑' : '▣', onSelect: () => onToggleLock?.(tab.id) },
     { id: 'linked-tabs', label: '关联标签页…', icon: '⌘', disabled: true, title: '关联标签页暂未支持' },
     { separator: true },

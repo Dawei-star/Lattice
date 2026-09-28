@@ -15,6 +15,8 @@ const MAX_NODE_HEIGHT = 560;
 const SNAP_DISTANCE = 10;
 const MIN_SCALE = 0.45;
 const MAX_SCALE = 2;
+const PORT_SIDES = ['top', 'right', 'bottom', 'left'];
+const PORT_LABELS = { top: '顶部', right: '右侧', bottom: '底部', left: '左侧' };
 const CARD_COLOR_OPTIONS = [
   { value: 'blue', label: '蓝色' },
   { value: 'green', label: '绿色' },
@@ -22,7 +24,7 @@ const CARD_COLOR_OPTIONS = [
   { value: 'red', label: '红色' },
 ];
 
-export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, onCreateNote }) {
+export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [], activeNoteId, onOpenNote, onCreateNote }) {
   const [canvasDocument, setCanvasDocument] = useState(() => loadDocument());
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [selected, setSelected] = useState(null);
@@ -58,12 +60,17 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
 
   useEffect(() => {
     let cancelled = false;
-    const desktopRead = window.latticeDesktop?.readVaultFile;
-    const load = desktopRead
-      ? desktopRead('画板.canvas').then((raw) => raw ? JSON.parse(raw) : loadDocument())
-      : canvasApi.get();
+    loadedFromVault.current = false;
+    hasLocalChanges.current = false;
+    hasAutoFitted.current = false;
+    saveRevision.current += 1;
+    setCanvasDocument(loadDocument());
+    setSelected(null);
+    setConnection(null);
+    setAlignmentGuides([]);
+    setSaveState('loading');
 
-    load.then((value) => {
+    canvasApi.get(canvasPath).then((value) => {
       if (cancelled) return;
       setSaveState('saved');
       if (hasLocalChanges.current) {
@@ -78,7 +85,7 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
     });
 
     return () => { cancelled = true; };
-  }, []);
+  }, [canvasPath]);
 
   useEffect(() => {
     if (resourcePicker !== 'image') return undefined;
@@ -104,14 +111,12 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
     setSaveState('saving');
     saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
       if (revision !== saveRevision.current) return;
-      const content = `${JSON.stringify(snapshot, null, 2)}\n`;
-      const desktopWrite = window.latticeDesktop?.writeVaultFile;
-      await (desktopWrite ? desktopWrite('画板.canvas', content) : canvasApi.save(snapshot));
+      await canvasApi.save(canvasPath, snapshot);
       if (revision === saveRevision.current) setSaveState('saved');
     }).catch(() => {
       if (revision === saveRevision.current) setSaveState('error');
     });
-  }, [canvasDocument]);
+  }, [canvasDocument, canvasPath]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -381,54 +386,80 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
     window.addEventListener('pointercancel', finish);
   };
 
-  const beginConnection = (event, node) => {
-    if (event.button !== 0) return;
-    event.stopPropagation();
-    const sourcePort = event.currentTarget;
-    sourcePort.setPointerCapture?.(event.pointerId);
-    const start = { x: node.x + getNodeWidth(node) / 2, y: node.y + getNodeHeight(node) };
-    const getTargetId = (point) => {
-      const target = document.elementFromPoint(point.x, point.y)?.closest('[data-canvas-node]');
-      const targetId = target?.dataset.canvasNode;
-      return targetId && targetId !== node.id ? targetId : null;
-    };
-    const move = (next) => setConnection({ nodeId: node.id, start, end: { x: next.clientX, y: next.clientY }, targetId: getTargetId(next) });
-    const up = (next) => {
-      const targetId = getTargetId(next);
-      if (targetId && targetId !== node.id) {
-        updateDocument((current) => current.edges.some((edge) => edge.from === node.id && edge.to === targetId)
-          ? current
-          : { ...current, edges: [...current.edges, { id: createId('edge'), from: node.id, to: targetId }] });
-      }
-      setConnection(null);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', cancel);
-      sourcePort.releasePointerCapture?.(event.pointerId);
-    };
-    const cancel = () => {
-      setConnection(null);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', cancel);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', cancel);
-  };
-
-  const getConnectionEnd = (activeConnection) => {
-    const targetNode = canvasDocument.nodes.find((node) => node.id === activeConnection.targetId);
-    return targetNode
-      ? { x: targetNode.x + getNodeWidth(targetNode) / 2, y: targetNode.y }
-      : pointToWorld(activeConnection.end);
-  };
-
   const pointToWorld = (point) => {
     const rect = stageRef.current?.getBoundingClientRect();
     return rect
       ? { x: (point.x - rect.left - view.x) / view.scale, y: (point.y - rect.top - view.y) / view.scale }
       : point;
+  };
+
+  const getConnectionTarget = (point, sourceId) => {
+    const targetElement = document.elementFromPoint(point.x, point.y)?.closest('[data-canvas-node]');
+    const targetId = targetElement?.dataset.canvasNode;
+    if (!targetId || targetId === sourceId) return null;
+    const targetNode = canvasDocument.nodes.find((node) => node.id === targetId);
+    if (!targetNode) return null;
+    const worldPoint = pointToWorld(point);
+    return { targetId, targetSide: nearestPortSide(targetNode, worldPoint) };
+  };
+
+  const beginConnection = (event, node, sourceSide) => {
+    if (event.button !== 0 || spaceDown) return;
+    event.stopPropagation();
+    const sourcePort = event.currentTarget;
+    sourcePort.setPointerCapture?.(event.pointerId);
+    const start = getPortPosition(node, sourceSide);
+    const move = (next) => {
+      const target = getConnectionTarget(next, node.id);
+      setConnection({
+        nodeId: node.id,
+        sourceSide,
+        start,
+        end: pointToWorld(next),
+        targetId: target?.targetId ?? null,
+        targetSide: target?.targetSide ?? null,
+      });
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      sourcePort.releasePointerCapture?.(event.pointerId);
+    };
+    const up = (next) => {
+      const target = getConnectionTarget(next, node.id);
+      if (target) {
+        updateDocument((current) => {
+          const targetNode = current.nodes.find((candidate) => candidate.id === target.targetId);
+          const duplicate = targetNode && current.edges.some((edge) => {
+            if (edge.from !== node.id || edge.to !== target.targetId) return false;
+            const sides = resolveConnectionSides(edge, node, targetNode);
+            return sides.fromSide === sourceSide && sides.toSide === target.targetSide;
+          });
+          return duplicate
+            ? current
+            : {
+                ...current,
+                edges: [...current.edges, {
+                  id: createId('edge'),
+                  from: node.id,
+                  to: target.targetId,
+                  fromSide: sourceSide,
+                  toSide: target.targetSide,
+                }],
+              };
+        });
+      }
+      setConnection(null);
+      finish();
+    };
+    const cancel = () => {
+      setConnection(null);
+      finish();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
   };
 
   const getContextPosition = (event) => {
@@ -547,11 +578,18 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
               {canvasDocument.edges.map((edge) => {
                 const from = canvasDocument.nodes.find((node) => node.id === edge.from);
                 const to = canvasDocument.nodes.find((node) => node.id === edge.to);
-                return from && to ? <path key={edge.id} d={connectionPath({ x: from.x + getNodeWidth(from) / 2, y: from.y + getNodeHeight(from) }, { x: to.x + getNodeWidth(to) / 2, y: to.y })} markerEnd="url(#canvas-arrow)" /> : null;
+                if (!from || !to) return null;
+                const sides = resolveConnectionSides(edge, from, to);
+                return <path key={edge.id} d={connectionPath(getPortPosition(from, sides.fromSide), getPortPosition(to, sides.toSide), sides.fromSide, sides.toSide)} markerEnd="url(#canvas-arrow)" />;
               })}
-              {connection ? <path className="is-preview" d={connectionPath(connection.start, getConnectionEnd(connection))} markerEnd="url(#canvas-arrow-preview)" /> : null}
+              {connection ? (() => {
+                const targetNode = canvasDocument.nodes.find((node) => node.id === connection.targetId);
+                const end = targetNode && connection.targetSide
+                  ? getPortPosition(targetNode, connection.targetSide)
+                  : connection.end;
+                return <path className="is-preview" d={connectionPath(connection.start, end, connection.sourceSide, connection.targetSide ?? oppositePortSide(connection.sourceSide))} markerEnd="url(#canvas-arrow-preview)" />;
+              })() : null}
             </svg>
-
             {canvasDocument.nodes.map((node) => {
               const isActive = node.type === 'file' && node.noteId === activeNoteId;
               const color = normalizeCardColor(node.color);
@@ -574,7 +612,6 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
                     if (event.key === 'Enter' && node.type === 'file') onOpenNote?.(node.noteId);
                   }}
                 >
-                  <button type="button" className="canvas-port canvas-port--in" data-canvas-port="in" data-node-id={node.id} onPointerDown={(event) => event.stopPropagation()} aria-label="连接到此卡片" />
                   <div className="canvas-card__handle" aria-hidden="true"><span /><span /><span /></div>
                   <span className="canvas-card__type">{node.type === 'file' ? '笔记卡片' : node.type === 'image' ? '图片卡片' : '文本卡片'}{isActive ? ' · 当前打开' : ''}</span>
                   {node.type === 'text'
@@ -603,7 +640,18 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
                     </div>
                   </footer>
                   <button type="button" className="canvas-resize-handle" onPointerDown={(event) => resizeNode(event, node)} aria-label="调整卡片大小" title="调整卡片大小" />
-                  <button type="button" className="canvas-port canvas-port--out" onPointerDown={(event) => beginConnection(event, node)} aria-label="从此卡片创建连接" />
+                  {PORT_SIDES.map((side) => (
+                    <button
+                      key={side}
+                      type="button"
+                      className={`canvas-port canvas-port--${side}`}
+                      data-port-side={side}
+                      onPointerDown={(event) => beginConnection(event, node, side)}
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label={`从此卡片${PORT_LABELS[side]}创建连接`}
+                      title={`从此卡片${PORT_LABELS[side]}创建连接`}
+                    />
+                  ))}
                 </article>
               );
             })}
@@ -625,7 +673,7 @@ export default function CanvasView({ noteIndex = [], activeNoteId, onOpenNote, o
           ) : null}
           <div className="canvas-stage__status" aria-live="polite">
             <span className={`canvas-stage__status-dot canvas-stage__status-dot--${saveState}`} />
-            <span>{alignmentGuides.length ? '正在对齐…' : connection ? '拖到目标卡片后松开' : saveState === 'loading' ? '正在加载画布' : saveState === 'saving' ? '保存中…' : saveState === 'error' ? '保存失败' : '已保存'}</span>
+            <span>{alignmentGuides.length ? '正在对齐…' : connection ? '拖到目标卡片的任意连接点后松开' : saveState === 'loading' ? '正在加载画布' : saveState === 'saving' ? '保存中…' : saveState === 'error' ? '保存失败' : '已保存'}</span>
             <span aria-hidden="true">·</span>
             <span>{selectedNode ? `已选中 ${selectedNode.type === 'file' ? '笔记' : selectedNode.type === 'image' ? '图片' : '文本'}卡片` : `${canvasDocument.nodes.length} 个对象 · ${canvasDocument.edges.length} 条连接`}</span>
           </div>
@@ -796,8 +844,66 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function connectionPath(from, to) {
-  const direction = to.y >= from.y ? 1 : -1;
-  const bend = Math.max(36, Math.min(180, Math.abs(to.y - from.y) * 0.45 + Math.abs(to.x - from.x) * 0.08));
-  return `M ${from.x} ${from.y} C ${from.x} ${from.y + bend * direction}, ${to.x} ${to.y - bend * direction}, ${to.x} ${to.y}`;
+function getPortPosition(node, side) {
+  const width = getNodeWidth(node);
+  const height = getNodeHeight(node);
+  switch (side) {
+    case 'top':
+      return { x: node.x + width / 2, y: node.y };
+    case 'right':
+      return { x: node.x + width, y: node.y + height / 2 };
+    case 'left':
+      return { x: node.x, y: node.y + height / 2 };
+    case 'bottom':
+    default:
+      return { x: node.x + width / 2, y: node.y + height };
+  }
+}
+
+function getPortVector(side) {
+  switch (side) {
+    case 'top': return { x: 0, y: -1 };
+    case 'right': return { x: 1, y: 0 };
+    case 'left': return { x: -1, y: 0 };
+    case 'bottom':
+    default: return { x: 0, y: 1 };
+  }
+}
+
+function oppositePortSide(side) {
+  return { top: 'bottom', right: 'left', bottom: 'top', left: 'right' }[side] ?? 'top';
+}
+
+function nearestPortSide(node, point) {
+  const width = getNodeWidth(node);
+  const height = getNodeHeight(node);
+  const distances = {
+    top: Math.abs(point.y - node.y),
+    right: Math.abs(point.x - (node.x + width)),
+    bottom: Math.abs(point.y - (node.y + height)),
+    left: Math.abs(point.x - node.x),
+  };
+  return Object.entries(distances).sort(([, left], [, right]) => left - right)[0][0];
+}
+
+function resolveConnectionSides(edge, from, to) {
+  if (edge.fromSide && edge.toSide) return { fromSide: edge.fromSide, toSide: edge.toSide };
+  const fromCenter = { x: from.x + getNodeWidth(from) / 2, y: from.y + getNodeHeight(from) / 2 };
+  const toCenter = { x: to.x + getNodeWidth(to) / 2, y: to.y + getNodeHeight(to) / 2 };
+  const horizontal = Math.abs(toCenter.x - fromCenter.x) > Math.abs(toCenter.y - fromCenter.y);
+  if (horizontal) {
+    const fromSide = toCenter.x >= fromCenter.x ? 'right' : 'left';
+    return { fromSide, toSide: oppositePortSide(fromSide) };
+  }
+  const fromSide = toCenter.y >= fromCenter.y ? 'bottom' : 'top';
+  return { fromSide, toSide: oppositePortSide(fromSide) };
+}
+
+function connectionPath(from, to, fromSide, toSide) {
+  const fromVector = getPortVector(fromSide);
+  const toVector = getPortVector(toSide);
+  const distance = Math.max(44, Math.min(180, Math.hypot(to.x - from.x, to.y - from.y) * 0.42));
+  const controlStart = { x: from.x + fromVector.x * distance, y: from.y + fromVector.y * distance };
+  const controlEnd = { x: to.x + toVector.x * distance, y: to.y + toVector.y * distance };
+  return `M ${from.x} ${from.y} C ${controlStart.x} ${controlStart.y}, ${controlEnd.x} ${controlEnd.y}, ${to.x} ${to.y}`;
 }

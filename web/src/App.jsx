@@ -37,6 +37,7 @@ export default function App() {
     notes,
     notesTotal,
     noteIndex,
+    canvasFiles,
     activeNote,
     graph,
     graphStale,
@@ -59,6 +60,8 @@ export default function App() {
     renameFolder,
     deleteFolder,
     moveNote,
+    moveCanvas,
+    createCanvas,
     togglePin,
     duplicateNote,
     renameNote,
@@ -89,6 +92,27 @@ export default function App() {
     }
   });
   const [shellMode] = useState(() => new URLSearchParams(window.location.search).get('shell') === 'topbar' ? 'topbar' : 'obsidian');
+  const [canvasPath, setCanvasPath] = useState('画板.canvas');
+
+  const handleViewChange = useCallback((nextView) => {
+    setView(nextView);
+    setSidebarOpen(true);
+  }, []);
+
+  const handleOpenCanvas = useCallback((nextPath = '画板.canvas') => {
+    setCanvasPath(nextPath);
+    handleViewChange('canvas');
+  }, [handleViewChange]);
+
+  const handleCreateCanvas = useCallback(async (folderPath = '') => {
+    const createdPath = await createCanvas(folderPath);
+    if (!createdPath) return null;
+    setCanvasPath(createdPath);
+    handleViewChange('canvas');
+    const name = createdPath.split('/').pop()?.replace(/\.canvas$/i, '') ?? createdPath;
+    toast.success(`已创建白板「${name}」`);
+    return createdPath;
+  }, [createCanvas, handleViewChange, toast]);
 
   // ── 多标签页：tabs 记录打开了哪些笔记，vault.activeNote 即当前标签的内容 ──
   const [tabs, setTabs] = useState(() => [{ id: 1, noteId: null }]);
@@ -141,6 +165,17 @@ export default function App() {
 
   /** 新建笔记时默认落进当前正在浏览的目录 */
   const targetFolderId = filter.kind === 'folder' ? filter.folderId : null;
+
+  const handleMoveCanvas = useCallback(async (fromPath, targetFolderPath = '') => {
+    const fileName = fromPath.split('/').pop();
+    const toPath = targetFolderPath ? `${targetFolderPath}/${fileName}` : fileName;
+    if (!fileName || toPath === fromPath) return false;
+    const moved = await moveCanvas(fromPath, toPath);
+    if (!moved) return false;
+    if (canvasPath === fromPath) setCanvasPath(toPath);
+    toast.success('画布文件已移动');
+    return true;
+  }, [canvasPath, moveCanvas, toast]);
 
   // ── 嵌入内容缓存 ────────────────────────────────────────────
   // 键为「笔记 id + updatedAt」：笔记改动后索引里的 updatedAt 会变，
@@ -244,6 +279,36 @@ export default function App() {
       if (closingActive) activateTab(remaining[Math.max(0, index - 1)]);
     },
     [tabs, activeTabId, confirmNavigation, activateTab, lockedTabIds, toast, vault],
+  );
+
+  const handleCloseTabs = useCallback(
+    (tabId, mode) => {
+      const targetIndex = tabs.findIndex((tab) => tab.id === tabId);
+      if (targetIndex === -1) return;
+
+      const shouldClose = (tab, index) => {
+        if (lockedTabIds.includes(tab.id)) return false;
+        if (mode === 'left') return index < targetIndex;
+        if (mode === 'right') return index > targetIndex;
+        if (mode === 'others') return tab.id !== tabId;
+        return false;
+      };
+
+      const remaining = tabs.filter((tab, index) => !shouldClose(tab, index));
+      if (remaining.length === tabs.length) return;
+
+      const closingActive = !remaining.some((tab) => tab.id === activeTabId);
+      if (closingActive && !confirmNavigation()) return;
+
+      setTabs(remaining);
+      setLockedTabIds((current) => current.filter((id) => remaining.some((tab) => tab.id === id)));
+
+      if (closingActive) {
+        const next = remaining.find((tab) => tab.id === tabId) ?? remaining[0];
+        activateTab(next);
+      }
+    },
+    [tabs, activeTabId, confirmNavigation, activateTab, lockedTabIds],
   );
 
   const handleRenameTab = useCallback((tabId) => {
@@ -561,9 +626,10 @@ export default function App() {
       {shellMode === 'obsidian' ? (
         <Ribbon
           view={view}
-          onViewChange={setView}
+          onViewChange={handleViewChange}
           onOpenSwitcher={handleOpenSwitcher}
           onCreateNote={handleCreateNote}
+          onCreateCanvas={handleCreateCanvas}
           onRefresh={handleRefreshAll}
           refreshing={refreshing}
           onTogglePanel={handleTogglePanel}
@@ -576,7 +642,7 @@ export default function App() {
         query={query}
         onQueryChange={setQuery}
         view={view}
-        onViewChange={setView}
+        onViewChange={handleViewChange}
         onCreateNote={handleCreateNote}
         onOpenSwitcher={handleOpenSwitcher}
         onRefresh={handleRefreshAll}
@@ -598,6 +664,9 @@ export default function App() {
         lockedTabIds={lockedTabIds}
         onSelect={handleTabSelect}
         onClose={handleTabClose}
+        onCloseToLeft={(tabId) => handleCloseTabs(tabId, 'left')}
+        onCloseToRight={(tabId) => handleCloseTabs(tabId, 'right')}
+        onCloseOthers={(tabId) => handleCloseTabs(tabId, 'others')}
         onNew={handleTabNew}
         onToggleLock={handleToggleTabLock}
         onTogglePin={togglePin}
@@ -626,6 +695,7 @@ export default function App() {
           <Sidebar
             folders={folders}
             noteIndex={noteIndex}
+            canvasFiles={canvasFiles}
             tags={tags}
             overview={overview}
             filter={filter}
@@ -646,7 +716,9 @@ export default function App() {
             refreshing={refreshing}
             onOpenSettings={() => setSettingsOpen(true)}
             onCollapseSidebar={() => setSidebarOpen(false)}
-            onOpenCanvas={() => setView('canvas')}
+            onOpenCanvas={handleOpenCanvas}
+            onCreateCanvas={handleCreateCanvas}
+            canvasPath={canvasPath}
             favoriteFolderIds={favoriteFolderIds}
             onDuplicateFolder={duplicateFolder}
             onMoveFolder={moveFolder}
@@ -656,6 +728,7 @@ export default function App() {
             onToggleNotePin={handleToggleNotePin}
             onDuplicateNote={handleDuplicateNote}
             onMoveNote={handleMoveNote}
+            onMoveCanvas={handleMoveCanvas}
             onCopyNotePath={handleCopyNotePath}
             onOpenDefault={handleOpenDefault}
             onRevealNote={handleRevealFile}
@@ -708,7 +781,7 @@ export default function App() {
               onRefresh={refreshGraph}
             />
           ) : view === 'canvas' ? (
-            <CanvasView noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateNote} />
+            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateNote} />
           ) : (
             <div className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}>
               <EditorPane
