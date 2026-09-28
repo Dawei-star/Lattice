@@ -71,6 +71,23 @@ export function claimDanglingLinks(title, noteId) {
     .run(noteId, title).changes;
 }
 
+/** 指向某篇笔记的全部链接（含目标标题），供外部改名后重新解析归属。 */
+export function listLinksPointingAt(noteId) {
+  return getDb()
+    .prepare(
+      `SELECT source_note_id AS sourceNoteId, target_title AS targetTitle
+         FROM links
+        WHERE target_note_id = ?`,
+    )
+    .all(noteId);
+}
+
+export function updateLinkTarget({ sourceNoteId, targetTitle, targetNoteId }) {
+  return getDb()
+    .prepare('UPDATE links SET target_note_id = ? WHERE source_note_id = ? AND target_title = ?')
+    .run(targetNoteId, sourceNoteId, targetTitle).changes;
+}
+
 /** 图谱用的边集合（仅含已解析的链接） */
 export function listEdges() {
   return getDb()

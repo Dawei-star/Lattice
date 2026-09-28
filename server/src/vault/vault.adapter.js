@@ -47,6 +47,19 @@ export class VaultAdapter {
     return folders;
   }
 
+  /** 只列 .md 路径，不读内容——供同步引擎做路径集合差量。 */
+  listMarkdownPaths() {
+    return listMarkdownSync(this.rootDir);
+  }
+
+  directoryExists(relativePath) {
+    try {
+      return fsSync.statSync(this.resolveDirectory(relativePath)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   async read(relativePath) {
     const safePath = normalizeVaultRelativePath(relativePath);
     const raw = await fs.readFile(resolveVaultPath(this.rootDir, safePath), 'utf8');
@@ -64,7 +77,10 @@ export class VaultAdapter {
   }
 
   async remove(relativePath) {
-    await fs.rm(resolveVaultPath(this.rootDir, relativePath), { force: true });
+    const target = resolveVaultPath(this.rootDir, relativePath);
+    await fs.rm(target, { force: true });
+    if (!(await existsAsync(target))) return;
+    await fs.unlink(target); // rm 静默失败时的兜底，见 removeSync 的注释
   }
 
   writeSync(note) {
@@ -109,7 +125,12 @@ export class VaultAdapter {
   }
 
   removeSync(relativePath) {
-    fsSync.rmSync(resolveVaultPath(this.rootDir, relativePath), { force: true });
+    const target = resolveVaultPath(this.rootDir, relativePath);
+    fsSync.rmSync(target, { force: true });
+    // 实测某些 Windows 环境（杀软 / 沙箱）rmSync 会静默失败：删除后必须验证，
+    // 不行就换 unlink 再试一次，仍失败才向上抛——静默残留会让投影以为文件还在。
+    if (!fsSync.existsSync(target)) return;
+    fsSync.unlinkSync(target);
   }
 
   movePrefixSync(oldPrefix, newPrefix) {
@@ -151,7 +172,14 @@ export class VaultAdapter {
   }
 
   removeDirectorySync(relativePath) {
-    fsSync.rmSync(this.resolveDirectory(relativePath), { recursive: true, force: true });
+    const target = this.resolveDirectory(relativePath);
+    fsSync.rmSync(target, { recursive: true, force: true });
+    if (!fsSync.existsSync(target)) return;
+    removeTreeFallback(target);
+    if (fsSync.existsSync(target)) {
+      // 删不掉要喊出来（目录被占用 / 权限被夺），静默残留会让上层误以为已删除
+      throw new Error(`目录删除失败：${relativePath}`);
+    }
   }
 
   moveSync(sourcePath, targetPath) {
@@ -225,8 +253,27 @@ function listFilesSync(root, relativeDir = '', result = []) {
   return result;
 }
 
-function uniqueRootTarget(root, name, reservedPaths) {
-  const extension = path.posix.extname(name);
+async function existsAsync(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeTreeFallback(target) {
+  // rmSync 在部分 Windows 环境（杀软 / 沙箱）会静默失败：后序遍历，
+  // 先 unlink 文件再 rmdir 空目录——这两条系统调用走的是不同路径，通常能成功。
+  for (const entry of fsSync.readdirSync(target, { withFileTypes: true })) {
+    const child = path.join(target, entry.name);
+    if (entry.isDirectory()) removeTreeFallback(child);
+    else fsSync.unlinkSync(child);
+  }
+  fsSync.rmdirSync(target);
+}
+
+function uniqueRootTarget(root, name, reservedPaths) {  const extension = path.posix.extname(name);
   const stem = extension ? name.slice(0, -extension.length) : name;
   let candidate = name;
   let counter = 2;

@@ -70,24 +70,24 @@ export function listByFilePathPrefix(prefix) {
     .map((row) => ({ id: row.id, filePath: row.file_path }));
 }
 
-export function insert({ id, title, content, folderId, filePath, wordCount, createdAt, updatedAt }) {
+export function insert({ id, title, content, folderId, filePath, wordCount, contentHash, createdAt, updatedAt }) {
   getDb()
     .prepare(
-      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, content_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
     )
-    .run(id, title, content, folderId, filePath, wordCount, createdAt, updatedAt);
+    .run(id, title, content, folderId, filePath, wordCount, contentHash, createdAt, updatedAt);
   return findById(id);
 }
 
-export function update(id, { title, content, folderId, filePath, isPinned, wordCount, updatedAt }) {
+export function update(id, { title, content, folderId, filePath, isPinned, wordCount, contentHash, updatedAt }) {
   getDb()
     .prepare(
       `UPDATE notes
-          SET title = ?, content = ?, folder_id = ?, file_path = ?, is_pinned = ?, word_count = ?, updated_at = ?
+          SET title = ?, content = ?, folder_id = ?, file_path = ?, is_pinned = ?, word_count = ?, content_hash = ?, updated_at = ?
         WHERE id = ?`,
     )
-    .run(title, content, folderId, filePath, isPinned ? 1 : 0, wordCount, updatedAt, id);
+    .run(title, content, folderId, filePath, isPinned ? 1 : 0, wordCount, contentHash, updatedAt, id);
   return findById(id);
 }
 
@@ -121,10 +121,17 @@ export function list({ folderId, tagId, sort = 'updated', limit, offset }) {
 
   const total = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${where}`).get(...params).total;
 
+  // 摘要只需要正文开头一小段：substr 避免把整篇正文拖进内存再截断
   const rows = db
-    .prepare(`SELECT * FROM notes n ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+    .prepare(
+      `SELECT n.id, n.title, n.folder_id, n.file_path, n.is_pinned, n.word_count, n.created_at, n.updated_at,
+              substr(n.content, 1, 400) AS content_excerpt
+         FROM notes n ${where}
+        ORDER BY ${orderBy}
+        LIMIT ? OFFSET ?`,
+    )
     .all(...params, limit, offset)
-    .map(mapSummary);
+    .map((row) => mapSummary({ ...row, content: row.content_excerpt }));
 
   return { items: rows, total };
 }

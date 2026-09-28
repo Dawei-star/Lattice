@@ -10,6 +10,7 @@ import * as tagsService from '../tags/tags.service.js';
 import * as repository from './notes.repository.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
+import { hashDocument } from '../../vault/markdown.js';
 
 const MAX_TITLE_LENGTH = 200;
 const vault = new VaultAdapter(config.vaultDir);
@@ -130,6 +131,7 @@ export function create({ id, title, content = '', folderId = null }) {
         folderId,
         filePath,
         wordCount: computeWordCount(content),
+        contentHash: hashDocument(draft),
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -206,6 +208,7 @@ export function update(id, patch) {
         filePath: nextFilePath,
         isPinned: nextPinned,
         wordCount: nextNote.wordCount,
+        contentHash: hashDocument({ ...nextNote, filePath: nextFilePath }),
         updatedAt,
       });
       if (contentChanged) {

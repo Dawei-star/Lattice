@@ -1,7 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
+import { createHash } from 'node:crypto';
+
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** 与磁盘字节一一对应的投影指纹：同步引擎用它跳过未变化的文件。 */
+export function hashDocument(note) {
+  return createHash('sha256').update(serializeMarkdownDocument(note)).digest('hex');
+}
+
+export function hashRaw(raw) {
+  return createHash('sha256').update(raw).digest('hex');
+}
 
 export function parseMarkdownDocument(raw, relativePath) {
   const match = raw.match(FRONTMATTER_RE);

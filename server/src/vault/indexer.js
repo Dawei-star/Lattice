@@ -3,9 +3,15 @@ import { getDb, withTransaction } from '../db/index.js';
 import { computeWordCount, extractTags } from '../lib/markdown.js';
 import { nowIso } from '../lib/time.js';
 import { rebuildForNote } from '../modules/links/links.service.js';
-import { syncForNote } from '../modules/tags/tags.service.js';
+import { pruneOrphans as pruneOrphanTags, syncForNote } from '../modules/tags/tags.service.js';
 
-/** Rebuild the relational projection from Markdown files without mutating the files. */
+/**
+ * 全量重建投影（兜底路径）。
+ *
+ * 常规运行使用 sync.js 的增量引擎；本函数保留为「整库推倒重来」的一致性后盾，
+ * 供未来「重建索引」维护动作使用。文件夹按路径复用既有 id，标签不再整体删除
+ * 而是重建后清理孤儿——前端的 folderId / tagId 跨重建保持稳定。
+ */
 export function rebuildProjection(notes, { folderPaths = [] } = {}) {
   return withTransaction(() => {
     const db = getDb();
@@ -28,7 +34,6 @@ export function rebuildProjection(notes, { folderPaths = [] } = {}) {
 
     db.exec('DELETE FROM notes');
     db.exec('DELETE FROM folders');
-    db.exec('DELETE FROM tags');
     db.exec('DELETE FROM notes_fts');
 
     const folderIds = new Map();
@@ -79,6 +84,7 @@ export function rebuildProjection(notes, { folderPaths = [] } = {}) {
 
     for (const note of normalized) syncForNote(note.id, extractTags(note.content));
     for (const note of normalized) rebuildForNote(note.id, note.content);
+    pruneOrphanTags();
 
     return { notes: normalized.length, folders: folderIds.size };
   });

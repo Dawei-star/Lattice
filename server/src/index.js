@@ -8,7 +8,7 @@ import { runMigrations } from './db/migrate.js';
 import { logger } from './lib/logger.js';
 import { resolveVaultDir } from './vault/config.js';
 import { VaultAdapter } from './vault/vault.adapter.js';
-import { rebuildProjection } from './vault/indexer.js';
+import { reconcileVault } from './vault/sync.js';
 import { watchVault } from './vault/watcher.js';
 
 let stopVaultWatcher = null;
@@ -48,9 +48,9 @@ async function syncMarkdownVault() {
   const vaultDir = resolveVaultDir(config.vaultDir);
   const vault = new VaultAdapter(vaultDir);
   try {
-    const notes = await vault.scan();
-    const folders = await vault.scanFolders();
-    const result = rebuildProjection(notes, { folderPaths: folders });
+    // full 模式：逐文件比对 content_hash，未变化的文件零写库。
+    // 首次运行会为存量投影回填哈希，之后的启动只读文件、几乎不写。
+    const result = await reconcileVault(vault, { mode: 'full' });
     logger.info('markdown_vault_indexed', { vaultDir, ...result });
   } catch (error) {
     logger.error('markdown_vault_index_failed', { vaultDir, err: error });
