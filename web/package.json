@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 5173",
-    "test": "node test/theme.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/ai-settings.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/run-integration.mjs"
+    "test": "node test/theme.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/ai-settings.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/run-integration.mjs",
+    "test:e2e": "node test/canvas-navigation.test.mjs && node test/run-smoke.mjs"
   },
   "dependencies": {
     "marked": "^14.1.4",
