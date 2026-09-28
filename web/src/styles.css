@@ -439,6 +439,7 @@ textarea:focus-visible,
 }
 
 .segmented {
+  position: relative;
   display: inline-flex;
   padding: 2px;
   background: var(--bg-subtle);
@@ -446,14 +447,36 @@ textarea:focus-visible,
   border-radius: 999px;
 }
 
+/* 滑动指示块：由 --seg-active（当前选中下标）驱动平滑移动 */
+.segmented::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: calc(2px + var(--seg-active, 0) * ((100% - 4px) / 3));
+  width: calc((100% - 4px) / 3);
+  background: color-mix(in srgb, #ffffff 78%, transparent);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  transition: left var(--dur-base) var(--ease-out);
+}
+
+[data-theme="dark"] .segmented::before {
+  background: var(--bg-active);
+}
+
 .segmented button {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
   height: 26px;
   padding: 0 12px;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-secondary);
+  background: transparent;
   border-radius: 999px;
-  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  transition: color var(--dur-fast) var(--ease-out);
 }
 
 .segmented button:hover {
@@ -462,12 +485,6 @@ textarea:focus-visible,
 
 .segmented button.is-active {
   color: var(--accent);
-  background: color-mix(in srgb, #ffffff 78%, transparent);
-  box-shadow: var(--shadow-sm);
-}
-
-[data-theme="dark"] .segmented button.is-active {
-  background: var(--bg-active);
 }
 
 .segmented--sm button {
@@ -648,6 +665,7 @@ textarea:focus-visible,
 }
 
 .ribbon__button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 32px;
@@ -656,7 +674,22 @@ textarea:focus-visible,
   color: var(--text-tertiary);
   border-radius: var(--radius-sm);
   font-size: 16px;
-  transition: background var(--dur-fast), color var(--dur-fast);
+  transition: background var(--dur-fast), color var(--dur-fast), transform var(--dur-fast) var(--ease-out);
+}
+
+.ribbon__button:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.ribbon__button.is-active::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: -7px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 .ribbon__button:disabled {
@@ -698,6 +731,12 @@ textarea:focus-visible,
   color: var(--text-secondary);
   border-right: 1px solid var(--border);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.tabbar__tab:not(.is-active):hover {
+  color: var(--text);
+  background: var(--bg-hover);
 }
 
 .tabbar__tab.is-locked {
@@ -738,6 +777,24 @@ textarea:focus-visible,
   font-size: 13px;
   color: var(--text-tertiary);
   border-radius: 6px;
+}
+
+/* 关闭按钮平时收起，悬停/选中标签页时平滑展开，减少视觉噪音 */
+.tabbar__close {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: width var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.tabbar__tab:hover .tabbar__close,
+.tabbar__tab:focus-within .tabbar__close,
+.tabbar__tab.is-active .tabbar__close {
+  width: 22px;
+  opacity: 1;
 }
 
 .tabbar__close:hover {
@@ -1898,7 +1955,12 @@ textarea:focus-visible,
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius);
-  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
+}
+
+.notecard__main:active {
+  transform: translateY(0) scale(0.995);
 }
 
 .notecard__main:hover {
@@ -5018,7 +5080,7 @@ body::before, body::after, .app::before { opacity: 0.52; }
 .notecard:hover { transform: none; background: rgba(216, 232, 249, 0.48); box-shadow: none; }
 .notecard.is-active { background: rgba(202, 222, 251, 0.72); border-color: rgba(92, 127, 199, 0.46); box-shadow: inset 3px 0 0 var(--accent); }
 .workspace { background: rgba(250, 253, 255, 0.42); }
-.workspace__editor { grid-template-columns: minmax(0, 1fr) 270px; gap: 0; }
+.workspace__editor { grid-template-columns: minmax(0, 1fr) var(--panel-width, 270px); gap: 0; }
 .editor { border-radius: 0; background: transparent; }
 .editor__toolbar { min-height: 44px; border-radius: 0; border-bottom: 1px solid var(--border); }
 .editor__title { padding: 16px 28px 12px; font-size: 27px; background: rgba(255, 255, 255, 0.34); }
@@ -5195,6 +5257,25 @@ body::before, body::after, .app::before { opacity: 0.52; }
   .canvas-picker__header, .canvas-picker__body { padding-inline: 18px; }
   .canvas-picker__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Canvas interaction refinement */
+.canvas-stage { touch-action: none; }
+.canvas-stage.is-marquee, .canvas-stage.is-marquee .canvas-card { cursor: crosshair; }
+.canvas-stage.is-animating .canvas-world { transition: transform .22s cubic-bezier(.22, .8, .36, 1); }
+.canvas-zoomctl { display: inline-flex; align-items: center; height: 30px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--bg-panel) 72%, transparent); }
+.canvas-zoomctl .canvas-tool { width: 28px; height: 28px; border: 0; border-radius: 0; }
+.canvas-zoomctl .canvas-tool:hover:not(:disabled) { border: 0; }
+.canvas-zoom { min-width: 44px; height: 28px; padding: 0 6px; color: var(--text-secondary); text-align: center; font: 11px var(--font-mono) !important; border-inline: 1px solid var(--border); }
+.canvas-zoom:hover { color: var(--accent); background: var(--accent-soft); }
+.canvas-marquee { position: absolute; z-index: 1; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 3px; pointer-events: none; }
+.canvas-links path { pointer-events: none; }
+.canvas-edge__hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.canvas-edge__line { fill: none; transition: stroke .15s ease, stroke-width .15s ease; }
+.canvas-edge:hover .canvas-edge__line { stroke: color-mix(in srgb, var(--accent) 62%, var(--text-tertiary)); }
+.canvas-edge.is-selected .canvas-edge__line { stroke: var(--accent); stroke-width: 2.6; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 40%, transparent)); }
+.canvas-arrowhead--selected { fill: var(--accent); }
+.canvas-card:active { transform: translateY(-1px) scale(1.012); box-shadow: 0 18px 38px rgba(28, 55, 95, .2); }
+.canvas-card:focus-within { border-color: var(--accent); }
 
 /* Graph workspace refinement */
 .graph { background: var(--bg-panel); border: 1px solid var(--border); }
@@ -5946,16 +6027,29 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   padding: 10px 12px 12px;
   color: var(--text-tertiary);
   font: 11px var(--font-mono);
   border-top: 1px solid var(--border);
 }
 
+.listpane__pagination span {
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .listpane__pagination .btn--icon {
   width: 28px;
   height: 28px;
+  border-radius: 999px;
+}
+
+.listpane__pagination .btn--icon:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 .notelist {
@@ -6229,4 +6323,75 @@ body {
     margin: 18px;
     padding-inline: 28px;
   }
+}
+
+/* ── 可拖动的面板分隔条 ───────────────────────────────────────────────
+   覆盖在面板交界处（compact 主题为零间距布局，定位直接贴着边线）。
+   位置变量：--sidebar-width / --list-width 由 App 内联提供并随拖动实时更新。 */
+.app__body {
+  position: relative;
+}
+
+.pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  z-index: 30;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 6px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+.pane-resizer:hover::after,
+.pane-resizer:focus-visible::after,
+.pane-resizer:active::after {
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pane-resizer--tree {
+  left: var(--sidebar-width);
+  transform: translateX(-50%);
+}
+
+.pane-resizer--list {
+  left: calc(var(--sidebar-width) + var(--list-width));
+  transform: translateX(-50%);
+}
+
+.workspace__editor {
+  position: relative;
+}
+
+.pane-resizer--panel {
+  right: var(--panel-width);
+  transform: translateX(50%);
+}
+
+.editor__body {
+  position: relative;
+}
+
+.pane-resizer--split {
+  left: var(--split-pos, 50%);
+  top: 4px;
+  bottom: 4px;
+  transform: translateX(-50%);
+}
+
+body.is-column-resizing {
+  cursor: col-resize;
+  user-select: none;
 }

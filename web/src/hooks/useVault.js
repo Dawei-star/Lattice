@@ -87,11 +87,16 @@ export function useVault() {
       if (error instanceof ApiError) {
         if (error.isOffline || error.isTimeout) {
           setConnectionDown(true);
-          toast.error(error.message);
+          toast.error(error.message, {
+            dedupeKey: `api-connectivity:${error.code}`,
+          });
           return;
         }
         toast.error(error.message, {
           detail: error.requestId ? `请求编号 ${error.requestId}` : undefined,
+          // Initial load fans out to several endpoints. A shared server failure must
+          // remain one actionable notice rather than covering the workspace in copies.
+          dedupeKey: `api-error:${error.status}:${error.code}`,
         });
         return;
       }
@@ -108,18 +113,26 @@ export function useVault() {
     async ({ silent = false } = {}) => {
       if (!silent) setLoading((current) => ({ ...current, sidebar: true }));
       try {
-        const [folderTree, tagList, stats, index, canvasList] = await Promise.all([
+        const [folderTree, tagList, stats, index] = await Promise.all([
           foldersApi.list(),
           tagsApi.list(),
           metaApi.overview(),
           notesApi.index(),
-          canvasApi.list(),
         ]);
         setFolders(folderTree ?? []);
         setTags(tagList ?? []);
         setOverview(stats ?? null);
         setNoteIndex(index ?? []);
-        setCanvasFiles(ensureDefaultCanvas(canvasList));
+        try {
+          setCanvasFiles(ensureDefaultCanvas(await canvasApi.list()));
+        } catch (error) {
+          // An older bundled backend may not provide this optional list endpoint.
+          // Keep the default canvas usable while the package is updated as one unit.
+          setCanvasFiles(ensureDefaultCanvas([]));
+          if (!(error instanceof ApiError && error.status === 404)) {
+            handleError(error, '加载画布文件列表失败');
+          }
+        }
         setConnectionDown(false);
       } catch (error) {
         handleError(error, '加载侧边栏数据失败');

@@ -86,12 +86,19 @@ async function seedFolderTreeFixture() {
 /**
  * 清掉上一次运行可能残留的样例笔记。
  * 测试中途失败时不会有机会执行收尾清理，因此每次开始前都要先扫一遍。
+ * FIXTURE_TITLE 带时间戳，精确匹配永远扫不到历史残留；改用前缀清扫，
+ * 否则残留的旧样例会让「指向不存在笔记的嵌入」误解析成已存在。
  */
 async function cleanupFixtures() {
   const pause = () => new Promise((resolve) => setTimeout(resolve, 300));
   const response = await fetch(`${BASE_URL}/api/notes/index`);
   const payload = await response.json();
-  const leftovers = (payload?.data ?? []).filter((note) => note.title === FIXTURE_TITLE);
+  const leftovers = (payload?.data ?? []).filter((note) => {
+    const title = typeof note.title === 'string' ? note.title : '';
+    return title === FIXTURE_TITLE
+      || title.startsWith('前端冒烟-嵌入样例-')
+      || title.startsWith('前端冒烟-不存在-');
+  });
 
   for (const note of leftovers) {
     await fetch(`${BASE_URL}/api/notes/${note.id}`, { method: 'DELETE' });

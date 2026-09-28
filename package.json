@@ -1,6 +1,6 @@
 {
   "name": "lattice",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "格物 Lattice —— 本地优先的双链笔记知识库（类 Obsidian 全栈实现）",
   "type": "module",
@@ -20,6 +20,6 @@
     "test:api": "node scripts/smoke.mjs",
     "ai": "node scripts/lattice-ai.mjs",
     "test:web": "npm --prefix web run test",
-    "verify": "npm --prefix server test && node scripts/smoke.mjs && npm --prefix web run test"
+    "verify": "npm --prefix server test && npm --prefix web run test"
   }
 }

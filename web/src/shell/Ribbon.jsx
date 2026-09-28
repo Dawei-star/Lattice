@@ -2,40 +2,40 @@ export default function Ribbon({ view, onViewChange, onOpenSwitcher, onToggleAi,
   return (
     <nav className="ribbon" aria-label="主导航">
       <div className="ribbon__group">
-        <button type="button" className="ribbon__button" onClick={onCreateNote} aria-label="新建笔记">
+        <button type="button" className="ribbon__button" onClick={onCreateNote} aria-label="新建笔记" title="新建笔记">
           <span aria-hidden="true">✎</span>
         </button>
-        <button type="button" className={`ribbon__button ${view === 'notes' ? 'is-active' : ''}`} onClick={() => onViewChange('notes')} aria-label="笔记">
+        <button type="button" className={`ribbon__button ${view === 'notes' ? 'is-active' : ''}`} onClick={() => onViewChange('notes')} aria-label="笔记" title="笔记">
           <span aria-hidden="true">▤</span>
         </button>
-        <button type="button" className={`ribbon__button ${view === 'graph' ? 'is-active' : ''}`} onClick={() => onViewChange('graph')} aria-label="图谱">
+        <button type="button" className={`ribbon__button ${view === 'graph' ? 'is-active' : ''}`} onClick={() => onViewChange('graph')} aria-label="图谱" title="图谱">
           <span aria-hidden="true">⌘</span>
         </button>
-        <button type="button" className={`ribbon__button ${view === 'canvas' ? 'is-active' : ''}`} onClick={() => onViewChange('canvas')} aria-label="画布">
+        <button type="button" className={`ribbon__button ${view === 'canvas' ? 'is-active' : ''}`} onClick={() => onViewChange('canvas')} aria-label="画布" title="画布">
           <span aria-hidden="true">▧</span>
         </button>
-        <button type="button" className="ribbon__button" onClick={() => onCreateCanvas?.()} aria-label="新建白板">
+        <button type="button" className="ribbon__button" onClick={() => onCreateCanvas?.()} aria-label="新建白板" title="新建白板">
           <span aria-hidden="true">▦</span>
         </button>
-        <button type="button" className="ribbon__button" onClick={onOpenSwitcher} aria-label="快速切换">
+        <button type="button" className="ribbon__button" onClick={onOpenSwitcher} aria-label="快速切换" title="快速切换（Ctrl / Cmd + K）">
           <span aria-hidden="true">⌕</span>
         </button>
-        <button type="button" className="ribbon__button" onClick={onToggleAi} aria-label="AI 文件助手">
+        <button type="button" className="ribbon__button" onClick={onToggleAi} aria-label="AI 文件助手" title="AI 文件助手">
           <span aria-hidden="true">✦</span>
         </button>
       </div>
       <div className="ribbon__spacer" />
       <div className="ribbon__group">
-        <button type="button" className="ribbon__button" onClick={onRefresh} disabled={refreshing} aria-label="重新加载">
+        <button type="button" className="ribbon__button" onClick={onRefresh} disabled={refreshing} aria-label="重新加载" title="重新加载">
           <span aria-hidden="true" className={refreshing ? 'is-spinning' : ''}>↻</span>
         </button>
-        <button type="button" className="ribbon__button" onClick={onTogglePanel} aria-label="切换侧栏">
+        <button type="button" className="ribbon__button" onClick={onTogglePanel} aria-label="切换侧栏" title="切换侧栏">
           <span aria-hidden="true">◧</span>
         </button>
-        <button type="button" className="ribbon__button" onClick={onToggleTheme} aria-label={theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}>
+        <button type="button" className="ribbon__button" onClick={onToggleTheme} aria-label={theme === 'dark' ? '切换亮色主题' : '切换暗色主题'} title={theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}>
           <span aria-hidden="true">{theme === 'dark' ? '☼' : '◐'}</span>
         </button>
-        <button type="button" className="ribbon__button" onClick={onOpenSettings} aria-label="设置">
+        <button type="button" className="ribbon__button" onClick={onOpenSettings} aria-label="设置" title="设置（Ctrl / Cmd + ,）">
           <span aria-hidden="true">⚙</span>
         </button>
       </div>

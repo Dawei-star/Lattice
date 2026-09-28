@@ -1,7 +1,7 @@
 {
   "name": "lattice-desktop",
   "productName": "格物 Lattice",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "格物 Lattice —— 本地优先的双链笔记知识库（Windows 桌面版）",
   "author": "Lattice",

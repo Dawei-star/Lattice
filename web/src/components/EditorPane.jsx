@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownPreview from './MarkdownPreview.jsx';
 import { formatDateTime, formatNumber } from '../lib/format.js';
 import ContextMenu from '../ui/ContextMenu.jsx';
+import Resizer from '../ui/Resizer.jsx';
+import { loadLayout, saveLayout } from '../lib/layout.js';
 import { loadSettings, subscribeSettings } from '../settings/settings.js';
 
 const MODES = [
@@ -45,6 +47,16 @@ export default function EditorPane({
   const draftRef = useRef(draft);
   const textareaRef = useRef(null);
   const previewRef = useRef(null);
+  const bodyRef = useRef(null);
+  const [splitRatio, setSplitRatio] = useState(() => loadLayout().split);
+
+  // 分栏边界：dx 按编辑区实际宽度换算成百分比，收敛与持久化交给 layout.js
+  const resizeSplit = (dx) => {
+    const width = bodyRef.current?.clientWidth ?? 0;
+    if (!width) return;
+    setSplitRatio((current) => saveLayout({ ...loadLayout(), split: current + (dx / width) * 100 }).split);
+  };
+  const resetSplit = () => setSplitRatio((current) => saveLayout({ ...loadLayout(), split: 50 }).split);
 
   draftRef.current = draft;
 
@@ -220,7 +232,7 @@ export default function EditorPane({
     >
     <section className="editor" aria-label="笔记编辑区">
       <div className="editor__toolbar">
-        <div className="segmented segmented--sm" role="tablist" aria-label="编辑模式">
+        <div className="segmented segmented--sm" role="tablist" aria-label="编辑模式" style={{ '--seg-active': MODES.findIndex((item) => item.key === mode) }}>
           {MODES.map((item) => (
             <button
               key={item.key}
@@ -298,7 +310,11 @@ export default function EditorPane({
         onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
       />
 
-      <div className={`editor__body mode-${mode}`}>
+      <div
+        ref={bodyRef}
+        className={`editor__body mode-${mode}`}
+        style={mode === 'split' ? { gridTemplateColumns: `minmax(0, ${splitRatio}fr) minmax(0, ${100 - splitRatio}fr)` } : undefined}
+      >
         {mode !== 'preview' ? (
           <textarea
             ref={textareaRef}
@@ -310,6 +326,16 @@ export default function EditorPane({
             onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))}
             onScroll={handleScroll}
             onKeyDown={handleKeyDown}
+          />
+        ) : null}
+
+        {mode === 'split' ? (
+          <Resizer
+            className="pane-resizer--split"
+            label="编辑 / 预览分栏"
+            style={{ '--split-pos': `${splitRatio}%` }}
+            onDrag={resizeSplit}
+            onReset={resetSplit}
           />
         ) : null}
 

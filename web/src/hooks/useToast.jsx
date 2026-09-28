@@ -7,19 +7,26 @@ const AUTO_DISMISS_MS = { success: 2600, info: 3200, error: 6000 };
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const seq = useRef(0);
+  const dedupeKeys = useRef(new Map());
 
   const dismiss = useCallback((id) => {
+    const dedupeKey = dedupeKeys.current.get(id);
+    if (dedupeKey) dedupeKeys.current.delete(id);
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
   const push = useCallback(
     (message, options = {}) => {
       if (!message) return null;
+      if (options.dedupeKey && dedupeKeys.current.has(options.dedupeKey)) {
+        return dedupeKeys.current.get(options.dedupeKey);
+      }
       seq.current += 1;
       const id = seq.current;
       const tone = options.tone ?? 'info';
+      if (options.dedupeKey) dedupeKeys.current.set(options.dedupeKey, id);
 
-      setToasts((current) => [...current, { id, message, tone, detail: options.detail }]);
+      setToasts((current) => [...current, { id, message, tone, detail: options.detail, dedupeKey: options.dedupeKey }]);
 
       const lifetime = options.duration ?? AUTO_DISMISS_MS[tone] ?? 3200;
       if (lifetime > 0) setTimeout(() => dismiss(id), lifetime);

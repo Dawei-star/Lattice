@@ -16,7 +16,9 @@ import TabBar from './shell/TabBar.jsx';
 import StatusBar from './shell/StatusBar.jsx';
 import SettingsModal from './settings/SettingsModal.jsx';
 import Modal from './ui/Modal.jsx';
+import Resizer from './ui/Resizer.jsx';
 import { loadImportedTheme } from './lib/theme.js';
+import { DEFAULT_LAYOUT, loadLayout, saveLayout } from './lib/layout.js';
 import { noteFilePath } from './api/vault-files.js';
 import { applySettings, loadSettings, subscribeSettings } from './settings/settings.js';
 
@@ -85,6 +87,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [layout, setLayout] = useState(() => loadLayout());
   const [refreshing, setRefreshing] = useState(false);
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'light');
   const [settings, setSettings] = useState(() => loadSettings());
@@ -97,6 +100,10 @@ export default function App() {
     }
   });
   const [shellMode] = useState(() => new URLSearchParams(window.location.search).get('shell') === 'topbar' ? 'topbar' : 'obsidian');
+
+  // 面板分隔条：拖动 / 双击复位，宽度收敛与持久化在 layout.js 里完成
+  const resizePane = (key, delta) => setLayout((current) => saveLayout({ ...current, [key]: current[key] + delta }));
+  const resetPane = (key) => setLayout((current) => saveLayout({ ...current, [key]: DEFAULT_LAYOUT[key] }));
   const [canvasPath, setCanvasPath] = useState('画板.canvas');
 
   const handleViewChange = useCallback((nextView) => {
@@ -447,6 +454,15 @@ export default function App() {
     }
   }, [createNote, openInTab, targetFolderId, toast]);
 
+  /** 画布内新建：创建笔记并在画布上落一张卡片，不离开画布视图 */
+  const handleCreateCanvasNote = useCallback(async () => {
+    const created = await createNote({});
+    if (!created) return null;
+    openInTab(created.id);
+    toast.success('已新建笔记并添加到画布');
+    return created;
+  }, [createNote, openInTab, toast]);
+
   const handleRefreshAll = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([refreshSidebar(), refreshNotes(), refreshGraph()]);
@@ -710,7 +726,10 @@ export default function App() {
         </div>
       ) : null}
 
-      <div className={`app__body app__body--${view} ${activeNote ? 'app__body--has-active-note' : ''} ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'} ${view === 'canvas' ? 'app__body--canvas' : ''} ${view === 'graph' ? 'app__body--graph' : ''}`}>
+      <div
+        className={`app__body app__body--${view} ${activeNote ? 'app__body--has-active-note' : ''} ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'} ${view === 'canvas' ? 'app__body--canvas' : ''} ${view === 'graph' ? 'app__body--graph' : ''}`}
+        style={{ '--sidebar-width': `${layout.tree}px`, '--list-width': `${layout.list}px` }}
+      >
         {sidebarOpen ? (
           <Sidebar
             folders={folders}
@@ -804,9 +823,12 @@ export default function App() {
               onRefresh={refreshGraph}
             />
           ) : view === 'canvas' ? (
-            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateNote} />
+            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateCanvasNote} />
           ) : (
-            <div className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}>
+            <div
+              className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}
+              style={panelOpen ? { '--panel-width': `${layout.panel}px` } : undefined}
+            >
               <EditorPane
                 note={activeNote}
                 folders={folders}
@@ -828,16 +850,41 @@ export default function App() {
               />
 
               {panelOpen ? (
-                <LinkPanel
-                  note={activeNote}
-                  folderLookup={folderLookup}
-                  onOpenNote={handleOpenNote}
-                  onCreateWikiLink={handleCreateByTitle}
-                />
+                <>
+                  <Resizer
+                    className="pane-resizer--panel"
+                    label="链接面板宽度"
+                    onDrag={(dx) => resizePane('panel', -dx)}
+                    onReset={() => resetPane('panel')}
+                  />
+                  <LinkPanel
+                    note={activeNote}
+                    folderLookup={folderLookup}
+                    onOpenNote={handleOpenNote}
+                    onCreateWikiLink={handleCreateByTitle}
+                  />
+                </>
               ) : null}
             </div>
           )}
         </main>
+
+        {sidebarOpen ? (
+          <Resizer
+            className="pane-resizer--tree"
+            label="目录树宽度"
+            onDrag={(dx) => resizePane('tree', dx)}
+            onReset={() => resetPane('tree')}
+          />
+        ) : null}
+        {view === 'notes' && sidebarOpen ? (
+          <Resizer
+            className="pane-resizer--list"
+            label="笔记列表宽度"
+            onDrag={(dx) => resizePane('list', dx)}
+            onReset={() => resetPane('list')}
+          />
+        ) : null}
       </div>
 
       {shellMode === 'obsidian' ? (

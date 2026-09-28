@@ -58,7 +58,7 @@ export default function TopBar({
       </div>
 
       <div className="topbar__actions">
-        <div className="segmented" role="tablist" aria-label="视图切换">
+        <div className="segmented" role="tablist" aria-label="视图切换" style={{ '--seg-active': view === 'notes' ? 0 : view === 'graph' ? 1 : 2 }}>
           <button
             type="button"
             role="tab"

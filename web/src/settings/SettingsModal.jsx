@@ -6,7 +6,8 @@ import { loadSettings, saveSettings, subscribeSettings } from './settings.js';
 import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
 import ModelCenter from './ModelCenter.jsx';
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
+const LATTICE_ICON_URL = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHg9IjEwNCIgeT0iMTQ3IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzA0MEE0NiIvPjxyZWN0IHg9IjEwNCIgeT0iMTA0IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzE2MjU4NSIvPjxyZWN0IHg9IjEwMCIgeT0iMTQyIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzFGMkVBMiIvPjxyZWN0IHg9IjEwMCIgeT0iMTAwIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzNCNTBERiIvPjxyZWN0IHg9Ijk2IiB5PSIxMzgiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM0QzY4RUIiLz48cmVjdCB4PSI5NiIgeT0iOTYiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM3Qjk2RkYiLz48cmVjdCB4PSI5MiIgeT0iMTM0IiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjOTBBOUZGIi8+PHJlY3QgeD0iOTIiIHk9IjkyIiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjQzZENkZGIi8+PC9zdmc+';
 const MAX_BACKGROUND_IMAGE_SIZE = 2 * 1024 * 1024;
 const ALLOWED_BACKGROUND_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 const GROUPS = [
@@ -108,7 +109,7 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
 
   return <Modal open={open} onClose={onClose} title="设置" ariaLabel="设置"><div className="settings-workspace">
     <aside className="settings-nav">
-      <div className="settings-nav__brand"><img className="settings-nav__mark" src="/lattice-icon.svg" alt="Lattice" /><div><strong>设置</strong><small>Preferences</small></div></div>
+      <div className="settings-nav__brand"><img className="settings-nav__mark" src={LATTICE_ICON_URL} alt="Lattice" /><div><strong>设置</strong><small>Preferences</small></div></div>
       <label className="settings-search"><span aria-hidden="true">⌕</span><input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索设置..." aria-label="搜索设置" /><kbd>⌘ K</kbd></label>
       <nav aria-label="设置分类">
         {groups.map((group) => <div className="settings-nav__group" key={group.title}>
@@ -217,7 +218,7 @@ function ModelProviderRow({ provider, active, editing, onSelect, onEdit, onChang
 }
 
 function About({ settings, onChange, onCheckUpdate, updateState }) {
-  return <><Section title="关于 Lattice"><div className="settings-about"><img className="settings-about__mark" src="/lattice-icon.svg" alt="Lattice" /><div><h3>Lattice</h3><p>本地优先的双链知识库。</p><span>当前版本 {APP_VERSION} · Windows Desktop</span></div><button type="button" className="btn" onClick={onCheckUpdate} disabled={updateState === 'checking'}>{updateState === 'checking' ? '检查中...' : '检查更新'}</button></div>{updateState === 'current' ? <Notice tone="success">当前版本 {APP_VERSION} 已是最新本地版本。在线更新通道将在发布后启用。</Notice> : null}<Row title="自动保存" description="编辑内容会在短暂空闲后自动保存。"><Toggle checked={settings.autoSave} onChange={(value) => onChange('autoSave', value)} /></Row><Row title="快捷切换" description="允许使用 Ctrl / Cmd + K 打开快速切换器。"><Toggle checked={settings.quickSwitcher} onChange={(value) => onChange('quickSwitcher', value)} /></Row></Section><Section title="账户"><Row title="本地工作区" description="Lattice 不要求登录，数据默认保存在本机。"><span className="settings-value">离线可用</span></Row></Section></>;
+  return <><Section title="关于 Lattice"><div className="settings-about"><img className="settings-about__mark" src={LATTICE_ICON_URL} alt="Lattice" /><div><h3>Lattice</h3><p>本地优先的双链知识库。</p><span>当前版本 {APP_VERSION} · Windows Desktop</span></div><button type="button" className="btn" onClick={onCheckUpdate} disabled={updateState === 'checking'}>{updateState === 'checking' ? '检查中...' : '检查更新'}</button></div>{updateState === 'current' ? <Notice tone="success">当前版本 {APP_VERSION} 已是最新本地版本。在线更新通道将在发布后启用。</Notice> : null}<Row title="自动保存" description="编辑内容会在短暂空闲后自动保存。"><Toggle checked={settings.autoSave} onChange={(value) => onChange('autoSave', value)} /></Row><Row title="快捷切换" description="允许使用 Ctrl / Cmd + K 打开快速切换器。"><Toggle checked={settings.quickSwitcher} onChange={(value) => onChange('quickSwitcher', value)} /></Row></Section><Section title="账户"><Row title="本地工作区" description="Lattice 不要求登录，数据默认保存在本机。"><span className="settings-value">离线可用</span></Row></Section></>;
 }
 
 function Section({ title, children }) { return <section className="settings-section"><h3>{title}</h3><div className="settings-section__body">{children}</div></section>; }

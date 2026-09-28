@@ -20,7 +20,7 @@
   // 中文展示名放 productName，两者分工不能混。
   "name": "lattice",
   "productName": "格物 Lattice",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "格物 Lattice —— 本地优先的双链笔记知识库",
   "company": "Lattice",
   "copyright": "Copyright © 2026 Lattice",

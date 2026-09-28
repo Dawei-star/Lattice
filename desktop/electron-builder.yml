@@ -11,6 +11,9 @@ directories:
 # 代价是启动略慢一点、源码可见 —— 对本地优先的自用工具来说是划算的。
 asar: false
 
+# Verify the exact files copied into each Electron artifact before it is emitted.
+afterPack: ./build/verify-package.cjs
+
 files:
   - package.json
   - src/**/*
