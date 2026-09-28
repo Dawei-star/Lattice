@@ -1,0 +1,130 @@
+/**
+ * 格物 Lattice —— winpack 打包配置
+ * ---------------------------------------------------------------------------
+ * 把「Express 后端 + 已构建前端」封成一个能在 Windows 上双击运行的桌面应用：
+ * Electron 运行壳在主进程里直接 import 后端（Electron 自带 Node，
+ * 且内置 node:sqlite，与项目「零原生依赖」的选型天然对齐），
+ * 后端同时托管 web/dist 作为 SPA，窗口打开的就是它自己的地址。
+ *
+ * 用法（在 tools/packer 目录下）：
+ *   node bin/winpack.mjs build -c <本文件绝对路径>
+ * 或者起可视化界面：node bin/winpack.mjs ui --cwd <本文件所在目录>
+ *
+ * 命令行参数可覆盖这里任何一项，例如只出绿色版：
+ *   node bin/winpack.mjs build -c ... --target portable
+ */
+
+{
+  // ── 应用标识 ──────────────────────────────────────────────────────────────
+  // name 必须是 ASCII：它是 exe 文件名、数据目录名与 appId 的来源。
+  // 中文展示名放 productName，两者分工不能混。
+  "name": "lattice",
+  "productName": "格物 Lattice",
+  "version": "0.1.0",
+  "description": "格物 Lattice —— 本地优先的双链笔记知识库",
+  "company": "Lattice",
+  "copyright": "Copyright © 2026 Lattice",
+
+  // ── 输入与入口 ────────────────────────────────────────────────────────────
+  // input 指仓库根；真正进包的东西由下面的 files 白名单决定。
+  // 之所以用白名单而不是「全量 + 排除」，是因为仓库里躺着 web/node_modules、
+  // desktop/node_modules、.git 这些又大又不该进产物的东西，排起来容易漏。
+  "input": "../..",
+  "files": [
+    "server/src/**",
+    "server/package.json",
+    "web/dist/**",
+    // sourcemap 有 2MB+，运行时用不到，不进包
+    "!web/dist/**/*.map",
+    "packaging/winpack/entry.mjs"
+  ],
+
+  // 入口是 winpack 的适配层，不是 server/src/index.js：
+  // 后者是自启动脚本（无导出、配置非法时直接 exit），不适合被别人 import。
+  "entry": "packaging/winpack/entry.mjs",
+
+  // ── 产出 ──────────────────────────────────────────────────────────────────
+  "output": {
+    // 相对本文件所在目录 → <仓库根>/dist/winpack（已被根 .gitignore 的 dist/ 覆盖）
+    "dir": "../../dist/winpack",
+    "name": "${name}-${version}-${arch}.${ext}"
+  },
+
+  // 图标用仓库里已有的多帧 ICO（desktop/build/make-icon.py 生成），
+  // 不重新编码 —— 已有资产能用就不动它。
+  "icon": "../../desktop/build/icon.ico",
+
+  // ── 运行时依赖 ────────────────────────────────────────────────────────────
+  // electron-builder 不会替你 npm install，只负责把 app/node_modules 里
+  // 已有的包收进产物。dependenciesFrom 指向「包含 node_modules 的目录」，
+  // 打包器会从那里递归解析整棵生产依赖树并扁平落盘 —— 离线、可复现。
+  "dependencies": {
+    "express": "^5.1.0",
+    "zod": "^3.25.76"
+  },
+  "dependenciesFrom": "../../server",
+
+  // ── 运行形态 ──────────────────────────────────────────────────────────────
+  "app": {
+    "mode": "server",
+    "entry": "packaging/winpack/entry.mjs",
+    // 首选端口；被占用时入口会自动退到系统分配的临时端口
+    "preferredPort": 5188,
+    // 就绪探针：/ready 会真的打一次数据库，确认可以对外服务才开窗
+    "readyPath": "/ready",
+    "readyTimeout": 30000
+  },
+
+  // ── 窗口 ──────────────────────────────────────────────────────────────────
+  "window": {
+    "title": "格物 Lattice",
+    "width": 1360,
+    "height": 860,
+    "minWidth": 1024,
+    "minHeight": 640,
+    // 与前端浅色主题的 --bg 一致，避免开窗瞬间的闪白
+    "backgroundColor": "#f4f6f8"
+  },
+
+  // ── 分发目标 ──────────────────────────────────────────────────────────────
+  // dir       ：解包目录，用于本机验证（可直接跑 win-unpacked/lattice.exe）
+  // portable  ：单文件绿色版，拷走即用
+  // nsis      ：安装包（带开始菜单/桌面快捷方式、可卸载）
+  //
+  // 目标各写各的 name，是为了让文件名一眼能懂。同一个平台有多个非 dir 目标时，
+  // 打包器也会自动加 -<type> 后缀兜底，但那样会得到 `-nsis.exe` 这种名字。
+  "targets": [
+    {
+      "type": "dir",
+      "platform": "win32",
+      "arch": ["x64"]
+    },
+    {
+      "type": "portable",
+      "platform": "win32",
+      "arch": ["x64"],
+      "name": "${name}-${version}-${arch}-portable.${ext}"
+    },
+    {
+      "type": "nsis",
+      "platform": "win32",
+      "arch": ["x64"],
+      "name": "${name}-${version}-${arch}-setup.${ext}"
+    }
+  ],
+
+  // ── 引擎 ──────────────────────────────────────────────────────────────────
+  "runtime": {
+    "engine": "electron",
+    // 复用仓库 desktop/ 里已装好的 electron-builder（本机唯一一份，离线可用）
+    "builderModules": "../../desktop/node_modules",
+    // 关掉 asar：应用要读 migrations/*.sql 并做动态 import，普通文件布局最确定
+    "asar": false,
+    // 默认 maximum 对 ~100MB 的包体太慢，normal 已经够用
+    "compression": "normal"
+  },
+
+  "portable": {
+    "requestExecutionLevel": "asInvoker"
+  }
+}
