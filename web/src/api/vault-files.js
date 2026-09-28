@@ -87,5 +87,5 @@ function collectFolders(node, byId) {
 }
 
 function safeFilePart(value) {
-  return String(value || '未命名笔记').replace(/[<>:"/\\|?*\u0000]/g, '_').replace(/[. ]+$/g, '').trim() || '未命名笔记';
+  return String(value || '未命名笔记').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, '').trim() || '未命名笔记';
 }

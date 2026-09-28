@@ -5,6 +5,7 @@ import { nowIso } from '../../lib/time.js';
 import * as repository from './folders.repository.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
+import { sanitizeFilePart } from '../../vault/path.js';
 import * as notesRepository from '../notes/notes.repository.js';
 
 const vault = new VaultAdapter(config.vaultDir);
@@ -121,20 +122,13 @@ export function remove(id) {
 }
 
 function getPath(folder) {
-  const parts = [safeFilePart(folder.name)];
+  const parts = [sanitizeFilePart(folder.name, '未命名目录')];
   const visited = new Set([folder.id]);
   let current = folder.parentId ? repository.findById(folder.parentId) : null;
   while (current && !visited.has(current.id)) {
     visited.add(current.id);
-    parts.unshift(safeFilePart(current.name));
+    parts.unshift(sanitizeFilePart(current.name, '未命名目录'));
     current = current.parentId ? repository.findById(current.parentId) : null;
   }
   return parts.join('/');
-}
-
-function safeFilePart(value) {
-  return String(value || '未命名目录')
-    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_')
-    .replace(/[. ]+$/g, '')
-    .trim() || '未命名目录';
 }

@@ -11,6 +11,7 @@ import * as repository from './notes.repository.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
 import { hashDocument } from '../../vault/markdown.js';
+import { sanitizeFilePart } from '../../vault/path.js';
 
 const MAX_TITLE_LENGTH = 200;
 const vault = new VaultAdapter(config.vaultDir);
@@ -30,20 +31,13 @@ function assertFolderExists(folderId) {
   }
 }
 
-function safeFilePart(value) {
-  return String(value || '未命名笔记')
-    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_')
-    .replace(/[. ]+$/g, '')
-    .trim() || '未命名笔记';
-}
-
 function folderPath(folderId) {
   const parts = [];
   const visited = new Set();
   let current = folderId ? foldersRepository.findById(folderId) : null;
   while (current && !visited.has(current.id)) {
     visited.add(current.id);
-    parts.unshift(safeFilePart(current.name));
+    parts.unshift(sanitizeFilePart(current.name));
     current = current.parentId ? foldersRepository.findById(current.parentId) : null;
   }
   return parts.join('/');
@@ -51,7 +45,7 @@ function folderPath(folderId) {
 
 function derivedNoteFilePath(note) {
   const directory = folderPath(note.folderId);
-  return `${directory ? `${directory}/` : ''}${safeFilePart(note.title)}.md`;
+  return `${directory ? `${directory}/` : ''}${sanitizeFilePart(note.title)}.md`;
 }
 
 function noteFilePath(note) {

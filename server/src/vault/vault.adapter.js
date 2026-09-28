@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { normalizeVaultRelativePath, resolveVaultPath } from './path.js';
+import { normalizeVaultRelativePath, resolveVaultPath, sanitizeFilePart } from './path.js';
 import { parseMarkdownDocument, serializeMarkdownDocument } from './markdown.js';
 
 const INTERNAL_DIR = '.lattice';
@@ -126,11 +126,15 @@ export class VaultAdapter {
 
   removeSync(relativePath) {
     const target = resolveVaultPath(this.rootDir, relativePath);
-    fsSync.rmSync(target, { force: true });
-    // 实测某些 Windows 环境（杀软 / 沙箱）rmSync 会静默失败：删除后必须验证，
-    // 不行就换 unlink 再试一次，仍失败才向上抛——静默残留会让投影以为文件还在。
-    if (!fsSync.existsSync(target)) return;
-    fsSync.unlinkSync(target);
+    // Windows 实测：rmSync({force}) 对 ≥260 字符路径会静默失败，
+    // 个别多字节长路径还会触发 libuv 原生 fast-fail（0xC0000409）使进程崩溃；
+    // unlinkSync 能正确走 \\?\ 长路径前缀，因此首选 unlink，rmSync 仅作占用时兜底。
+    try {
+      fsSync.unlinkSync(target);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      fsSync.rmSync(target, { force: true });
+    }
   }
 
   movePrefixSync(oldPrefix, newPrefix) {
@@ -152,7 +156,7 @@ export class VaultAdapter {
       const source = resolveVaultPath(this.rootDir, relativePath, '');
       const isMarkdown = relativePath.toLowerCase().endsWith('.md');
       const document = isMarkdown ? parseMarkdownDocument(fsSync.readFileSync(source, 'utf8'), relativePath) : null;
-      const targetName = document ? `${safeFileName(document.title)}.md` : path.posix.basename(relativePath);
+      const targetName = document ? `${sanitizeFilePart(document.title)}.md` : path.posix.basename(relativePath);
       const targetPath = uniqueRootTarget(this.rootDir, targetName, moves.map((move) => move.toPath));
       this.moveSync(relativePath, targetPath);
       moves.push({ fromPath: relativePath, toPath: targetPath });
@@ -282,11 +286,4 @@ function uniqueRootTarget(root, name, reservedPaths) {  const extension = path.p
     counter += 1;
   }
   return candidate;
-}
-
-function safeFileName(value) {
-  return String(value || '未命名笔记')
-    .replace(/[<>:"/\\|?*\u0000]/g, '_')
-    .replace(/[. ]+$/g, '')
-    .trim() || '未命名笔记';
 }

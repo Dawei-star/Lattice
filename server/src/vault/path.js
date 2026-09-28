@@ -1,6 +1,18 @@
 import path from 'node:path';
 
 const WINDOWS_RESERVED = /[<>:"|?*\u0000]/;
+const ILLEGAL_FILE_CHARS = /[<>:"/\\|?*\u0000-\u001f\u007f]/g;
+
+/**
+ * Sanitize one path segment (file or folder name) for portable filesystem safety.
+ * Strips every reserved char plus all control characters, and trailing dots/spaces.
+ */
+export function sanitizeFilePart(value, fallback = '未命名笔记') {
+  return String(value || fallback)
+    .replace(ILLEGAL_FILE_CHARS, '_')
+    .replace(/[. ]+$/g, '')
+    .trim() || fallback;
+}
 
 /** Normalize a user-visible note path without allowing filesystem escape. */
 export function normalizeVaultRelativePath(input, extension = '.md') {

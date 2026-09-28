@@ -1,6 +1,7 @@
 /** 笔记仓储层 */
 import { getDb } from '../../db/index.js';
 import { toPlainText } from '../../lib/markdown.js';
+import { sanitizeFilePart } from '../../vault/path.js';
 
 export const SORT_SQL = {
   updated: 'n.is_pinned DESC, n.updated_at DESC',
@@ -146,8 +147,8 @@ export function listBrief() {
       title: row.title,
       folderId: row.folder_id,
       isPinned: row.is_pinned === 1,
-      filePath: row.file_path || `${safeFilePart(row.title)}.md`,
-      wordCount: row.word_count,
+      filePath: row.file_path || `${sanitizeFilePart(row.title)}.md`,
+      wordCount: row.wordCount,
       updatedAt: row.updated_at,
     }));
 }
@@ -162,17 +163,10 @@ export function listIndex() {
       title: row.title,
       folderId: row.folder_id,
       isPinned: row.is_pinned === 1,
-      filePath: row.file_path || `${safeFilePart(row.title)}.md`,
+      filePath: row.file_path || `${sanitizeFilePart(row.title)}.md`,
       wordCount: row.word_count,
       updatedAt: row.updated_at,
     }));
-}
-
-function safeFilePart(value) {
-  return String(value || '未命名笔记')
-    .replace(/[<>:"/\\|?*\u0000]/g, '_')
-    .replace(/[. ]+$/g, '')
-    .trim() || '未命名笔记';
 }
 
 export function statistics() {

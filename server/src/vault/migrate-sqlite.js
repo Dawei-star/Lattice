@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getDb } from '../db/index.js';
 import { VaultAdapter } from './vault.adapter.js';
-import { normalizeVaultRelativePath, resolveVaultPath } from './path.js';
+import { normalizeVaultRelativePath, resolveVaultPath, sanitizeFilePart } from './path.js';
 
 export async function migrateSqliteToVault(vaultDir) {
   const db = getDb();
@@ -20,7 +20,7 @@ export async function migrateSqliteToVault(vaultDir) {
 
   for (const row of notes) {
     const folderPath = getFolderPath(row.folder_id, folderMap);
-    const basePath = row.file_path || normalizeVaultRelativePath(path.posix.join(folderPath, safeFileName(row.title)));
+    const basePath = row.file_path || normalizeVaultRelativePath(path.posix.join(folderPath, sanitizeFilePart(row.title)));
     const filePath = await allocateMigrationPath(db, adapter, basePath, row.id);
     const absolutePath = resolveVaultPath(vaultDir, filePath);
 
@@ -81,15 +81,8 @@ function getFolderPath(folderId, folderMap) {
   let current = folderId ? folderMap.get(folderId) : null;
   while (current && !visited.has(current.id)) {
     visited.add(current.id);
-    parts.unshift(safeFileName(current.name));
+    parts.unshift(sanitizeFilePart(current.name));
     current = current.parent_id ? folderMap.get(current.parent_id) : null;
   }
   return parts.join('/');
-}
-
-export function safeFileName(value) {
-  return String(value || '未命名笔记')
-    .replace(/[<>:"/\\|?*\u0000]/g, '_')
-    .replace(/[. ]+$/g, '')
-    .trim() || '未命名笔记';
 }
