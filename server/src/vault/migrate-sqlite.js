@@ -9,7 +9,7 @@ export async function migrateSqliteToVault(vaultDir) {
   const folders = db.prepare('SELECT id, name, parent_id FROM folders').all();
   const folderMap = new Map(folders.map((folder) => [folder.id, folder]));
   const notes = db.prepare(
-    'SELECT id, title, content, folder_id, is_pinned, created_at, updated_at FROM notes ORDER BY updated_at ASC',
+    'SELECT id, title, content, folder_id, file_path, is_pinned, created_at, updated_at FROM notes ORDER BY updated_at ASC',
   ).all();
   const adapter = new VaultAdapter(vaultDir);
   await adapter.ensure();
@@ -20,17 +20,19 @@ export async function migrateSqliteToVault(vaultDir) {
 
   for (const row of notes) {
     const folderPath = getFolderPath(row.folder_id, folderMap);
-    const filePath = normalizeVaultRelativePath(path.posix.join(folderPath, safeFileName(row.title)));
+    const basePath = row.file_path || normalizeVaultRelativePath(path.posix.join(folderPath, safeFileName(row.title)));
+    const filePath = await allocateMigrationPath(db, adapter, basePath, row.id);
     const absolutePath = resolveVaultPath(vaultDir, filePath);
 
     try {
       const existing = await adapter.read(filePath);
       if (existing.id === row.id) {
         skipped.push({ id: row.id, filePath, reason: 'already-migrated' });
+        db.prepare('UPDATE notes SET file_path = ? WHERE id = ?').run(filePath, row.id);
       } else {
-        conflicts.push({ id: row.id, filePath, reason: 'file-exists' });
+        conflicts.push({ id: row.id, filePath, reason: 'file-renamed-to-avoid-conflict' });
       }
-      continue;
+      if (existing.id === row.id) continue;
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
@@ -45,10 +47,32 @@ export async function migrateSqliteToVault(vaultDir) {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     });
+    db.prepare('UPDATE notes SET file_path = ? WHERE id = ?').run(filePath, row.id);
     migrated.push({ id: row.id, filePath });
   }
 
   return { migrated, skipped, conflicts, total: notes.length, vaultDir };
+}
+
+async function allocateMigrationPath(db, adapter, basePath, noteId) {
+  const extension = '.md';
+  const stem = basePath.endsWith(extension) ? basePath.slice(0, -extension.length) : basePath;
+  let candidate = basePath;
+  let suffix = 2;
+  while (true) {
+    const owner = db.prepare('SELECT id FROM notes WHERE file_path = ?').get(candidate);
+    if (!owner || owner.id === noteId) {
+      if (!adapter.existsSync(candidate)) return candidate;
+      try {
+        const existing = await adapter.read(candidate);
+        if (existing.id === noteId) return candidate;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+    candidate = `${stem} (${suffix})${extension}`;
+    suffix += 1;
+  }
 }
 
 function getFolderPath(folderId, folderMap) {

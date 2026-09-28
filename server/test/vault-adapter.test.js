@@ -12,7 +12,9 @@ test('VaultAdapter scans nested markdown and writes frontmatter atomically', asy
   await fs.writeFile(path.join(root, '工程', '设计.md'), '# 设计\n\n[[实现]]\n', 'utf8');
 
   const notes = await vault.scan();
+  const folders = await vault.scanFolders();
   assert.equal(notes.length, 1);
+  assert.deepEqual(folders, ['工程']);
   assert.equal(notes[0].title, '设计');
   assert.match(await fs.readFile(path.join(root, '工程', '设计.md'), 'utf8'), /^---\n/);
 

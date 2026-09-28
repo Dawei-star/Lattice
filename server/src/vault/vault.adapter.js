@@ -40,6 +40,13 @@ export class VaultAdapter {
     return notes;
   }
 
+  async scanFolders() {
+    await this.ensure();
+    const folders = [];
+    await walkDirectories(this.rootDir, '', folders);
+    return folders;
+  }
+
   async read(relativePath) {
     const safePath = normalizeVaultRelativePath(relativePath);
     const raw = await fs.readFile(resolveVaultPath(this.rootDir, safePath), 'utf8');
@@ -74,6 +81,33 @@ export class VaultAdapter {
     return { ...note, filePath: relativePath, hasFrontmatter: true };
   }
 
+  existsSync(relativePath) {
+    return fsSync.existsSync(resolveVaultPath(this.rootDir, relativePath));
+  }
+
+  readRawSync(relativePath) {
+    const target = resolveVaultPath(this.rootDir, relativePath);
+    try {
+      return fsSync.readFileSync(target, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  writeRawSync(relativePath, content) {
+    const safePath = normalizeVaultRelativePath(relativePath);
+    const target = resolveVaultPath(this.rootDir, safePath);
+    fsSync.mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      fsSync.writeFileSync(temporary, content, 'utf8');
+      fsSync.renameSync(temporary, target);
+    } finally {
+      if (fsSync.existsSync(temporary)) fsSync.rmSync(temporary, { force: true });
+    }
+  }
+
   removeSync(relativePath) {
     fsSync.rmSync(resolveVaultPath(this.rootDir, relativePath), { force: true });
   }
@@ -91,19 +125,18 @@ export class VaultAdapter {
 
   relocatePrefixToRootSync(oldPrefix) {
     const prefix = `${oldPrefix}/`;
-    for (const relativePath of listMarkdownSync(this.rootDir)) {
+    const moves = [];
+    for (const relativePath of listFilesSync(this.rootDir)) {
       if (!relativePath.startsWith(prefix)) continue;
-      const source = resolveVaultPath(this.rootDir, relativePath);
-      const document = parseMarkdownDocument(fsSync.readFileSync(source, 'utf8'), relativePath);
-      let targetName = safeFileName(document.title);
-      let targetPath = `${targetName}.md`;
-      let counter = 2;
-      while (fsSync.existsSync(resolveVaultPath(this.rootDir, targetPath))) {
-        targetPath = `${targetName} (${counter})-${document.id.slice(0, 8)}.md`;
-        counter += 1;
-      }
+      const source = resolveVaultPath(this.rootDir, relativePath, '');
+      const isMarkdown = relativePath.toLowerCase().endsWith('.md');
+      const document = isMarkdown ? parseMarkdownDocument(fsSync.readFileSync(source, 'utf8'), relativePath) : null;
+      const targetName = document ? `${safeFileName(document.title)}.md` : path.posix.basename(relativePath);
+      const targetPath = uniqueRootTarget(this.rootDir, targetName, moves.map((move) => move.toPath));
       this.moveSync(relativePath, targetPath);
+      moves.push({ fromPath: relativePath, toPath: targetPath });
     }
+    return moves;
   }
 
   moveDirectorySync(sourcePath, targetPath) {
@@ -122,8 +155,8 @@ export class VaultAdapter {
   }
 
   moveSync(sourcePath, targetPath) {
-    const source = resolveVaultPath(this.rootDir, sourcePath);
-    const target = resolveVaultPath(this.rootDir, targetPath);
+    const source = resolveVaultPath(this.rootDir, sourcePath, '');
+    const target = resolveVaultPath(this.rootDir, targetPath, '');
     fsSync.mkdirSync(path.dirname(target), { recursive: true });
     fsSync.renameSync(source, target);
   }
@@ -158,6 +191,18 @@ async function walk(root, relativeDir, result) {
   }
 }
 
+async function walkDirectories(root, relativeDir, result) {
+  const absoluteDir = path.join(root, relativeDir);
+  const entries = await fs.readdir(absoluteDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === INTERNAL_DIR || entry.name.startsWith('.')) continue;
+    if (!entry.isDirectory()) continue;
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+    result.push(relativePath);
+    await walkDirectories(root, relativePath, result);
+  }
+}
+
 function listMarkdownSync(root, relativeDir = '', result = []) {
   const absoluteDir = path.join(root, relativeDir);
   for (const entry of fsSync.readdirSync(absoluteDir, { withFileTypes: true })) {
@@ -167,6 +212,29 @@ function listMarkdownSync(root, relativeDir = '', result = []) {
     else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) result.push(relativePath);
   }
   return result;
+}
+
+function listFilesSync(root, relativeDir = '', result = []) {
+  const absoluteDir = path.join(root, relativeDir);
+  for (const entry of fsSync.readdirSync(absoluteDir, { withFileTypes: true })) {
+    if (entry.name === INTERNAL_DIR || entry.name.startsWith('.')) continue;
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) listFilesSync(root, relativePath, result);
+    else if (entry.isFile()) result.push(relativePath);
+  }
+  return result;
+}
+
+function uniqueRootTarget(root, name, reservedPaths) {
+  const extension = path.posix.extname(name);
+  const stem = extension ? name.slice(0, -extension.length) : name;
+  let candidate = name;
+  let counter = 2;
+  while (fsSync.existsSync(resolveVaultPath(root, candidate)) || reservedPaths.includes(candidate)) {
+    candidate = `${stem} (${counter})${extension}`;
+    counter += 1;
+  }
+  return candidate;
 }
 
 function safeFileName(value) {

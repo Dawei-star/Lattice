@@ -16,7 +16,8 @@ export function watchVault(vaultDir, { log = () => {}, delay = 180 } = {}) {
     running = true;
     try {
       const notes = await adapter.scan();
-      rebuildProjection(notes);
+      const folders = await adapter.scanFolders();
+      rebuildProjection(notes, { folderPaths: folders });
       log({ notes: notes.length });
     } catch (error) {
       log({ error });

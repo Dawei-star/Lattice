@@ -15,6 +15,7 @@ function mapNote(row) {
     title: row.title,
     content: row.content,
     folderId: row.folder_id,
+    filePath: row.file_path || null,
     isPinned: row.is_pinned === 1,
     wordCount: row.word_count,
     createdAt: row.created_at,
@@ -32,6 +33,7 @@ function mapSummary(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     excerpt: buildExcerpt(row.content),
+    filePath: row.file_path || null,
   };
 }
 
@@ -52,24 +54,40 @@ export function findByTitle(title) {
     .map(mapNote);
 }
 
-export function insert({ id, title, content, folderId, wordCount, createdAt, updatedAt }) {
+export function findByFilePath(filePath) {
+  return mapNote(getDb().prepare('SELECT * FROM notes WHERE file_path = ?').get(filePath));
+}
+
+export function updateFilePath(id, filePath) {
+  getDb().prepare('UPDATE notes SET file_path = ? WHERE id = ?').run(filePath, id);
+}
+
+export function listByFilePathPrefix(prefix) {
+  const normalizedPrefix = `${prefix.replace(/\/$/, '')}/`;
+  return getDb()
+    .prepare('SELECT id, file_path FROM notes WHERE file_path = ? OR file_path LIKE ?')
+    .all(prefix, `${normalizedPrefix}%`)
+    .map((row) => ({ id: row.id, filePath: row.file_path }));
+}
+
+export function insert({ id, title, content, folderId, filePath, wordCount, createdAt, updatedAt }) {
   getDb()
     .prepare(
-      `INSERT INTO notes (id, title, content, folder_id, is_pinned, word_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
     )
-    .run(id, title, content, folderId, wordCount, createdAt, updatedAt);
+    .run(id, title, content, folderId, filePath, wordCount, createdAt, updatedAt);
   return findById(id);
 }
 
-export function update(id, { title, content, folderId, isPinned, wordCount, updatedAt }) {
+export function update(id, { title, content, folderId, filePath, isPinned, wordCount, updatedAt }) {
   getDb()
     .prepare(
       `UPDATE notes
-          SET title = ?, content = ?, folder_id = ?, is_pinned = ?, word_count = ?, updated_at = ?
+          SET title = ?, content = ?, folder_id = ?, file_path = ?, is_pinned = ?, word_count = ?, updated_at = ?
         WHERE id = ?`,
     )
-    .run(title, content, folderId, isPinned ? 1 : 0, wordCount, updatedAt, id);
+    .run(title, content, folderId, filePath, isPinned ? 1 : 0, wordCount, updatedAt, id);
   return findById(id);
 }
 
@@ -114,14 +132,14 @@ export function list({ folderId, tagId, sort = 'updated', limit, offset }) {
 /** 图谱与统计用的轻量全量投影 */
 export function listBrief() {
   return getDb()
-    .prepare('SELECT id, title, folder_id, is_pinned, word_count, updated_at FROM notes')
+    .prepare('SELECT id, title, folder_id, file_path, is_pinned, word_count, updated_at FROM notes')
     .all()
     .map((row) => ({
       id: row.id,
       title: row.title,
       folderId: row.folder_id,
-      filePath: `${safeFilePart(row.title)}.md`,
       isPinned: row.is_pinned === 1,
+      filePath: row.file_path || `${safeFilePart(row.title)}.md`,
       wordCount: row.word_count,
       updatedAt: row.updated_at,
     }));
@@ -130,14 +148,14 @@ export function listBrief() {
 /** 全量轻量索引：供快速切换器、双链解析与嵌入预览使用，不含正文 */
 export function listIndex() {
   return getDb()
-    .prepare('SELECT id, title, folder_id, is_pinned, word_count, updated_at FROM notes ORDER BY updated_at DESC')
+    .prepare('SELECT id, title, folder_id, file_path, is_pinned, word_count, updated_at FROM notes ORDER BY updated_at DESC')
     .all()
     .map((row) => ({
       id: row.id,
       title: row.title,
       folderId: row.folder_id,
-      filePath: `${safeFilePart(row.title)}.md`,
       isPinned: row.is_pinned === 1,
+      filePath: row.file_path || `${safeFilePart(row.title)}.md`,
       wordCount: row.word_count,
       updatedAt: row.updated_at,
     }));

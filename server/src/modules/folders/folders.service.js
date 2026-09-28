@@ -1,27 +1,19 @@
-/**
- * 文件夹服务层：业务规则与编排。
- * 不依赖 req/res，可以被测试与后台任务直接调用。
- */
 import { randomUUID } from 'node:crypto';
+import { withTransaction } from '../../db/index.js';
 import { ConflictError, NotFoundError } from '../../lib/errors.js';
 import { nowIso } from '../../lib/time.js';
 import * as repository from './folders.repository.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
+import * as notesRepository from '../notes/notes.repository.js';
 
 const vault = new VaultAdapter(config.vaultDir);
 
-/**
- * 返回嵌套目录树，每个节点带上直接归属的笔记数量。
- */
 export function listTree() {
   const folders = repository.findAll();
   const counts = repository.countNotesGrouped();
   const byId = new Map(
-    folders.map((folder) => [
-      folder.id,
-      { ...folder, noteCount: counts.get(folder.id) ?? 0, children: [] },
-    ]),
+    folders.map((folder) => [folder.id, { ...folder, noteCount: counts.get(folder.id) ?? 0, children: [] }]),
   );
 
   const roots = [];
@@ -30,7 +22,6 @@ export function listTree() {
     if (parent) parent.children.push(node);
     else roots.push(node);
   }
-
   return roots;
 }
 
@@ -41,8 +32,7 @@ export function getById(id) {
 }
 
 export function create({ name, parentId = null, sortOrder = 0 }) {
-  if (parentId) getById(parentId); // 父目录必须存在
-
+  if (parentId) getById(parentId);
   if (repository.findByNameAndParent(name, parentId)) {
     throw new ConflictError(`同级下已存在名为「${name}」的目录`);
   }
@@ -63,16 +53,13 @@ export function create({ name, parentId = null, sortOrder = 0 }) {
 export function update(id, patch) {
   const current = getById(id);
   const oldPath = getPath(current);
-
   const name = patch.name ?? current.name;
   const parentId = patch.parentId === undefined ? current.parentId : patch.parentId;
   const sortOrder = patch.sortOrder ?? current.sortOrder;
 
   if (parentId === id) throw new ConflictError('不能把目录移动到它自己下面');
-
   if (parentId) {
     getById(parentId);
-    // 防止把父目录挂到自己的后代下，形成环
     if (repository.findAncestorIds(parentId).includes(id)) {
       throw new ConflictError('不能把目录移动到它自己的子目录下');
     }
@@ -83,26 +70,54 @@ export function update(id, patch) {
     throw new ConflictError(`同级下已存在名为「${name}」的目录`);
   }
 
-  const updated = repository.update(id, { name, parentId, sortOrder, updatedAt: nowIso() });
-  const newPath = getPath(updated);
+  const nextFolder = { ...current, name, parentId, sortOrder };
+  const newPath = getPath(nextFolder);
+  const pathChanges = notesRepository.listByFilePathPrefix(oldPath);
+
   if (oldPath !== newPath) {
     vault.moveDirectorySync(oldPath, newPath);
   }
-  return updated;
+
+  try {
+    const updated = withTransaction(() => {
+      const saved = repository.update(id, { name, parentId, sortOrder, updatedAt: nowIso() });
+      if (oldPath !== newPath) {
+        for (const note of pathChanges) {
+          const suffix = note.filePath.slice(oldPath.length);
+          notesRepository.updateFilePath(note.id, `${newPath}${suffix}`);
+        }
+      }
+      return saved;
+    });
+    return updated;
+  } catch (error) {
+    if (oldPath !== newPath) vault.moveDirectorySync(newPath, oldPath);
+    throw error;
+  }
 }
 
-/**
- * 删除目录。子目录级联删除，其中笔记不被删除，而是回到「未分类」。
- * @returns {{ deletedFolderCount: number, affectedNoteCount: number }}
- */
 export function remove(id) {
   const current = getById(id);
   const oldPath = getPath(current);
-  const affectedNoteCount = repository.countNotes(id);
-  repository.remove(id);
-  vault.relocatePrefixToRootSync(oldPath);
+  const pathChanges = notesRepository.listByFilePathPrefix(oldPath);
+  const moves = vault.relocatePrefixToRootSync(oldPath);
+  const moveBySource = new Map(moves.map((move) => [move.fromPath, move.toPath]));
+
+  try {
+    withTransaction(() => {
+      repository.remove(id);
+      for (const note of pathChanges) {
+        const nextPath = moveBySource.get(note.filePath);
+        if (nextPath) notesRepository.updateFilePath(note.id, nextPath);
+      }
+    });
+  } catch (error) {
+    for (const move of [...moves].reverse()) vault.moveSync(move.toPath, move.fromPath);
+    throw error;
+  }
+
   vault.removeDirectorySync(oldPath);
-  return { deletedFolderCount: 1, affectedNoteCount };
+  return { deletedFolderCount: 1, affectedNoteCount: pathChanges.length };
 }
 
 function getPath(folder) {
@@ -119,7 +134,7 @@ function getPath(folder) {
 
 function safeFilePart(value) {
   return String(value || '未命名目录')
-    .replace(/[<>:"/\\|?*\u0000]/g, '_')
+    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_')
     .replace(/[. ]+$/g, '')
     .trim() || '未命名目录';
 }
