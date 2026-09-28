@@ -1,4 +1,0 @@
-{"ts":"2026-09-28T12:48:06.595Z","level":"info","msg":"database_opened","app":"lattice","file":"D:\\source\\Item\\init\\FCNode\\lattice\\server\\data\\lattice.db"}
-{"ts":"2026-09-28T12:48:06.600Z","level":"info","msg":"migrations_checked","app":"lattice","newlyApplied":0}
-{"ts":"2026-09-28T12:48:06.752Z","level":"info","msg":"markdown_vault_indexed","app":"lattice","vaultDir":"D:\\source\\Item\\init\\FCNode\\lattice\\server\\data\\vault","added":0,"updated":0,"removed":0,"skipped":301,"notes":301,"folders":122}
-{"ts":"2026-09-28T12:48:06.773Z","level":"info","msg":"server_started","app":"lattice","url":"http://127.0.0.1:5188","env":"development","corsOrigins":["http://localhost:5173","http://127.0.0.1:5173"]}

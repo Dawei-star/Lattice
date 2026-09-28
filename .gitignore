@@ -18,6 +18,9 @@ server/data/
 *.db-wal
 *.db-shm
 
+# 开发启动器的服务日志残留
+server/.server-*
+
 .DS_Store
 Thumbs.db
 .idea/
