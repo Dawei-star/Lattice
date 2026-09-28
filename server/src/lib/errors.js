@@ -46,6 +46,13 @@ export class ValidationError extends AppError {
   }
 }
 
+/** 401 —— AI 工作区令牌缺失或无效 */
+export class UnauthorizedError extends AppError {
+  constructor(message = '需要有效的访问令牌', options = {}) {
+    super(message, { status: 401, code: 'UNAUTHORIZED', ...options });
+  }
+}
+
 /** 404 —— 资源不存在 */
 export class NotFoundError extends AppError {
   constructor(message = '资源不存在', options = {}) {

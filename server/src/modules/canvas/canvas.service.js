@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from '../../config/index.js';
-import { ConflictError, NotFoundError } from '../../lib/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
 import { resolveVaultPath } from '../../vault/path.js';
 
 const FILE_PATH = '画板.canvas';
@@ -19,9 +19,13 @@ export function read(filePath = FILE_PATH) {
   if (!fs.existsSync(file)) return { nodes: [], edges: [] };
   try {
     const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!value || typeof value !== 'object' || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
+      throw new ValidationError('Canvas file has an invalid structure');
+    }
     return { nodes: value.nodes ?? [], edges: value.edges ?? [] };
-  } catch {
-    return { nodes: [], edges: [] };
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    throw new ValidationError('Canvas file contains invalid JSON', [{ field: 'path', message: filePath }]);
   }
 }
 

@@ -24,6 +24,8 @@ const schema = z
     CORS_ORIGINS: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
     AUTO_MIGRATE: booleanish.default('true'),
+    AI_ACCESS_TOKEN: z.string().min(16).max(500).optional(),
+    AI_ACCESS_ROLE: z.enum(['viewer', 'editor', 'admin']).default('editor'),
     // 前端构建产物目录覆盖。桌面端打包后前端不在仓库相对位置上，
     // 需要显式指向 resources 下的解包目录；留空则回退到 web/dist 约定路径。
     WEB_DIST_DIR: z.string().min(1).optional(),
@@ -68,6 +70,8 @@ export const config = Object.freeze({
   corsOrigins: Object.freeze(corsOrigins),
   logLevel: env.LOG_LEVEL,
   autoMigrate: env.AUTO_MIGRATE,
+  aiAccessToken: env.AI_ACCESS_TOKEN ?? '',
+  aiAccessRole: env.AI_ACCESS_ROLE,
   /** 前端构建产物目录，存在时由后端一并托管（单进程生产模式） */
   webDistDir: env.WEB_DIST_DIR
     ? path.resolve(env.WEB_DIST_DIR)

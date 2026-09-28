@@ -49,7 +49,8 @@ async function syncMarkdownVault() {
   const vault = new VaultAdapter(vaultDir);
   try {
     const notes = await vault.scan();
-    const result = rebuildProjection(notes);
+    const folders = await vault.scanFolders();
+    const result = rebuildProjection(notes, { folderPaths: folders });
     logger.info('markdown_vault_indexed', { vaultDir, ...result });
   } catch (error) {
     logger.error('markdown_vault_index_failed', { vaultDir, err: error });

@@ -90,7 +90,7 @@ function delay(ms, signal) {
   });
 }
 
-async function attemptOnce(url, { method, body, timeout, signal }) {
+async function attemptOnce(url, { method, body, timeout, signal, headers }) {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     throw new ApiError('', { code: 'OFFLINE', status: 0 });
   }
@@ -106,6 +106,7 @@ async function attemptOnce(url, { method, body, timeout, signal }) {
       headers: {
         Accept: 'application/json',
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...headers,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
@@ -148,7 +149,7 @@ async function attemptOnce(url, { method, body, timeout, signal }) {
 
 /**
  * @param {string} path 以 / 开头的资源路径
- * @param {{ method?: string, body?: unknown, query?: Record<string, unknown>, signal?: AbortSignal, timeout?: number, retries?: number, base?: string }} [options]
+ * @param {{ method?: string, body?: unknown, query?: Record<string, unknown>, headers?: Record<string, string>, signal?: AbortSignal, timeout?: number, retries?: number, base?: string }} [options]
  * @returns {Promise<unknown>} 后端返回的完整响应体
  */
 async function requestRaw(path, options = {}) {
@@ -160,6 +161,7 @@ async function requestRaw(path, options = {}) {
     timeout = DEFAULT_TIMEOUT_MS,
     retries = MAX_RETRIES,
     base = BASE_URL,
+    headers,
   } = options;
 
   const url = new URL(`${base}${path}`, window.location.origin);
@@ -174,7 +176,7 @@ async function requestRaw(path, options = {}) {
   for (;;) {
     attempt += 1;
     try {
-      return await attemptOnce(url, { method, body, timeout, signal });
+      return await attemptOnce(url, { method, body, timeout, signal, headers });
     } catch (error) {
       const retryable = error instanceof ApiError && error.isRetryable;
       if (!retryable || attempt > retries) throw error;
