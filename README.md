@@ -1,6 +1,6 @@
 # 格物 Lattice
 
-一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现。用户选择本地 Vault 文件夹，笔记以 Markdown 文件保存，SQLite 仅作为可重建索引。
+一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现。用户选择本地 Vault 文件夹，笔记以 Markdown 文件保存，SQLite 仅作为可重建索引。默认无需联网；配置外部模型后，只有 AI 对话会按配置发送到对应服务。
 
 所有数据都在你自己的机器上，不需要注册、不需要联网。
 
@@ -12,12 +12,11 @@
 
 | 文档 | 面向 | 内容 |
 | --- | --- | --- |
-| 本文 | 开发者 / 二次开发 | 架构、技术选型、API、数据模型、测试、构建与打包 |
-| [`docs/使用说明书.md`](docs/使用说明书.md) | 最终使用者 | 安装启动、界面导览、日常操作、快捷键、备份迁移、升卸载、故障排查 |
-| `../tools/packer/README.md` | 打包维护者 | winpack 打包器的命令行、配置字段与验收说明（在仓库外，与 `lattice/` 平级） |
+| 本文 | 开发者 / 二次开发 | 架构、技术选型、API、数据模型、测试与开发运行 |
+| [`使用说明书.md`](使用说明书.md) | 发行版使用者 | 安装启动、界面导览、笔记、白板、设置、备份迁移、升级卸载与故障排查 |
 
-三份文档的定位不同：本文假设你愿意读代码，说明书假设你只想把笔记写好，
-打包器文档假设你只关心怎么把产物打出来。
+两份文档的定位不同：本文面向代码维护与二次开发，说明书面向已经安装发行版的日常使用者。
+发行版安装包由发布版本直接提供，本文不重复介绍打包流程。
 
 ---
 
@@ -32,15 +31,22 @@
 | 全文检索 | SQLite FTS5 + trigram 分词，中文可做子串匹配；结果带关键词高亮 |
 | 标签 | 正文写 `#标签` 自动归类，支持 `#工程/前端` 嵌套写法 |
 | 目录树 | 任意层级嵌套、就地重命名、删除后笔记自动回到「未分类」 |
+| 多标签页 | 并行打开多篇笔记，支持锁定、收藏、重命名、移动，以及关闭左侧 / 右侧 / 其他标签 |
+| 本地白板 | 使用 `.canvas` 文件保存文本卡片、笔记卡片、Vault 图片和卡片连接，支持四边连接点、拖拽、缩放与对齐 |
+| Vault 文件浏览 | 侧栏显示 Markdown 与 Canvas 文件，可打开、移动、复制路径并通过右键菜单操作 |
+| AI 文件助手 | 自然语言搜索、整理、创建、编辑、复制、移动和删除；写操作先预览再确认，支持外部 OpenAI-compatible 服务、审计历史和 CLI |
 | 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建 |
 | 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
-| 主题 | 浅色 / 深色双主题，首屏渲染前定主题，无闪烁 |
+| 个性化设置 | 浅色 / 深色主题、背景图片、自定义主题、界面密度、字号、内容宽度与编辑器偏好 |
 
 快捷键：`Ctrl+K` 快速切换 · `Ctrl+N` 新建笔记 · `Ctrl+S` 立即保存 · `Ctrl+E` 切换编辑/预览
 
 ---
 
-## 快速开始
+## 开发快速开始
+
+普通使用者直接运行已发布的 Windows 发行版即可，无需安装 Node.js 或执行下面的开发命令。
+下面内容仅供开发、调试和二次开发使用。
 
 ```bash
 # 1. 安装依赖（后端 + 前端）
@@ -67,125 +73,13 @@ npm start         # 后端同时托管 API 与前端静态资源
 
 访问 <http://127.0.0.1:5177>。这条路径下前端与 API 同源，不涉及任何 CORS。
 
-### 打包成 Windows 桌面应用
+### 发行版说明
 
-项目里有**两条互相独立**的打包链路。它们跑起来的是同一个后端、同一份前端，差别只在
-「谁来当那个壳」；但配置、输出目录、产物文件名都不一样，别把一方的产物当成另一方的：
+发行版已经提供 Windows 安装版与绿色版，普通使用者无需准备 Node.js、数据库或开发环境。
+安装、首次选择 Vault、数据位置、升级和卸载方式请直接阅读 [`使用说明书.md`](使用说明书.md)。
 
-| 链路 | 配置在哪 | 输出目录 | 典型产物 |
-| --- | --- | --- | --- |
-| 项目自带桌面壳 | `desktop/electron-builder.yml` | `desktop/release/` | `Lattice-<版本>-setup.exe`、`Lattice-<版本>-portable.exe` |
-| winpack 通用打包器 | `packaging/winpack/winpack.config.jsonc` | `dist/winpack/` | `lattice-<版本>-x64-setup.exe`、`lattice-<版本>-x64-portable.exe` |
-
-命名里的 `Lattice` 与 `lattice` 不是笔误，两边各有各的来源：路线一的 `Lattice-` 前缀写在
-`electron-builder.yml` 的 `artifactName` 里；路线二的 `lattice` 来自 winpack 的 `name`
-（**必须 ASCII 小写** —— 它同时充当 exe 文件名与数据目录名）。两条链路都把中文展示名
-留给 `productName`，那两个都是「格物 Lattice」。
-
-#### 路线一：`desktop/` 自带桌面壳
-
-`desktop/` 是一个独立的 Electron 包，把后端直接跑在 Electron 主进程里（Electron 44 自带
-Node 24，内置 `node:sqlite` 可用），因此不需要给用户装 Node，也不需要额外打包一份 node.exe。
-窗口加载的是 `http://127.0.0.1:<临时端口>` —— 仍然是「后端托管前端」的单进程形态。
-
-```bash
-cd desktop
-npm install
-npm run start            # 开发态直接起桌面窗口
-npm run dist             # 产出安装包 + 绿色版到 desktop/release/
-```
-
-`npm run dist` 会先把 `web/dist` 重新构建一遍，再交给 electron-builder，因此不必手动 build。
-
-| 脚本 | 作用 |
-| --- | --- |
-| `start` | 开发态直接起桌面窗口（前端产物需已存在于 `web/dist`） |
-| `build:web` | 只重建前端产物到 `web/dist` |
-| `pack` | 只产出未压缩的免打包目录 `release/win-unpacked/`，用于快速验证 |
-| `dist` | 重建前端 + 产出安装包与绿色版 |
-| `dist:installer` / `dist:portable` | 只产出其中一种 |
-
-| 产物 | 说明 |
-| --- | --- |
-| `Lattice-<版本>-setup.exe` | NSIS 安装程序，可选安装目录，带开始菜单与桌面快捷方式 |
-| `Lattice-<版本>-portable.exe` | 免安装绿色版，双击即用 |
-
-路线一的数据存放位置：
-
-- 首次启动会选择一个本地 Vault 文件夹，所有笔记以 `.md` 文件保存在该文件夹中。
-- SQLite 索引位于安装版 `%APPDATA%\Lattice\data\lattice.db`，绿色版位于 exe 同级的 `LatticeData\data\lattice.db`。
-- 复制 Vault 文件夹即可备份和迁移笔记；SQLite 文件属于可重建索引，不是笔记的唯一来源。
-- 运行日志：数据目录下的 `logs/lattice.log`（超过 2MB 自动轮转为 `lattice.log.1`）
-
-桌面端有一个可选环境变量 `LATTICE_LOG_LEVEL`（`debug` / `info` / `warn` / `error`，默认 `info`），
-排查时用它提升日志详细度。它不属于 `server/.env` 的一部分 —— 桌面端全程不需要配置文件，
-所有运行参数都由主进程在启动内嵌后端前注入。
-
-首次启动若 Vault 为空，会保持为空；你可以直接把现有 Markdown 文件放入该文件夹，应用会自动建立索引。
-
-**卸载不会删除笔记**：`deleteAppDataOnUninstall: false` 刻意保留数据目录，避免手滑卸载
-把知识库一起删掉。绿色版直接删目录即可，删之前记得先把 `LatticeData\` 挪走。
-
-> 打包刻意关闭了 asar：后端要保持 ESM 的 `import` 语义，运行时还要读取
-> `migrations/*.sql`，以普通文件分发最确定。
->
-> **国内环境注意**：`desktop/.npmrc` 固定了 Electron 的 npmmirror 镜像。首次安装时
-> Electron 默认从 GitHub 拉二进制，**下载失败却不报错**，只留下一个空的 `dist/` 目录，
-> 直到启动时才发现跑不起来。换机器时不要删掉这个文件。
-
-#### 路线二：winpack 通用打包器
-
-`packaging/winpack/` 里放的不是代码，是一份**声明式打包配置** —— 它驱动仓库外的通用打包器
-（`../tools/packer`，与 `lattice/` 平级，不属于本仓库）。打包器本身不认识 Lattice，
-所有项目相关的信息都由这份配置提供。
-
-打包器和 `lattice/` 平级，都在 `FCNode/` 下：
-
-```bash
-cd ../tools/packer            # 从仓库根出发；打包器在任何目录下都能驱动
-
-# 可视化界面：填表单、看实时日志、直接看验收报告
-node bin/winpack.mjs ui --cwd ../../lattice/packaging/winpack
-
-# 或者纯命令行
-node bin/winpack.mjs build  -c ../../lattice/packaging/winpack/winpack.config.jsonc
-node bin/winpack.mjs verify ../../lattice/dist/winpack/win-unpacked
-```
-
-`packaging/winpack/` 里只有两个文件，各管一头 —— 这个分工是理解这条链路的关键：
-
-| 文件 | 什么时候起作用 | 干什么 |
-| --- | --- | --- |
-| `winpack.config.jsonc` | 构建时（只被打包器读） | 收哪些文件、用什么图标、出哪些分发目标、依赖从哪来 |
-| `entry.mjs` | 运行时（会被烤进包里） | 导出 `start({ port, dataDir })`，运行壳靠它拉起后端 |
-
-**为什么非要一个 `entry.mjs`**：打包器的运行壳只认「入口模块导出 `start()`」这一个契约，
-而 `server/src/index.js` 是**自启动脚本** —— 没有导出，配置非法时直接 `process.exit`，
-没法被别的进程 import。这一层适配做的事和 `desktop/src/backend.js` 完全一样：
-置环境变量 → 打开库 → 跑迁移 → 首次灌示例数据 → 监听 → 等 `/ready` 就绪，只是宿主换了一个。
-
-两条已经在 `entry.mjs` 注释里记下的约束，改动时别绕过去：
-
-- 所有环境变量必须在**动态 import 之前**落地。`server/src/config` 在首次 import 时就读取并
-  冻结 `process.env`，晚一步设置会静默用上默认值。
-- 端口**不能传 0**。zod 校验要求 `PORT ∈ [1, 65535]`，传 0 会让进程在 import 阶段直接
-  fail fast 退出。正确做法是先探一个空闲端口（首选 5188），再把探测结果同时交给
-  `listen()` 和 `PORT` 环境变量。
-
-winpack 产物的数据与日志位置：
-
-| 形态 | 数据目录 |
-| --- | --- |
-| 绿色版（`-portable.exe`） | exe 同级的 `lattice\data\lattice.db`，拷走整个目录即带走全部笔记 |
-| 安装版（`-setup.exe`） | 同样优先放 exe 同级（即安装目录下），不可写时回退 `%APPDATA%\lattice\data\lattice.db` |
-
-日志在数据目录下的 `logs\main.log`，超过 5MB 自动轮转为 `main.log.1`。
-
-> **数据安全提醒**：安装版的数据默认落在**安装目录**下（`portable.preferExecutableDir`
-> 默认为 `true`），而 `deleteAppDataOnUninstall: false` 保护的是 `%APPDATA%` 那一份。
-> 所以卸载前**建议先把 `lattice\` 数据目录挪出来**；若更看重卸载安全，把
-> `portable.preferExecutableDir` 设为 `false`，数据就会统一落到 `%APPDATA%\lattice\`
-> —— 代价是绿色版不再「拷走即带走数据」。两者只能取一个。
+开发者只需要关注源码、测试和开发运行流程；发行版的具体文件名、下载地址与发布说明以对应版本
+的发行包为准。
 
 ### 配置
 
@@ -200,7 +94,19 @@ winpack 产物的数据与日志位置：
 | `CORS_ORIGINS` | `http://localhost:5173,...` | 允许的前端来源，生产环境禁止写 `*` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `AUTO_MIGRATE` | `true` | 启动时自动应用未执行的迁移 |
+| `AI_ACCESS_TOKEN` | 空 | 可选。设置后 `/api/ai` 要求 `Authorization: Bearer <token>` |
+| `AI_ACCESS_ROLE` | `editor` | 令牌认证后的服务端角色：`viewer` / `editor` / `admin` |
 | `WEB_DIST_DIR` | `../web/dist` | 前端产物目录；桌面端打包后指向解包目录 |
+
+AI 面板中的外部模型 Endpoint、Model、API key 和工作区令牌保存在浏览器本地设置中。CLI 使用同一套 API，
+可通过 `LATTICE_AI_ACCESS_TOKEN` 传递工作区令牌；服务端令牌启用后，角色以服务端配置为准。
+
+```bash
+npm run ai -- chat "搜索项目笔记"
+npm run ai -- preview --file plan.json
+npm run ai -- execute --confirm --file plan.json
+npm run ai -- history --limit 40
+```
 
 ---
 
@@ -214,7 +120,7 @@ winpack 产物的数据与日志位置：
 | 图谱渲染 | 原生 Canvas，不用 d3 | 需求只有画点、画线、拖拽、缩放，一个图表库的体积与抽象成本高于收益 |
 | Markdown 消毒 | 自研白名单消毒器 | 正文可能来自剪藏网页，直接 `innerHTML` 是一条真实的 XSS 路径。用 DOMParser 解析后按白名单裁剪，省掉一个依赖 |
 | 实时协作 | 不实现 | 单机单用户场景没有协作需求，用自动保存 + 本地状态足够，不做过度设计 |
-| 认证 | 不实现 | 单机版无需登录。数据表已预留 `user_id` 扩展位，后续升级多用户不必重构表结构 |
+| AI 认证 | 可选 Bearer token | 未配置时保持单机本地模式；配置 `AI_ACCESS_TOKEN` 后由服务端校验令牌并固定角色，避免客户端伪造权限 |
 | 前端路由 | 不用 react-router | 只有「笔记 / 图谱」两个视图，内部状态即可，少一个依赖 |
 
 ---
@@ -234,7 +140,7 @@ lattice/
 │   │   ├── lib/                     错误体系、结构化日志、Markdown 语义解析
 │   │   ├── middleware/              请求 ID、访问日志、CORS、安全头、校验、错误处理
 │   │   ├── modules/                 按功能组织，每个模块四层
-│   │   │   └── notes|folders|links|tags|search|graph|meta|health/
+│   │   │   └── notes|folders|links|tags|search|graph|canvas|vault|meta|health/
 │   │   │       ├── *.routes.js      路由 + zod 边界校验
 │   │   │       ├── *.controller.js  只做请求/响应转换
 │   │   │       ├── *.service.js     业务规则与事务编排
@@ -248,24 +154,23 @@ lattice/
 │       ├── api/                     类型化 HTTP 客户端 + 资源访问层
 │       ├── hooks/                   知识库中心状态、防抖、轻提示
 │       ├── lib/                     Markdown 管线、HTML 消毒、力导向布局、格式化
-│       ├── components/              顶栏 / 侧栏 / 列表 / 编辑区 / 关系面板 / 图谱 / 切换器
+│       ├── components/              顶栏 / 侧栏 / 列表 / 编辑区 / 关系面板 / 图谱 / 白板 / 切换器
 │       └── styles.css               设计令牌 + 双主题
 ├── desktop/                         Windows 桌面壳（Electron 44）
 │   ├── src/main.js                  应用生命周期、窗口、菜单、GPU/渲染崩溃自愈
 │   ├── src/backend.js               在 Electron 主进程内嵌 Express 并托管前端
 │   ├── src/menu.js                  中文应用菜单
-│   ├── electron-builder.yml         安装包 / 绿色版打包配置
+│   ├── electron-builder.yml         Windows 桌面运行配置
 │   ├── .npmrc                       Electron 二进制走 npmmirror 镜像（勿删）
 │   ├── assets/icon.ico              运行时窗口图标（随包分发）
 │   ├── build/make-icon.py           图标生成脚本（产出上面两份 .ico）
 │   ├── build/archive/               历代废弃图标方案（按代分目录）
 │   ├── build/concepts*/             图标设计过程稿（每轮的候选与配色对照）
 │   └── build/                       icon.ico + 各档 PNG + 矢量源 + 尺寸对照图
-├── packaging/winpack/               winpack 打包配置（见「打包成 Windows 桌面应用」）
-│   ├── winpack.config.jsonc         收哪些文件、什么图标、出哪些目标
+├── packaging/winpack/               发布运行配置（仅维护发行版运行环境）
+│   ├── winpack.config.jsonc         运行环境声明
 │   └── entry.mjs                    运行壳入口适配层，导出 start({ port, dataDir })
-├── dist/winpack/                    winpack 产物（gitignored）
-├── docs/使用说明书.md               面向使用者的操作手册
+├── 使用说明书.md                    面向发行版使用者的操作手册
 └── scripts/                         零依赖开发启动器、接口冒烟测试
 ```
 
@@ -288,8 +193,7 @@ lattice/
 Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未必对。
 两份由脚本用 `copyfile` 生成，字节完全一致。
 
-改图标后要重出安装包，新的 exe 图标才会生效 —— 跑 `npm run dist`，
-然后**重新装一次**；旧安装留在系统里的 exe 不会自己变。
+发布版本的窗口、任务栏与安装入口共用这套图标资源；修改图标后应随下一次发行版本一起更新。
 
 三点容易踩：
 
@@ -374,9 +278,17 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | `DELETE` | `/api/notes/:id` | 删除，幂等 |
 | `GET` `POST` `PATCH` `DELETE` | `/api/folders` | 目录树与增删改 |
 | `GET` `DELETE` | `/api/tags` | 标签列表（带引用数）与删除 |
+| `GET` `PUT` `PATCH` | `/api/canvas` | 读取、保存和移动 Vault 中的 `.canvas` 白板文件 |
+| `GET` | `/api/canvas/files` | 列出 Vault 中的白板文件 |
+| `GET` | `/api/vault/assets` | 列出可在白板中引用的图片资源 |
+| `GET` | `/api/vault/asset?path=` | 读取 Vault 中的图片资源 |
 | `GET` | `/api/search?q=` | 全文检索，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
 | `GET` | `/api/graph` | 图谱节点、边、悬空引用与统计 |
 | `GET` | `/api/meta/overview` | 知识库总览统计 |
+| `POST` | `/api/ai/chat` | 本地规则助手或 OpenAI-compatible 外部模型对话，返回建议、引用和结构化操作 |
+| `POST` | `/api/ai/operations/preview` | 预览文件操作、存在性和风险；写操作标记为需要确认 |
+| `POST` | `/api/ai/operations/execute` | 在角色权限和显式确认通过后执行 `read/create/update/delete/move/copy` |
+| `GET` | `/api/ai/history` | 查看 AI/CLI 文件操作审计历史 |
 
 ---
 
@@ -402,9 +314,9 @@ notes ──┬─< note_tags >── tags
 ## 测试
 
 ```bash
-npm test            # 后端单元测试（Markdown 语义解析，25 项）
+npm test            # 后端单元测试（Markdown 与 AI 操作边界，36 项）
 npm run test:api    # 接口冒烟测试，需后端已启动（68 项）
-npm run test:web    # 前端渲染冒烟测试，需后端已启动（32 项）
+npm run test:web    # 前端渲染冒烟测试，需后端已启动（49 项）
 npm run verify      # 依次执行以上全部
 ```
 
@@ -424,14 +336,12 @@ npm run verify      # 依次执行以上全部
 
 当前实现刻意划定了边界，以下是明确未做的部分：
 
-- **无附件上传**：图片目前只能引用外部 URL，尚未接入文件存储
+- **笔记正文暂无附件上传**：白板可以引用 Vault 中已有图片，但不会把图片复制进笔记正文或白板文件
 - **无版本历史**：每次保存覆盖，没有快照与回滚
 - **无实时协作**：单机单用户，未引入 WebSocket / CRDT
 - **图谱规模**：力导向是 O(n²)，数百到数千节点流畅；上万节点需要换 Barnes-Hut 近似
 - **`node:sqlite` 的稳定性**：它仍被 Node 标记为实验特性（虽已可直接使用）。若追求绝对稳定，
   可换 `better-sqlite3`，接口几乎一一对应，迁移成本很低
-- **未做代码签名**：exe 没有签名证书，首次运行时 Windows SmartScreen 会拦一下
-  （「未知发布者」）。内网 / 自用分发可接受，要公开发布就得买证书
 - **移动端**：窄屏已做响应式降级，但还不是 PWA
 
-下一步建议按此顺序推进：附件上传 → 导出静态站点 → 笔记版本历史 → PWA。
+下一步建议按此顺序推进：笔记附件上传 → 导出静态站点 → 笔记版本历史 → PWA。

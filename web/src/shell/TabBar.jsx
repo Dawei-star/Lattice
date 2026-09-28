@@ -85,7 +85,6 @@ export default function TabBar({
               aria-selected={active}
               aria-label={locked ? `${title}（已锁定）` : title}
               tabIndex={active ? 0 : -1}
-              title={locked ? `${title}（已锁定）` : title}
               onClick={() => onSelect(tab.id)}
               onMouseDown={(event) => {
                 if (event.button === 1) {

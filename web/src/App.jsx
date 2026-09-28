@@ -3,6 +3,7 @@ import { notesApi } from './api/resources.js';
 import EditorPane from './components/EditorPane.jsx';
 import GraphView from './components/GraphView.jsx';
 import CanvasView from './components/CanvasView.jsx';
+import AIAssistantPanel from './components/AIAssistantPanel.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
 import NoteListPane from './components/NoteListPane.jsx';
 import QuickSwitcher from './components/QuickSwitcher.jsx';
@@ -36,6 +37,8 @@ export default function App() {
     overview,
     notes,
     notesTotal,
+    page,
+    pageCount,
     noteIndex,
     canvasFiles,
     activeNote,
@@ -49,6 +52,7 @@ export default function App() {
     connectionDown,
     setQuery,
     setSort,
+    setPage,
     selectFolder,
     selectTag,
     clearFilter,
@@ -77,6 +81,7 @@ export default function App() {
 
   const [view, setView] = useState('notes');
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -226,7 +231,14 @@ export default function App() {
     [tabs, activeTabId, activeNote?.id, confirmNavigation, openNote, activateTab],
   );
 
-  const handleOpenNote = openInTab;
+  const handleOpenNote = useCallback(
+    async (id) => {
+      const opened = await openInTab(id);
+      if (opened) setView('notes');
+      return opened;
+    },
+    [openInTab],
+  );
 
   const handleTabSelect = useCallback(
     (tabId) => {
@@ -455,6 +467,12 @@ export default function App() {
         return;
       }
 
+      if (meta && key === 'j') {
+        event.preventDefault();
+        setAiOpen((value) => !value);
+        return;
+      }
+
       if (meta && key === 'o') {
         event.preventDefault();
         setSwitcherOpen(true);
@@ -508,6 +526,7 @@ export default function App() {
 
   const handleOpenSwitcher = useCallback(() => setSwitcherOpen(true), []);
   const handleCloseSwitcher = useCallback(() => setSwitcherOpen(false), []);
+  const handleToggleAi = useCallback(() => setAiOpen((value) => !value), []);
   const handleTogglePanel = useCallback(() => setPanelOpen((value) => !value), []);
 
   const copyText = useCallback(async (value, label) => {
@@ -628,6 +647,7 @@ export default function App() {
           view={view}
           onViewChange={handleViewChange}
           onOpenSwitcher={handleOpenSwitcher}
+          onToggleAi={handleToggleAi}
           onCreateNote={handleCreateNote}
           onCreateCanvas={handleCreateCanvas}
           onRefresh={handleRefreshAll}
@@ -750,6 +770,8 @@ export default function App() {
         {view === 'notes' ? <NoteListPane
           notes={notes}
           notesTotal={notesTotal}
+          page={page}
+          pageCount={pageCount}
           search={search}
           filter={filter}
           sort={sort}
@@ -761,6 +783,7 @@ export default function App() {
           activeNoteId={activeNote?.id ?? null}
           loading={loading.notes}
           onSortChange={setSort}
+          onPageChange={setPage}
           onOpenNote={handleOpenNote}
           onTogglePin={togglePin}
           onDeleteNote={handleDeleteNote}
@@ -836,6 +859,16 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         theme={theme}
         onThemeChange={setTheme}
+      />
+      <AIAssistantPanel
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        onOpenSettings={() => { setAiOpen(false); setSettingsOpen(true); }}
+        noteIndex={noteIndex}
+        folders={folders}
+        activeNote={activeNote}
+        onOpenNote={handleOpenNote}
+        onOperationComplete={handleRefreshAll}
       />
       <RenameDialog
         open={Boolean(renameDialog)}

@@ -62,6 +62,25 @@ export function noteFilePath(note, folders) {
   return `${directory ? `${directory}/` : ''}${safeFilePart(note.title)}.md`;
 }
 
+export function uniqueNoteFilePath(note, folders, existingNotes = []) {
+  const base = noteFilePath(note, folders);
+  const extension = '.md';
+  const stem = base.slice(0, -extension.length);
+  const occupied = new Set(
+    existingNotes
+      .filter((candidate) => candidate?.id !== note?.id)
+      .map((candidate) => candidate?.filePath)
+      .filter(Boolean),
+  );
+  let candidate = base;
+  let suffix = 2;
+  while (occupied.has(candidate)) {
+    candidate = `${stem} (${suffix})${extension}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function collectFolders(node, byId) {
   byId.set(node.id, node);
   for (const child of node.children ?? []) collectFolders(child, byId);

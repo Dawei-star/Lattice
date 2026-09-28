@@ -18,6 +18,7 @@
     "start": "npm --prefix server run start",
     "test": "npm --prefix server test",
     "test:api": "node scripts/smoke.mjs",
+    "ai": "node scripts/lattice-ai.mjs",
     "test:web": "npm --prefix web run test",
     "verify": "npm --prefix server test && node scripts/smoke.mjs && npm --prefix web run test"
   }

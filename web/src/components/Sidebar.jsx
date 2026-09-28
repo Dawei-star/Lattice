@@ -78,7 +78,7 @@ export default function Sidebar({
   return (
     <aside className="sidebar" aria-label="知识库导航">
       <div className="sidebar__toolbar" role="toolbar" aria-label="文件列表操作">
-        <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记" title="新建笔记">
+        <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记">
           <span aria-hidden="true">✎</span>
         </button>
         <button
@@ -86,18 +86,17 @@ export default function Sidebar({
           className={`sidebar__toolbtn ${creating ? 'is-active' : ''}`}
           onClick={() => setCreating((value) => !value)}
           aria-label="新建目录"
-          title="新建目录"
         >
           <span aria-hidden="true">＋</span>
         </button>
-        <button type="button" className="sidebar__toolbtn" onClick={cycleSort} aria-label="切换排序" title={`排序：${SORT_LABELS[sort] ?? sort}（点击切换）`}>
+        <button type="button" className="sidebar__toolbtn" onClick={cycleSort} aria-label="切换排序">
           <span aria-hidden="true">⇅</span>
         </button>
-        <button type="button" className="sidebar__toolbtn" onClick={onRefresh} disabled={refreshing} aria-label="刷新" title="刷新">
+        <button type="button" className="sidebar__toolbtn" onClick={onRefresh} disabled={refreshing} aria-label="刷新">
           <span aria-hidden="true">↻</span>
         </button>
         <span className="sidebar__toolbar-space" aria-hidden="true" />
-        <button type="button" className="sidebar__toolbtn" onClick={onCollapseSidebar} aria-label="收起侧边栏" title="收起侧边栏（Ctrl / Cmd + B）">
+        <button type="button" className="sidebar__toolbtn" onClick={onCollapseSidebar} aria-label="收起侧边栏">
           <span aria-hidden="true">⟨</span>
         </button>
       </div>

@@ -74,6 +74,7 @@ function cleanElement(element) {
 
   if (!ALLOWED_TAGS.has(tag)) {
     // 未知但无害的标签：去掉标签本身，保留内部文本
+    for (const child of [...element.children]) cleanElement(child);
     element.replaceWith(...element.childNodes);
     return;
   }

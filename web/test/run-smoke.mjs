@@ -214,6 +214,56 @@ async function main() {
   );
   check('至少渲染一篇笔记卡片', container.querySelectorAll('.notecard').length > 0);
 
+  section('AI 文件助手');
+  const aiButton = container.querySelector('.ribbon__button[aria-label="AI 文件助手"]');
+  check('AI 文件助手入口存在', Boolean(aiButton));
+  aiButton?.click();
+  await waitFor(() => container.querySelector('.ai-assistant'), { label: 'AI 面板打开' });
+  check('AI 面板提供自然语言输入', Boolean(container.querySelector('textarea[aria-label="输入 AI 文件操作"]')));
+  const aiSettingsButton = container.querySelector('button[aria-label="AI 连接设置"]');
+  aiSettingsButton?.click();
+  await waitFor(() => container.querySelector('.ai-assistant__settings'), { label: 'AI 设置展开' });
+  check('AI 设置提供访问令牌配置', container.querySelector('.ai-assistant__settings')?.textContent.includes('工作区访问令牌'));
+  container.querySelector('button[aria-label="关闭连接设置"]')?.click();
+  await waitFor(() => !container.querySelector('.ai-assistant__settings'), { label: 'AI 设置关闭' });
+  const organizeQuickAction = [...container.querySelectorAll('.ai-assistant__quick-actions button')]
+    .find((button) => button.textContent.includes('整理建议'));
+  check('AI 提供整理快捷操作', Boolean(organizeQuickAction));
+  organizeQuickAction?.click();
+  const aiResponse = await waitFor(
+    () => [...container.querySelectorAll('.ai-message__suggestions')].find((node) => node.textContent.includes('按文件类型分组'))
+      ?? container.querySelector('.ai-assistant__error'),
+    { label: 'AI 本地助手响应' },
+  );
+  check('AI 本地助手返回整理建议', aiResponse?.classList.contains('ai-message__suggestions'), container.querySelector('.ai-assistant__error')?.textContent ?? '');
+  container.querySelector('.ai-assistant__header-actions button[aria-label="关闭 AI 文件助手"]')?.click();
+  await waitFor(() => !container.querySelector('.ai-assistant'), { label: 'AI 面板关闭' });
+
+  section('设置中的模型管理');
+  container.querySelector('button[aria-label="设置"]')?.click();
+  await waitFor(() => container.querySelector('.settings-workspace'), { label: '设置面板打开' });
+  const modelSettingsButton = [...container.querySelectorAll('.settings-nav__item')]
+    .find((button) => button.textContent.includes('模型'));
+  check('设置侧栏包含模型栏目', Boolean(modelSettingsButton));
+  modelSettingsButton?.click();
+  await waitFor(() => container.querySelector('.model-center'), { label: '模型管理页面打开' });
+  check('模型管理提供添加模型入口', Boolean(container.querySelector('.model-center__intro .btn')));
+  check('模型管理不再展示内置模型分组', !container.querySelector('.model-center__group-title'));
+  check('模型管理列出可编辑的自定义模型', container.querySelectorAll('.model-center__row').length >= 1);
+  const addModelButton = container.querySelector('.model-center__intro .btn');
+  addModelButton?.click();
+  await waitFor(() => container.querySelector('.model-center__chooser'), { label: '模型服务商选择打开' });
+  check('模型管理提供服务商选择', container.querySelectorAll('.model-center__provider').length >= 10);
+  container.querySelector('.model-center__provider--wide')?.click();
+  await waitFor(() => container.querySelector('.model-center__form'), { label: '自定义模型表单打开' });
+  check('模型管理提供 API 接口字段', Boolean(container.querySelector('.model-center__form input[placeholder*="api.openai.com"]')));
+  container.querySelector('.model-center__back')?.click();
+  await waitFor(() => container.querySelector('.model-center__chooser'), { label: '返回服务商选择' });
+  container.querySelector('.model-center__close')?.click();
+  await waitFor(() => !container.querySelector('.model-center__chooser'), { label: '模型添加弹窗关闭' });
+  container.querySelector('.settings-content__head button[aria-label="关闭设置"]')?.click();
+  await waitFor(() => !container.querySelector('.settings-workspace'), { label: '设置面板关闭' });
+
   section('目录右键菜单');
   const folderTrigger = folderButtons
     .find((button) => button.textContent.includes('工程笔记'));

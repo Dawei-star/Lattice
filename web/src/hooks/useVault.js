@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../api/client.js';
 import { canvasApi } from '../api/canvas.js';
 import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
-import { noteFilePath, vaultFiles } from '../api/vault-files.js';
+import { noteFilePath, uniqueNoteFilePath, vaultFiles } from '../api/vault-files.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
 
@@ -64,6 +64,7 @@ export function useVault() {
   const [sort, setSort] = useState('updated');
   const [notes, setNotes] = useState([]);
   const [notesTotal, setNotesTotal] = useState(0);
+  const [page, setPage] = useState(0);
 
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
@@ -77,6 +78,7 @@ export function useVault() {
 
   /** 编辑器未保存内容的重载保护：切换笔记前由编辑区注册拦截器 */
   const navigationGuard = useRef(null);
+  const openRequest = useRef(0);
 
   const handleError = useCallback(
     (error, fallbackMessage) => {
@@ -131,7 +133,7 @@ export function useVault() {
   const refreshNotes = useCallback(async () => {
     setLoading((current) => ({ ...current, notes: true }));
     try {
-      const params = { sort, limit: PAGE_SIZE, offset: 0 };
+      const params = { sort, limit: PAGE_SIZE, offset: page * PAGE_SIZE };
       if (filter.kind === 'folder') params.folderId = filter.folderId ?? UNFILED;
       if (filter.kind === 'tag') params.tagId = filter.tagId;
 
@@ -144,7 +146,16 @@ export function useVault() {
     } finally {
       setLoading((current) => ({ ...current, notes: false }));
     }
-  }, [filter, sort, handleError]);
+  }, [filter, page, sort, handleError]);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(0, Math.ceil(notesTotal / PAGE_SIZE) - 1)));
+  }, [notesTotal]);
+
+  const setSortOrder = useCallback((nextSort) => {
+    setSort(nextSort);
+    setPage(0);
+  }, []);
 
   const refreshGraph = useCallback(async () => {
     setLoading((current) => ({ ...current, graph: true }));
@@ -228,6 +239,7 @@ export function useVault() {
 
   const openNote = useCallback(
     async (id) => {
+      const requestId = ++openRequest.current;
       if (!id) {
         setActiveNote(null);
         return null;
@@ -239,11 +251,13 @@ export function useVault() {
           const content = await vaultFiles.readMarkdown(note.filePath);
           if (content !== null) note.content = content;
         }
+        if (requestId !== openRequest.current) return null;
         setActiveNote(note);
         setConnectionDown(false);
         return note;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) {
+          if (requestId !== openRequest.current) return null;
           setActiveNote(null);
           toast.info('这篇笔记已经不存在了，列表已刷新');
           refreshNotes();
@@ -253,7 +267,7 @@ export function useVault() {
         }
         return null;
       } finally {
-        setLoading((current) => ({ ...current, note: false }));
+        if (requestId === openRequest.current) setLoading((current) => ({ ...current, note: false }));
       }
     },
     [handleError, refreshNotes, refreshSidebar, toast],
@@ -283,7 +297,7 @@ export function useVault() {
             createdAt: timestamp,
             updatedAt: timestamp,
           };
-          const filePath = noteFilePath(note, folders);
+          const filePath = uniqueNoteFilePath(note, folders, noteIndex);
           const written = await vaultFiles.writeMarkdown(filePath, { ...note, filePath });
           if (!written) throw new Error('无法创建 Markdown 文件');
           for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -312,7 +326,7 @@ export function useVault() {
         return null;
       }
     },
-    [folders, handleError, refreshNotes, refreshSidebar],
+    [folders, handleError, noteIndex, refreshNotes, refreshSidebar],
   );
 
   /**
@@ -328,7 +342,10 @@ export function useVault() {
           ...patch,
           updatedAt: new Date().toISOString(),
         };
-        const nextPath = noteFilePath(saved, folders);
+        const pathChanged = saved.title !== current.title || saved.folderId !== current.folderId;
+        const nextPath = pathChanged
+          ? uniqueNoteFilePath(saved, folders, noteIndex)
+          : current.filePath ?? noteFilePath(saved, folders);
         const written = nextPath === current.filePath
           ? await vaultFiles.writeMarkdown(current.filePath, saved)
           : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved);
@@ -352,7 +369,7 @@ export function useVault() {
         throw error;
       }
     },
-    [activeNote, folders, handleError, refreshNotes, refreshSidebar],
+    [activeNote, folders, handleError, noteIndex, refreshNotes, refreshSidebar],
   );
 
   const deleteNote = useCallback(
@@ -601,16 +618,19 @@ export function useVault() {
 
   const selectFolder = useCallback((folderId) => {
     setFilter({ kind: 'folder', folderId });
+    setPage(0);
     setQuery('');
   }, []);
 
   const selectTag = useCallback((tagId) => {
     setFilter({ kind: 'tag', tagId });
+    setPage(0);
     setQuery('');
   }, []);
 
   const clearFilter = useCallback(() => {
     setFilter(DEFAULT_FILTER);
+    setPage(0);
   }, []);
 
   return {
@@ -620,6 +640,8 @@ export function useVault() {
     overview,
     notes,
     notesTotal,
+    page,
+    pageCount: Math.max(1, Math.ceil(notesTotal / PAGE_SIZE)),
     noteIndex,
     canvasFiles,
     activeNote,
@@ -634,7 +656,8 @@ export function useVault() {
 
     // 状态设置
     setQuery,
-    setSort,
+    setSort: setSortOrder,
+    setPage,
     selectFolder,
     selectTag,
     clearFilter,

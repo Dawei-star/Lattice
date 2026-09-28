@@ -16,6 +16,8 @@ export const SORT_LABELS = {
 export default function NoteListPane({
   notes,
   notesTotal,
+  page,
+  pageCount,
   search,
   filter,
   sort,
@@ -27,6 +29,7 @@ export default function NoteListPane({
   activeNoteId,
   loading,
   onSortChange,
+  onPageChange,
   onOpenNote,
   onTogglePin,
   onDeleteNote,
@@ -131,6 +134,13 @@ export default function NoteListPane({
           </ul>
         )}
       </div>
+      {!isSearching && pageCount > 1 ? (
+        <nav className="listpane__pagination" aria-label="Note pagination">
+          <button type="button" className="btn btn--icon" onClick={() => onPageChange?.(page - 1)} disabled={page <= 0} aria-label="Previous page" title="Previous page">{'<'}</button>
+          <span>{page + 1} / {pageCount}</span>
+          <button type="button" className="btn btn--icon" onClick={() => onPageChange?.(page + 1)} disabled={page >= pageCount - 1} aria-label="Next page" title="Next page">{'>'}</button>
+        </nav>
+      ) : null}
     </section>
   );
 }

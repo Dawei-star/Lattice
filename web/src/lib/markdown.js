@@ -20,6 +20,7 @@ const BLOCK_EMBED = /^[ \t]*!\[\[([^[\]|#]+?)(?:#([^[\]|]+?))?(?:\|[^[\]]+?)?\]\
 
 const BLOCK_TOKEN = /@@LATTICE_BLOCK_(\d+)@@/g;
 const INLINE_TOKEN = /@@LATTICE_TOKEN_(\d+)@@/g;
+const CODE_SPAN = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/g;
 
 function escapeHtml(value) {
   return String(value)
@@ -49,7 +50,7 @@ export function renderMarkdown(source, options = {}) {
   };
 
   // ── 第一步：把独占一行的嵌入替换成块级占位 ──────────────────────
-  const draft = text
+  const draft = replaceOutsideCode(text, (segment) => segment
     .split('\n')
     .map((line) => {
       const match = line.match(BLOCK_EMBED);
@@ -57,10 +58,10 @@ export function renderMarkdown(source, options = {}) {
       blockTokens.push(match[1].trim());
       return `@@LATTICE_BLOCK_${blockTokens.length - 1}@@`;
     })
-    .join('\n');
+    .join('\n'));
 
   // ── 第二步：把行内双链 / 行内嵌入替换成行内占位 ────────────────
-  const tokenized = draft.replace(WIKI_LINK, (match, bang, target, heading, alias) => {
+  const tokenized = replaceOutsideCode(draft, (segment) => segment.replace(WIKI_LINK, (match, bang, target, heading, alias) => {
     const title = target.trim();
     if (!title) return match;
 
@@ -77,7 +78,7 @@ export function renderMarkdown(source, options = {}) {
     return pushInline(
       `<a class="wiki-link${resolved ? '' : ' is-dangling'}" href="#" data-wiki-title="${escapeHtml(title)}"${headingAttr} title="${escapeHtml(hint)}">${escapeHtml(alias?.trim() || title)}</a>`,
     );
-  });
+  }));
 
   const parsed = marked.parse(tokenized, { async: false });
   let html = typeof parsed === 'string' ? parsed : '';
@@ -97,6 +98,17 @@ export function renderMarkdown(source, options = {}) {
   html = html.replace(INLINE_TOKEN, (match, index) => inlineTokens[Number(index)] ?? '');
 
   return sanitizeHtml(html);
+}
+
+function replaceOutsideCode(source, replace) {
+  let result = '';
+  let cursor = 0;
+  for (const match of source.matchAll(CODE_SPAN)) {
+    result += replace(source.slice(cursor, match.index));
+    result += match[0];
+    cursor = match.index + match[0].length;
+  }
+  return result + replace(source.slice(cursor));
 }
 
 function renderBlockEmbed(title, resolveTitle) {
