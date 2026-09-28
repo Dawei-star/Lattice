@@ -4,7 +4,6 @@ import Modal from '../ui/Modal.jsx';
 import { canvasApi } from '../api/canvas.js';
 import { vaultAssetsApi, vaultFiles } from '../api/vault-files.js';
 
-const STORAGE_KEY = 'lattice-canvas-document-v1';
 const EMPTY_DOCUMENT = { nodes: [], edges: [] };
 const NODE_WIDTH = 248;
 const NODE_HEIGHT = 140;
@@ -27,7 +26,7 @@ const CARD_COLOR_OPTIONS = [
 ];
 
 export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [], activeNoteId, onOpenNote, onCreateNote }) {
-  const [canvasDocument, setCanvasDocument] = useState(() => loadDocument());
+  const [canvasDocument, setCanvasDocument] = useState(EMPTY_DOCUMENT);
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [selected, setSelected] = useState([]);
   const [selectedEdge, setSelectedEdge] = useState(null);
@@ -47,6 +46,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const loadedFromVault = useRef(false);
   const hasLocalChanges = useRef(false);
   const hasAutoFitted = useRef(false);
+  const userTouchedView = useRef(false);
   const saveRevision = useRef(0);
   const saveQueue = useRef(Promise.resolve());
   const saveTimer = useRef(0);
@@ -79,10 +79,11 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     loadedFromVault.current = false;
     hasLocalChanges.current = false;
     hasAutoFitted.current = false;
+    userTouchedView.current = false;
     saveRevision.current += 1;
     historyRef.current = { undo: [], redo: [] };
     setHistoryDepth({ undo: 0, redo: 0 });
-    setCanvasDocument(loadDocument());
+    setCanvasDocument(EMPTY_DOCUMENT);
     setSelected([]);
     setSelectedEdge(null);
     setConnection(null);
@@ -214,6 +215,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     if (!stage) return undefined;
     const handleWheel = (event) => {
       event.preventDefault();
+      userTouchedView.current = true;
       const unit = event.deltaMode === 1 ? 16 : 1;
       if (event.ctrlKey || event.metaKey) {
         const rect = stage.getBoundingClientRect();
@@ -506,6 +508,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
 
   const handlePointerMove = (event) => {
     if (!panRef.current) return;
+    userTouchedView.current = true;
     const start = panRef.current;
     const nextView = {
       ...start.view,
@@ -855,7 +858,11 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage || !canvasDocument.nodes.length || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(() => fitView(docRef.current.nodes));
+    const observer = new ResizeObserver(() => {
+      // 用户已手动缩放/平移过视图时，容器 resize 不得覆盖其视图
+      if (userTouchedView.current) return;
+      fitView(docRef.current.nodes);
+    });
     observer.observe(stage);
     return () => observer.disconnect();
   }, [canvasDocument.nodes.length]);
@@ -1213,14 +1220,6 @@ function CanvasResourcePicker({ kind, notes, images, query, loading, error, onQu
       </div>
     </Modal>
   );
-}
-
-function loadDocument() {
-  try {
-    return normalizeDocument(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null'));
-  } catch {
-    return EMPTY_DOCUMENT;
-  }
 }
 
 function normalizeDocument(value) {

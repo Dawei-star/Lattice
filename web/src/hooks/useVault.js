@@ -243,7 +243,7 @@ export function useVault() {
     navigationGuard.current = guard;
   }, []);
 
-  /** 返回 true 表示切换被拦下（有未保存内容且用户选择留下） */
+  /** 返回 true 允许切换；返回 false 表示被拦下（守卫返回 false，通常因未保存内容） */
   const confirmNavigation = useCallback(() => {
     const guard = navigationGuard.current;
     if (typeof guard !== 'function') return true;
