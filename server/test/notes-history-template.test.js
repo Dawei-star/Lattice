@@ -1,0 +1,155 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lattice-notes-p1-'));
+const vaultDir = path.join(root, 'vault');
+process.env.NODE_ENV = 'test';
+process.env.DB_FILE = path.join(root, 'lattice.db');
+process.env.VAULT_DIR = vaultDir;
+
+const [{ createApp }, { openDatabase, closeDatabase }, { runMigrations }, { VaultAdapter }, { applyVaultChange }] = await Promise.all([
+  import('../src/app.js'),
+  import('../src/db/index.js'),
+  import('../src/db/migrate.js'),
+  import('../src/vault/vault.adapter.js'),
+  import('../src/vault/sync.js'),
+]);
+
+openDatabase();
+runMigrations();
+
+const server = createApp().listen(0, '127.0.0.1');
+await new Promise((resolve) => server.once('listening', resolve));
+const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+async function request(method, pathname, body) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { response, payload: await response.json() };
+}
+
+test.after(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  // applyVaultChange schedules debounced semantic indexing; let it drain before
+  // closing the temporary database used by this integration test.
+  await new Promise((resolve) => setTimeout(resolve, 2_100));
+  closeDatabase();
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test('note history snapshots preserve raw markdown and protect restores from stale writes', async () => {
+  const created = await request('POST', '/api/notes', { title: 'History', content: '# First\n\nraw  *markdown*' });
+  assert.equal(created.response.status, 201);
+  const noteId = created.payload.data.id;
+
+  const updated = await request('PATCH', `/api/notes/${noteId}`, { content: '# Second\n\nchanged' });
+  assert.equal(updated.response.status, 200);
+
+  const history = await request('GET', `/api/notes/${noteId}/history`);
+  assert.equal(history.response.status, 200);
+  assert.equal(history.payload.data.items.length, 1);
+  assert.equal(history.payload.data.items[0].size > 0, true);
+
+  const version = history.payload.data.items[0].version;
+  const snapshot = await request('GET', `/api/notes/${noteId}/history/${version}`);
+  assert.equal(snapshot.response.status, 200);
+  assert.equal(snapshot.payload.data.content, '# First\n\nraw  *markdown*');
+
+  const adapter = new VaultAdapter(vaultDir);
+  await adapter.write({
+    ...updated.payload.data,
+    content: '# External change',
+  });
+  await applyVaultChange(adapter, updated.payload.data.filePath);
+  const externalHistory = await request('GET', `/api/notes/${noteId}/history`);
+  assert.equal(externalHistory.payload.data.items.length, 2);
+
+  const staleHash = externalHistory.payload.data.currentHash;
+  await request('PATCH', `/api/notes/${noteId}`, { content: '# Third' });
+  const staleRestore = await request('POST', `/api/notes/${noteId}/history/${version}/restore`, {
+    expectedCurrentHash: staleHash,
+  });
+  assert.equal(staleRestore.response.status, 409);
+
+  const latestHistory = await request('GET', `/api/notes/${noteId}/history`);
+  const restored = await request('POST', `/api/notes/${noteId}/history/${version}/restore`, {
+    expectedCurrentHash: latestHistory.payload.data.currentHash,
+  });
+  assert.equal(restored.response.status, 200);
+  assert.equal(restored.payload.data.content, '# First\n\nraw  *markdown*');
+
+  const afterRestore = await request('GET', `/api/notes/${noteId}/history`);
+  assert.equal(afterRestore.payload.data.items.length, 4);
+});
+
+test('templates and daily notes are isolated from the note projection and daily creation is idempotent', async () => {
+  await fs.mkdir(path.join(vaultDir, '_templates'), { recursive: true });
+  await fs.writeFile(
+    path.join(vaultDir, '_templates', 'meeting.md'),
+    '---\nstatus: planned\npriority: 2\n---\n# {{title}}\n\nDate: {{date}}\n\nTime: {{time}}',
+    'utf8',
+  );
+
+  const templates = await request('GET', '/api/notes/templates');
+  assert.equal(templates.response.status, 200);
+  assert.deepEqual(templates.payload.data.map((item) => item.name), ['meeting']);
+
+  const generated = await request('POST', '/api/notes/from-template', {
+    template: 'meeting',
+    title: 'Planning',
+    date: '2026-09-29',
+  });
+  assert.equal(generated.response.status, 201);
+  assert.match(generated.payload.data.content, /Planning/);
+  assert.match(generated.payload.data.content, /2026-09-29/);
+  assert.deepEqual(generated.payload.data.properties, { priority: 2, status: 'planned' });
+  assert.equal(generated.payload.data.filePath, 'Planning.md');
+
+  const firstDaily = await request('POST', '/api/notes/daily', { date: '2026-09-29' });
+  const secondDaily = await request('POST', '/api/notes/daily', { date: '2026-09-29' });
+  assert.equal(firstDaily.response.status, 201);
+  assert.equal(secondDaily.response.status, 201);
+  assert.equal(firstDaily.payload.data.id, secondDaily.payload.data.id);
+  assert.equal(firstDaily.payload.data.filePath, 'Daily/2026-09-29.md');
+  assert.equal(secondDaily.payload.data.filePath, 'Daily/2026-09-29.md');
+
+  const noteIndex = await request('GET', '/api/notes/index');
+  assert.equal(noteIndex.payload.data.some((note) => note.filePath.startsWith('_templates/')), false);
+});
+
+test('note properties are stored in frontmatter, exposed by detail and restored with history', async () => {
+  const created = await request('POST', '/api/notes', {
+    title: 'Properties',
+    content: 'body',
+    properties: { status: 'draft', priority: 1, tags: ['ai', 'notes'] },
+  });
+  assert.equal(created.response.status, 201);
+  assert.deepEqual(created.payload.data.properties, { priority: 1, status: 'draft', tags: ['ai', 'notes'] });
+
+  const updated = await request('PATCH', `/api/notes/${created.payload.data.id}`, {
+    properties: { status: 'published', owner: 'team' },
+  });
+  assert.equal(updated.response.status, 200);
+  assert.deepEqual(updated.payload.data.properties, { owner: 'team', status: 'published' });
+
+  const raw = await fs.readFile(path.join(vaultDir, updated.payload.data.filePath), 'utf8');
+  assert.match(raw, /^owner: team$/m);
+  assert.match(raw, /^status: published$/m);
+
+  const history = await request('GET', `/api/notes/${created.payload.data.id}/history`);
+  const version = await request('GET', `/api/notes/${created.payload.data.id}/history/${history.payload.data.items[0].version}`);
+  assert.deepEqual(version.payload.data.properties, { priority: 1, status: 'draft', tags: ['ai', 'notes'] });
+});
+
+test('history route rejects malformed version identifiers before touching the filesystem', async () => {
+  const created = await request('POST', '/api/notes', { title: 'Validation', content: 'body' });
+  const result = await request('GET', `/api/notes/${created.payload.data.id}/history/not-a-version`);
+  assert.equal(result.response.status, 422);
+  assert.equal(result.payload.error.code, 'VALIDATION_ERROR');
+});
