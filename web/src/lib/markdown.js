@@ -38,6 +38,7 @@ function escapeHtml(value) {
  */
 export function renderMarkdown(source, options = {}) {
   const resolveTitle = options.resolveTitle ?? (() => null);
+  const resolveAsset = options.resolveAsset ?? (() => null);
   const text = source ?? '';
 
   /** @type {string[]} */
@@ -82,6 +83,7 @@ export function renderMarkdown(source, options = {}) {
 
   const parsed = marked.parse(tokenized, { async: false });
   let html = typeof parsed === 'string' ? parsed : '';
+  html = rewriteAssetUrls(html, resolveAsset);
 
   // ── 第三步：回填块级嵌入 ──────────────────────────────────────
   // 块级嵌入被 marked 包进了 <p>，需要连同 <p> 一起去掉，否则 div 嵌在 p 里是非法结构
@@ -98,6 +100,18 @@ export function renderMarkdown(source, options = {}) {
   html = html.replace(INLINE_TOKEN, (match, index) => inlineTokens[Number(index)] ?? '');
 
   return sanitizeHtml(html);
+}
+
+function rewriteAssetUrls(html, resolveAsset) {
+  return html.replace(/(<img\b[^>]*\bsrc=")([^"]+)("[^>]*>)/gi, (match, prefix, source, suffix) => {
+    if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(source)) return match;
+    try {
+      const resolved = resolveAsset(source);
+      return resolved ? `${prefix}${escapeHtml(resolved)}${suffix}` : match;
+    } catch {
+      return match;
+    }
+  });
 }
 
 function replaceOutsideCode(source, replace) {
@@ -181,4 +195,38 @@ export function highlightText(text, query) {
   }
 
   return result + escapeHtml(source.slice(cursor));
+}
+
+/**
+ * Extract headings for the editor outline without treating fenced code as
+ * document structure. `start` is a source offset, so editors can jump without
+ * reparsing the document or keeping a second document model.
+ */
+export function parseOutline(source) {
+  const headings = [];
+  let offset = 0;
+  let insideFence = false;
+
+  for (const line of String(source ?? '').split('\n')) {
+    const fence = line.match(/^\s{0,3}(```+|~~~+)/);
+    if (fence) {
+      insideFence = !insideFence;
+    } else if (!insideFence) {
+      const match = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*$/);
+      if (match) {
+        const text = match[2].replace(/\s+#+\s*$/, '').trim();
+        if (text) {
+          headings.push({
+            level: match[1].length,
+            text,
+            start: offset,
+            index: headings.length,
+          });
+        }
+      }
+    }
+    offset += line.length + 1;
+  }
+
+  return headings;
 }

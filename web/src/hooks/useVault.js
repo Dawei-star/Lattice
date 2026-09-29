@@ -6,7 +6,7 @@
  * 不直接调用 API 层，也不自己拼查询参数。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError } from '../api/client.js';
+import { ApiError, BASE_URL } from '../api/client.js';
 import { canvasApi } from '../api/canvas.js';
 import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
 import { noteFilePath, uniqueNoteFilePath, vaultFiles } from '../api/vault-files.js';
@@ -51,6 +51,14 @@ function nextCanvasPath(files, folderPath = '') {
   return candidate;
 }
 
+function normalizeNoteFilePath(value) {
+  return String(value ?? '')
+    .trim()
+    .replaceAll('\\', '/')
+    .replace(/^\.\//, '')
+    .toLowerCase();
+}
+
 export function useVault() {
   const toast = useToast();
 
@@ -79,6 +87,11 @@ export function useVault() {
   /** 编辑器未保存内容的重载保护：切换笔记前由编辑区注册拦截器 */
   const navigationGuard = useRef(null);
   const openRequest = useRef(0);
+  const activeNoteRef = useRef(activeNote);
+
+  useEffect(() => {
+    activeNoteRef.current = activeNote;
+  }, [activeNote]);
 
   const handleError = useCallback(
     (error, fallbackMessage) => {
@@ -287,6 +300,34 @@ export function useVault() {
   );
 
   /** 按标题打开；标题不存在时返回 null，由调用方决定是否创建 */
+  const findNoteByFilePath = useCallback(
+    async (filePath) => {
+      const expectedPath = normalizeNoteFilePath(filePath);
+      if (!expectedPath) return null;
+
+      let lastError = null;
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        try {
+          const index = await notesApi.index();
+          setNoteIndex(index ?? []);
+          const match = (index ?? []).find((entry) => normalizeNoteFilePath(entry.filePath) === expectedPath);
+          if (match) {
+            void refreshSidebar({ silent: true });
+            return match;
+          }
+        } catch (error) {
+          lastError = error;
+          break;
+        }
+        if (attempt < 11) await new Promise((resolve) => setTimeout(resolve, 180));
+      }
+
+      if (lastError) handleError(lastError, '打开外部 Markdown 文件失败');
+      return null;
+    },
+    [handleError, refreshSidebar],
+  );
+
   const openByTitle = useCallback(
     async (title) => {
       const hit = resolveTitle(title);
@@ -489,6 +530,59 @@ export function useVault() {
     [handleError, refreshSidebar, toast],
   );
 
+  // 外部编辑器、同步软件和文件管理器都会直接改变 Vault。watcher 完成
+  // 投影后通过 SSE 通知这里，避免界面继续展示已经不存在的旧投影。
+  useEffect(() => {
+    const EventSourceCtor = window.EventSource ?? globalThis.EventSource;
+    if (typeof EventSourceCtor !== 'function') return undefined;
+
+    const eventsUrl = new URL(`${BASE_URL}/vault/events`, window.location.origin);
+    const source = new EventSourceCtor(eventsUrl.toString());
+    let refreshTimer = null;
+    let refreshInFlight = false;
+
+    const refreshFromVault = () => {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(async () => {
+        if (refreshInFlight) return;
+        refreshInFlight = true;
+        try {
+          await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        } finally {
+          refreshInFlight = false;
+        }
+      }, 80);
+    };
+
+    source.onopen = refreshFromVault;
+    source.onmessage = (message) => {
+      let change;
+      try {
+        change = JSON.parse(message.data);
+      } catch {
+        return;
+      }
+      if (!change || change.action === 'ready') return;
+
+      const current = activeNoteRef.current;
+      if (change.action === 'removed' && current?.id === change.id) {
+        openRequest.current += 1;
+        activeNoteRef.current = null;
+        setActiveNote(null);
+        toast.info('当前笔记已从本地文件夹删除，界面已同步');
+      } else if (change.action === 'updated' && current?.id === change.id) {
+        openNote(current.id);
+      }
+      setGraphStale(true);
+      refreshFromVault();
+    };
+
+    return () => {
+      clearTimeout(refreshTimer);
+      source.close();
+    };
+  }, [openNote, refreshNotes, refreshSidebar, toast]);
+
   const moveCanvas = useCallback(
     async (fromPath, toPath) => {
       try {
@@ -678,6 +772,7 @@ export function useVault() {
 
     // 动作
     openNote,
+    findNoteByFilePath,
     openByTitle,
     createNote,
     saveNote,

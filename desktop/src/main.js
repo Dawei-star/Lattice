@@ -8,11 +8,19 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { startBackend, stopBackendSync } = require('./backend.js');
 const { buildMenuTemplate } = require('./menu.js');
 const { readVaultDir, writeVaultDir } = require('./vault-config.js');
 const { isInternalUrl, isSafeExternalUrl } = require('./url-security.js');
+const {
+  MAX_MARKDOWN_SIZE,
+  findMarkdownFileArg,
+  resolveExternalMarkdown,
+  readExternalMarkdown,
+  writeExternalMarkdown,
+} = require('./external-file.js');
 
 const APP_NAME = '格物 Lattice';
 const APP_ID = 'com.lattice.desktop';
@@ -143,6 +151,8 @@ app.on('child-process-gone', (_event, details) => {
 let mainWindow = null;
 let backend = null;
 let vaultDir = null;
+let pendingExternalFile = findMarkdownFileArg(process.argv);
+const externalSessions = new Map();
 
 /** 单实例：重复启动时把已有窗口拉到前台，而不是开第二个后端 */
 if (!app.requestSingleInstanceLock()) {
@@ -150,10 +160,15 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.setAppUserModelId(APP_ID);
 
-  app.on('second-instance', () => {
-    if (!mainWindow) return;
+  app.on('second-instance', (_event, commandLine) => {
+    const filePath = findMarkdownFileArg(commandLine);
+    if (!mainWindow) {
+      if (filePath) pendingExternalFile = filePath;
+      return;
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
+    if (filePath) void openExternalMarkdown(filePath);
   });
 
   app.whenReady().then(bootstrap).catch(handleFatal);
@@ -168,6 +183,16 @@ async function bootstrap() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate()));
 
   vaultDir = await ensureVaultSelected();
+  const initialFilePath = pendingExternalFile;
+  pendingExternalFile = null;
+  let initialExternalToken = null;
+  if (initialFilePath) {
+    try {
+      initialExternalToken = createExternalSession(initialFilePath);
+    } catch (error) {
+      reportExternalMarkdownError(error);
+    }
+  }
   registerVaultIpc();
 
   backend = await startBackend({
@@ -177,7 +202,53 @@ async function bootstrap() {
     log: (message) => console.log(`[main] ${message}`),
   });
 
-  createWindow(backend.url);
+  createWindow(backend.url, initialExternalToken);
+}
+
+async function openExternalMarkdown(filePath) {
+  if (!vaultDir || !backend || !mainWindow) {
+    pendingExternalFile = filePath;
+    return;
+  }
+
+  try {
+    const token = createExternalSession(filePath);
+    mainWindow.webContents.send('lattice:open-external-file', token);
+  } catch (error) {
+    reportExternalMarkdownError(error);
+  }
+}
+
+function createExternalSession(filePath) {
+  const resolvedPath = resolveExternalMarkdown(filePath);
+  const token = crypto.randomUUID();
+  externalSessions.set(token, {
+    token,
+    filePath: resolvedPath,
+    writeGranted: false,
+  });
+  return token;
+}
+
+function getExternalSession(token) {
+  if (typeof token !== 'string' || !token.trim()) return null;
+  return externalSessions.get(token) ?? null;
+}
+
+function externalFileInfo(session) {
+  const resolvedPath = resolveExternalMarkdown(session.filePath);
+  const stats = fs.statSync(resolvedPath);
+  return {
+    fileName: path.basename(resolvedPath),
+    modifiedAt: stats.mtimeMs,
+    content: readExternalMarkdown(resolvedPath),
+    writeGranted: session.writeGranted,
+  };
+}
+
+function reportExternalMarkdownError(error) {
+  console.error('[main] external Markdown open failed', error);
+  dialog.showErrorBox('无法打开 Markdown 文件', error?.message ?? String(error));
 }
 
 async function ensureVaultSelected() {
@@ -209,6 +280,9 @@ function registerVaultIpc() {
   ipcMain.removeHandler('vault:write-markdown');
   ipcMain.removeHandler('vault:move-markdown');
   ipcMain.removeHandler('vault:remove-markdown');
+  ipcMain.removeHandler('external:read');
+  ipcMain.removeHandler('external:grant-write');
+  ipcMain.removeHandler('external:write');
 
   ipcMain.handle('vault:info', () => ({ path: vaultDir }));
   ipcMain.handle('vault:select', async () => {
@@ -305,6 +379,40 @@ function registerVaultIpc() {
     fs.rmSync(target, { force: true });
     return true;
   });
+
+  ipcMain.handle('external:read', (_event, token) => {
+    const session = getExternalSession(token);
+    if (!session) return null;
+    return externalFileInfo(session);
+  });
+  ipcMain.handle('external:grant-write', (_event, token) => {
+    const session = getExternalSession(token);
+    if (!session) return { granted: false, message: '外部文件会话已失效，请重新打开文件' };
+
+    try {
+      const resolvedPath = resolveExternalMarkdown(session.filePath);
+      fs.accessSync(resolvedPath, fs.constants.W_OK);
+      session.writeGranted = true;
+      return { granted: true };
+    } catch (error) {
+      return {
+        granted: false,
+        message: error?.code === 'EACCES'
+          ? '当前文件没有写入权限，请检查文件属性或安全软件设置'
+          : error?.message ?? '无法获取文件写入权限',
+      };
+    }
+  });
+  ipcMain.handle('external:write', (_event, token, content) => {
+    const session = getExternalSession(token);
+    if (!session) throw new Error('外部文件会话已失效，请重新打开文件');
+    if (!session.writeGranted) throw new Error('请先点击“获取写权限”');
+    if (typeof content !== 'string' || content.length > MAX_MARKDOWN_SIZE) {
+      throw new Error('Markdown 文件内容不能超过 2 MB');
+    }
+
+    return writeExternalMarkdown(session.filePath, content, { authorized: true });
+  });
 }
 
 function resolveVaultFile(relativePath, extension) {
@@ -317,7 +425,7 @@ function resolveVaultFile(relativePath, extension) {
   return relative.startsWith('..') || path.isAbsolute(relative) ? null : target;
 }
 
-function createWindow(url) {
+function createWindow(url, initialExternalToken = null) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -385,7 +493,16 @@ function createWindow(url) {
     mainWindow = null;
   });
 
-  mainWindow.loadURL(url);
+  const targetUrl = initialExternalToken
+    ? `${url}/?external=${encodeURIComponent(initialExternalToken)}`
+    : url;
+  mainWindow.loadURL(targetUrl);
+
+  if (pendingExternalFile) {
+    const queuedFile = pendingExternalFile;
+    pendingExternalFile = null;
+    setTimeout(() => openExternalMarkdown(queuedFile), 0);
+  }
 }
 
 /**

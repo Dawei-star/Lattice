@@ -15,6 +15,8 @@ if (!command || command === '--help' || command === '-h') {
 
 try {
   if (command === 'chat') {
+    const agent = args.includes('--agent');
+    const autoApprove = agent && !args.includes('--confirm-writes');
     const message = args.filter((arg) => !arg.startsWith('--')).join(' ').trim();
     if (!message) throw new Error('chat 需要一段自然语言消息');
     await printJson(await request('/ai/chat', 'POST', {
@@ -23,6 +25,10 @@ try {
       role: process.env.LATTICE_ROLE ?? 'editor',
       provider: providerFromEnv(),
       context: { files: [], folders: [] },
+      // --agent：任务循环模式，模型自主多轮执行工具；默认自动执行写操作，
+      // 加 --confirm-writes 则写操作仍走 preview → execute 两步
+      mode: agent ? 'agent' : 'assist',
+      autoApprove: agent ? autoApprove : false,
     }));
   } else if (command === 'preview') {
     const body = parseJsonArgument(args, 'preview');
@@ -103,5 +109,5 @@ async function printJson(value) {
 }
 
 function printHelp() {
-  console.log(`Lattice AI file manager\n\nCommands:\n  npm run ai -- chat <message>\n  npm run ai -- preview --file plan.json\n  npm run ai -- execute --confirm --file plan.json\n  npm run ai -- history --limit 40\n\nEnvironment:\n  LATTICE_API_URL         API base (default: http://127.0.0.1:5177/api)\n  LATTICE_ROLE            viewer, editor or admin (default: editor)\n  LATTICE_AI_ENDPOINT     optional OpenAI-compatible endpoint\n  LATTICE_AI_API_KEY      optional provider key\n  LATTICE_AI_MODEL        optional provider model\n  LATTICE_AI_ACCESS_TOKEN optional workspace bearer token\n`);
+  console.log(`Lattice AI file manager\n\nCommands:\n  npm run ai -- chat <message>            助手模式：问答与操作计划\n  npm run ai -- chat --agent <task>       任务模式：自主多轮执行，写操作默认自动\n  npm run ai -- chat --agent --confirm-writes <task>\n                                          任务模式，但写操作需手动 preview/execute\n  npm run ai -- preview --file plan.json\n  npm run ai -- execute --confirm --file plan.json\n  npm run ai -- history --limit 40\n\nEnvironment:\n  LATTICE_API_URL         API base (default: http://127.0.0.1:5177/api)\n  LATTICE_ROLE            viewer, editor or admin (default: editor)\n  LATTICE_AI_ENDPOINT     optional OpenAI-compatible endpoint\n  LATTICE_AI_API_KEY      optional provider key\n  LATTICE_AI_MODEL        optional provider model\n  LATTICE_AI_ACCESS_TOKEN optional workspace bearer token\n`);
 }

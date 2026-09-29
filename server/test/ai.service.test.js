@@ -8,7 +8,8 @@ test('AI local assistant returns structured organization suggestions', async () 
     context: { files: [{ title: '设计笔记', path: '设计笔记.md' }], folders: [] },
   });
 
-  assert.equal(result.meta.provider, 'local');
+  // 「整理」属于确定性建议类请求，走本地秒答快路径，不经过模型
+  assert.equal(result.meta.provider, 'local-instant');
   assert.ok(result.reply.includes('低风险建议'));
   assert.ok(result.suggestions.length >= 2);
   assert.deepEqual(result.actions, []);

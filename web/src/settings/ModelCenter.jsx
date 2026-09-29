@@ -1,16 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Modal from '../ui/Modal.jsx';
+import { aiApi } from '../api/ai.js';
 import { createAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
 import { CUSTOM_SERVICE, PROVIDERS, findProviderByService } from './aiProviders.js';
-
 export default function ModelCenter() {
   const [settings, setSettings] = useState(() => loadAiSettings());
   const [addStep, setAddStep] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [formError, setFormError] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => subscribeAiSettings(setSettings), []);
+
+  const requestOptions = useMemo(() => {
+    const accessToken = settings.accessToken?.trim();
+    return accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {};
+  }, [settings.accessToken]);
 
   const openProviderChooser = () => {
     setFormError('');
@@ -20,6 +28,7 @@ export default function ModelCenter() {
   const openProviderForm = (provider = PROVIDERS[0]) => {
     setEditingId(null);
     setFormError('');
+    setTestResult(null);
     setDraft({
       providerKey: provider.key,
       providerLabel: provider.label,
@@ -40,6 +49,7 @@ export default function ModelCenter() {
   const openEdit = (provider) => {
     setEditingId(provider.id);
     setFormError('');
+    setTestResult(null);
     const match = findProviderByService(provider.service);
     setDraft({
       ...provider,
@@ -55,6 +65,7 @@ export default function ModelCenter() {
 
   // 表单内直接切换服务商：保留已输入的密钥，重置接口地址与模型选择。
   const switchDraftProvider = (key) => {
+    setTestResult(null);
     const provider = PROVIDERS.find((item) => item.key === key) ?? PROVIDERS[0];
     setDraft((current) => ({
       ...current,
@@ -75,10 +86,46 @@ export default function ModelCenter() {
     setEditingId(null);
     setDraft(null);
     setFormError('');
+    setTestResult(null);
   };
 
-  const submitProvider = (event) => {
+  // 表单字段一旦变化，之前的连通性测试结果就不再代表当前配置，立即清掉
+  const updateDraft = (patch) => {
+    setTestResult(null);
+    setDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const probeProvider = async (provider) => {
+    try {
+      const result = await aiApi.test({ provider }, requestOptions);
+      return result ?? { ok: false, error: '测试请求没有返回结果' };
+    } catch (requestError) {
+      return { ok: false, error: requestError?.message ?? '测试请求失败，请确认本地服务已启动' };
+    }
+  };
+
+  const runConnectivityTest = async () => {
+    const endpoint = draft.endpoint.trim();
+    const model = draft.model.trim();
+    const apiKey = draft.apiKey.trim();
+    if (!endpoint || !model || !apiKey) {
+      const result = { ok: false, error: '请先填写完整的 Endpoint、模型 ID 和 API Key 再测试。' };
+      setTestResult(result);
+      return result;
+    }
+    setTesting(true);
+    try {
+      const result = await probeProvider({ endpoint, model, apiKey, authHeader: draft.authHeader });
+      setTestResult(result);
+      return result;
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const submitProvider = async (event) => {
     event.preventDefault();
+    if (testing || saving) return;
     const next = {
       ...draft,
       name: draft.name.trim() || draft.model.trim(),
@@ -90,19 +137,32 @@ export default function ModelCenter() {
       setFormError('请填写完整的 Endpoint、模型 ID 和 API Key。');
       return;
     }
-    if (editingId) {
-      saveAiSettings({ ...settings, providers: settings.providers.map((provider) => provider.id === editingId ? { ...provider, ...next } : provider) });
-    } else {
-      const provider = createAiProvider(next);
-      saveAiSettings({ ...settings, providers: [...settings.providers, provider], activeProviderId: provider.id });
+    // 保存前强制连通性测试：Key 或模型 ID 不匹配时直接拦截，避免无效配置进入列表
+    setSaving(true);
+    setFormError('');
+    try {
+      const result = await probeProvider({ endpoint: next.endpoint, model: next.model, apiKey: next.apiKey, authHeader: next.authHeader });
+      setTestResult(result);
+      if (!result.ok) {
+        setFormError(`连通性测试未通过，已取消保存：${result.error ?? '未知错误'}`);
+        return;
+      }
+      if (editingId) {
+        saveAiSettings({ ...settings, providers: settings.providers.map((provider) => provider.id === editingId ? { ...provider, ...next, verified: true } : provider) });
+      } else {
+        const provider = createAiProvider({ ...next, verified: true });
+        saveAiSettings({ ...settings, providers: [...settings.providers, provider], activeProviderId: provider.id });
+      }
+      closeModal();
+    } finally {
+      setSaving(false);
     }
-    closeModal();
   };
 
   const removeProvider = (provider) => {
     if (!window.confirm(`删除模型“${provider.name || provider.model}”？`)) return;
     if (settings.providers.length === 1) {
-      saveAiSettings({ ...settings, providers: settings.providers.map((item) => ({ ...item, endpoint: '', model: '', apiKey: '', enabled: false })) });
+      saveAiSettings({ ...settings, providers: settings.providers.map((item) => ({ ...item, endpoint: '', model: '', apiKey: '', enabled: false, verified: false })) });
       return;
     }
     const providers = settings.providers.filter((item) => item.id !== provider.id);
@@ -130,9 +190,194 @@ export default function ModelCenter() {
     {addStep ? <Modal open title={addStep === 'chooser' ? '添加模型' : formTitle} ariaLabel={addStep === 'chooser' ? '添加模型' : formTitle} onClose={closeModal} className="model-center__modal">
       {addStep === 'chooser'
         ? <ProviderChooser onChoose={openProviderForm} onClose={closeModal} />
-        : <CustomModelForm key={`${draft.providerKey}-${editingId ?? 'new'}`} draft={draft} editing={Boolean(editingId)} error={formError} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} onSwitchProvider={switchDraftProvider} onSubmit={submitProvider} onBack={() => { setFormError(''); setAddStep('chooser'); }} onReset={() => setDraft((current) => ({ ...current, endpoint: '', model: '', name: '', apiKey: '' }))} />}
+        : <CustomModelForm key={`${draft.providerKey}-${editingId ?? 'new'}`} draft={draft} editing={Boolean(editingId)} error={formError} onChange={updateDraft} onSwitchProvider={switchDraftProvider} onSubmit={submitProvider} onTest={runConnectivityTest} testing={testing} saving={saving} testResult={testResult} onBack={() => { setFormError(''); setTestResult(null); setAddStep('chooser'); }} onReset={() => { setTestResult(null); setDraft((current) => ({ ...current, endpoint: '', model: '', name: '', apiKey: '' })); }} />}
     </Modal> : null}
+    <EmbeddingSection settings={settings} />
+    <IndexStatusSection />
+    <RetrievalDebugSection />
   </div>;
+}
+
+/**
+ * 语义索引（Embedding）配置：启用后自动对全库笔记分块并向量化，
+ * 解锁语义搜索、相关笔记推荐与带引用的知识库问答。
+ * 隐私边界：启用云端 embedding 意味着笔记分块内容会发往该服务商，界面明确提示。
+ */
+function EmbeddingSection({ settings }) {
+  const embedding = settings.embedding ?? { endpoint: '', model: '', apiKey: '', authHeader: 'bearer', enabled: false };
+  const [showKey, setShowKey] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const update = (patch) => {
+    setResult(null);
+    saveAiSettings({ ...settings, embedding: { ...embedding, ...patch } });
+  };
+
+  const runTest = async () => {
+    if (!embedding.endpoint?.trim() || !embedding.model?.trim() || !embedding.apiKey?.trim()) {
+      setResult({ ok: false, error: '请先填写完整的 Endpoint、模型 ID 和 API Key。' });
+      return;
+    }
+    setTesting(true);
+    try {
+      const response = await aiApi.test({
+        kind: 'embedding',
+        provider: {
+          endpoint: embedding.endpoint,
+          model: embedding.model,
+          apiKey: embedding.apiKey,
+          authHeader: embedding.authHeader,
+        },
+      }, {});
+      setResult(response?.data ?? response ?? { ok: false, error: '测试请求没有返回结果' });
+    } catch (requestError) {
+      setResult({ ok: false, error: requestError?.message ?? '测试请求失败' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return <section className="model-center__panel" aria-label="语义索引配置">
+    <header className="model-center__panel-head">
+      <h4>语义索引（Embedding）</h4>
+      <span className={`model-center__pill ${embedding.enabled ? 'model-center__pill--ready' : 'model-center__pill--pending'}`}>{embedding.enabled ? '已启用' : '未启用'}</span>
+      <div className="model-center__panel-actions">
+        <button type="button" className="btn btn--sm" onClick={runTest} disabled={testing}>{testing ? '测试中…' : '测试连接'}</button>
+        <button type="button" className={`model-center__switch ${embedding.enabled ? 'is-on' : ''}`} onClick={() => update({ enabled: !embedding.enabled })} role="switch" aria-checked={embedding.enabled} aria-label={embedding.enabled ? '停用语义索引' : '启用语义索引'}><span /></button>
+      </div>
+    </header>
+    <div className="model-center__embedding-body">
+      <div className="model-center__embedding-fields">
+        <label>Endpoint<input value={embedding.endpoint} onChange={(event) => update({ endpoint: event.target.value })} placeholder="https://api.siliconflow.cn/v1/embeddings" /></label>
+        <label>模型 ID<input value={embedding.model} onChange={(event) => update({ model: event.target.value })} placeholder="BAAI/bge-m3" /></label>
+        <label>API Key<span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={embedding.apiKey} onChange={(event) => update({ apiKey: event.target.value })} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)}>{showKey ? '隐藏' : '显示'}</button></span></label>
+      </div>
+      <div className="model-center__embedding-side">
+        <p className="model-center__embedding-hint">启用后笔记会按标题分块并计算向量，用于语义搜索、相关笔记推荐与知识库问答。云端 embedding 会把笔记分块内容发往该服务商；不开启则仅使用关键词检索。</p>
+        {result ? <p className={`model-center__test-result ${result.ok ? 'is-ok' : 'is-failed'}`} role="status">{result.ok ? `✓ 测试通过${result.dim ? ` · 向量维度 ${result.dim}` : ''} · ${result.latencyMs ?? '?'}ms` : `✗ ${result.error ?? '测试失败'}`}</p> : null}
+      </div>
+    </div>
+  </section>;
+}
+
+/** 索引状态与重建入口：增量索引在后台自动进行，这里提供可见性与手动兜底 */
+function IndexStatusSection() {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const response = await aiApi.indexStatus();
+      setStatus(response?.data ?? response ?? null);
+    } catch {
+      setStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 15_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const runReindex = async () => {
+    setBusy(true);
+    try {
+      await aiApi.reindex();
+      setTimeout(refresh, 1_500);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const healthy = status && !status.pending && !status.failed;
+
+  return <section className="model-center__panel" aria-label="语义索引状态">
+    <header className="model-center__panel-head">
+      <h4>语义索引状态</h4>
+      <span className={`model-center__pill ${healthy ? 'model-center__pill--ready' : 'model-center__pill--pending'}`}>
+        {status?.pending ? '索引中' : status?.failed ? '有失败' : '就绪'}
+      </span>
+      <div className="model-center__panel-actions">
+        <button type="button" className="btn btn--sm" onClick={refresh}>刷新</button>
+        <button type="button" className="btn btn--sm" onClick={runReindex} disabled={busy}>{busy ? '入队中…' : '重建索引'}</button>
+      </div>
+    </header>
+    <p className="model-center__index-summary">
+      {status
+        ? (status.configured
+          ? `模型 ${status.model} · 已索引 ${status.indexed}/${status.totalNotes} 篇 · 共 ${status.totalChunks} 个分块${status.pending ? ` · 待处理 ${status.pending}` : ''}${status.failed ? ` · 失败 ${status.failed}` : ''}`
+          : '未配置 embedding 模型，语义功能未启用')
+        : '索引状态加载中…'}
+    </p>
+  </section>;
+}
+
+/**
+ * 检索调试视图（FastGPT 式「看命中」）：输入一句话，直接看到关键词路 /
+ * 语义路各自命中了哪些分块、融合后入选了哪些 —— 知识库问答质量的第一排查工具。
+ */
+function RetrievalDebugSection() {
+  const [term, setTerm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  const runPreview = async () => {
+    const query = term.trim();
+    if (!query || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const response = await aiApi.retrievalPreview(query);
+      setResult(response?.data ?? response ?? null);
+    } catch (requestError) {
+      setResult(null);
+      setError(requestError?.message ?? '检索失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="model-center__panel" aria-label="检索调试">
+    <header className="model-center__panel-head">
+      <h4>检索调试</h4>
+      <form className="model-center__panel-actions" onSubmit={(event) => { event.preventDefault(); runPreview(); }}>
+        <input
+          className="model-center__debug-input"
+          value={term}
+          onChange={(event) => setTerm(event.target.value)}
+          placeholder="输入一句话，看知识库会命中什么…"
+          aria-label="检索测试语句"
+          maxLength={200}
+        />
+        <button type="submit" className="btn btn--sm" disabled={busy || !term.trim()}>{busy ? '检索中…' : '测试检索'}</button>
+      </form>
+    </header>
+    <div className="model-center__debug-body">
+      {error ? <p className="model-center__form-error" role="alert">{error}</p> : null}
+      {!error && !result ? <p className="model-center__index-summary">用于排查「知识库问答为什么没引用某篇笔记」：测试语句会同时跑关键词与语义两路检索，列出最终注入模型的分块。</p> : null}
+      {result ? (
+        <div className="model-center__debug-results">
+          {result.blocks?.length
+            ? result.blocks.map((block, index) => (
+              <div className="model-center__debug-hit" key={`${block.noteId}-${index}`}>
+                <span className="model-center__debug-order">[{index + 1}]</span>
+                <div>
+                  <strong>{block.title}</strong>
+                  {block.anchor ? <small> ＞ {block.anchor}</small> : null}
+                  {block.wholeNote ? <small>（整文注入）</small> : null}
+                  <p>{String(block.excerpt ?? '').slice(0, 120)}…</p>
+                </div>
+              </div>
+            ))
+            : <p className="model-center__index-summary">没有命中任何分块。若已配置 embedding，请确认索引状态是「已索引」；关键词路至少需要 2 个字的词。</p>}
+          {result.semanticError ? <p className="model-center__index-summary">语义路不可用：{result.semanticError}（本次仅使用关键词检索）</p> : null}
+        </div>
+      ) : null}
+    </div>
+  </section>;
 }
 
 function ProviderLogo({ logo, className = '' }) {
@@ -191,7 +436,7 @@ function EyeOffIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10.7 5.2A10.6 10.6 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-2.2 3M6.5 6.5A16.9 16.9 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.5-1.7" /><path d="m3 3 18 18" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>;
 }
 
-function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, onSubmit, onBack, onReset }) {
+function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, onSubmit, onTest, testing = false, saving = false, testResult = null, onBack, onReset }) {
   const suggestionsId = 'model-center__model-suggestions';
   const isCustom = draft.providerKey === 'custom';
   const knownModels = draft.providerModels ?? [];
@@ -218,7 +463,13 @@ function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, on
     {modelField}
     {keyField}
     <details><summary>高级配置 <span>›</span></summary>{!isCustom ? nameField : null}{!isCustom ? <label>请求地址 (OpenAI 兼容)<span className="model-center__label-hint">{draft.providerHint || '服务商默认地址已自动填入，可按需修改。'}</span>{endpointInput}</label> : null}<label>认证方式<select value={draft.authHeader} onChange={(event) => onChange({ authHeader: event.target.value })}><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option></select></label></details>
+    {testResult ? <p className={`model-center__test-result ${testResult.ok ? 'is-ok' : 'is-failed'}`} role="status">{testResult.ok ? `✓ 连通性测试通过 · ${testResult.latencyMs ?? '?'}ms · ${draft.model}` : `✗ ${testResult.error ?? '连通性测试失败'}`}</p> : null}
     {error ? <p className="model-center__form-error" role="alert">{error}</p> : null}
-    <footer><span>ⓘ 连通性测试会发起一次真实请求，可能消耗少量模型 Token。</span><button type="button" className="btn" onClick={onReset}>重置</button><button type="submit" className="btn btn--primary">{editing ? '保存模型' : '添加模型'}</button></footer>
+    <footer>
+      <span>ⓘ 连通性测试会发起一次真实请求，可能消耗少量模型 Token；保存前会自动测试一次。</span>
+      <button type="button" className="btn" onClick={onTest} disabled={testing || saving}>{testing ? '测试中…' : testResult ? '重新测试' : '测试连接'}</button>
+      <button type="button" className="btn" onClick={onReset} disabled={testing || saving}>重置</button>
+      <button type="submit" className="btn btn--primary" disabled={testing || saving}>{saving ? '测试并保存…' : editing ? '保存模型' : '添加模型'}</button>
+    </footer>
   </form>;
 }

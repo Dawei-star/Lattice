@@ -76,7 +76,7 @@ function resolveMessage(status, code, serverMessage) {
   if (code === 'TIMEOUT') return '请求超时，后端可能未响应，请稍后重试';
   if (status === 0) return '网络请求失败，请稍后重试';
   // 4xx 的文案由后端提供，本身就是面向用户的；5xx 一律用兜底文案
-  if (status < 500 && serverMessage) return serverMessage;
+  if ((status < 500 || code === 'AI_PROVIDER_ERROR') && serverMessage) return serverMessage;
   return FALLBACK_MESSAGES[status] ?? `请求失败（HTTP ${status}）`;
 }
 
@@ -90,7 +90,7 @@ function delay(ms, signal) {
   });
 }
 
-async function attemptOnce(url, { method, body, timeout, signal, headers }) {
+async function attemptOnce(url, { method, body, rawBody, timeout, signal, headers }) {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     throw new ApiError('', { code: 'OFFLINE', status: 0 });
   }
@@ -105,10 +105,10 @@ async function attemptOnce(url, { method, body, timeout, signal, headers }) {
       method,
       headers: {
         Accept: 'application/json',
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(body === undefined && rawBody === undefined ? {} : rawBody === undefined ? { 'Content-Type': 'application/json' } : {}),
         ...headers,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
       signal: controller.signal,
     });
 
@@ -162,6 +162,7 @@ async function requestRaw(path, options = {}) {
     retries = MAX_RETRIES,
     base = BASE_URL,
     headers,
+    rawBody,
   } = options;
 
   const url = new URL(`${base}${path}`, window.location.origin);
@@ -176,7 +177,7 @@ async function requestRaw(path, options = {}) {
   for (;;) {
     attempt += 1;
     try {
-      return await attemptOnce(url, { method, body, timeout, signal, headers });
+        return await attemptOnce(url, { method, body, rawBody, timeout, signal, headers });
     } catch (error) {
       const retryable = error instanceof ApiError && error.isRetryable;
       if (!retryable || attempt > retries) throw error;
@@ -200,6 +201,7 @@ export const http = {
   getFull: (path, options) => requestRaw(path, { ...options, method: 'GET' }),
   post: (path, body, options) => request(path, { ...options, method: 'POST', body }),
   postFull: (path, body, options) => requestRaw(path, { ...options, method: 'POST', body }),
+  postRaw: (path, body, options) => requestRaw(path, { ...options, method: 'POST', rawBody: body }),
   patch: (path, body, options) => request(path, { ...options, method: 'PATCH', body }),
   put: (path, body, options) => request(path, { ...options, method: 'PUT', body }),
   delete: (path, options) => request(path, { ...options, method: 'DELETE' }),

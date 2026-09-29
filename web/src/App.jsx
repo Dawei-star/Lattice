@@ -58,6 +58,7 @@ export default function App() {
     selectFolder,
     selectTag,
     clearFilter,
+    setActiveNote,
     openNote,
     createNote,
     saveNote,
@@ -128,11 +129,42 @@ export default function App() {
 
   // ── 多标签页：tabs 记录打开了哪些笔记，vault.activeNote 即当前标签的内容 ──
   const [tabs, setTabs] = useState(() => [{ id: 1, noteId: null }]);
+  const [externalNotes, setExternalNotes] = useState(() => new Map());
   const [activeTabId, setActiveTabId] = useState(1);
   const [lockedTabIds, setLockedTabIds] = useState([]);
   const [renameDialog, setRenameDialog] = useState(null);
   const [renameSaving, setRenameSaving] = useState(false);
   const tabSeq = useRef(2);
+
+  useEffect(() => {
+    const validNoteIds = new Set((noteIndex ?? []).map((note) => note.id));
+    const invalidTabs = tabs.filter((tab) => tab.noteId && !validNoteIds.has(tab.noteId));
+    if (!invalidTabs.length) return;
+
+    const remaining = tabs.filter((tab) => !invalidTabs.some((invalid) => invalid.id === tab.id));
+    const activeWasRemoved = invalidTabs.some((tab) => tab.id === activeTabId);
+    setLockedTabIds((current) => current.filter((tabId) => remaining.some((tab) => tab.id === tabId)));
+
+    if (!remaining.length) {
+      const fresh = { id: tabSeq.current++, noteId: null };
+      setTabs([fresh]);
+      setActiveTabId(fresh.id);
+      setActiveNote(null);
+      return;
+    }
+
+    setTabs(remaining);
+    if (activeWasRemoved) {
+      const removedIndex = tabs.findIndex((tab) => tab.id === activeTabId);
+      const next = remaining[Math.max(0, removedIndex - 1)];
+      setActiveTabId(next.id);
+      if (next.externalToken) {
+        const externalNote = externalNotes.get(next.externalToken);
+        if (externalNote) setActiveNote(externalNote);
+      } else if (next.noteId) openNote(next.noteId);
+      else setActiveNote(null);
+    }
+  }, [activeTabId, externalNotes, noteIndex, openNote, setActiveNote, tabs]);
 
   const noteTitles = useMemo(() => new Map((noteIndex ?? []).map((n) => [n.id, n.title])), [noteIndex]);
 
@@ -214,10 +246,13 @@ export default function App() {
   const activateTab = useCallback(
     (tab) => {
       setActiveTabId(tab.id);
-      if (!tab.noteId) vault.setActiveNote(null);
+      if (tab.externalToken) {
+        const externalNote = externalNotes.get(tab.externalToken);
+        if (externalNote) setActiveNote(externalNote);
+      } else if (!tab.noteId) setActiveNote(null);
       else if (tab.noteId !== activeNote?.id) openNote(tab.noteId);
     },
-    [activeNote?.id, openNote, vault],
+    [activeNote?.id, externalNotes, openNote, setActiveNote],
   );
 
   /** 打开笔记：已有标签直接激活，否则新开一个标签 */
@@ -247,6 +282,65 @@ export default function App() {
     [openInTab],
   );
 
+  const handleOpenExternalFile = useCallback(
+    async (token) => {
+      if (typeof token !== 'string' || !token.trim()) return;
+      if (!confirmNavigation()) return;
+      setView('notes');
+      setSidebarOpen(true);
+      if (typeof window.latticeDesktop?.readExternalMarkdownFile !== 'function') {
+        toast.error('当前运行环境不支持直接打开外部 Markdown 文件');
+        return;
+      }
+      try {
+        const payload = await window.latticeDesktop.readExternalMarkdownFile(token);
+        if (!payload) {
+          toast.error('外部 Markdown 文件会话已失效，请重新打开文件');
+          return;
+        }
+        const timestamp = new Date().toISOString();
+        const note = {
+          id: `external:${token}`,
+          title: payload.fileName,
+          content: payload.content ?? '',
+          folderId: null,
+          isPinned: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          external: true,
+          externalToken: token,
+          externalWriteGranted: Boolean(payload.writeGranted),
+          externalRevision: payload.modifiedAt ?? timestamp,
+        };
+        setExternalNotes((current) => new Map(current).set(token, note));
+        const existing = tabs.find((tab) => tab.externalToken === token);
+        if (existing) {
+          setActiveTabId(existing.id);
+          setActiveNote(note);
+          return;
+        }
+        const tab = { id: tabSeq.current++, noteId: null, externalToken: token };
+        setTabs((current) => [...current, tab]);
+        setActiveTabId(tab.id);
+        setActiveNote(note);
+      } catch (error) {
+        toast.error(error?.message ?? '打开外部 Markdown 文件失败');
+      }
+    },
+    [confirmNavigation, setActiveNote, tabs, toast],
+  );
+
+  const startupOpenHandled = useRef(false);
+  useEffect(() => {
+    const unsubscribe = window.latticeDesktop?.onOpenExternalFile?.(handleOpenExternalFile);
+    const startupToken = new URLSearchParams(window.location.search).get('external');
+    if (startupToken && !startupOpenHandled.current) {
+      startupOpenHandled.current = true;
+      void handleOpenExternalFile(startupToken);
+    }
+    return typeof unsubscribe === 'function' ? unsubscribe : undefined;
+  }, [handleOpenExternalFile]);
+
   const handleTabSelect = useCallback(
     (tabId) => {
       if (tabId === activeTabId || !confirmNavigation()) return;
@@ -258,13 +352,13 @@ export default function App() {
 
   const handleTabNew = useCallback(() => {
     const active = tabs.find((t) => t.id === activeTabId);
-    if (active && !active.noteId) return;
+    if (active && !active.noteId && !active.externalToken) return;
     if (!confirmNavigation()) return;
     const tab = { id: tabSeq.current++, noteId: null };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
-    vault.setActiveNote(null);
-  }, [tabs, activeTabId, confirmNavigation, vault]);
+    setActiveNote(null);
+  }, [tabs, activeTabId, confirmNavigation, setActiveNote]);
 
   const handleToggleTabLock = useCallback((tabId) => {
     setLockedTabIds((current) => {
@@ -290,14 +384,14 @@ export default function App() {
         setTabs([fresh]);
         setActiveTabId(fresh.id);
         setLockedTabIds([]);
-        vault.setActiveNote(null);
+        setActiveNote(null);
         return;
       }
       setTabs(remaining);
       setLockedTabIds((current) => current.filter((id) => id !== tabId));
       if (closingActive) activateTab(remaining[Math.max(0, index - 1)]);
     },
-    [tabs, activeTabId, confirmNavigation, activateTab, lockedTabIds, toast, vault],
+    [tabs, activeTabId, confirmNavigation, activateTab, lockedTabIds, setActiveNote, toast],
   );
 
   const handleCloseTabs = useCallback(
@@ -332,7 +426,7 @@ export default function App() {
 
   const handleRenameTab = useCallback((tabId) => {
     const tab = tabs.find((item) => item.id === tabId);
-    if (!tab?.noteId) return;
+    if (!tab?.noteId || tab.externalToken) return;
     const note = activeNote?.id === tab.noteId
       ? activeNote
       : noteIndex.find((item) => item.id === tab.noteId);
@@ -341,7 +435,7 @@ export default function App() {
   }, [activeNote, noteIndex, tabs]);
 
   const handleRenameNote = useCallback((note) => {
-    if (!note?.id) return;
+    if (!note?.id || note.external) return;
     const tab = tabs.find((item) => item.noteId === note.id);
     setRenameDialog({ tabId: tab?.id ?? null, noteId: note.id, title: note.title });
   }, [tabs]);
@@ -367,19 +461,21 @@ export default function App() {
 
   const handleMoveTabNote = useCallback(async (tabId, folderId) => {
     const tab = tabs.find((item) => item.id === tabId);
-    if (!tab?.noteId) return;
+    if (!tab?.noteId || tab.externalToken) return;
     const moved = await moveNote(tab.noteId, folderId);
     if (moved) toast.success(folderId ? '笔记已移动' : '笔记已移至未分类');
   }, [moveNote, tabs, toast]);
 
   /** 删除笔记后：移除其标签，并把激活位挪到相邻标签 */
   const handleToggleNotePin = useCallback(async (note) => {
+    if (note?.external) return false;
     const saved = await togglePin(note);
     if (saved) toast.success(saved.isPinned ? '笔记已收藏' : '已取消笔记收藏');
     return saved;
   }, [toast, togglePin]);
 
   const handleMoveNote = useCallback(async (id, folderId) => {
+    if (String(id).startsWith('external:')) return false;
     const moved = await moveNote(id, folderId);
     if (moved) toast.success(folderId ? '笔记已移动' : '笔记已移至未分类');
     return moved;
@@ -387,6 +483,7 @@ export default function App() {
 
   const handleDeleteNote = useCallback(
     async (id) => {
+      if (String(id).startsWith('external:')) return false;
       const ok = await deleteNote(id);
       if (!ok) return false;
       const closedIndex = tabs.findIndex((t) => t.noteId === id);
@@ -397,17 +494,18 @@ export default function App() {
         const fresh = { id: tabSeq.current++, noteId: null };
         setTabs([fresh]);
         setActiveTabId(fresh.id);
+        setActiveNote(null);
         return true;
       }
       setTabs(remaining);
       if (tabs.find((t) => t.id === activeTabId)?.noteId === id) {
         const next = remaining[Math.max(0, closedIndex - 1)];
         setActiveTabId(next.id);
-        if (next.noteId) openNote(next.noteId);
+        activateTab(next);
       }
       return true;
     },
-    [deleteNote, tabs, activeTabId, openNote],
+    [activateTab, deleteNote, tabs, activeTabId],
   );
 
   const handleOpenFromGraph = useCallback(
@@ -453,6 +551,30 @@ export default function App() {
       toast.success('已新建笔记');
     }
   }, [createNote, openInTab, targetFolderId, toast]);
+
+  const handleCreateFromTemplate = useCallback(async (template) => {
+    try {
+      const created = await notesApi.createFromTemplate({ template, folderId: targetFolderId });
+      if (!created) return;
+      openInTab(created.id);
+      setView('notes');
+      toast.success(`已从模板创建「${created.title}」`);
+    } catch (error) {
+      toast.error(error?.message ?? '模板创建失败');
+    }
+  }, [openInTab, targetFolderId, toast]);
+
+  const handleCreateDaily = useCallback(async () => {
+    try {
+      const created = await notesApi.createDaily();
+      if (!created) return;
+      openInTab(created.id);
+      setView('notes');
+      toast.success(`已创建每日笔记「${created.title}」`);
+    } catch (error) {
+      toast.error(error?.message ?? '每日笔记创建失败');
+    }
+  }, [openInTab, toast]);
 
   /** 画布内新建：创建笔记并在画布上落一张卡片，不离开画布视图 */
   const handleCreateCanvasNote = useCallback(async () => {
@@ -556,11 +678,19 @@ export default function App() {
 
   const handleCopyPath = useCallback((note) => {
     if (!note) return;
+    if (note.external) {
+      toast.info('外部文件路径仅由主进程保管');
+      return;
+    }
     copyText(noteFilePath(note, folders), '路径');
-  }, [copyText, folders]);
+  }, [copyText, folders, toast]);
 
   const handleCopyNotePath = useCallback(async (note, mode = 'relative') => {
     if (!note) return;
+    if (note.external) {
+      toast.info('外部文件路径仅由主进程保管');
+      return;
+    }
     const relativePath = note.filePath ?? noteFilePath(note, folders);
     if (mode === 'relative') {
       await copyText(relativePath, '路径');
@@ -615,6 +745,7 @@ export default function App() {
 
   const handleOpenDefault = useCallback(async (note) => {
     if (!note) return;
+    if (note.external) return;
     const relativePath = note.filePath ?? noteFilePath(note, folders);
     if (!window.latticeDesktop?.openVaultFile) {
       toast.info('浏览器开发模式不支持使用系统默认应用打开');
@@ -626,6 +757,7 @@ export default function App() {
 
   const handleRevealFile = useCallback(async (note) => {
     if (!note) return;
+    if (note.external) return;
     const relativePath = note.filePath ?? noteFilePath(note, folders);
     if (!window.latticeDesktop?.revealVaultPath) {
       toast.info('浏览器开发模式不支持在资源管理器中显示文件');
@@ -637,6 +769,7 @@ export default function App() {
 
   const handleShowInFileList = useCallback((note) => {
     if (!note) return;
+    if (note.external) return;
     setView('notes');
     setSidebarOpen(true);
     selectFolder(note.folderId ?? null);
@@ -649,12 +782,61 @@ export default function App() {
   }, [openInTab]);
 
   const handleDuplicateNote = useCallback(async (note) => {
+    if (note?.external) return;
     const created = await duplicateNote(note);
     if (created) {
       await openInTab(created.id);
       setView('notes');
     }
   }, [duplicateNote, openInTab]);
+
+  const handleRequestExternalWrite = useCallback(async (note) => {
+    if (!note?.externalToken) return false;
+    if (typeof window.latticeDesktop?.requestExternalWrite !== 'function') {
+      toast.error('当前运行环境不支持获取外部文件写权限');
+      return false;
+    }
+    try {
+      const result = await window.latticeDesktop.requestExternalWrite(note.externalToken);
+      if (!result?.granted) {
+        toast.error(result?.message ?? '无法获取文件写入权限');
+        return false;
+      }
+      setExternalNotes((current) => {
+        const existing = current.get(note.externalToken);
+        if (!existing) return current;
+        return new Map(current).set(note.externalToken, { ...existing, externalWriteGranted: true });
+      });
+      setActiveNote((current) => (
+        current?.externalToken === note.externalToken
+          ? { ...current, externalWriteGranted: true }
+          : current
+      ));
+      toast.success('已获取写权限，现在可以编辑并保存原文件');
+      return true;
+    } catch (error) {
+      toast.error(error?.message ?? '无法获取文件写入权限');
+      return false;
+    }
+  }, [setActiveNote, toast]);
+
+  const handleSaveExternal = useCallback(async (token, content) => {
+    if (!token || typeof window.latticeDesktop?.writeExternalMarkdownFile !== 'function') {
+      throw new Error('当前运行环境不支持保存外部 Markdown 文件');
+    }
+    const saved = await window.latticeDesktop.writeExternalMarkdownFile(token, content);
+    if (!saved) throw new Error('外部 Markdown 文件保存失败');
+    const timestamp = new Date().toISOString();
+    setExternalNotes((current) => {
+      const existing = current.get(token);
+      if (!existing) return current;
+      return new Map(current).set(token, { ...existing, content, updatedAt: timestamp });
+    });
+    setActiveNote((current) => (
+      current?.externalToken === token ? { ...current, content, updatedAt: timestamp } : current
+    ));
+    return true;
+  }, [setActiveNote]);
 
   return (
     <div className={`app app--${shellMode}`}>
@@ -694,6 +876,7 @@ export default function App() {
         tabs={tabs}
         activeTabId={activeTabId}
         noteTitles={noteTitles}
+        externalNotes={externalNotes}
         noteIndex={noteIndex}
         folders={folders}
         activeNote={activeNote}
@@ -728,7 +911,11 @@ export default function App() {
 
       <div
         className={`app__body app__body--${view} ${activeNote ? 'app__body--has-active-note' : ''} ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'} ${view === 'canvas' ? 'app__body--canvas' : ''} ${view === 'graph' ? 'app__body--graph' : ''}`}
-        style={{ '--sidebar-width': `${layout.tree}px`, '--list-width': `${layout.list}px` }}
+        style={{
+          '--sidebar-width': `${layout.tree}px`,
+          '--list-width': `${layout.list}px`,
+          '--sidebar-offset': `${sidebarOpen ? layout.tree : 30}px`,
+        }}
       >
         {sidebarOpen ? (
           <Sidebar
@@ -835,6 +1022,9 @@ export default function App() {
                 resolveTitle={resolveTitle}
                 resolveEmbed={resolveEmbed}
                 onSave={saveNote}
+                externalWriteGranted={Boolean(activeNote?.external && activeNote.externalWriteGranted)}
+                onRequestExternalWrite={handleRequestExternalWrite}
+                onSaveExternal={handleSaveExternal}
                 onDelete={handleDeleteNote}
                 onTogglePin={togglePin}
                 onMove={moveNote}
@@ -842,6 +1032,8 @@ export default function App() {
                 onCreateWikiLink={handleCreateByTitle}
                 registerNavigationGuard={registerNavigationGuard}
                 onCreateNote={handleCreateNote}
+                onCreateFromTemplate={handleCreateFromTemplate}
+                onCreateDaily={handleCreateDaily}
                 onOpenSwitcher={handleOpenSwitcher}
                 onCloseTab={() => handleTabClose(activeTabId)}
                 onDuplicate={handleDuplicateNote}
@@ -877,7 +1069,7 @@ export default function App() {
             onReset={() => resetPane('tree')}
           />
         ) : null}
-        {view === 'notes' && sidebarOpen ? (
+        {view === 'notes' ? (
           <Resizer
             className="pane-resizer--list"
             label="笔记列表宽度"
@@ -910,7 +1102,6 @@ export default function App() {
       <AIAssistantPanel
         open={aiOpen}
         onClose={() => setAiOpen(false)}
-        onOpenSettings={() => { setAiOpen(false); setSettingsOpen(true); }}
         noteIndex={noteIndex}
         folders={folders}
         activeNote={activeNote}

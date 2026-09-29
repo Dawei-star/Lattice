@@ -102,6 +102,13 @@ export const notesApi = {
    */
   update: (id, patch, options = {}) => http.patch(`/notes/${id}`, patch, options),
 
+  history: (id, options = {}) => http.get(`/notes/${id}/history`, options),
+  historyVersion: (id, version, options = {}) => http.get(`/notes/${id}/history/${version}`, options),
+  restoreHistory: (id, version, body = {}, options = {}) => http.post(`/notes/${id}/history/${version}/restore`, body, options),
+  templates: (options = {}) => http.get('/notes/templates', options),
+  createFromTemplate: (input = {}, options = {}) => http.post('/notes/from-template', input, options),
+  createDaily: (input = {}, options = {}) => http.post('/notes/daily', input, options),
+
   /** @returns {Promise<{ id: string, deleted: boolean }>} */
   remove: (id, options = {}) => http.delete(`/notes/${id}`, options),
 };

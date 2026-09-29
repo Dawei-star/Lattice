@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import { VaultAdapter } from './vault.adapter.js';
 import { applyVaultChange, reconcileVault } from './sync.js';
 
-export function watchVault(vaultDir, { log = () => {}, delay = 180 } = {}) {
+export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, delay = 180 } = {}) {
   const adapter = new VaultAdapter(vaultDir);
   let timer = null;
   let flushing = false;
@@ -31,14 +31,18 @@ export function watchVault(vaultDir, { log = () => {}, delay = 180 } = {}) {
 
       for (const relativePath of files) {
         try {
-          log(await applyVaultChange(adapter, relativePath));
+          const result = await applyVaultChange(adapter, relativePath);
+          log(result);
+          if (result.action !== 'skipped' && result.action !== 'absent') onChange(result);
         } catch (error) {
           log({ error, file: relativePath });
         }
       }
       if (structural) {
         try {
-          log(await reconcileVault(adapter, { mode: 'membership' }));
+          const result = await reconcileVault(adapter, { mode: 'membership' });
+          log(result);
+          if (result.added || result.updated || result.removed) onChange({ action: 'reconciled', ...result });
         } catch (error) {
           log({ error });
         }
@@ -66,7 +70,7 @@ export function watchVault(vaultDir, { log = () => {}, delay = 180 } = {}) {
       return;
     }
     const name = String(filename).replaceAll('\\', '/');
-    if (name.includes('.lattice') || name.endsWith('.tmp')) return;
+    if (name.includes('.lattice') || name.startsWith('_templates/') || name.endsWith('.tmp')) return;
     if (name.toLowerCase().endsWith('.md')) changedFiles.add(name);
     else structuralChange = true; // 目录增删改名、资产文件等
     schedule();

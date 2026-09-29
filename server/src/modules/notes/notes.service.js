@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { withTransaction } from '../../db/index.js';
-import { NotFoundError, ValidationError } from '../../lib/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
 import { computeWordCount, extractTags, inferTitle } from '../../lib/markdown.js';
 import { nowIso } from '../../lib/time.js';
 import * as foldersRepository from '../folders/folders.repository.js';
@@ -10,8 +10,9 @@ import * as tagsService from '../tags/tags.service.js';
 import * as repository from './notes.repository.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
-import { hashDocument } from '../../vault/markdown.js';
+import { hashDocument, parseMarkdownDocument } from '../../vault/markdown.js';
 import { sanitizeFilePart } from '../../vault/path.js';
+import * as historyStore from './notes.history.js';
 
 const MAX_TITLE_LENGTH = 200;
 const vault = new VaultAdapter(config.vaultDir);
@@ -89,10 +90,26 @@ function writeMarkdown(note) {
     isPinned: note.isPinned,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
+    properties: note.properties,
   });
 }
 
-export function create({ id, title, content = '', folderId = null }) {
+function readProperties(note) {
+  const raw = note?.filePath ? vault.readRawSync(note.filePath) : null;
+  if (raw === null) return {};
+  return parseMarkdownDocument(raw, note.filePath).properties ?? {};
+}
+
+function normalizeProperties(properties) {
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return {};
+  return Object.fromEntries(Object.entries(properties).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function propertiesEqual(left, right) {
+  return JSON.stringify(normalizeProperties(left)) === JSON.stringify(normalizeProperties(right));
+}
+
+export function create({ id, title, content = '', folderId = null, properties = {} }) {
   assertFolderExists(folderId);
 
   if (id) {
@@ -113,6 +130,7 @@ export function create({ id, title, content = '', folderId = null }) {
     isPinned: false,
     createdAt: timestamp,
     updatedAt: timestamp,
+    properties,
   };
 
   writeMarkdown(draft);
@@ -143,7 +161,7 @@ export function create({ id, title, content = '', folderId = null }) {
 
 export function duplicate(id, { folderId } = {}) {
   const current = repository.findById(id);
-  if (!current) throw new NotFoundError('笔记不存在');
+  if (!current) throw new NotFoundError('Note not found');
 
   const targetFolderId = folderId === undefined ? current.folderId : folderId;
   assertFolderExists(targetFolderId);
@@ -152,6 +170,7 @@ export function duplicate(id, { folderId } = {}) {
     title: duplicateTitle(current.title, targetFolderId),
     content: current.content,
     folderId: targetFolderId,
+    properties: readProperties(current),
   });
 }
 
@@ -164,6 +183,8 @@ export function update(id, patch) {
   const nextContent = patch.content === undefined ? current.content : patch.content;
   const nextFolderId = patch.folderId === undefined ? current.folderId : patch.folderId;
   const nextPinned = patch.isPinned === undefined ? current.isPinned : patch.isPinned;
+  const currentProperties = readProperties(current);
+  const nextProperties = patch.properties === undefined ? currentProperties : patch.properties;
 
   assertFolderExists(nextFolderId);
 
@@ -171,12 +192,13 @@ export function update(id, patch) {
   const contentChanged = nextContent !== current.content;
   const folderChanged = nextFolderId !== current.folderId;
   const pinnedChanged = nextPinned !== current.isPinned;
+  const propertiesChanged = !propertiesEqual(nextProperties, currentProperties);
   const nextFilePath = titleChanged || folderChanged
     ? allocateFilePath({ title: nextTitle, folderId: nextFolderId }, { excludeId: id })
     : oldFilePath;
   const filePathChanged = nextFilePath !== oldFilePath || !current.filePath;
 
-  if (!titleChanged && !contentChanged && !folderChanged && !pinnedChanged && !filePathChanged) {
+  if (!titleChanged && !contentChanged && !folderChanged && !pinnedChanged && !propertiesChanged && !filePathChanged) {
     return getDetail(id);
   }
 
@@ -190,8 +212,10 @@ export function update(id, patch) {
     isPinned: nextPinned,
     wordCount: contentChanged ? computeWordCount(nextContent) : current.wordCount,
     updatedAt,
+    properties: nextProperties,
   };
 
+  if (titleChanged || contentChanged || propertiesChanged) historyStore.createSnapshot(current);
   writeMarkdown(nextNote);
   try {
     withTransaction(() => {
@@ -217,7 +241,7 @@ export function update(id, patch) {
   } catch (error) {
     if (nextFilePath !== oldFilePath) vault.removeSync(nextFilePath);
     try {
-      writeMarkdown({ ...current, filePath: oldFilePath });
+      writeMarkdown({ ...current, filePath: oldFilePath, properties: currentProperties });
     } catch {
       // Preserve the original database error. The next vault scan can rebuild the projection.
     }
@@ -253,7 +277,8 @@ export function getDetail(id) {
 
   const tags = tagsRepository.findTagsForNotes([id]).get(id) ?? [];
   const { outgoing, backlinks } = linksService.describeForNote(id);
-  return { ...note, filePath: noteFilePath(note), tags, outgoing, backlinks };
+  const filePath = noteFilePath(note);
+  return { ...note, filePath, properties: readProperties({ ...note, filePath }), tags, outgoing, backlinks };
 }
 
 export function list(options) {
@@ -280,4 +305,50 @@ export function index() {
 
 export function statistics() {
   return repository.statistics();
+}
+
+export function listHistory(id) {
+  const note = repository.findById(id);
+  if (!note) throw new NotFoundError('Note not found');
+  return {
+    items: historyStore.listSnapshots(id),
+    currentHash: historyStore.currentHash(note),
+  };
+}
+
+export function getHistoryVersion(id, version) {
+  const note = repository.findById(id);
+  if (!note) throw new NotFoundError('Note not found');
+  const snapshot = historyStore.readSnapshot(id, version);
+  historyStore.assertSnapshotMatchesHash(snapshot);
+  const parsed = parseMarkdownDocument(snapshot.raw, note.filePath ?? `${note.title}.md`);
+  return {
+    version: snapshot.version,
+    hash: snapshot.hash,
+    createdAt: snapshot.createdAt,
+    title: parsed.title,
+    content: parsed.content,
+    isPinned: parsed.isPinned,
+    properties: parsed.properties,
+  };
+}
+
+export function restoreHistory(id, version, { expectedCurrentHash } = {}) {
+  const current = repository.findById(id);
+  if (!current) throw new NotFoundError('Note not found');
+
+  const currentHash = historyStore.currentHash(current);
+  if (expectedCurrentHash && expectedCurrentHash !== currentHash) {
+    throw new ConflictError('绗旇宸茶鍏朵粬鎿嶄綔淇敼锛岃閲嶆柊鍔犺浇后再恢复');
+  }
+
+  const snapshot = historyStore.readSnapshot(id, version);
+  historyStore.assertSnapshotMatchesHash(snapshot);
+  const parsed = parseMarkdownDocument(snapshot.raw, current.filePath ?? `${current.title}.md`);
+  return update(id, {
+    title: parsed.title,
+    content: parsed.content,
+    isPinned: parsed.isPinned,
+    properties: parsed.properties,
+  });
 }

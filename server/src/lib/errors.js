@@ -53,6 +53,13 @@ export class UnauthorizedError extends AppError {
   }
 }
 
+/** 502 —— 外部 AI 服务拒绝请求、返回异常或不可达 */
+export class AiProviderError extends AppError {
+  constructor(message = '外部模型服务调用失败', options = {}) {
+    super(message, { status: 502, code: 'AI_PROVIDER_ERROR', ...options });
+  }
+}
+
 /** 404 —— 资源不存在 */
 export class NotFoundError extends AppError {
   constructor(message = '资源不存在', options = {}) {

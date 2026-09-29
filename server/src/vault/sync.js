@@ -21,7 +21,9 @@ import { computeWordCount, extractTags } from '../lib/markdown.js';
 import { nowIso } from '../lib/time.js';
 import { claimForTitle, rebuildForNote } from '../modules/links/links.service.js';
 import { listLinksPointingAt, updateLinkTarget } from '../modules/links/links.repository.js';
-import { findByTitle } from '../modules/notes/notes.repository.js';
+import { findByFilePath, findByTitle } from '../modules/notes/notes.repository.js';
+import * as historyStore from '../modules/notes/notes.history.js';
+import { scheduleNoteIndex } from '../modules/ai/ai.indexer.js';
 import { pruneOrphans as pruneOrphanTags, syncForNote } from '../modules/tags/tags.service.js';
 import { hashRaw, parseMarkdownDocument, serializeMarkdownDocument } from './markdown.js';
 import { normalizeVaultRelativePath, resolveVaultPath } from './path.js';
@@ -48,7 +50,7 @@ export async function applyVaultChange(adapter, relativePath) {
       db.prepare('DELETE FROM notes WHERE file_path = ?').run(safePath);
       pruneOrphanTags();
       pruneEmptyFolderChain(adapter, parentPathOf(safePath));
-      return { file: safePath, action: 'removed' };
+      return { file: safePath, id: row.id, action: 'removed' };
     });
   }
 
@@ -74,6 +76,11 @@ export async function applyVaultChange(adapter, relativePath) {
     ({ raw, contentHash, note } = await rewriteWithFrontmatter(adapter, note, raw));
   }
 
+  const previous = known ? findByFilePath(safePath) : null;
+  if (previous && (previous.title !== note.title || previous.content !== note.content)) {
+    historyStore.createSnapshot(previous, serializeMarkdownDocument(previous));
+  }
+
   withTransaction(() => {
     // 该路径上的其他占用者：它的文件已被当前文件替换，DB 行随之清位。
     // （改名场景下行早已迁移到新路径，这里通常查不到东西。）
@@ -82,6 +89,9 @@ export async function applyVaultChange(adapter, relativePath) {
     upsertProjection(note, contentHash);
     pruneOrphanTags();
   });
+
+  // 语义索引跟进（内部自带保护，失败不影响投影）
+  scheduleNoteIndex(note.id, { contentHash });
 
   return { file: safePath, action: known ? 'updated' : 'added' };
 }
@@ -172,6 +182,11 @@ export async function reconcileVault(adapter, { mode = 'full' } = {}) {
     pruneMissingFolders(diskFolders);
     pruneOrphanTags();
   });
+
+  // 语义索引跟进（内部自带保护，失败不影响投影）；被删除的笔记由外键级联清理
+  for (const { note, contentHash } of pending) {
+    scheduleNoteIndex(note.id, { contentHash });
+  }
 
   return stats;
 }

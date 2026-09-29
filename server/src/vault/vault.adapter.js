@@ -6,6 +6,7 @@ import { normalizeVaultRelativePath, resolveVaultPath, sanitizeFilePart } from '
 import { parseMarkdownDocument, serializeMarkdownDocument } from './markdown.js';
 
 const INTERNAL_DIR = '.lattice';
+const SPECIAL_DIRS = new Set([INTERNAL_DIR, '_templates']);
 
 export class VaultAdapter {
   constructor(rootDir) {
@@ -213,7 +214,7 @@ async function walk(root, relativeDir, result) {
   const absoluteDir = path.join(root, relativeDir);
   const entries = await fs.readdir(absoluteDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === INTERNAL_DIR || entry.name.startsWith('.')) continue;
+    if (SPECIAL_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       await walk(root, relativePath, result);
@@ -227,7 +228,7 @@ async function walkDirectories(root, relativeDir, result) {
   const absoluteDir = path.join(root, relativeDir);
   const entries = await fs.readdir(absoluteDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === INTERNAL_DIR || entry.name.startsWith('.')) continue;
+    if (SPECIAL_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
     if (!entry.isDirectory()) continue;
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
     result.push(relativePath);
@@ -238,7 +239,7 @@ async function walkDirectories(root, relativeDir, result) {
 function listMarkdownSync(root, relativeDir = '', result = []) {
   const absoluteDir = path.join(root, relativeDir);
   for (const entry of fsSync.readdirSync(absoluteDir, { withFileTypes: true })) {
-    if (entry.name === INTERNAL_DIR || entry.name.startsWith('.')) continue;
+    if (SPECIAL_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
     if (entry.isDirectory()) listMarkdownSync(root, relativePath, result);
     else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) result.push(relativePath);
@@ -249,7 +250,7 @@ function listMarkdownSync(root, relativeDir = '', result = []) {
 function listFilesSync(root, relativeDir = '', result = []) {
   const absoluteDir = path.join(root, relativeDir);
   for (const entry of fsSync.readdirSync(absoluteDir, { withFileTypes: true })) {
-    if (entry.name === INTERNAL_DIR || entry.name.startsWith('.')) continue;
+    if (SPECIAL_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
     if (entry.isDirectory()) listFilesSync(root, relativePath, result);
     else if (entry.isFile()) result.push(relativePath);

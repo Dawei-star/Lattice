@@ -34,7 +34,9 @@
 | 多标签页 | 并行打开多篇笔记，支持锁定、收藏、重命名、移动，以及关闭左侧 / 右侧 / 其他标签 |
 | 本地白板 | 使用 `.canvas` 文件保存文本卡片、笔记卡片、Vault 图片和卡片连接，支持四边连接点、拖拽、缩放与对齐 |
 | Vault 文件浏览 | 侧栏显示 Markdown 与 Canvas 文件，可打开、移动、复制路径并通过右键菜单操作 |
-| AI 文件助手 | 自然语言搜索、整理、创建、编辑、复制、移动和删除；写操作先预览再确认，支持外部 OpenAI-compatible 服务、审计历史和 CLI |
+| AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、自然语言文件操作（任务模式可自主多轮执行并自动审计）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
+| 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成，并对同一天幂等更新 |
+| MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露 `list_notes`、`search_notes`、`read_note`、`create_note`、`update_note` |
 | 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建 |
 | 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
 | 个性化设置 | 浅色 / 深色主题、背景图片、自定义主题、界面密度、字号、内容宽度与编辑器偏好 |
@@ -96,10 +98,13 @@ npm start         # 后端同时托管 API 与前端静态资源
 | `AUTO_MIGRATE` | `true` | 启动时自动应用未执行的迁移 |
 | `AI_ACCESS_TOKEN` | 空 | 可选。设置后 `/api/ai` 要求 `Authorization: Bearer <token>` |
 | `AI_ACCESS_ROLE` | `editor` | 令牌认证后的服务端角色：`viewer` / `editor` / `admin` |
+| `AI_DIGEST_HOUR` | 空 | 可选。`0`-`23` 的本地小时；设置后服务端自动生成 `Journal/每日摘要 YYYY-MM-DD.md` |
 | `WEB_DIST_DIR` | `../web/dist` | 前端产物目录；桌面端打包后指向解包目录 |
 
-AI 面板中的外部模型 Endpoint、Model、API key 和工作区令牌保存在浏览器本地设置中。CLI 使用同一套 API，
+外部模型（对话与 embedding）配置在模型管理中心填写，保存后自动同步到本机服务端（SQLite `ai_settings` 表），
+聊天、语义索引管道与 CLI 共用同一份配置；浏览器本地只保留界面缓存。CLI 使用同一套 API，
 可通过 `LATTICE_AI_ACCESS_TOKEN` 传递工作区令牌；服务端令牌启用后，角色以服务端配置为准。
+语义索引在「设置 → 模型管理」配置 embedding 模型后自动增量进行；启用云端 embedding 时笔记分块内容会发往该服务商。
 
 ```bash
 npm run ai -- chat "搜索项目笔记"
@@ -107,6 +112,16 @@ npm run ai -- preview --file plan.json
 npm run ai -- execute --confirm --file plan.json
 npm run ai -- history --limit 40
 ```
+
+### MCP Server
+
+```bash
+npm run setup       # 首次安装也会安装 MCP 依赖
+npm run mcp         # 以 stdio 启动 MCP Server
+npm run test:mcp    # 运行 MCP 协议与读写 e2e
+```
+
+Claude Desktop 等客户端需要把 `scripts/mcp-server/server.mjs` 配置为 stdio command，并通过 `DB_FILE` / `VAULT_DIR` 指向与 Lattice 相同的数据目录。
 
 ---
 
@@ -285,7 +300,13 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | `GET` | `/api/search?q=` | 全文检索，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
 | `GET` | `/api/graph` | 图谱节点、边、悬空引用与统计 |
 | `GET` | `/api/meta/overview` | 知识库总览统计 |
-| `POST` | `/api/ai/chat` | 本地规则助手或 OpenAI-compatible 外部模型对话，返回建议、引用和结构化操作 |
+| `POST` | `/api/ai/chat` | 对话（非流式，CLI / 兼容入口），返回带来源引用的回复、建议与结构化操作 |
+| `POST` | `/api/ai/chat/stream` | 流式对话（SSE）：`meta` → `delta`… → `done`/`error` |
+| `GET/PUT` | `/api/ai/settings` | 读取 / 保存服务端模型配置（对话模型 + embedding） |
+| `GET/POST` | `/api/ai/sessions` 等 | 会话列表、创建、消息读取、重命名、删除 |
+| `GET` | `/api/ai/index/status` · `POST /api/ai/index/reindex` | 语义索引状态与全量重建 |
+| `GET` | `/api/ai/related?noteId=` | 相关笔记推荐（语义，需 embedding 配置） |
+| `POST` | `/api/ai/retrieval/preview` | 检索调试视图：关键词/语义双路命中与融合结果 |
 | `POST` | `/api/ai/operations/preview` | 预览文件操作、存在性和风险；写操作标记为需要确认 |
 | `POST` | `/api/ai/operations/execute` | 在角色权限和显式确认通过后执行 `read/create/update/delete/move/copy` |
 | `GET` | `/api/ai/history` | 查看 AI/CLI 文件操作审计历史 |
@@ -317,6 +338,7 @@ notes ──┬─< note_tags >── tags
 npm test            # 后端单元测试（Markdown 与 AI 操作边界，36 项）
 npm run test:api    # 接口冒烟测试，需后端已启动（68 项）
 npm run test:web    # 前端渲染冒烟测试，需后端已启动（49 项）
+npm run test:mcp    # MCP stdio 协议与笔记读写 e2e
 npm run verify      # 依次执行以上全部
 ```
 

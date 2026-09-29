@@ -4,6 +4,7 @@ export default function TabBar({
   tabs,
   activeTabId,
   noteTitles,
+  externalNotes = new Map(),
   noteIndex = [],
   folders = [],
   activeNote,
@@ -33,7 +34,10 @@ export default function TabBar({
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
         const tabIndex = tabs.findIndex((item) => item.id === tab.id);
-        const title = tab.noteId ? (noteTitles.get(tab.noteId) ?? '加载中…') : '新标签页';
+        const externalNote = tab.externalToken ? externalNotes.get(tab.externalToken) : null;
+        const title = tab.externalToken
+          ? (externalNote?.title ?? '加载中…')
+          : tab.noteId ? (noteTitles.get(tab.noteId) ?? '加载中…') : '新标签页';
         const locked = lockedTabIds.includes(tab.id);
         const hasClosableLeft = tabs
           .slice(0, tabIndex)
@@ -43,7 +47,9 @@ export default function TabBar({
           .some((item) => !lockedTabIds.includes(item.id));
         const hasClosableOthers = tabs
           .some((item) => item.id !== tab.id && !lockedTabIds.includes(item.id));
-        const note = tab.noteId
+        const note = tab.externalToken
+          ? externalNote
+          : tab.noteId
           ? (activeNote?.id === tab.noteId ? activeNote : noteIndex.find((item) => item.id === tab.noteId))
           : null;
         return (
@@ -55,6 +61,7 @@ export default function TabBar({
               tab,
               title,
               note,
+              isExternal: Boolean(tab.externalToken),
               active,
               locked,
               hasClosableLeft,
@@ -129,6 +136,7 @@ function buildTabMenu({
   tab,
   title,
   note,
+  isExternal,
   active,
   locked,
   hasClosableLeft,
@@ -153,18 +161,19 @@ function buildTabMenu({
   onOpenLinkedNote,
 }) {
   const hasNote = Boolean(note?.id);
+  const hasVaultNote = hasNote && !isExternal;
   const outgoing = active && note?.id && activeNote?.id === note.id ? (activeNote.outgoing ?? []) : [];
   const moveItems = [
     {
       id: 'move-root',
       label: '根目录（未分类）',
-      disabled: !hasNote || note.folderId == null,
+      disabled: !hasVaultNote || note.folderId == null,
       onSelect: () => onMoveNote?.(tab.id, null),
     },
     ...folderItems.map((folder) => ({
       id: `move-${folder.id}`,
       label: `${'　'.repeat(folder.depth)}${folder.name}`,
-      disabled: !hasNote || note.folderId === folder.id,
+      disabled: !hasVaultNote || note.folderId === folder.id,
       onSelect: () => onMoveNote?.(tab.id, folder.id),
     })),
   ];
@@ -190,9 +199,9 @@ function buildTabMenu({
     { id: 'split-vertical', label: '上下分屏', icon: '⬍', disabled: true, title: '分屏工作区暂未支持' },
     { id: 'open-window', label: '在新窗口中打开', icon: '□', disabled: true, title: '多窗口工作区暂未支持' },
     { separator: true },
-    { id: 'rename', label: '重命名', icon: '✎', disabled: !hasNote, onSelect: () => onRename?.(tab.id) },
+    { id: 'rename', label: '重命名', icon: '✎', disabled: !hasVaultNote, onSelect: () => onRename?.(tab.id) },
     { id: 'move', label: '将文件移动到…', icon: '↳', submenuItems: moveItems },
-    { id: 'pin', label: note?.isPinned ? '取消收藏' : '收藏', icon: '★', disabled: !hasNote, onSelect: () => onTogglePin?.(note) },
+    { id: 'pin', label: note?.isPinned ? '取消收藏' : '收藏', icon: '★', disabled: !hasVaultNote, onSelect: () => onTogglePin?.(note) },
     { id: 'export-image', label: '导出图片', icon: '▧', disabled: true, title: '图片导出暂未支持' },
     { separator: true },
     {
@@ -200,24 +209,24 @@ function buildTabMenu({
       label: '复制路径',
       icon: '⌁',
       submenuItems: [
-        { id: 'copy-relative', label: '相对路径', disabled: !hasNote, onSelect: () => onCopyPath?.(note, 'relative') },
-        { id: 'copy-absolute', label: '完整路径', disabled: !hasNote, onSelect: () => onCopyPath?.(note, 'absolute') },
-        { id: 'copy-link', label: '复制双链', disabled: !hasNote, onSelect: () => onCopyWikiLink?.(note) },
+        { id: 'copy-relative', label: '相对路径', disabled: !hasVaultNote, onSelect: () => onCopyPath?.(note, 'relative') },
+        { id: 'copy-absolute', label: '完整路径', disabled: !hasVaultNote, onSelect: () => onCopyPath?.(note, 'absolute') },
+        { id: 'copy-link', label: '复制双链', disabled: !hasVaultNote, onSelect: () => onCopyWikiLink?.(note) },
       ],
     },
     { id: 'history', label: '打开版本历史', icon: '◷', disabled: true, title: '版本历史暂未支持' },
     { id: 'open-links', label: '打开当前笔记的…', icon: '↗', submenuItems: linkItems },
     { separator: true },
-    { id: 'default-app', label: '使用默认应用打开', icon: '↗', disabled: !hasNote, onSelect: () => onOpenDefault?.(note) },
-    { id: 'reveal', label: '在系统资源管理器中显示', icon: '⌂', disabled: !hasNote, onSelect: () => onRevealFile?.(note) },
-    { id: 'show-in-list', label: '在文件列表中显示当前文件', icon: '☷', disabled: !hasNote, onSelect: () => onShowInFileList?.(note) },
+    { id: 'default-app', label: '使用默认应用打开', icon: '↗', disabled: !hasVaultNote, onSelect: () => onOpenDefault?.(note) },
+    { id: 'reveal', label: '在系统资源管理器中显示', icon: '⌂', disabled: !hasVaultNote, onSelect: () => onRevealFile?.(note) },
+    { id: 'show-in-list', label: '在文件列表中显示当前文件', icon: '☷', disabled: !hasVaultNote, onSelect: () => onShowInFileList?.(note) },
     { separator: true },
     {
       id: 'delete',
       label: '删除文件',
       icon: '⌫',
       danger: true,
-      disabled: !hasNote,
+      disabled: !hasVaultNote,
       onSelect: () => {
         if (window.confirm(`确定删除文件「${title}」吗？`)) onDeleteNote?.(note.id);
       },

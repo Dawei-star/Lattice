@@ -13,6 +13,7 @@ import { closeDatabase, getDb, openDatabase } from '../src/db/index.js';
 import { runMigrations } from '../src/db/migrate.js';
 import { VaultAdapter } from '../src/vault/vault.adapter.js';
 import { applyVaultChange, reconcileVault } from '../src/vault/sync.js';
+import { watchVault } from '../src/vault/watcher.js';
 
 const T0 = '2026-01-01T00:00:00.000Z';
 
@@ -28,6 +29,15 @@ function writeNote(adapter, { id, title, content, folderPath = '' }) {
   const filePath = folderPath ? `${folderPath}/${title}.md` : `${title}.md`;
   adapter.writeSync({ id, title, content, filePath, isPinned: false, createdAt: T0, updatedAt: T0 });
   return filePath;
+}
+
+async function waitFor(predicate, timeout = 1500) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('Timed out waiting for vault watcher');
 }
 
 test('reconcile full 建立投影，二次运行零写入且 ID 稳定', async () => {
@@ -263,4 +273,29 @@ test('复制文件带来的重复 id：副本获得新 id，两个文件都可�
   assert.equal(rows.length, 2, '两个文件都必须可寻址');
   assert.notEqual(rows[0].id, rows[1].id, '重复 id 必须被拆开');
   assert.ok(rows.some((row) => row.id === id), '先入盘的原件保留 id');
+});
+
+test('watchVault detects an external Markdown deletion and publishes the removed note', async () => {
+  const { dir, adapter } = makeVault();
+  const filePath = writeNote(adapter, {
+    id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    title: 'externally removed',
+    content: 'watcher regression',
+  });
+  await reconcileVault(adapter, { mode: 'full' });
+
+  const changes = [];
+  const stop = watchVault(dir, { delay: 20, onChange: (change) => changes.push(change) });
+  try {
+    fs.rmSync(path.join(dir, filePath), { force: true });
+    await waitFor(() => changes.some((change) => change.action === 'removed'));
+    assert.deepEqual(changes.find((change) => change.action === 'removed'), {
+      file: filePath,
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      action: 'removed',
+    });
+    assert.equal(getDb().prepare('SELECT COUNT(*) AS c FROM notes').get().c, 0);
+  } finally {
+    stop();
+  }
 });

@@ -26,9 +26,14 @@ const schema = z
     AUTO_MIGRATE: booleanish.default('true'),
     AI_ACCESS_TOKEN: z.string().min(16).max(500).optional(),
     AI_ACCESS_ROLE: z.enum(['viewer', 'editor', 'admin']).default('editor'),
+    // 聊天类上游调用的超时：推理型模型生成完整回复可能需要 1-2 分钟，
+    // 连通性测试仍固定 20 秒（探针只请求 max_tokens=1，慢说明不可用）
+    AI_CHAT_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(600_000).default(120_000),
     // 前端构建产物目录覆盖。桌面端打包后前端不在仓库相对位置上，
     // 需要显式指向 resources 下的解包目录；留空则回退到 web/dist 约定路径。
     WEB_DIST_DIR: z.string().min(1).optional(),
+    // 每日摘要自动生成时刻（本地时区 0-23 点）。留空 = 不定时，仅手动触发
+    AI_DIGEST_HOUR: z.coerce.number().int().min(0).max(23).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.NODE_ENV === 'production' && value.CORS_ORIGINS.split(',').some((o) => o.trim() === '*')) {
@@ -72,8 +77,11 @@ export const config = Object.freeze({
   autoMigrate: env.AUTO_MIGRATE,
   aiAccessToken: env.AI_ACCESS_TOKEN ?? '',
   aiAccessRole: env.AI_ACCESS_ROLE,
+  aiChatTimeoutMs: env.AI_CHAT_TIMEOUT_MS,
   /** 前端构建产物目录，存在时由后端一并托管（单进程生产模式） */
   webDistDir: env.WEB_DIST_DIR
     ? path.resolve(env.WEB_DIST_DIR)
     : path.join(serverRoot, '..', 'web', 'dist'),
+  /** 每日摘要自动生成时刻；未设置则不启用定时 */
+  aiDigestHour: env.AI_DIGEST_HOUR ?? null,
 });

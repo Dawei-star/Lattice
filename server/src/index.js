@@ -5,8 +5,11 @@ import { createApp } from './app.js';
 import { config } from './config/index.js';
 import { closeDatabase, openDatabase } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
+import { maybeRunScheduledDigest } from './modules/ai/ai.digest.js';
 import { logger } from './lib/logger.js';
+import { recoverJobs } from './lib/jobs.js';
 import { resolveVaultDir } from './vault/config.js';
+import { publishVaultEvent } from './vault/events.js';
 import { VaultAdapter } from './vault/vault.adapter.js';
 import { reconcileVault } from './vault/sync.js';
 import { watchVault } from './vault/watcher.js';
@@ -21,10 +24,12 @@ async function bootstrap() {
     const { applied } = runMigrations();
     logger.info('migrations_checked', { newlyApplied: applied.length });
   }
+  recoverJobs();
 
   await syncMarkdownVault();
   stopVaultWatcher = watchVault(resolveVaultDir(config.vaultDir), {
     log: (event) => logger.info('markdown_vault_changed', event),
+    onChange: publishVaultEvent,
   });
 
   const app = createApp();
@@ -41,7 +46,27 @@ async function bootstrap() {
     process.exit(1);
   });
 
+  startDigestScheduler();
   installShutdownHandlers(server);
+}
+
+/** 每日摘要定时器：配置了 AI_DIGEST_HOUR 时每小时检查一次，到点且当天未生成则自动生成 */
+function startDigestScheduler() {
+  if (config.aiDigestHour === null || config.aiDigestHour === undefined) return;
+  const timer = setInterval(async () => {
+    try {
+      const result = await maybeRunScheduledDigest();
+      if (result) logger.info('digest_generated', { noteId: result.noteId, modifiedCount: result.modifiedCount });
+    } catch (error) {
+      logger.error('digest_scheduler_failed', { err: error });
+    }
+  }, 60 * 60 * 1000);
+  timer.unref();
+  // 启动时也检查一次（服务器在配置时刻之后才启动的场景）
+  maybeRunScheduledDigest().then((result) => {
+    if (result) logger.info('digest_generated_on_boot', { noteId: result.noteId });
+  }).catch((error) => logger.error('digest_scheduler_failed', { err: error }));
+  logger.info('digest_scheduler_started', { hour: config.aiDigestHour });
 }
 
 async function syncMarkdownVault() {

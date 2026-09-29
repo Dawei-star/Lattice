@@ -107,10 +107,25 @@ async function startBackend({ appRoot, userDataDir, vaultDir, log = () => {} }) 
 
   const { openDatabase, closeDatabase } = await importModule(path.join(serverRoot, 'src', 'db', 'index.js'));
   const { runMigrations } = await importModule(path.join(serverRoot, 'src', 'db', 'migrate.js'));
+  const { config } = await importModule(path.join(serverRoot, 'src', 'config', 'index.js'));
   const { createApp } = await importModule(path.join(serverRoot, 'src', 'app.js'));
+  const { resolveVaultDir } = await importModule(path.join(serverRoot, 'src', 'vault', 'config.js'));
+  const { VaultAdapter } = await importModule(path.join(serverRoot, 'src', 'vault', 'vault.adapter.js'));
+  const { reconcileVault } = await importModule(path.join(serverRoot, 'src', 'vault', 'sync.js'));
+  const { watchVault } = await importModule(path.join(serverRoot, 'src', 'vault', 'watcher.js'));
+  const { publishVaultEvent } = await importModule(path.join(serverRoot, 'src', 'vault', 'events.js'));
 
   openDatabase();
   const { applied } = runMigrations();
+
+  const resolvedVaultDir = resolveVaultDir(config.vaultDir);
+  const vault = new VaultAdapter(resolvedVaultDir);
+  const indexed = await reconcileVault(vault, { mode: 'full' });
+  log(`vault indexed: ${JSON.stringify(indexed)}`);
+  const stopVaultWatcher = watchVault(resolvedVaultDir, {
+    log: (event) => log(`vault changed: ${JSON.stringify(event)}`),
+    onChange: publishVaultEvent,
+  });
   log(`数据库就绪：${dbFile}（本次应用迁移 ${applied.length} 个）`);
 
   // 首次启动灌入示例知识库，避免用户面对一个空白库
@@ -121,7 +136,7 @@ async function startBackend({ appRoot, userDataDir, vaultDir, log = () => {} }) 
   await waitUntilReady(url);
   log(`后端已就绪：${url}（前端产物 ${webDistDir}）`);
 
-  runtime = { httpServer, closeDatabase, url, dbFile };
+  runtime = { httpServer, closeDatabase, stopVaultWatcher, url, dbFile };
 
   return { url, port, dbFile, webDistDir, firstRun, migrationsApplied: applied.length };
 }
@@ -134,6 +149,11 @@ function stopBackendSync() {
     runtime.httpServer.close();
   } catch {
     // 已关闭则忽略
+  }
+  try {
+    runtime.stopVaultWatcher?.();
+  } catch {
+    // Ignore a watcher that is already closed during shutdown.
   }
   try {
     runtime.closeDatabase();

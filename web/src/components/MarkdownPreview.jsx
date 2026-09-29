@@ -14,6 +14,7 @@ const MAX_EMBED_DEPTH = 2;
 export default function MarkdownPreview({
   content,
   resolveTitle,
+  resolveAsset,
   resolveEmbed,
   onOpenWikiLink,
   onCreateWikiLink,
@@ -23,8 +24,8 @@ export default function MarkdownPreview({
   const containerRef = useRef(null);
 
   const html = useMemo(
-    () => renderMarkdown(content, { resolveTitle }),
-    [content, resolveTitle],
+    () => renderMarkdown(content, { resolveTitle, resolveAsset }),
+    [content, resolveAsset, resolveTitle],
   );
 
   // 每次 HTML 变化后，把仍处于 loading 状态的嵌入卡片填上内容

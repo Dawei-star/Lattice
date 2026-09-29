@@ -221,18 +221,13 @@ async function main() {
   );
   check('至少渲染一篇笔记卡片', container.querySelectorAll('.notecard').length > 0);
 
-  section('AI 文件助手');
+  section('AI 知识库助手');
   const aiButton = container.querySelector('.ribbon__button[aria-label="AI 文件助手"]');
   check('AI 文件助手入口存在', Boolean(aiButton));
   aiButton?.click();
   await waitFor(() => container.querySelector('.ai-assistant'), { label: 'AI 面板打开' });
-  check('AI 面板提供自然语言输入', Boolean(container.querySelector('textarea[aria-label="输入 AI 文件操作"]')));
-  const aiSettingsButton = container.querySelector('button[aria-label="AI 连接设置"]');
-  aiSettingsButton?.click();
-  await waitFor(() => container.querySelector('.ai-assistant__settings'), { label: 'AI 设置展开' });
-  check('AI 设置提供访问令牌配置', container.querySelector('.ai-assistant__settings')?.textContent.includes('工作区访问令牌'));
-  container.querySelector('button[aria-label="关闭连接设置"]')?.click();
-  await waitFor(() => !container.querySelector('.ai-assistant__settings'), { label: 'AI 设置关闭' });
+  check('AI 面板提供自然语言输入', Boolean(container.querySelector('textarea[aria-label="输入 AI 指令"]')));
+  check('AI 面板不重复渲染连接设置', !container.querySelector('.ai-assistant__settings') && !container.querySelector('button[aria-label="AI 连接设置"]'));
   const organizeQuickAction = [...container.querySelectorAll('.ai-assistant__quick-actions button')]
     .find((button) => button.textContent.includes('整理建议'));
   check('AI 提供整理快捷操作', Boolean(organizeQuickAction));
@@ -243,7 +238,7 @@ async function main() {
     { label: 'AI 本地助手响应' },
   );
   check('AI 本地助手返回整理建议', aiResponse?.classList.contains('ai-message__suggestions'), container.querySelector('.ai-assistant__error')?.textContent ?? '');
-  container.querySelector('.ai-assistant__header-actions button[aria-label="关闭 AI 文件助手"]')?.click();
+  container.querySelector('.ai-assistant__header-actions button[aria-label="关闭 AI 知识库助手"]')?.click();
   await waitFor(() => !container.querySelector('.ai-assistant'), { label: 'AI 面板关闭' });
 
   section('设置中的模型管理');
@@ -268,6 +263,29 @@ async function main() {
   await waitFor(() => container.querySelector('.model-center__chooser'), { label: '返回服务商选择' });
   container.querySelector('.model-center__close')?.click();
   await waitFor(() => !container.querySelector('.model-center__chooser'), { label: '模型添加弹窗关闭' });
+
+  section('设置中的 MCP Server');
+  const mcpSettingsButton = [...container.querySelectorAll('.settings-nav__item')]
+    .find((button) => button.textContent.includes('MCP Server'));
+  check('设置侧栏包含 MCP Server 入口', Boolean(mcpSettingsButton));
+  mcpSettingsButton?.click();
+  await waitFor(() => container.querySelector('.mcp-settings'), { label: 'MCP Server 页面打开' });
+  check('MCP 页面显示 stdio 传输', container.querySelector('.mcp-settings')?.textContent.includes('stdio'));
+  check('MCP 页面列出笔记工具', container.querySelectorAll('.mcp-settings__tool').length === 5);
+  const mcpConfig = container.querySelector('.mcp-settings__config pre')?.textContent ?? '';
+  check('MCP 页面生成 Claude Desktop 配置', mcpConfig.includes('mcpServers') && mcpConfig.includes('DB_FILE') && mcpConfig.includes('VAULT_DIR'));
+  await waitFor(() => container.querySelector('.mcp-server-row'), { label: 'MCP Server 列表加载' });
+  check('MCP 页面列出当前 Lattice Server', container.querySelector('.mcp-server-row')?.textContent.includes('Lattice'));
+  const latticeToggle = container.querySelector('.mcp-server-row .mcp-toggle');
+  latticeToggle?.click();
+  await waitFor(() => container.querySelector('.mcp-server-row.is-disabled'), { label: 'MCP Server 停用状态更新' });
+  check('MCP Server 支持停用', container.querySelector('.mcp-server-row')?.classList.contains('is-disabled'));
+  latticeToggle?.click();
+  container.querySelector('.mcp-manager__actions .btn--primary')?.click();
+  await waitFor(() => container.querySelector('.mcp-editor'), { label: 'MCP Server 编辑器打开' });
+  check('MCP Server 支持新建配置', Boolean(container.querySelector('.mcp-editor__form input')));
+  container.querySelector('.mcp-editor__actions .btn')?.click();
+
   container.querySelector('.settings-content__head button[aria-label="关闭设置"]')?.click();
   await waitFor(() => !container.querySelector('.settings-workspace'), { label: '设置面板关闭' });
 

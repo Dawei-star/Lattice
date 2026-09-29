@@ -49,6 +49,12 @@ win:
   icon: build/icon.ico
   artifactName: Lattice-${version}-${arch}.${ext}
 
+fileAssociations:
+  - ext: md
+    name: Markdown document
+    description: Open Markdown files in Lattice
+    role: Editor
+
 nsis:
   oneClick: false
   perMachine: false

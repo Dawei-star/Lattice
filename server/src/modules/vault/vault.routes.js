@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeVaultRelativePath } from '../../vault/path.js';
@@ -17,7 +17,41 @@ const assetQuery = z.object({
   }, '图片路径必须是 Vault 内的相对路径'),
 });
 
+const attachmentPathQuery = z.object({
+  path: z.string().min(1).max(1024).refine((value) => {
+    try {
+      normalizeVaultRelativePath(value, '');
+      return value.replaceAll('\\', '/').startsWith('attachments/');
+    } catch {
+      return false;
+    }
+  }, '附件路径必须位于 Vault 的 attachments 目录'),
+});
+
+const uploadQuery = z.object({
+  name: z.string().trim().min(1).max(255),
+});
+
+const validateReferencesBody = z.object({
+  content: z.string().max(2_000_000),
+  filePath: z.string().max(1024).default(''),
+});
+
+const cleanupBody = z.object({
+  dryRun: z.boolean().default(true),
+}).default({});
+
+const rawAttachmentBody = express.raw({ type: '*/*', limit: '25mb' });
+
 vaultRouter.get('/info', controller.getInfo);
+vaultRouter.get('/events', controller.streamEvents);
+vaultRouter.get('/attachments', controller.listAttachments);
+vaultRouter.post('/attachments', rawAttachmentBody, validate({ query: uploadQuery }), controller.uploadAttachment);
+vaultRouter.get('/attachments/references', validate({ query: attachmentPathQuery }), controller.attachmentReferences);
+vaultRouter.post('/attachments/validate', validate({ body: validateReferencesBody }), controller.validateAttachmentReferences);
+vaultRouter.post('/attachments/cleanup', validate({ body: cleanupBody }), controller.cleanupAttachments);
+vaultRouter.delete('/attachments', validate({ query: attachmentPathQuery }), controller.deleteAttachment);
+vaultRouter.get('/attachment', validate({ query: attachmentPathQuery }), controller.readAttachment);
 vaultRouter.get('/assets', controller.listAssets);
 vaultRouter.get('/asset', validate({ query: assetQuery }), controller.readAsset);
 vaultRouter.post('/migrate', controller.migrate);
