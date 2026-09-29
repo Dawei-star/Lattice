@@ -2,6 +2,13 @@
 
 一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现。用户选择本地 Vault 文件夹，笔记以 Markdown 文件保存，SQLite 仅作为可重建索引。默认无需联网；配置外部模型后，只有 AI 对话会按配置发送到对应服务。
 
+[![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#发行版说明)
+[![Node.js: >=22.5.0](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](package.json)
+[![GitHub stars](https://img.shields.io/github/stars/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/issues)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/commits/main)
+
 所有数据都在你自己的机器上，不需要注册、不需要联网。
 
 ---
@@ -289,14 +296,19 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | `GET` | `/api/notes/index` | 全量轻量索引（供快速切换与双链解析） |
 | `GET` | `/api/notes/:id` | 详情，含标签、出链、反向链接 |
 | `POST` | `/api/notes` | 新建，可带客户端 UUID 以保证重试幂等 |
-| `PATCH` | `/api/notes/:id` | 局部更新（`title` / `content` / `folderId` / `isPinned`） |
+| `PATCH` | `/api/notes/:id` | 局部更新（`title` / `content` / `folderId` / `isPinned` / `properties`） |
 | `DELETE` | `/api/notes/:id` | 删除，幂等 |
+| `GET` | `/api/notes/templates` | 列出 Vault `_templates/` 下的 Markdown 模板 |
+| `POST` | `/api/notes/from-template` | 按模板创建笔记，支持 `{{date}}` / `{{time}}` / `{{title}}` |
+| `POST` | `/api/notes/daily` | 创建幂等的 `Daily/YYYY-MM-DD.md` 每日笔记 |
+| `GET` | `/api/notes/:id/history` 等 | 查看、预览和恢复笔记版本历史 |
 | `GET` `POST` `PATCH` `DELETE` | `/api/folders` | 目录树与增删改 |
 | `GET` `DELETE` | `/api/tags` | 标签列表（带引用数）与删除 |
 | `GET` `PUT` `PATCH` | `/api/canvas` | 读取、保存和移动 Vault 中的 `.canvas` 白板文件 |
 | `GET` | `/api/canvas/files` | 列出 Vault 中的白板文件 |
 | `GET` | `/api/vault/assets` | 列出可在白板中引用的图片资源 |
 | `GET` | `/api/vault/asset?path=` | 读取 Vault 中的图片资源 |
+| `GET` `POST` `DELETE` | `/api/vault/attachments` 等 | 附件列举、上传、读取、删除、引用检查和孤儿清理 |
 | `GET` | `/api/search?q=` | 全文检索，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
 | `GET` | `/api/graph` | 图谱节点、边、悬空引用与统计 |
 | `GET` | `/api/meta/overview` | 知识库总览统计 |
@@ -356,14 +368,14 @@ npm run verify      # 依次执行以上全部
 
 ## 已知限制与后续方向
 
-当前实现刻意划定了边界，以下是明确未做的部分：
+当前实现刻意划定了边界，以下是明确未做或仍需增强的部分：
 
-- **笔记正文暂无附件上传**：白板可以引用 Vault 中已有图片，但不会把图片复制进笔记正文或白板文件
-- **无版本历史**：每次保存覆盖，没有快照与回滚
+- **静态站点仍是单篇导出**：单篇 HTML 已支持图片内联、双链和嵌入展开；完整 Vault 批量导出、导航页和资源目录尚未实现
+- **历史保留策略待完善**：版本快照、预览与恢复已支持，但高频编辑下的按天归并和自动清理尚未落地
 - **无实时协作**：单机单用户，未引入 WebSocket / CRDT
 - **图谱规模**：力导向是 O(n²)，数百到数千节点流畅；上万节点需要换 Barnes-Hut 近似
 - **`node:sqlite` 的稳定性**：它仍被 Node 标记为实验特性（虽已可直接使用）。若追求绝对稳定，
   可换 `better-sqlite3`，接口几乎一一对应，迁移成本很低
 - **移动端**：窄屏已做响应式降级，但还不是 PWA
 
-下一步建议按此顺序推进：笔记附件上传 → 导出静态站点 → 笔记版本历史 → PWA。
+下一步建议按此顺序推进：历史保留与清理 → 完整静态站点导出 → PWA。

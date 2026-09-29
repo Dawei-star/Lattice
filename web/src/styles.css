@@ -5546,6 +5546,40 @@ textarea:focus-visible,
   color: var(--text-secondary);
 }
 
+.settings-update {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.settings-update > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-update strong {
+  color: inherit;
+}
+
+.settings-update p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+}
+
+.settings-update__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.settings-update__link {
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ── 响应式 ───────────────────────────────────────────────────────────── */
 @media (max-width: 1400px) {
   :root {
@@ -5965,6 +5999,8 @@ body::before, body::after, .app::before { opacity: 0.52; }
   .settings-row__control { max-width: none; justify-content: flex-start; }
   .settings-row__control select { width: min(100%, 220px); }
   .settings-about .btn { margin-left: 0; }
+  .settings-update { align-items: flex-start; flex-direction: column; }
+  .settings-update__actions { justify-content: flex-start; }
   .mcp-settings__hero { flex-direction: column; }
   .mcp-settings__config-actions { align-items: flex-start; flex-direction: column; }
   .mcp-settings__tool { align-items: flex-start; flex-direction: column; gap: 5px; }

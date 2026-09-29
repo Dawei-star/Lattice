@@ -9,18 +9,20 @@ const notes = new Map([
   ['embedded', { id: 'embedded-id', filePath: 'Embedded.md' }],
 ]);
 
+let fetchCalls = 0;
 const html = await buildStaticHtml({
   title: 'Exported note',
   content: '# Intro\n\n[[Linked note#Intro]]\n\n![[Embedded]]\n\n![Cover](attachments/cover.png)',
   resolveTitle: (title) => notes.get(title.toLowerCase()) ?? null,
   resolveAsset: () => '/api/vault/attachment?path=attachments%2Fcover.png',
   resolveEmbed: async (title) => (title === 'Embedded' ? '## Embedded content' : null),
-  fetchImpl: async () => ({
+  fetchImpl: async () => { fetchCalls += 1; return {
     ok: true,
     blob: async () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }),
-  }),
+  }; },
 });
 
+assert.equal(fetchCalls, 1);
 assert.match(html, /href="\.\/Guides\/Linked%20note\.html#intro"/);
 assert.match(html, /Embedded content/);
 assert.match(html, /src="data:image\/png;base64,/);

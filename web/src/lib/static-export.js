@@ -21,12 +21,13 @@ export async function buildStaticHtml({
   });
   const root = parseFragment(body);
   await inlineVaultImages(root, fetchImpl);
+  const renderedBody = root.innerHTML;
 
   return `<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title>
 <style>body{max-width:860px;margin:40px auto;padding:0 24px;color:#24364b;font:16px/1.75 system-ui,sans-serif}article{overflow-wrap:anywhere}h1,h2,h3,h4,h5,h6{line-height:1.3;scroll-margin-top:16px}img{display:block;max-width:100%;height:auto}pre{padding:16px;overflow:auto;background:#f2f5f8;border-radius:6px}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #b7c7d7;color:#58708a}a.wiki-link{color:#4569a8}span.wiki-link.is-dangling{color:#7e8b9c;border-bottom:1px dashed #aab5c2}.note-embed{margin:16px 0;padding:12px 14px;border:1px solid #d6e0ea;border-radius:7px;background:#f8fafc}.note-embed__head{font-size:13px;font-weight:650}.note-embed__badge{margin-right:7px;color:#6b7f99;font-size:11px}.note-embed__body{margin-top:8px}</style></head>
-<body><article><h1>${escapeHtml(title)}</h1>${body}</article></body></html>`;
+<body><article><h1>${escapeHtml(title)}</h1>${renderedBody}</article></body></html>`;
 }
 
 async function renderStaticBody(source, context) {
@@ -36,6 +37,10 @@ async function renderStaticBody(source, context) {
   });
   const root = parseFragment(html);
   await expandEmbeds(root, context);
+  for (const embed of root.querySelectorAll('[data-embed-title], [data-embed-state]')) {
+    embed.removeAttribute('data-embed-title');
+    embed.removeAttribute('data-embed-state');
+  }
   assignHeadingIds(root);
   rewriteWikiLinks(root, context.resolveTitle);
   return root.innerHTML;

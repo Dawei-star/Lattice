@@ -7,6 +7,7 @@ import { loadSettings, saveSettings, subscribeSettings } from './settings.js';
 import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
 import { createMcpServer, loadMcpSettings, saveMcpSettings } from './mcpSettings.js';
 import ModelCenter from './ModelCenter.jsx';
+import { checkGithubReleases } from '../lib/update.js';
 
 const APP_VERSION = '0.1.1';
 const LATTICE_ICON_URL = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHg9IjEwNCIgeT0iMTQ3IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzA0MEE0NiIvPjxyZWN0IHg9IjEwNCIgeT0iMTA0IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzE2MjU4NSIvPjxyZWN0IHg9IjEwMCIgeT0iMTQyIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzFGMkVBMiIvPjxyZWN0IHg9IjEwMCIgeT0iMTAwIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzNCNTBERiIvPjxyZWN0IHg9Ijk2IiB5PSIxMzgiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM0QzY4RUIiLz48cmVjdCB4PSI5NiIgeT0iOTYiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM3Qjk2RkYiLz48cmVjdCB4PSI5MiIgeT0iMTM0IiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjOTBBOUZGIi8+PHJlY3QgeD0iOTIiIHk9IjkyIiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjQzZENkZGIi8+PC9zdmc+';
@@ -27,6 +28,7 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
   const [vaultPath, setVaultPath] = useState('');
   const [vaultNotice, setVaultNotice] = useState(null);
   const [updateState, setUpdateState] = useState('idle');
+  const updateRequestRef = useRef(0);
   const [importedTheme, setImportedTheme] = useState(() => loadImportedTheme());
   const searchRef = useRef(null);
 
@@ -105,9 +107,17 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
   };
 
   const checkForUpdates = async () => {
+    const requestId = updateRequestRef.current + 1;
+    updateRequestRef.current = requestId;
     setUpdateState('checking');
-    await new Promise((resolve) => setTimeout(resolve, 320));
-    setUpdateState('current');
+    try {
+      const release = await checkGithubReleases({ currentVersion: APP_VERSION });
+      if (requestId !== updateRequestRef.current) return;
+      setUpdateState({ status: release.isUpdateAvailable ? 'available' : 'current', release });
+    } catch (error) {
+      if (requestId !== updateRequestRef.current) return;
+      setUpdateState({ status: 'error', message: error?.message ?? '无法连接 GitHub，请稍后重试' });
+    }
   };
 
   return <Modal open={open} onClose={onClose} title="设置" ariaLabel="设置"><div className="settings-workspace">
@@ -474,7 +484,22 @@ function mergeMcpServers(existing, imported) {
 }
 
 function About({ settings, onChange, onCheckUpdate, updateState }) {
-  return <><Section title="关于 Lattice"><div className="settings-about"><img className="settings-about__mark" src={LATTICE_ICON_URL} alt="Lattice" /><div><h3>Lattice</h3><p>本地优先的双链知识库。</p><span>当前版本 {APP_VERSION} · Windows Desktop</span></div><button type="button" className="btn" onClick={onCheckUpdate} disabled={updateState === 'checking'}>{updateState === 'checking' ? '检查中...' : '检查更新'}</button></div>{updateState === 'current' ? <Notice tone="success">当前版本 {APP_VERSION} 已是最新本地版本。在线更新通道将在发布后启用。</Notice> : null}<Row title="自动保存" description="编辑内容会在短暂空闲后自动保存。"><Toggle checked={settings.autoSave} onChange={(value) => onChange('autoSave', value)} /></Row><Row title="快捷切换" description="允许使用 Ctrl / Cmd + K 打开快速切换器。"><Toggle checked={settings.quickSwitcher} onChange={(value) => onChange('quickSwitcher', value)} /></Row></Section><Section title="账户"><Row title="本地工作区" description="Lattice 不要求登录，数据默认保存在本机。"><span className="settings-value">离线可用</span></Row></Section></>;
+  const isChecking = updateState === 'checking';
+  const status = updateState?.status;
+  const release = updateState?.release;
+  return <><Section title="关于 Lattice"><div className="settings-about"><img className="settings-about__mark" src={LATTICE_ICON_URL} alt="Lattice" /><div><h3>Lattice</h3><p>本地优先的双链知识库。</p><span>当前版本 {APP_VERSION} · Windows Desktop</span></div><button type="button" className="btn" onClick={onCheckUpdate} disabled={isChecking}>{isChecking ? '检查中...' : '检查更新'}</button></div><UpdateResult status={status} release={release} message={updateState?.message} /></Section><Row title="自动保存" description="编辑内容会在短暂空闲后自动保存。"><Toggle checked={settings.autoSave} onChange={(value) => onChange('autoSave', value)} /></Row><Row title="快捷切换" description="允许使用 Ctrl / Cmd + K 打开快速切换器。"><Toggle checked={settings.quickSwitcher} onChange={(value) => onChange('quickSwitcher', value)} /></Row><Section title="账户"><Row title="本地工作区" description="Lattice 不要求登录，数据默认保存在本机。"><span className="settings-value">离线可用</span></Row></Section></>;
+}
+
+function UpdateResult({ status, release, message }) {
+  if (status === 'error') return <Notice tone="danger">GitHub 更新检查失败：{message}</Notice>;
+  if (!release || !['current', 'available'].includes(status)) return null;
+
+  const releaseLink = <a className="settings-update__link" href={release.htmlUrl} target="_blank" rel="noreferrer">查看 GitHub 发布页</a>;
+  if (status === 'available') {
+    return <Notice tone="success"><div className="settings-update"><div><strong>发现新版本 {release.name}</strong><p>当前版本 {APP_VERSION}，可从 GitHub 下载 Windows 安装包。</p></div><div className="settings-update__actions">{release.installer ? <a className="btn btn--primary" href={release.downloadUrl} target="_blank" rel="noreferrer">下载 Windows 安装包</a> : null}{releaseLink}</div></div></Notice>;
+  }
+
+  return <Notice tone="success"><div className="settings-update"><div><strong>当前版本 {APP_VERSION} 已是最新</strong><p>已从 GitHub Releases 检查到 {release.name}。</p></div><div className="settings-update__actions">{releaseLink}</div></div></Notice>;
 }
 
 function Section({ title, children }) { return <section className="settings-section"><h3>{title}</h3><div className="settings-section__body">{children}</div></section>; }
