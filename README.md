@@ -213,22 +213,6 @@ lattice/
 │       ├── lib/                     Markdown 管线、HTML 消毒、力导向布局、格式化
 │       ├── components/              顶栏 / 侧栏 / 列表 / 编辑区 / 关系面板 / 图谱 / 白板 / 切换器
 │       └── styles.css               设计令牌 + 双主题
-├── desktop/                         Windows 桌面壳（Electron 44）
-│   ├── src/main.js                  应用生命周期、窗口、菜单、GPU/渲染崩溃自愈
-│   ├── src/backend.js               在 Electron 主进程内嵌 Express 并托管前端
-│   ├── src/menu.js                  中文应用菜单
-│   ├── electron-builder.yml         Windows 桌面运行配置
-│   ├── .npmrc                       Electron 二进制走 npmmirror 镜像（勿删）
-│   ├── assets/icon.ico              运行时窗口图标（随包分发）
-│   ├── build/make-icon.py           图标生成脚本（产出上面两份 .ico）
-│   ├── build/archive/               历代废弃图标方案（按代分目录）
-│   ├── build/concepts*/             图标设计过程稿（每轮的候选与配色对照）
-│   └── build/                       icon.ico + 各档 PNG + 矢量源 + 尺寸对照图
-├── packaging/winpack/               发布运行配置（仅维护发行版运行环境）
-│   ├── winpack.config.jsonc         运行环境声明
-│   └── entry.mjs                    运行壳入口适配层，导出 start({ port, dataDir })
-├── 使用说明书.md                    面向发行版使用者的操作手册
-└── scripts/                         零依赖开发启动器、接口冒烟测试
 ```
 
 ### 应用图标
