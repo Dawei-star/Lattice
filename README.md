@@ -7,13 +7,46 @@
 
 ---
 
-![Img](./FILES/README.md/v6-b-final.png)
+![Lattice logo](./FILES/README.md/v6-b-final.png)
+
 [![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#发行版说明)
 [![Node.js: >=22.5.0](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](package.json)
 [![GitHub stars](https://img.shields.io/github/stars/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/issues)
 [![GitHub last commit](https://img.shields.io/github/last-commit/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/commits/main)
+
+## 界面预览
+
+### 知识库工作区
+
+<table>
+  <tr>
+    <td width="50%"><img src="./FILES/README.md/lattice-workspace-light.png" alt="Lattice 浅色工作区" /></td>
+    <td width="50%"><img src="./FILES/README.md/lattice-workspace-dark.png" alt="Lattice 深色工作区" /></td>
+  </tr>
+  <tr>
+    <td align="center">浅色主题</td>
+    <td align="center">深色主题</td>
+  </tr>
+</table>
+
+### 白板与 AI 助手
+
+<table>
+  <tr>
+    <td width="50%"><img src="./FILES/README.md/lattice-canvas.png" alt="Lattice 本地白板" /></td>
+    <td width="50%"><img src="./FILES/README.md/lattice-ai-assistant.png" alt="Lattice AI 知识库助手" /></td>
+  </tr>
+  <tr>
+    <td align="center">本地白板与关系连线</td>
+    <td align="center">AI 知识库助手</td>
+  </tr>
+</table>
+
+### MCP 集成
+
+![Lattice MCP Server 设置页](./FILES/README.md/lattice-mcp-server.png)
 
 ## 文档
 
