@@ -1,19 +1,18 @@
 # 格物 Lattice
 
-> 语言切换 Language: [中文](./README.md) | [English](./docscc/README.en.md)
+> 语言切换 Language: [中文](./README.zh-CN.md) | [English](./README.en.md)
 
 一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现。用户选择本地 Vault 文件夹，笔记以 Markdown 文件保存，SQLite 仅作为可重建索引。默认无需联网；配置外部模型后，只有 AI 对话会按配置发送到对应服务。
-
 
 所有数据都在你自己的机器上，不需要注册、不需要联网。
 
 ---
 
-![Lattice logo](./FILES/README.md/v6-b-final.png)
+![Lattice logo](../FILES/README.md/v6-b-final.png)
 
-[![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](LICENSE)
+[![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](../LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#发行版说明)
-[![Node.js: >=22.5.0](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](package.json)
+[![Node.js: >=22.5.0](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](../package.json)
 [![GitHub stars](https://img.shields.io/github/stars/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/issues)
 [![GitHub last commit](https://img.shields.io/github/last-commit/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/commits/main)
@@ -24,8 +23,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="./FILES/README.md/lattice-workspace-light.png" alt="Lattice 浅色工作区" /></td>
-    <td width="50%"><img src="./FILES/README.md/lattice-workspace-dark.png" alt="Lattice 深色工作区" /></td>
+    <td width="50%"><img src="../FILES/README.md/lattice-workspace-light.png" alt="Lattice 浅色工作区" /></td>
+    <td width="50%"><img src="../FILES/README.md/lattice-workspace-dark.png" alt="Lattice 深色工作区" /></td>
   </tr>
   <tr>
     <td align="center">浅色主题</td>
@@ -37,8 +36,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="./FILES/README.md/lattice-canvas.png" alt="Lattice 本地白板" /></td>
-    <td width="50%"><img src="./FILES/README.md/lattice-ai-assistant.png" alt="Lattice AI 知识库助手" /></td>
+    <td width="50%"><img src="../FILES/README.md/lattice-canvas.png" alt="Lattice 本地白板" /></td>
+    <td width="50%"><img src="../FILES/README.md/lattice-ai-assistant.png" alt="Lattice AI 知识库助手" /></td>
   </tr>
   <tr>
     <td align="center">本地白板与关系连线</td>
@@ -48,14 +47,14 @@
 
 ### MCP 集成
 
-![Lattice MCP Server 设置页](./FILES/README.md/lattice-mcp-server.png)
+![Lattice MCP Server 设置页](../FILES/README.md/lattice-mcp-server.png)
 
 ## 文档
 
 | 文档 | 面向 | 内容 |
 | --- | --- | --- |
 | 本文 | 开发者 / 二次开发 | 架构、技术选型、API、数据模型、测试与开发运行 |
-| [`使用说明书.md`](使用说明书.md) | 发行版使用者 | 安装启动、界面导览、笔记、白板、设置、备份迁移、升级卸载与故障排查 |
+| [`使用说明书.md`](../使用说明书.md) | 发行版使用者 | 安装启动、界面导览、笔记、白板、设置、备份迁移、升级卸载与故障排查 |
 
 两份文档的定位不同：本文面向代码维护与二次开发，说明书面向已经安装发行版的日常使用者。
 发行版安装包由发布版本直接提供，本文不重复介绍打包流程。
@@ -120,7 +119,7 @@ npm start         # 后端同时托管 API 与前端静态资源
 ### 发行版说明
 
 发行版已经提供 Windows 安装版与绿色版，普通使用者无需准备 Node.js、数据库或开发环境。
-安装、首次选择 Vault、数据位置、升级和卸载方式请直接阅读 [`使用说明书.md`](使用说明书.md)。
+安装、首次选择 Vault、数据位置、升级和卸载方式请直接阅读 [`使用说明书.md`](../使用说明书.md)。
 
 开发者只需要关注源码、测试和开发运行流程；发行版的具体文件名、下载地址与发布说明以对应版本
 的发行包为准。
@@ -213,22 +212,6 @@ lattice/
 │       ├── lib/                     Markdown 管线、HTML 消毒、力导向布局、格式化
 │       ├── components/              顶栏 / 侧栏 / 列表 / 编辑区 / 关系面板 / 图谱 / 白板 / 切换器
 │       └── styles.css               设计令牌 + 双主题
-├── desktop/                         Windows 桌面壳（Electron 44）
-│   ├── src/main.js                  应用生命周期、窗口、菜单、GPU/渲染崩溃自愈
-│   ├── src/backend.js               在 Electron 主进程内嵌 Express 并托管前端
-│   ├── src/menu.js                  中文应用菜单
-│   ├── electron-builder.yml         Windows 桌面运行配置
-│   ├── .npmrc                       Electron 二进制走 npmmirror 镜像（勿删）
-│   ├── assets/icon.ico              运行时窗口图标（随包分发）
-│   ├── build/make-icon.py           图标生成脚本（产出上面两份 .ico）
-│   ├── build/archive/               历代废弃图标方案（按代分目录）
-│   ├── build/concepts*/             图标设计过程稿（每轮的候选与配色对照）
-│   └── build/                       icon.ico + 各档 PNG + 矢量源 + 尺寸对照图
-├── packaging/winpack/               发布运行配置（仅维护发行版运行环境）
-│   ├── winpack.config.jsonc         运行环境声明
-│   └── entry.mjs                    运行壳入口适配层，导出 start({ port, dataDir })
-├── 使用说明书.md                    面向发行版使用者的操作手册
-└── scripts/                         零依赖开发启动器、接口冒烟测试
 ```
 
 ### 应用图标
