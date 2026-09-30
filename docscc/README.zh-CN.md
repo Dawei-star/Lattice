@@ -19,10 +19,10 @@
 
 ## 网站入口
 
-**格物 Lattice 文档站**：[`website/lattice-docs.html`](../website/lattice-docs.html)
+**格物 Lattice 文档站**：[在线访问](https://dawei-star.github.io/Lattice/website/lattice-docs.html) · [`website/lattice-docs.html`](../website/lattice-docs.html)
 集中查看产品介绍、功能预览、隐私边界、技术构成和快速开始说明。
 
-**格物 Lattice 下载中心**：[`website/lattice-download.html`](../website/lattice-download.html)
+**格物 Lattice 下载中心**：[在线访问](https://dawei-star.github.io/Lattice/website/lattice-download.html) · [`website/lattice-download.html`](../website/lattice-download.html)
 提供 Windows 安装版与绿色版的 GitHub Releases 入口；具体版本、文件名和校验信息以发布页为准。
 
 **源码与反馈**：[`Dawei-star/Lattice`](https://github.com/Dawei-star/Lattice)

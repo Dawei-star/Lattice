@@ -19,10 +19,10 @@ All data stays on your own machine. No registration or network connection is req
 
 ## Website
 
-**格物 Lattice Documentation Site**: [`website/lattice-docs.html`](../website/lattice-docs.html)
+**格物 Lattice Documentation Site**: [Open online](https://dawei-star.github.io/Lattice/website/lattice-docs.html) · [`website/lattice-docs.html`](../website/lattice-docs.html)
 Read the product overview, feature previews, privacy boundaries, technical architecture, and quick-start guide.
 
-**格物 Lattice Download Center**: [`website/lattice-download.html`](../website/lattice-download.html)
+**格物 Lattice Download Center**: [Open online](https://dawei-star.github.io/Lattice/website/lattice-download.html) · [`website/lattice-download.html`](../website/lattice-download.html)
 Open the GitHub Releases page for the Windows installer and portable build. The release page is the source of truth for versions, filenames, and checksums.
 
 **Source and feedback**: [`Dawei-star/Lattice`](https://github.com/Dawei-star/Lattice)
