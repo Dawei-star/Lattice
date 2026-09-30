@@ -9,7 +9,7 @@ import { maybeRunScheduledDigest } from './modules/ai/ai.digest.js';
 import { logger } from './lib/logger.js';
 import { recoverJobs } from './lib/jobs.js';
 import { resolveVaultDir } from './vault/config.js';
-import { publishVaultEvent } from './vault/events.js';
+import { closeVaultEventClients, publishVaultEvent } from './vault/events.js';
 import { VaultAdapter } from './vault/vault.adapter.js';
 import { reconcileVault } from './vault/sync.js';
 import { watchVault } from './vault/watcher.js';
@@ -91,6 +91,9 @@ function installShutdownHandlers(server) {
     closing = true;
     logger.info('shutdown_started', { signal });
 
+    // 先关掉 SSE 长连接，否则 server.close 会一直等在途请求、吃满 10 秒兜底
+    closeVaultEventClients();
+
     // 停止接收新连接，等在途请求处理完
     server.close((error) => {
       if (error) logger.error('shutdown_server_error', { err: error });
@@ -125,4 +128,9 @@ function installShutdownHandlers(server) {
   });
 }
 
-bootstrap();
+// 启动失败必须退出进程：否则 unhandledRejection 处理器只记日志，
+// 服务未启动的「僵尸进程」会一直挂着（如 DB 打不开、vault sync 失败）。
+bootstrap().catch((error) => {
+  logger.error('bootstrap_failed', { err: error instanceof Error ? error : new Error(String(error)) });
+  process.exit(1);
+});

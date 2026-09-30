@@ -53,6 +53,33 @@ export class VaultAdapter {
     return listMarkdownSync(this.rootDir);
   }
 
+  /** 异步版路径列举：reconcile 等可自由 await 的调用方用它，避免同步遍历阻塞事件循环。 */
+  async listMarkdownPathsAsync() {
+    const files = [];
+    await walk(this.rootDir, '', files);
+    return files;
+  }
+
+  /**
+   * 写入前防护：目标自身或任一已存在的祖先目录是符号链接时拒绝写入。
+   * 词法校验（resolveVaultPath）挡不住 vault 内混入的 symlink（网盘同步/解压导入），
+   * 跟随链接读写会越出 root。root 本身是 symlink 属用户配置，不在此列。
+   */
+  async assertWritablePath(absolutePath) {
+    let current = absolutePath;
+    while (current !== path.dirname(current)) {
+      let stat = null;
+      try {
+        stat = await fs.lstat(current);
+      } catch {
+        // 不存在的段（新文件）继续向上查父链
+      }
+      if (stat?.isSymbolicLink()) throw new Error(`Vault 内拒绝穿越符号链接：${path.relative(this.rootDir, current) || '.'}`);
+      if (current === this.rootDir) return;
+      current = path.dirname(current);
+    }
+  }
+
   directoryExists(relativePath) {
     try {
       return fsSync.statSync(this.resolveDirectory(relativePath)).isDirectory();
@@ -70,6 +97,7 @@ export class VaultAdapter {
   async write(note) {
     const relativePath = normalizeVaultRelativePath(note.filePath || `${note.title}.md`);
     const target = resolveVaultPath(this.rootDir, relativePath);
+    await this.assertWritablePath(target);
     await fs.mkdir(path.dirname(target), { recursive: true });
     const temporary = `${target}.${randomUUID()}.tmp`;
     await fs.writeFile(temporary, serializeMarkdownDocument({ ...note, filePath: relativePath }), 'utf8');
@@ -87,6 +115,7 @@ export class VaultAdapter {
   writeSync(note) {
     const relativePath = normalizeVaultRelativePath(note.filePath || `${note.title}.md`);
     const target = resolveVaultPath(this.rootDir, relativePath);
+    assertWritablePathSync(this.rootDir, target);
     fsSync.mkdirSync(path.dirname(target), { recursive: true });
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
@@ -115,6 +144,7 @@ export class VaultAdapter {
   writeRawSync(relativePath, content) {
     const safePath = normalizeVaultRelativePath(relativePath);
     const target = resolveVaultPath(this.rootDir, safePath);
+    assertWritablePathSync(this.rootDir, target);
     fsSync.mkdirSync(path.dirname(target), { recursive: true });
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
@@ -233,6 +263,22 @@ async function walkDirectories(root, relativeDir, result) {
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
     result.push(relativePath);
     await walkDirectories(root, relativePath, result);
+  }
+}
+
+/** assertWritablePath 的同步版：writeSync / writeRawSync 在同步写入路径上使用。 */
+function assertWritablePathSync(rootDir, absolutePath) {
+  let current = absolutePath;
+  while (current !== path.dirname(current)) {
+    let stat = null;
+    try {
+      stat = fsSync.lstatSync(current);
+    } catch {
+      // 不存在的段（新文件）继续向上查父链
+    }
+    if (stat?.isSymbolicLink()) throw new Error(`Vault 内拒绝穿越符号链接：${path.relative(rootDir, current) || '.'}`);
+    if (current === rootDir) return;
+    current = path.dirname(current);
   }
 }
 

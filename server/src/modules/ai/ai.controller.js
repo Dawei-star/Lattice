@@ -8,7 +8,7 @@ import { generateDigest as createDigest } from './ai.digest.js';
 // 文件操作的处理函数直接来自 ai.operations（service 层只是转发）；
 // execute 语义与 SQL 无关，为免静态扫描误判，导入时起名为 runFileActions
 import { preview as previewFileActions, execute as runFileActions, history as listAuditLog } from './ai.operations.js';
-import { loadServerSettings, saveServerSettings } from './ai.settings.js';
+import { loadServerSettings, maskServerSettings, mergeSettingsPatch, saveServerSettings } from './ai.settings.js';
 import { applyAiPrincipal } from './ai.auth.js';
 import { NotFoundError } from '../../lib/errors.js';
 import { listJobs } from '../../lib/jobs.js';
@@ -155,11 +155,12 @@ export async function writeStream(req, res) {
 // ── 服务端模型配置 ───────────────────────────────────────────────────
 
 export function getSettings(_req, res) {
-  res.json({ data: loadServerSettings() });
+  res.json({ data: maskServerSettings(loadServerSettings()) });
 }
 
 export function putSettings(req, res) {
-  const data = saveServerSettings(req.valid.body);
+  // apiKey 缺省或为掩码值时保留现值，明文 Key 不必在客户端回环
+  const data = saveServerSettings(mergeSettingsPatch(req.valid.body, loadServerSettings()));
   // 配置变化的下一步就是补齐积压索引：入队所有笔记（无 embedding 配置时是安全的空操作）
   try {
     indexer.reindexAll();

@@ -47,3 +47,19 @@ export function publishVaultEvent(event) {
     }
   }
 }
+
+/**
+ * 关闭全部 SSE 长连接。停机时必须先调用：server.close 要等在途请求结束，
+ * 而 SSE 响应永不 end()，不主动关闭会吃满停机兜底超时并以错误码退出。
+ */
+export function closeVaultEventClients() {
+  for (const response of clients) {
+    try {
+      // end() 触发 response 的 close 事件，由 subscribe 里的 cleanup 清掉心跳定时器
+      response.end();
+    } catch {
+      clients.delete(response);
+    }
+  }
+  clients.clear();
+}

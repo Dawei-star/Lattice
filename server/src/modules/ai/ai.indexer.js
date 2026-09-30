@@ -78,7 +78,20 @@ export function reindexAll() {
 async function runReindexJob(_payload, context) {
   const db = getDb();
   const model = resolveEmbeddingProvider()?.model ?? '';
-  const rows = db.prepare('SELECT id, content_hash FROM notes ORDER BY id').all();
+  // 只重置真正过期的笔记（无状态 / 未 indexed / hash 或 model 变化）。
+  // 若无条件全部置 pending，indexNote 的「未变化跳过」永远不会生效，
+  // 每次全量重建都要重写所有笔记的分块与向量行。
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.content_hash
+         FROM notes n
+         LEFT JOIN ai_index_state s ON s.note_id = n.id
+        WHERE s.note_id IS NULL
+           OR s.status <> 'indexed'
+           OR s.content_hash <> n.content_hash
+           OR s.model <> ?`,
+    )
+    .all(model);
 
   withTransaction(() => {
     for (const row of rows) {
@@ -86,7 +99,11 @@ async function runReindexJob(_payload, context) {
         `INSERT INTO ai_index_state (note_id, content_hash, model, chunk_count, status, updated_at)
            VALUES (?, ?, ?, 0, 'pending', ?)
            ON CONFLICT(note_id) DO UPDATE SET
-             content_hash = excluded.content_hash, model = excluded.model, status = 'pending',
+             content_hash = excluded.content_hash, model = excluded.model,
+             status = CASE WHEN ai_index_state.content_hash = excluded.content_hash
+                             AND ai_index_state.model = excluded.model
+                             AND ai_index_state.status = 'indexed'
+                           THEN 'indexed' ELSE 'pending' END,
              error = NULL, attempts = 0, updated_at = excluded.updated_at`,
       ).run(row.id, row.content_hash, model, nowIso());
     }

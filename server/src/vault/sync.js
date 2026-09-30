@@ -19,9 +19,8 @@ import { randomUUID } from 'node:crypto';
 import { getDb, withTransaction } from '../db/index.js';
 import { computeWordCount, extractTags } from '../lib/markdown.js';
 import { nowIso } from '../lib/time.js';
-import { claimForTitle, rebuildForNote } from '../modules/links/links.service.js';
-import { listLinksPointingAt, updateLinkTarget } from '../modules/links/links.repository.js';
-import { findByFilePath, findByTitle } from '../modules/notes/notes.repository.js';
+import { claimForTitle, rebuildForNote, releaseStaleLinks } from '../modules/links/links.service.js';
+import { findByFilePath } from '../modules/notes/notes.repository.js';
 import * as historyStore from '../modules/notes/notes.history.js';
 import { scheduleNoteIndex } from '../modules/ai/ai.indexer.js';
 import { pruneOrphans as pruneOrphanTags, syncForNote } from '../modules/tags/tags.service.js';
@@ -106,7 +105,7 @@ export async function applyVaultChange(adapter, relativePath) {
  */
 export async function reconcileVault(adapter, { mode = 'full' } = {}) {
   await adapter.ensure();
-  const diskPaths = adapter.listMarkdownPaths();
+  const diskPaths = await adapter.listMarkdownPathsAsync();
   const diskFolders = await adapter.scanFolders();
   const db = getDb();
 
@@ -125,7 +124,7 @@ export async function reconcileVault(adapter, { mode = 'full' } = {}) {
     const row = rowByPath.get(relativePath);
     if (mode === 'membership' && row) continue; // 内容变化由该文件自己的 .md 事件负责
 
-    const raw = fs.readFileSync(resolveVaultPath(adapter.rootDir, relativePath), 'utf8');
+    const raw = await fs.promises.readFile(resolveVaultPath(adapter.rootDir, relativePath), 'utf8');
     const contentHash = hashRaw(raw);
     if (row && row.content_hash === contentHash) {
       stats.skipped += 1;
@@ -163,8 +162,10 @@ export async function reconcileVault(adapter, { mode = 'full' } = {}) {
       if (squatter) db.prepare('DELETE FROM notes WHERE id = ?').run(squatter.id);
       upsertProjection(note, contentHash);
       if (existed) stats.updated += 1;
-      else stats.added += 1;
-      stats.notes += 1;
+      else {
+        stats.added += 1;
+        stats.notes += 1; // 初始值是存量行数，只有新增才改变总量
+      }
     }
 
     // 消失的文件（以及从未有过路径的遗留行）：以「盘上路径集合」为准。
@@ -241,19 +242,6 @@ function upsertProjection(note, contentHash) {
 
   syncForNote(note.id, extractTags(note.content));
   rebuildForNote(note.id, note.content);
-}
-
-/**
- * 笔记被外部改名后，原本指向它的链接（target_note_id = 该笔记）的文本仍是旧标题，
- * 不能继续霸占指向关系：按链接文本重新解析归属，解析不到就退回悬空。
- */
-function releaseStaleLinks(noteId, newTitle) {
-  const normalizedNewTitle = newTitle.toLowerCase();
-  for (const link of listLinksPointingAt(noteId)) {
-    if (link.targetTitle.toLowerCase() === normalizedNewTitle) continue;
-    const owner = findByTitle(link.targetTitle)[0];
-    updateLinkTarget({ sourceNoteId: link.sourceNoteId, targetTitle: link.targetTitle, targetNoteId: owner?.id ?? null });
-  }
 }
 
 /** 目录链逐级 upsert（读改写都走 parent+name 唯一索引），返回最深层目录 id。 */
@@ -359,6 +347,7 @@ async function rewriteWithFrontmatter(adapter, note, _previousRaw) {
 
 async function writeRawAtomic(adapter, relativePath, raw) {
   const target = resolveVaultPath(adapter.rootDir, relativePath);
+  await adapter.assertWritablePath(target);
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   const temporary = `${target}.${randomUUID()}.tmp`;
   await fs.promises.writeFile(temporary, raw, 'utf8');

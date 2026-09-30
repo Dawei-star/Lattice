@@ -6,7 +6,7 @@ import * as foldersRepository from '../folders/folders.repository.js';
 import * as foldersService from '../folders/folders.service.js';
 import * as notesRepository from './notes.repository.js';
 import * as notesService from './notes.service.js';
-import { reconcileVault } from '../../vault/sync.js';
+import { applyVaultChange } from '../../vault/sync.js';
 import { parseMarkdownDocument } from '../../vault/markdown.js';
 import { resolveVaultPath } from '../../vault/path.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
@@ -69,9 +69,10 @@ export async function createDaily({ date } = {}) {
   if (existing) return notesService.getDetail(existing.id);
 
   // Recover a manually created daily file into the projection before deciding
-  // whether a second file would be created.
+  // whether a second file would be created. Only this one file needs to be
+  // reconciled; a full-vault scan would block the event loop for seconds.
   if (vault.existsSync(filePath)) {
-    await reconcileVault(vault, { mode: 'full' });
+    await applyVaultChange(vault, filePath);
     const recovered = notesRepository.findByFilePath(filePath);
     if (recovered) return notesService.getDetail(recovered.id);
     throw new ConflictError('每日笔记文件已存在但无法建立投影');

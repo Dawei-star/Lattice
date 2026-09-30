@@ -51,6 +51,48 @@ export function saveServerSettings(patch) {
   return next;
 }
 
+const MASK_PREFIX = 'masked:';
+
+function maskApiKey(apiKey) {
+  return apiKey ? `${MASK_PREFIX}${apiKey.slice(-4)}` : '';
+}
+
+/**
+ * GET /settings 用：apiKey 永不明文下发，只返回 masked:末4位 形式的掩码。
+ * 内部消费方（聊天/索引管道）仍读 loadServerSettings 的原始值。
+ */
+export function maskServerSettings(settings) {
+  return {
+    ...settings,
+    providers: settings.providers.map((provider) => ({ ...provider, apiKey: maskApiKey(provider.apiKey) })),
+    embedding: settings.embedding ? { ...settings.embedding, apiKey: maskApiKey(settings.embedding.apiKey) } : null,
+  };
+}
+
+/**
+ * PUT /settings 用：apiKey 缺省或为掩码值时保留现值，前端无需回传明文 Key。
+ * provider 按 id 匹配现有配置；embedding 是单对象直接匹配。
+ */
+export function mergeSettingsPatch(patch, current) {
+  const currentById = new Map(current.providers.map((provider) => [provider.id, provider]));
+  const providers = (patch.providers ?? []).map((provider) => {
+    const existing = currentById.get(typeof provider.id === 'string' && provider.id.trim() ? provider.id.trim().slice(0, 120) : 'provider-server');
+    return resolvePreservedApiKey(provider, existing);
+  });
+  const embedding = patch.embedding
+    ? resolvePreservedApiKey(patch.embedding, current.embedding)
+    : null;
+  return { ...patch, providers, embedding };
+}
+
+function resolvePreservedApiKey(provider, existing) {
+  if (!existing?.apiKey) return provider;
+  if (provider.apiKey === undefined || provider.apiKey.startsWith(MASK_PREFIX)) {
+    return { ...provider, apiKey: existing.apiKey };
+  }
+  return provider;
+}
+
 function normalizeSettings(value) {
   if (!value || typeof value !== 'object') return { ...EMPTY, providers: [], embedding: null };
   const providers = (Array.isArray(value.providers) ? value.providers : [])
@@ -81,9 +123,14 @@ function normalizeProvider(value, { nullable = false } = {}) {
   };
 }
 
+/** 掩码值不是可用凭证：显式携带掩码 Key 的 provider（多来自配置回显）应回落服务端配置 */
+export function isMaskedApiKey(apiKey) {
+  return typeof apiKey === 'string' && apiKey.startsWith(MASK_PREFIX);
+}
+
 /** 供聊天/索引使用的对话模型配置：显式 provider 优先，否则取服务端激活项 */
 export function resolveChatProvider(explicit) {
-  if (explicit?.endpoint && explicit?.apiKey) return explicit;
+  if (explicit?.endpoint && explicit?.apiKey && !isMaskedApiKey(explicit.apiKey)) return explicit;
   const settings = loadServerSettings();
   const active = settings.providers.find((provider) => provider.id === settings.activeProviderId)
     ?? settings.providers[0]

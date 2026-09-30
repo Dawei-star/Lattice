@@ -940,7 +940,6 @@ export default function App() {
             onRevealFolder={revealFolder}
             onRefresh={handleRefreshAll}
             refreshing={refreshing}
-            onOpenSettings={() => setSettingsOpen(true)}
             onCollapseSidebar={() => setSidebarOpen(false)}
             onOpenCanvas={handleOpenCanvas}
             onCreateCanvas={handleCreateCanvas}

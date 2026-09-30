@@ -70,7 +70,8 @@ export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, dela
       return;
     }
     const name = String(filename).replaceAll('\\', '/');
-    if (name.includes('.lattice') || name.startsWith('_templates/') || name.endsWith('.tmp')) return;
+    // 只按路径段前缀排除内部目录，避免误伤 my.lattice.md 这类合法文件名
+    if (name === '.lattice' || name.startsWith('.lattice/') || name === '_templates' || name.startsWith('_templates/') || name.endsWith('.tmp')) return;
     if (name.toLowerCase().endsWith('.md')) changedFiles.add(name);
     else structuralChange = true; // 目录增删改名、资产文件等
     schedule();

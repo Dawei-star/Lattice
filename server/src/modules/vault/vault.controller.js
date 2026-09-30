@@ -25,6 +25,7 @@ export async function readAsset(req, res) {
   }
   res.type(asset.mimeType);
   res.setHeader('Cache-Control', 'private, max-age=60');
+  applyAssetSecurityHeaders(res);
   res.sendFile(asset.absolutePath);
 }
 
@@ -53,9 +54,21 @@ export function readAttachment(req, res) {
     return;
   }
   res.type(asset.mimeType);
-  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(asset.name)}`);
+  // SVG 等可携带脚本的格式强制下载，防止存储型 XSS 在应用同源下执行
+  const disposition = asset.mimeType === 'image/svg+xml' ? 'attachment' : 'inline';
+  res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(asset.name)}`);
   res.setHeader('Cache-Control', 'private, max-age=60');
+  applyAssetSecurityHeaders(res);
   res.sendFile(asset.absolutePath);
+}
+
+/**
+ * 静态资产响应的沙箱头：CSP 只加在 SPA 路由上，资产端点若不带同样约束，
+ * SVG/HTML 类附件可在应用同源下执行脚本、调用全部 API。
+ */
+function applyAssetSecurityHeaders(res) {
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
 export function attachmentReferences(req, res) {

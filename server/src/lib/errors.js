@@ -60,6 +60,13 @@ export class AiProviderError extends AppError {
   }
 }
 
+/** 502 —— 外部更新源（GitHub Releases）不可达、返回异常或数据无法解析 */
+export class UpdateCheckError extends AppError {
+  constructor(message = '无法获取 GitHub 更新信息，请稍后重试', options = {}) {
+    super(message, { status: 502, code: 'UPDATE_CHECK_FAILED', ...options });
+  }
+}
+
 /** 404 —— 资源不存在 */
 export class NotFoundError extends AppError {
   constructor(message = '资源不存在', options = {}) {

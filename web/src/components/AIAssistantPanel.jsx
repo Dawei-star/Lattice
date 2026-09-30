@@ -51,6 +51,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const [relatedOpen, setRelatedOpen] = useState(true);
   const abortRef = useRef(null);
   const messagesRef = useRef(null);
+  const draftRef = useRef(null);
 
   const activeProvider = getActiveAiProvider(settings);
   const connectionState = !hasExternalAi(settings) ? 'local' : activeProvider?.verified ? 'connected' : 'configured';
@@ -161,6 +162,14 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     const container = messagesRef.current;
     if (container) container.scrollTop = container.scrollHeight;
   }, [messages, streamText, sending, preview, execution]);
+
+  // 输入框随内容自动增高，超过上限后内部滚动
+  useEffect(() => {
+    const el = draftRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 148)}px`;
+  }, [draft, tab]);
 
   const context = useMemo(() => ({
     activeFile: activeNote?.filePath ?? activeNote?.title ?? null,
@@ -451,6 +460,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
               </div>
               <form onSubmit={(event) => { event.preventDefault(); send(); }}>
                 <textarea
+                  ref={draftRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
@@ -461,9 +471,9 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                     }
                   }}
                   placeholder={settings.autoApprove
-                    ? '下达任务指令，AI 会自主多轮执行并汇报…（写操作将自动执行并审计）'
-                    : '向知识库提问，或描述要完成的文件操作…（Enter 发送，Shift+Enter 换行）'}
-                  rows={3}
+                    ? '下达任务指令，AI 会自主多轮执行并汇报…'
+                    : '向知识库提问，或描述要完成的文件操作…'}
+                  rows={1}
                   aria-label="输入 AI 指令"
                   disabled={composerBusy}
                 />

@@ -18,7 +18,12 @@ const node = z.object({ id: z.string().min(1).max(100), type: z.enum(['text', 'f
   }
 });
 const edge = z.object({ id: z.string().min(1).max(100), from: z.string().min(1).max(100), to: z.string().min(1).max(100) }).passthrough();
-const documentBody = z.object({ nodes: z.array(node).max(10000), edges: z.array(edge).max(20000) }).passthrough();
+const documentBody = z.object({
+  nodes: z.array(node).max(10000),
+  edges: z.array(edge).max(20000),
+  // 乐观锁：传 GET 返回的 revision，服务端发现画布已变则返回 409
+  expectedHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+}).passthrough();
 const canvasPath = z.string().min(1).max(2048).superRefine((value, ctx) => {
   try {
     normalizeVaultRelativePath(value, '.canvas');

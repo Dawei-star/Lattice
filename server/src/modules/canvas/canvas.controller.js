@@ -1,11 +1,11 @@
 import * as service from './canvas.service.js';
 
 export async function readCanvas(_req, res) {
-  res.json({ data: service.read(_req.valid.query.path) });
+  res.json({ data: await service.read(_req.valid.query.path) });
 }
 
 export async function writeCanvas(req, res) {
-  res.json({ data: service.write(req.valid.body, req.valid.query.path) });
+  res.json({ data: await service.write(req.valid.body, req.valid.query.path) });
 }
 
 export async function listCanvasFiles(_req, res) {

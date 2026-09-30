@@ -203,7 +203,7 @@ async function runConversation({ cleanMessage, context, history, provider, signa
 
     // 只读/检索：无论模式都自动执行并回填
     if (canAutoTools) {
-      const feedback = executeAutoTools(autoTools, emit);
+      const feedback = await executeAutoTools(autoTools, emit);
       if (!feedback) break;
       working = [...working, { role: 'assistant', content: lastRaw }, { role: 'user', content: feedback }];
       continue;
@@ -211,7 +211,7 @@ async function runConversation({ cleanMessage, context, history, provider, signa
 
     // 任务模式 + 允许自动执行：写操作走正式执行通道（路径校验 + 审计），结果回填继续循环
     if (writes.length && agent && autoApprove) {
-      let feedback = executeAutoTools(autoTools, emit);
+      let feedback = await executeAutoTools(autoTools, emit);
       emit({ type: 'status', text: `执行 ${writes.length} 项文件写操作…` });
       const writeResult = await applyFileActions(writes, {
         actor,
@@ -257,14 +257,14 @@ async function runConversation({ cleanMessage, context, history, provider, signa
 }
 
 /** 执行 read/search 工具并回填文本；无可执行内容返回空串 */
-function executeAutoTools(tools, emit = null) {
+async function executeAutoTools(tools, emit = null) {
   const parts = [];
   for (const action of tools) {
     if (action?.type === 'search') {
       const term = String(action.query ?? '').trim();
       emit?.({ type: 'status', text: `检索「${term.slice(0, 24) || '…'}」…` });
       try {
-        parts.push(formatSearchResults(executeSearchAction(term)));
+        parts.push(formatSearchResults(await executeSearchAction(term)));
       } catch (error) {
         parts.push(`【搜索 ${term}】失败：${error?.message ?? '未知错误'}`);
       }

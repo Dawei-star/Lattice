@@ -271,7 +271,24 @@ async function main() {
   mcpSettingsButton?.click();
   await waitFor(() => container.querySelector('.mcp-settings'), { label: 'MCP Server 页面打开' });
   check('MCP 页面显示 stdio 传输', container.querySelector('.mcp-settings')?.textContent.includes('stdio'));
-  check('MCP 页面列出笔记工具', container.querySelectorAll('.mcp-settings__tool').length === 5);
+  // 断言工具清单本身，而不是一个魔法数字：MCP 工具集扩充时这里会明确列出期望值，
+  // 既不会漏掉新工具，也不会因为「数量对了但换了一个工具」而假通过。
+  const mcpToolNames = [...container.querySelectorAll('.mcp-settings__tool code')].map((node) => node.textContent.trim());
+  const expectedMcpTools = [
+    'list_notes',
+    'search_notes',
+    'read_note',
+    'get_note_links',
+    'list_tags',
+    'get_vault_statistics',
+    'create_note',
+    'update_note',
+    'list_note_history',
+    'restore_note_version',
+  ];
+  check('MCP 页面列出笔记工具',
+    mcpToolNames.length === expectedMcpTools.length && expectedMcpTools.every((name) => mcpToolNames.includes(name)),
+    `实际=${mcpToolNames.join(', ') || '(无)'}`);
   const mcpConfig = container.querySelector('.mcp-settings__config pre')?.textContent ?? '';
   check('MCP 页面生成 Claude Desktop 配置', mcpConfig.includes('mcpServers') && mcpConfig.includes('DB_FILE') && mcpConfig.includes('VAULT_DIR'));
   await waitFor(() => container.querySelector('.mcp-server-row'), { label: 'MCP Server 列表加载' });

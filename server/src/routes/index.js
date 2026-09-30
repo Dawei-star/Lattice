@@ -13,6 +13,7 @@ import { mcpRouter } from '../modules/mcp/mcp.routes.js';
 import { notesRouter } from '../modules/notes/notes.routes.js';
 import { searchRouter } from '../modules/search/search.routes.js';
 import { tagsRouter } from '../modules/tags/tags.routes.js';
+import { updateRouter } from '../modules/update/update.routes.js';
 import { vaultRouter } from '../modules/vault/vault.routes.js';
 
 export const apiRouter = Router();
@@ -26,5 +27,6 @@ apiRouter.use('/tags', tagsRouter);
 apiRouter.use('/search', searchRouter);
 apiRouter.use('/graph', graphRouter);
 apiRouter.use('/meta', metaRouter);
+apiRouter.use('/update', updateRouter);
 apiRouter.use('/mcp', mcpRouter);
 apiRouter.use('/vault', vaultRouter);

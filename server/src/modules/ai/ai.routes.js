@@ -76,7 +76,7 @@ aiRouter.put('/settings', validate({ body: z.object({
     id: z.string().max(120).optional(),
     name: z.string().max(80).optional(),
     service: z.string().max(80).optional(),
-    endpoint: z.string().max(500),
+    endpoint: z.string().url().max(500),
     model: z.string().max(120).optional(),
     apiKey: z.string().max(500).optional(),
     authHeader: z.enum(['bearer', 'x-api-key']).default('bearer'),
@@ -84,7 +84,7 @@ aiRouter.put('/settings', validate({ body: z.object({
   })).max(20).default([]),
   activeProviderId: z.string().max(120).nullable().optional(),
   embedding: z.object({
-    endpoint: z.string().max(500),
+    endpoint: z.string().url().max(500),
     model: z.string().max(120),
     apiKey: z.string().max(500).optional(),
     authHeader: z.enum(['bearer', 'x-api-key']).default('bearer'),

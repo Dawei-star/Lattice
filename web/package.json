@@ -1,6 +1,6 @@
 {
   "name": "@lattice/web",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "test:e2e": "node test/canvas-navigation.test.mjs && node test/run-smoke.mjs"
   },
   "dependencies": {
+    "lucide-react": "^1.49.0",
     "marked": "^14.1.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

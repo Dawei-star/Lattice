@@ -152,7 +152,7 @@ export function cleanupOrphans({ dryRun = true } = {}) {
   const deleted = [];
   const skipped = [];
   for (const candidate of candidates) {
-    const references = collectReferenceMap(config.vaultDir).get(candidate.path) ?? [];
+    const references = referenceMap.get(candidate.path) ?? [];
     if (references.length > 0) {
       skipped.push({ ...candidate, referencedBy: references });
       continue;

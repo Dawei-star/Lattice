@@ -29,10 +29,12 @@ export async function migrateSqliteToVault(vaultDir) {
       if (existing.id === row.id) {
         skipped.push({ id: row.id, filePath, reason: 'already-migrated' });
         db.prepare('UPDATE notes SET file_path = ? WHERE id = ?').run(filePath, row.id);
+        continue;
       } else {
+        // 目标文件已被其他笔记占用（allocate 与 read 之间的变化），跳过以免覆盖
         conflicts.push({ id: row.id, filePath, reason: 'file-renamed-to-avoid-conflict' });
+        continue;
       }
-      if (existing.id === row.id) continue;
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }

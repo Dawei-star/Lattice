@@ -75,7 +75,7 @@ export default function LinkPanel({
         <div className="linkpanel__body">
           <Group
             title="出链"
-            hint={`${resolvedCount}/${outgoing.length} 已解析`}
+            hint={outgoing.length ? `${resolvedCount}/${outgoing.length} 已解析` : null}
             items={outgoing}
             emptyText="还没有引用其他笔记。用 [[标题]] 建立第一条链接。"
             renderItem={(link) => (

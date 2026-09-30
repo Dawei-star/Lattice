@@ -55,6 +55,15 @@ export function findByTitle(title) {
     .map(mapNote);
 }
 
+/** 批量按标题解析笔记 id（同名取最近更新的一篇），供链接重建避免逐标题查询。 */
+export function findIdsByTitles(titles) {
+  if (!titles.length) return [];
+  const placeholders = titles.map(() => '?').join(',');
+  return getDb()
+    .prepare(`SELECT id, title FROM notes WHERE title COLLATE NOCASE IN (${placeholders}) ORDER BY updated_at DESC`)
+    .all(...titles);
+}
+
 export function findByFilePath(filePath) {
   return mapNote(getDb().prepare('SELECT * FROM notes WHERE file_path = ?').get(filePath));
 }
@@ -148,7 +157,7 @@ export function listBrief() {
       folderId: row.folder_id,
       isPinned: row.is_pinned === 1,
       filePath: row.file_path || `${sanitizeFilePart(row.title)}.md`,
-      wordCount: row.wordCount,
+      wordCount: row.word_count,
       updatedAt: row.updated_at,
     }));
 }

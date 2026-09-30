@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { ArrowDownUp, FilePlus2, FolderPlus, PanelLeftClose, RefreshCw } from 'lucide-react';
 import FolderTree from './FolderTree.jsx';
 import TagCloud from './TagCloud.jsx';
+import RepositorySwitcher from './RepositorySwitcher.jsx';
 import { formatNumber } from '../lib/format.js';
 import { SORT_LABELS } from './NoteListPane.jsx';
 
@@ -32,7 +34,6 @@ export default function Sidebar({
   onRevealFolder,
   onRefresh,
   refreshing,
-  onOpenSettings,
   onCollapseSidebar,
   onOpenCanvas,
   onCreateCanvas,
@@ -79,7 +80,7 @@ export default function Sidebar({
     <aside className="sidebar" aria-label="知识库导航">
       <div className="sidebar__toolbar" role="toolbar" aria-label="文件列表操作">
         <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记">
-          <span aria-hidden="true">✎</span>
+          <FilePlus2 size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -87,17 +88,17 @@ export default function Sidebar({
           onClick={() => setCreating((value) => !value)}
           aria-label="新建目录"
         >
-          <span aria-hidden="true">＋</span>
+          <FolderPlus size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button type="button" className="sidebar__toolbtn" onClick={cycleSort} aria-label="切换排序">
-          <span aria-hidden="true">⇅</span>
+          <ArrowDownUp size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button type="button" className="sidebar__toolbtn" onClick={onRefresh} disabled={refreshing} aria-label="刷新">
-          <span aria-hidden="true">↻</span>
+          <RefreshCw size={18} strokeWidth={1.75} className={refreshing ? 'is-spinning' : undefined} aria-hidden="true" />
         </button>
         <span className="sidebar__toolbar-space" aria-hidden="true" />
         <button type="button" className="sidebar__toolbtn" onClick={onCollapseSidebar} aria-label="收起侧边栏">
-          <span aria-hidden="true">⟨</span>
+          <PanelLeftClose size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>
 
@@ -193,11 +194,7 @@ export default function Sidebar({
       </Section>
 
       <div className="sidebar__footer">
-        <button type="button" className="sidebar__settings" onClick={onOpenSettings}>
-          <span className="sidebar__settings-icon" aria-hidden="true">⚙</span>
-          <span>设置</span>
-          <span className="kbd">⌘ ,</span>
-        </button>
+        <RepositorySwitcher />
       </div>
     </aside>
   );

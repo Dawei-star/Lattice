@@ -234,6 +234,8 @@ export function update(id, patch) {
         linksService.rebuildForNote(id, nextContent);
       }
       if (titleChanged) {
+        // 旧标题的链接先按文本重新解析归属（与外部编辑改名路径一致），再认领新标题
+        linksService.releaseStaleLinks(id, nextTitle);
         linksService.claimForTitle(nextTitle, id);
         tagsService.pruneOrphans();
       }
@@ -339,7 +341,7 @@ export function restoreHistory(id, version, { expectedCurrentHash } = {}) {
 
   const currentHash = historyStore.currentHash(current);
   if (expectedCurrentHash && expectedCurrentHash !== currentHash) {
-    throw new ConflictError('绗旇宸茶鍏朵粬鎿嶄綔淇敼锛岃閲嶆柊鍔犺浇后再恢复');
+    throw new ConflictError('笔记已被其他操作修改，请重新加载后再恢复');
   }
 
   const snapshot = historyStore.readSnapshot(id, version);

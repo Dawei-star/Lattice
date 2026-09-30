@@ -43,6 +43,16 @@ const schema = z
         message: '生产环境禁止使用通配符来源 *，请显式列出允许的前端域名',
       });
     }
+    // 全部 /api 写端点（除 AI Bearer Token 外）没有认证：绑定到非回环地址
+    // 等于向局域网开放无鉴权的笔记增删，必须在启动时显式承担风险
+    const loopback = ['127.0.0.1', '::1', 'localhost'];
+    if (!loopback.includes(value.HOST) && !value.AI_ACCESS_TOKEN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['HOST'],
+        message: `HOST=${value.HOST} 会向局域网暴露无鉴权的 API；请绑定 127.0.0.1，或配置 AI_ACCESS_TOKEN（≥16 位）后继续`,
+      });
+    }
   });
 
 const parsed = schema.safeParse(process.env);

@@ -1,0 +1,1328 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="格物 Lattice 操作说明书：安装、笔记、双链、画布、AI、备份与故障排查。" />
+    <title>格物 Lattice · 使用说明书</title>
+    <link rel="icon" href="../web/public/lattice-icon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #f3f5f8;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --surface-tint: #eef2ff;
+        --ink: #172033;
+        --muted: #647084;
+        --subtle: #8d98a8;
+        --line: #dfe4ec;
+        --line-strong: #c9d1df;
+        --brand: #3e55c7;
+        --brand-dark: #2f3e98;
+        --brand-soft: #e8ecff;
+        --teal: #187f73;
+        --teal-soft: #e2f5f1;
+        --orange: #bd6a1d;
+        --orange-soft: #fff0dc;
+        --danger: #b54747;
+        --shadow: 0 18px 48px rgba(18, 32, 63, 0.08);
+        --sidebar-width: 264px;
+        --toc-width: 226px;
+        --header-height: 68px;
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --canvas: #111722;
+        --surface: #192130;
+        --surface-soft: #202a3a;
+        --surface-tint: #252f53;
+        --ink: #edf2fb;
+        --muted: #a7b2c4;
+        --subtle: #7d899e;
+        --line: #303b50;
+        --line-strong: #45516a;
+        --brand: #9eafff;
+        --brand-dark: #c3ccff;
+        --brand-soft: #2b3561;
+        --teal: #73d2c0;
+        --teal-soft: #1b3d3c;
+        --orange: #f0ae6b;
+        --orange-soft: #4a3420;
+        --danger: #f09292;
+        --shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+      }
+
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        font-size: 15px;
+        line-height: 1.8;
+        letter-spacing: 0;
+      }
+      body.nav-open { overflow: hidden; }
+      a { color: inherit; text-decoration: none; }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+      :focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 48%, transparent); outline-offset: 3px; }
+
+      .topbar {
+        position: fixed;
+        z-index: 30;
+        top: 0;
+        right: 0;
+        left: 0;
+        display: flex;
+        align-items: center;
+        min-height: var(--header-height);
+        padding: 0 28px;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--surface) 95%, transparent);
+        backdrop-filter: blur(16px);
+      }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        width: var(--sidebar-width);
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 760;
+        white-space: nowrap;
+      }
+      .brand img { width: 28px; height: 28px; border-radius: 8px; box-shadow: 0 5px 14px rgba(62, 85, 199, 0.22); }
+      .brand small { margin-left: 1px; color: var(--subtle); font-size: 11px; font-weight: 600; }
+      .topbar-tools { display: flex; align-items: center; justify-content: space-between; min-width: 0; flex: 1; gap: 20px; }
+      .search-wrap { position: relative; width: min(380px, 40vw); }
+      .search-box {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 38px;
+        padding: 0 11px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface-soft);
+        color: var(--muted);
+      }
+      .search-box:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent); }
+      .search-box svg { flex: 0 0 auto; }
+      .search-box input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; }
+      .key-hint { padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--subtle); font-size: 10px; white-space: nowrap; }
+      .search-results {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        left: 0;
+        display: none;
+        overflow: hidden;
+        max-height: 360px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+      .search-results.is-visible { display: block; }
+      .search-result { display: block; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+      .search-result:last-child { border-bottom: 0; }
+      .search-result:hover { background: var(--surface-tint); }
+      .search-result strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.4; }
+      .search-result span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .search-empty { padding: 12px; color: var(--muted); font-size: 12px; }
+      .topnav { display: flex; align-items: center; gap: 20px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+      .topnav a:hover, .topnav a[aria-current="page"] { color: var(--brand); }
+      .top-actions { display: flex; align-items: center; gap: 9px; padding-left: 4px; }
+      .icon-button, .mobile-menu {
+        display: inline-grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--muted);
+      }
+      .icon-button:hover, .mobile-menu:hover { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+      .theme-icon-sun, :root[data-theme="dark"] .theme-icon-moon { display: none; }
+      :root[data-theme="dark"] .theme-icon-sun { display: block; }
+      .mobile-menu { display: none; }
+      .backdrop { display: none; }
+
+      .shell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--toc-width); min-height: 100vh; padding-top: var(--header-height); }
+      .sidebar {
+        position: sticky;
+        top: var(--header-height);
+        align-self: start;
+        height: calc(100vh - var(--header-height));
+        overflow-y: auto;
+        padding: 36px 22px 42px 28px;
+        border-right: 1px solid var(--line);
+      }
+      .sidebar-intro { margin: 0 0 30px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+      .sidebar-intro strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 14px; }
+      .nav-group { margin-top: 22px; }
+      .nav-label { display: block; margin-bottom: 7px; color: var(--subtle); font-size: 10px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+      .nav-link { display: block; padding: 6px 9px; border-left: 2px solid transparent; border-radius: 0 6px 6px 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .nav-link:hover, .nav-link.active { border-left-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+      .main { min-width: 0; padding: 60px clamp(28px, 5vw, 82px) 92px; }
+      .article { max-width: 940px; margin: 0 auto; }
+      .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 12px; color: var(--brand); font-size: 12px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+      .eyebrow::before { width: 22px; height: 2px; background: var(--orange); content: ""; }
+      #guide-content > h1 { max-width: 720px; margin: 0 0 14px; color: var(--ink); font-size: clamp(34px, 5vw, 56px); font-weight: 820; letter-spacing: -0.02em; line-height: 1.14; }
+      .hero-copy { max-width: 760px; margin: 0; color: var(--muted); font-size: 16px; line-height: 1.9; }
+      .guide-intro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 30px 0 44px; }
+      .intro-card { min-height: 126px; padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 22px rgba(18, 32, 63, 0.04); }
+      .intro-card strong { display: block; margin-bottom: 6px; color: var(--ink); font-size: 13px; }
+      .intro-card span { color: var(--muted); font-size: 12px; line-height: 1.65; }
+      #guide-content > h2 { scroll-margin-top: 92px; margin: 66px 0 20px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--ink); font-size: 26px; line-height: 1.35; }
+      #guide-content > h3 { scroll-margin-top: 92px; margin: 36px 0 10px; color: var(--ink); font-size: 18px; line-height: 1.45; }
+      #guide-content p { margin: 12px 0; color: var(--muted); }
+      #guide-content strong { color: var(--ink); font-weight: 720; }
+      #guide-content ul, #guide-content ol { margin: 12px 0 18px; padding-left: 24px; color: var(--muted); }
+      #guide-content li { margin: 5px 0; padding-left: 3px; }
+      #guide-content li::marker { color: var(--brand); }
+      #guide-content a { color: var(--brand); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--brand) 36%, transparent); text-underline-offset: 3px; }
+      #guide-content a:hover { color: var(--brand-dark); }
+      #guide-content code { padding: 2px 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); color: var(--brand-dark); font-family: "Cascadia Code", Consolas, monospace; font-size: 0.88em; }
+      #guide-content pre { overflow-x: auto; margin: 16px 0 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 10px; background: #182130; color: #e8edf7; font: 13px/1.7 "Cascadia Code", Consolas, monospace; }
+      #guide-content pre code { padding: 0; border: 0; background: transparent; color: inherit; }
+      #guide-content blockquote { margin: 18px 0; padding: 12px 17px; border-left: 3px solid var(--teal); background: var(--teal-soft); color: var(--muted); }
+      #guide-content blockquote p { margin: 0; }
+      .table-wrap { overflow-x: auto; margin: 16px 0 22px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      #guide-content table { width: 100%; min-width: 580px; border-collapse: collapse; color: var(--muted); font-size: 13px; }
+      #guide-content th, #guide-content td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      #guide-content th { background: var(--surface-soft); color: var(--ink); font-weight: 720; }
+      #guide-content tr:last-child td { border-bottom: 0; }
+      .toc {
+        position: sticky;
+        top: var(--header-height);
+        align-self: start;
+        height: calc(100vh - var(--header-height));
+        overflow-y: auto;
+        padding: 42px 28px 42px 20px;
+        border-left: 1px solid var(--line);
+      }
+      .toc-label { display: block; margin-bottom: 12px; color: var(--subtle); font-size: 10px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+      .toc a { display: block; padding: 5px 8px; border-left: 2px solid transparent; color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .toc a:hover, .toc a.active { border-left-color: var(--brand); color: var(--brand); }
+      .footer { display: flex; justify-content: space-between; gap: 18px; margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--subtle); font-size: 12px; }
+      .footer a { color: var(--brand); }
+      .print-only { display: none; }
+
+      @media (max-width: 1180px) {
+        :root { --sidebar-width: 238px; --toc-width: 190px; }
+        .topnav { gap: 13px; }
+        .main { padding-right: 42px; padding-left: 42px; }
+      }
+      @media (max-width: 920px) {
+        .topbar { padding: 0 17px; }
+        .brand { width: auto; min-width: 205px; }
+        .topbar-tools { justify-content: flex-end; }
+        .search-wrap { width: min(300px, 39vw); }
+        .topnav, .toc { display: none; }
+        .shell { display: block; }
+        .sidebar { position: fixed; z-index: 25; top: var(--header-height); bottom: 0; left: 0; width: min(310px, 86vw); height: auto; transform: translateX(-105%); transition: transform 180ms ease; background: var(--surface); box-shadow: var(--shadow); }
+        .nav-open .sidebar { transform: translateX(0); }
+        .nav-open .backdrop { position: fixed; z-index: 20; inset: var(--header-height) 0 0; display: block; background: rgba(12, 19, 33, 0.38); }
+        .mobile-menu { display: inline-grid; }
+        .main { padding: 44px 28px 70px; }
+        .article { max-width: 820px; }
+      }
+      @media (max-width: 620px) {
+        :root { --header-height: 60px; }
+        .topbar { min-height: var(--header-height); }
+        .brand { min-width: 0; font-size: 14px; }
+        .brand small { display: none; }
+        .search-wrap { width: 42px; }
+        .search-box { width: 42px; padding: 0 11px; }
+        .search-box input, .key-hint { display: none; }
+        .search-box:focus-within { position: absolute; right: 0; width: min(280px, 76vw); padding-left: 11px; }
+        .search-box:focus-within input { display: block; }
+        .main { padding: 34px 18px 58px; }
+        #guide-content > h1 { font-size: 36px; }
+        .hero-copy { font-size: 14px; }
+        .guide-intro { grid-template-columns: 1fr; margin-top: 24px; margin-bottom: 34px; }
+        .intro-card { min-height: 0; }
+        #guide-content > h2 { margin-top: 50px; font-size: 23px; }
+        #guide-content > h3 { font-size: 17px; }
+        .footer { display: block; }
+        .footer span { display: block; margin: 6px 0; }
+      }
+      @media print {
+        .topbar, .sidebar, .toc, .guide-intro, .footer { display: none !important; }
+        .shell { display: block; padding-top: 0; }
+        .main { padding: 0; }
+        #guide-content > h1 { font-size: 32px; }
+        #guide-content > h2 { break-before: page; }
+        a { color: inherit !important; text-decoration: none !important; }
+        .print-only { display: block; margin-bottom: 24px; color: #555; font-size: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="返回使用说明书首页">
+        <img src="../web/public/lattice-icon.svg" alt="" />
+        <span>格物 Lattice <small>使用说明书</small></span>
+      </a>
+      <div class="topbar-tools">
+        <div class="search-wrap">
+          <label class="search-box" for="guide-search">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.4" stroke="currentColor" stroke-width="1.8" /><path d="m16 16 4.2 4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+            <input id="guide-search" type="search" placeholder="搜索使用说明" autocomplete="off" />
+            <span class="key-hint">Ctrl K</span>
+          </label>
+          <div class="search-results" id="search-results" aria-live="polite"></div>
+        </div>
+        <nav class="topnav" aria-label="顶部导航">
+          <a href="lattice-docs.html">产品文档</a>
+          <a href="#一安装与启动" aria-current="page">使用说明</a>
+          <a href="lattice-download.html">下载</a>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题" aria-pressed="false" title="切换主题">
+            <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.3 15.4A8.5 8.5 0 0 1 8.6 3.7 8.5 8.5 0 1 0 20.3 15.4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
+            <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
+          </button>
+          <button class="icon-button" id="print-guide" type="button" aria-label="打印使用说明" title="打印使用说明">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 9V3h10v6M7 18H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" /><path d="M7 14h10v7H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" /></svg>
+          </button>
+          <button class="mobile-menu" id="menu-toggle" type="button" aria-label="打开说明书导航" aria-expanded="false" title="打开说明书导航">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="backdrop" id="backdrop"></div>
+    <div class="shell" id="top">
+      <aside class="sidebar" id="sidebar" aria-label="说明书导航">
+        <p class="sidebar-intro"><strong>操作说明书</strong>从安装启动到日常使用、数据迁移与故障排查</p>
+        <div class="nav-group"><span class="nav-label">章节</span><a class="nav-link" href="#一安装与启动">一、安装与启动</a>
+<a class="nav-link" href="#二界面导览">二、界面导览</a>
+<a class="nav-link" href="#三日常操作">三、日常操作</a>
+<a class="nav-link" href="#四快捷键">四、快捷键</a>
+<a class="nav-link" href="#五数据备份与迁移">五、数据、备份与迁移</a>
+<a class="nav-link" href="#六设置模型与集成">六、设置、模型与集成</a>
+<a class="nav-link" href="#七升级与卸载">七、升级与卸载</a>
+<a class="nav-link" href="#八故障排查">八、故障排查</a>
+<a class="nav-link" href="#九已知限制">九、已知限制</a>
+<a class="nav-link" href="#附录关于隐私">附录：关于隐私</a></div>
+      </aside>
+
+      <main class="main">
+        <article class="article">
+          <div class="eyebrow">Lattice 0.1.2 · Windows</div>
+          <div class="print-only">格物 Lattice 操作说明书 · 本地优先的双链笔记知识库</div>
+          <div id="guide-content"><h1 id="格物-lattice-操作说明书">格物 Lattice 操作说明书</h1><div class="guide-intro" aria-label="阅读提示"><div class="intro-card"><strong>第一次使用</strong><span>先看安装与启动，再按界面导览熟悉 Vault、笔记列表和编辑区。</span></div><div class="intro-card"><strong>日常写作</strong><span>重点查看双向链接、标签、搜索、画布和 AI 助手章节。</span></div><div class="intro-card"><strong>数据安全</strong><span>备份时直接复制 Vault；遇到问题优先查看数据位置和故障排查。</span></div></div>
+<p><strong>版本 0.1.2 · Windows 桌面发行版</strong></p>
+<p>一个本地优先的双链笔记知识库。所有笔记都存放在你自己的电脑上，不注册、不云同步；
+不配置外部模型时完全离线，AI 功能只有在你主动填写并使用模型时才会联网（详见<a href="#%E9%99%84%E5%BD%95%E5%85%B3%E4%BA%8E%E9%9A%90%E7%A7%81">附录：关于隐私</a>）。</p>
+<hr>
+<h2 id="一安装与启动">一、安装与启动</h2>
+<h3 id="11-两个版本怎么选">1.1 两个版本怎么选</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>安装版 <code>Lattice-0.1.2-setup.exe</code></th>
+<th>绿色版 <code>Lattice-0.1.2-portable.exe</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td>安装</td>
+<td>需要走安装向导</td>
+<td>免安装，双击即用</td>
+</tr>
+<tr>
+<td>管理员权限</td>
+<td>不需要（装在当前用户目录）</td>
+<td>不需要</td>
+</tr>
+<tr>
+<td>开始菜单 / 桌面快捷方式</td>
+<td>自动创建</td>
+<td>无，自己放个快捷方式即可</td>
+</tr>
+<tr>
+<td>笔记库位置</td>
+<td>首次启动时选择的文件夹</td>
+<td>首次启动时选择的文件夹</td>
+</tr>
+<tr>
+<td>索引与日志</td>
+<td><code>%APPDATA%\Lattice\data\</code></td>
+<td><strong>exe 同级的 <code>LatticeData\data\</code></strong></td>
+</tr>
+<tr>
+<td>换机器 / 带走数据</td>
+<td>拷走 Vault 文件夹即可</td>
+<td>整个文件夹连 <code>LatticeData\</code> 一起拷走</td>
+</tr>
+<tr>
+<td>适用场景</td>
+<td>长期自用，装完不管</td>
+<td>放在 U 盘、多机同步、不想污染系统</td>
+</tr>
+</tbody></table></div>
+<p><strong>建议</strong>：日常使用选安装版；需要随身携带或想「一份文件夹 = 一套运行环境」选绿色版。</p>
+<h3 id="12-安装版">1.2 安装版</h3>
+<ol>
+<li>双击 <code>Lattice-0.1.2-setup.exe</code>。</li>
+<li>安装向导可<strong>自选安装目录</strong>；默认装在当前用户目录下，因此不会弹 UAC 提权框。</li>
+<li>安装向导会提供创建桌面快捷方式与开始菜单项的选项（默认勾选）。</li>
+<li>完成后从桌面或开始菜单启动「格物 Lattice」。</li>
+</ol>
+<h3 id="13-绿色版">1.3 绿色版</h3>
+<ol>
+<li>把 <code>Lattice-0.1.2-portable.exe</code> 放到一个<strong>你有写权限的文件夹</strong>里（例如 <code>D:\Tools\Lattice\</code>）。</li>
+<li>双击运行。首次启动会在同级目录自动建出 <code>LatticeData\</code>。</li>
+</ol>
+<blockquote>
+<p><strong>不要</strong>把绿色版直接放进 <code>C:\Program Files\</code> 这类只读位置——写不进去时它会自动把数据回退到
+<code>%APPDATA%\Lattice\</code>，这样就不再「便携」了。真遇到这种情况，日志里会有记录。</p>
+</blockquote>
+<h3 id="14-首次启动会发生什么">1.4 首次启动会发生什么</h3>
+<ul>
+<li>会弹出系统文件夹选择框，让你<strong>指定一个文件夹作为知识库（Vault）</strong>。可以选一个空文件夹，
+也可以选一个已经存放 Markdown 的文件夹。此后每次启动都直接打开这个库。</li>
+<li>选定后自动建库并执行数据库初始化，<strong>无需任何其他手动配置</strong>。</li>
+<li>不会自动写入示例知识库。Vault 为空时保持为空，避免应用擅自修改你选择的文件夹。</li>
+<li>可以直接把已有 Markdown 文件复制进 Vault，应用会在启动和文件变化后自动建立索引；
+单文件改动只做增量同步，不会每次都全库重建。</li>
+</ul>
+<p>启动时窗口会短暂延迟出现（先起本地服务、加载页面，再显示窗口，避免白屏闪烁）。
+正常情况下 1–3 秒内完成。</p>
+<p>想更换知识库文件夹：在「设置 → 知识库位置」中重新选择，应用会自动重启加载新目录。</p>
+<h3 id="15-启动时的几个行为约定">1.5 启动时的几个行为约定</h3>
+<ul>
+<li><strong>单实例</strong>：软件同时只允许开一个。重复双击不会开第二个，而是把已有的窗口拉到最前面。</li>
+<li><strong>关窗即退出</strong>：没有托盘常驻，关闭窗口等于完全退出，本地服务同时停止。</li>
+<li><strong>本地端口</strong>：内部服务优先绑定 <code>127.0.0.1:5188</code>；若被占用会自动改用系统分配的随机端口，
+不需要你干预，也不会和别的东西抢端口。</li>
+<li><strong>不对外暴露</strong>：服务只监听 <code>127.0.0.1</code>，局域网内其他机器访问不到。</li>
+<li><strong>关联打开 .md</strong>：在资源管理器中双击 Markdown 文件，可以选择用 Lattice 打开
+（详见 <a href="#312-%E5%AF%BC%E5%87%BA-html-%E4%B8%8E%E6%89%93%E5%BC%80%E5%A4%96%E9%83%A8-markdown">3.12</a>）。</li>
+</ul>
+<hr>
+<h2 id="二界面导览">二、界面导览</h2>
+<p>窗口默认 1280×820，最小可缩到 940×600；窄屏下侧边栏会自动改为抽屉式，功能不会丢失。</p>
+<pre><code>┌──┬───────────────────────────────────────────────────────────────┐
+│功│ 标签页栏（打开的笔记 / 画布）                          ＋ ×    │
+│能├────────────┬───────────────┬──────────────────────────────────┤
+│区│ 侧边栏      │ 笔记列表      │ 编辑区                           │
+│  │            │               │                                  │
+│✎ │ 全部笔记    │ 🔍 全文检索…  │ 标题                              │
+│▤ │ 目录树      │ 标题 + 摘要   │ 编辑 / 分栏 / 预览   状态  工具   │
+│⌘ │ （含画布）  │ 标签 / 反链数 │ 属性 / 大纲 / AI 写作            │
+│▧ │ 标签云      │ 置顶标记      ├──────────────────────────────────┤
+│▦ │ 统计        │               │ 关系面板（可收起）                │
+│⌕ │            │               │ 出链 / 反向链接 / 悬空            │
+│✦ │            │               │                                  │
+│  │            │               │                                  │
+│↻ │            │               │                                  │
+│◧ │            │               │                                  │
+│◐ │            │               │                                  │
+│⚙ │            │               │                                  │
+├──┴────────────┴───────────────┴──────────────────────────────────┤
+│ 状态栏  N 篇笔记 · M 条链接          当前：xxx          ● 已连接   │
+└──────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="21-左侧功能区">2.1 左侧功能区</h3>
+<p>窗口最左侧是一条竖向图标栏，从上到下分别是：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>图标</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>✎</td>
+<td>新建笔记</td>
+</tr>
+<tr>
+<td>▤ / ⌘ / ▧</td>
+<td>切换三个主视图：<strong>笔记 / 图谱 / 画布</strong></td>
+</tr>
+<tr>
+<td>▦</td>
+<td>新建画布（白板）</td>
+</tr>
+<tr>
+<td>⌕</td>
+<td>打开快速切换面板（<code>Ctrl + K</code>）</td>
+</tr>
+<tr>
+<td>✦</td>
+<td>打开 / 关闭 <strong>AI 知识库助手</strong>（<code>Ctrl + J</code>）</td>
+</tr>
+<tr>
+<td>↻</td>
+<td>重新加载全部数据（笔记、目录、标签、统计、图谱）</td>
+</tr>
+<tr>
+<td>◧</td>
+<td>展开 / 收起右侧的关系面板</td>
+</tr>
+<tr>
+<td>◐ / ☼</td>
+<td>切换浅色 / 深色主题</td>
+</tr>
+<tr>
+<td>⚙</td>
+<td>打开设置（<code>Ctrl + ,</code>）</td>
+</tr>
+</tbody></table></div>
+<h3 id="22-侧边栏">2.2 侧边栏</h3>
+<p>侧边栏顶部有一排小工具：新建笔记、新建目录、切换排序、刷新、收起侧边栏。</p>
+<p>下方依次是：</p>
+<ul>
+<li><strong>全部笔记</strong>：取消一切筛选，回到完整列表，右侧显示笔记总数。</li>
+<li><strong>目录树</strong>：任意层级嵌套，其中同时显示 Markdown 笔记与 <code>.canvas</code> 画布文件。
+悬停或右键可以就地重命名、新建子目录与笔记、移动、复制（创建副本）、收藏目录、
+复制相对 / 完整路径、用系统默认应用打开、在资源管理器中显示等。</li>
+<li><strong>标签云</strong>：点标签即筛选出所有带该标签的笔记；区块可折叠。</li>
+<li><strong>统计</strong>：笔记、目录、标签、链接数量与总字数；底部还会列出「待补全的引用」（悬空链接）。</li>
+<li><strong>底部「设置」入口</strong>，点击等价于 <code>Ctrl + ,</code>。</li>
+</ul>
+<p>侧边栏收起后，最左缘会保留一条细轨，点一下（或按 <code>Ctrl + B</code>）即可展开。</p>
+<h3 id="23-笔记列表与全文检索">2.3 笔记列表与全文检索</h3>
+<ul>
+<li>列表顶部是<strong>全文检索框</strong>，输入即搜（有防抖），右侧 <code>×</code> 一键清空；检索时列表切换为
+「检索结果」模式，命中片段带关键词高亮，右上还会标明本次走的是 <code>FTS5 全文索引</code> 还是 <code>LIKE 匹配</code>。</li>
+<li>非检索状态下可在右上角切换排序：<strong>最近更新 / 创建时间 / 标题</strong>。</li>
+<li>每行显示标题、正文摘要、更新时间、字数、标签，以及出链 / 反链数量；置顶笔记排在最前并带 ★。</li>
+<li>右键笔记卡片可以：打开、置顶 / 取消置顶、创建副本、复制路径、复制双链、删除。</li>
+<li>笔记很多时列表底部分页，不会一次性渲染全部内容。</li>
+</ul>
+<h3 id="24-标签页栏">2.4 标签页栏</h3>
+<p>功能区右侧、内容区上方是标签页栏。打开笔记、切换笔记、新建标签页都在这里完成。</p>
+<ul>
+<li>点击标签切换；<code>×</code> 关闭；标签过多时可横向滚动。</li>
+<li>右键标签提供完整操作（详见 <a href="#316-%E6%A0%87%E7%AD%BE%E9%A1%B5%E5%8F%B3%E9%94%AE%E8%8F%9C%E5%8D%95">3.16 标签页右键菜单</a>）：
+关闭左侧 / 右侧 / 其他、锁定 / 解锁、收藏、重命名、移动到目录、
+复制相对路径 / 完整路径 / 双链、用默认应用打开、在资源管理器中显示、删除文件等。</li>
+<li>关闭正在编辑、尚有未保存内容的标签前，会先弹出确认。</li>
+<li>通过系统关联打开的 Vault 之外的 Markdown 文件，也会以独立标签出现（标注为只读或可写）。</li>
+</ul>
+<h3 id="25-编辑区">2.5 编辑区</h3>
+<ul>
+<li><strong>标题框</strong>：直接改，改完自动保存。</li>
+<li><strong>模式切换</strong>：<code>编辑</code>（纯文本）/ <code>分栏</code>（左写右看，默认）/ <code>预览</code>（只读渲染）。
+分栏模式下两侧滚动位置按比例同步，中间分界条可以拖动调整宽窄（见 <a href="#29-%E5%8F%AF%E6%8B%96%E6%8B%BD%E5%88%86%E6%A0%8F%E5%B8%83%E5%B1%80">2.9</a>）。</li>
+<li><strong>状态提示</strong>：依次显示「已同步 → 有未保存修改 → 保存中 → 已保存」；保存失败会出现明确的
+错误条和「重试保存」按钮，而不是静默吞掉。</li>
+<li><strong>工具按钮</strong>：置顶 ★、所属目录移动、插入附件 ↑、导出 HTML ↓、版本历史 ◷、删除。</li>
+<li><strong>属性</strong>：标题下方可折叠的属性区，可以添加、改名、删除笔记的自定义属性（随笔记保存）。</li>
+<li><strong>文档大纲</strong>：正文中的标题会自动生成大纲，点击直接跳到对应位置。</li>
+<li><strong>AI 写作条</strong>：编辑 / 分栏模式下常驻正文上方（详见 <a href="#314-ai-%E5%86%99%E4%BD%9C%E5%8A%A9%E6%89%8B">3.14</a>）。</li>
+<li><strong>底部字数统计</strong>：字数、行数、字符数，以及创建 / 更新时间。</li>
+</ul>
+<h3 id="26-关系面板">2.6 关系面板</h3>
+<p>展示当前笔记与其他笔记的关系：</p>
+<ul>
+<li><strong>出链</strong>：本篇正文里 <code>[[引用]]</code> 了谁。</li>
+<li><strong>反向链接</strong>：谁引用了本篇（自动维护，不需要手工登记）。</li>
+<li><strong>悬空链接</strong>：你引用了但<strong>还不存在</strong>的笔记，点一下就能补建。</li>
+</ul>
+<h3 id="27-图谱视图">2.7 图谱视图</h3>
+<p>把所有笔记和引用关系画成一张网：</p>
+<ul>
+<li>节点大小按连接数（度数）缩放，一眼看出哪些是枢纽笔记。</li>
+<li>鼠标<strong>拖拽</strong>节点、<strong>滚轮</strong>缩放、<strong>点击</strong>节点直接跳到那篇笔记。</li>
+<li>适合发现「孤岛笔记」（没有任何连接的）和意料之外的关联。</li>
+</ul>
+<h3 id="28-画布视图">2.8 画布视图</h3>
+<p>点击功能区的 ▧，或在侧边栏打开任意 <code>.canvas</code> 文件，即进入画布视图。顶部工具栏显示当前画布的
+对象数、连接数和选中状态。知识库中可以同时存在多个画布文件，各自独立保存。</p>
+<p>画布的完整操作见 <a href="#315-%E7%94%BB%E5%B8%83%E7%99%BD%E6%9D%BF">3.15 画布（白板）</a>。</p>
+<h3 id="29-可拖拽分栏布局">2.9 可拖拽分栏布局</h3>
+<p>目录树、笔记列表、关系面板以及编辑 / 预览分栏之间都有一条细细的<strong>分隔条</strong>：</p>
+<ul>
+<li><strong>按住拖动</strong>：连续调整宽度，宽度自动限制在合理区间内。</li>
+<li><strong>双击分隔条</strong>：立即恢复默认宽度。</li>
+<li><strong>键盘微调</strong>：先用 Tab 把焦点移到分隔条上，按 ← / → 每次微调 16 px。</li>
+<li><strong>自动记忆</strong>：调整结果会防抖保存在本机，下次打开保持不变。</li>
+</ul>
+<h3 id="210-底部状态栏">2.10 底部状态栏</h3>
+<p>窗口最底部常驻一条状态栏：左侧是全库笔记数、链接数；中间显示当前打开的笔记标题；
+右侧是本地服务连接状态（已连接 / 连接中断）。</p>
+<hr>
+<h2 id="三日常操作">三、日常操作</h2>
+<h3 id="31-新建与保存">3.1 新建与保存</h3>
+<ul>
+<li><code>Ctrl + N</code> 新建，或点功能区 / 侧边栏的 ✎。新建笔记默认落进当前正在浏览的目录。</li>
+<li><strong>自动保存</strong>：停止输入约 0.9 秒后静默存盘，不需要手动保存。延迟时长可在
+「设置 → 编辑器」中改为 500 ms / 900 ms / 1500 ms，也可以整体关闭自动保存。</li>
+<li><code>Ctrl + S</code> 可立即保存（比如写完最后一句就想马上落盘）。</li>
+<li>标题留空时不会提交标题（服务端拒绝空标题），正文照常保存。</li>
+<li>每次成功保存都会自动产生一个<strong>版本快照</strong>，可随时查看或恢复（见 <a href="#310-%E7%89%88%E6%9C%AC%E5%8E%86%E5%8F%B2">3.10</a>）。</li>
+</ul>
+<h3 id="32-双向链接核心功能">3.2 双向链接（核心功能）</h3>
+<p>在正文里用双方括号引用其他笔记：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>写法</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>[[笔记标题]]</code></td>
+<td>链接到该笔记</td>
+</tr>
+<tr>
+<td><code>[[笔记标题|显示文字]]</code></td>
+<td>链接到该笔记，但显示成别的文字</td>
+</tr>
+<tr>
+<td><code>[[笔记标题#小节名]]</code></td>
+<td>指向该笔记里的某个小节</td>
+</tr>
+</tbody></table></div>
+<ul>
+<li>目标笔记不存在时，这条链接会被标成<strong>悬空链接</strong>，在关系面板里可一键创建。</li>
+<li>链接是<strong>从正文自动解析</strong>的，不需要手动维护任何关系表。改了正文，链接就跟着变。</li>
+<li>被引用的笔记删掉后，指向它的链接会退回悬空状态而<strong>不是消失</strong>——引用关系不会凭空断掉。</li>
+<li>在预览或关系列表里点击双链即可跳转；想把链接发给别处，可右键笔记选择「复制双链」。</li>
+</ul>
+<h3 id="33-嵌入引用">3.3 嵌入引用</h3>
+<p>独占一行的 <code>![[笔记标题]]</code> 会把那篇笔记的内容<strong>内嵌</strong>显示进来，而不是只给一个链接。</p>
+<ul>
+<li>支持两级嵌套。</li>
+<li>会自动检测循环引用（A 嵌 B、B 又嵌 A），不会无限递归。</li>
+</ul>
+<h3 id="34-标签">3.4 标签</h3>
+<p>在正文里直接写 <code>#标签</code> 即自动归类。支持嵌套写法 <code>#工程/前端</code>、<code>#工程/后端</code>，
+侧栏标签云里按层级展示。标签同样是正文派生数据，删掉正文里的标签，归类自动消失。</p>
+<h3 id="35-快速切换">3.5 快速切换</h3>
+<p>按 <code>Ctrl + K</code>（或 <code>Ctrl + O</code>）打开快速切换面板，输入标题片段模糊匹配、回车跳转。</p>
+<p><strong>目标笔记不存在时可以直接创建</strong>——这是最常用的写笔记姿势：想到一个概念，
+<code>Ctrl+K</code> 输入名字、回车，边写边把新笔记链上。</p>
+<blockquote>
+<p>如果在「设置 → 关于」里关闭了「快捷切换」开关，<code>Ctrl + K</code> 将不再唤起面板。</p>
+</blockquote>
+<h3 id="36-全文检索">3.6 全文检索</h3>
+<p>笔记列表顶部的检索框输入即搜，检索范围是<strong>标题 + 正文</strong>，结果带关键词高亮，
+并标注本次使用的检索策略（FTS5 / LIKE）。</p>
+<p>关于中文检索的一个说明：</p>
+<ul>
+<li>中文采用 <strong>SQLite FTS5 + trigram 分词</strong>，支持子串匹配——搜「知识」能命中「知识管理」。</li>
+<li><strong>两个字的短查询会自动改用模糊匹配兜底</strong>（trigram 需要至少 3 个字符才能建索引）。
+所以「笔记」这种两字词也能搜到，只是走的是另一条路径。</li>
+<li>搜不到时不要怀疑软件：先试试把关键词写长一点。</li>
+</ul>
+<h3 id="37-目录与整理">3.7 目录与整理</h3>
+<ul>
+<li>目录可任意层级嵌套，可就地重命名、删除、创建副本、整体移动。</li>
+<li><strong>删除目录不会删除里面的笔记</strong>——笔记会自动回到「未分类」，不会丢。</li>
+<li>在侧边栏目录上右键，可以把常用目录<strong>收藏</strong>、复制它的相对 / 完整路径、
+「在此目录中查找」（自动带筛选并聚焦检索框），或直接在资源管理器中打开。</li>
+</ul>
+<h3 id="38-主题与外观">3.8 主题与外观</h3>
+<p>点功能区的 ◐ / ☼ 切换浅色 / 深色。选择会记住，下次打开直接生效，
+并且首屏渲染前就定好主题，不会出现先白后黑的闪烁。</p>
+<p>在「设置 → 外观」中还可以：</p>
+<ul>
+<li>选择一张 PNG、JPG、WebP、GIF 或 AVIF 图片作为工作区背景，单张图片最大 2 MB。
+背景图片只以本机 data URI 形式保存，不会出现在网络请求里。</li>
+<li>导入 JSON 或 CSS 颜色令牌作为自定义主题，导入时会按 WCAG 规则校验对比度
+（正文文本至少 4.5:1、辅助文字至少 3:1），不达标会被拦下；也可以一键恢复默认主题。</li>
+<li>调整界面密度（紧凑 / 舒适）。</li>
+</ul>
+<h3 id="39-附件">3.9 附件</h3>
+<p>0.1.1 起，笔记正文支持插入附件。</p>
+<ul>
+<li>点编辑区工具栏的 <strong>↑</strong> 按钮选择本地文件；图片会以 <code>![名称](路径)</code> 插入，
+其他文件以 <code>[名称](路径)</code> 链接形式插入，插入位置就是当前光标处。</li>
+<li>支持常见图片，以及 PDF、TXT、CSV、JSON、Word / Excel 文档、常见音视频
+（mp3 / mp4 / wav / webm），<strong>单个文件最大 25 MB</strong>。</li>
+<li>附件统一保存在 <strong>Vault 根目录的 <code>attachments/</code> 文件夹</strong>中，笔记里只保存相对引用，
+不会把文件塞进数据库。图片在分栏 / 预览中直接显示。</li>
+<li>备份或迁移知识库时，连同 <code>attachments/</code> 一起复制即可（见<a href="#%E4%BA%94%E6%95%B0%E6%8D%AE%E5%A4%87%E4%BB%BD%E4%B8%8E%E8%BF%81%E7%A7%BB">第五章</a>）。</li>
+</ul>
+<h3 id="310-版本历史">3.10 版本历史</h3>
+<ul>
+<li>编辑区工具栏点 <strong>◷</strong> 打开「版本历史」。</li>
+<li>左侧是每次保存产生的快照列表（时间 + 大小），点选后右侧预览该版本的完整内容。</li>
+<li>确认无误后点「恢复此版本」，笔记立即回到当时的标题与正文；恢复操作本身也会保存，
+不会覆盖掉快照记录。</li>
+<li>快照不是数据库里的二进制，而是 Vault 内 <code>.lattice/history/</code> 目录下的 <strong>Markdown 原文副本</strong>，
+所以即使索引损坏，历史也还在。</li>
+<li>当前版本不会自动清理，高频编辑时该目录会逐渐变大（见<a href="#%E4%B9%9D%E5%B7%B2%E7%9F%A5%E9%99%90%E5%88%B6">第九章</a>）。</li>
+</ul>
+<h3 id="311-模板每日笔记与每日摘要">3.11 模板、每日笔记与每日摘要</h3>
+<p>这三类文件都直接落在 Vault 里，是普通 Markdown：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>功能</th>
+<th>位置 / 文件名</th>
+<th>怎么用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>模板</td>
+<td>Vault 的 <code>_templates/</code> 目录</td>
+<td>把任意 <code>.md</code> 放进去即成为模板，支持 <code>{{date}}</code>、<code>{{time}}</code>、<code>{{title}}</code> 占位符；新标签页空状态会列出全部模板，点击即按模板建笔记</td>
+</tr>
+<tr>
+<td>每日笔记</td>
+<td><code>Daily/YYYY-MM-DD.md</code></td>
+<td>空状态页点「每日笔记」创建；同一天重复点击是幂等的，不会建出第二篇</td>
+</tr>
+<tr>
+<td>AI 每日摘要</td>
+<td><code>Journal/每日摘要 YYYY-MM-DD.md</code></td>
+<td>在 AI 助手面板点「☰ 每日摘要」，自动汇总当天修改过的笔记；已配置模型时附带一段 AI 总览，同一天重复生成会更新同一篇</td>
+</tr>
+</tbody></table></div>
+<h3 id="312-导出-html-与打开外部-markdown">3.12 导出 HTML 与打开外部 Markdown</h3>
+<ul>
+<li><strong>导出单篇 HTML</strong>：编辑区工具栏点 <strong>↓</strong>，会把当前笔记下载为一个独立的 <code>.html</code> 文件，
+图片会内联、双链可点击、嵌入内容会展开，适合单篇分享。目前还是<strong>单篇导出</strong>，
+整个知识库的批量站点导出尚未提供。</li>
+<li><strong>打开 Vault 之外的 Markdown</strong>：在资源管理器里双击 <code>.md</code> 文件并选择用 Lattice 打开，
+文件会以独立标签出现，默认<strong>只读</strong>，不进入知识库索引。需要修改时点标签内的
+「获取写权限」，授权后即可直接编辑并保存回原文件；关闭标签不影响原文件。</li>
+</ul>
+<h3 id="313-ai-知识库助手">3.13 AI 知识库助手</h3>
+<p>点功能区的 <strong>✦</strong> 或按 <code>Ctrl + J</code>，界面右侧滑出 AI 知识库助手。</p>
+<p><strong>两种工作状态</strong>（面板标题旁有指示灯）：</p>
+<ul>
+<li><strong>本地模式</strong>：没有配置任何外部模型。助手仍可响应搜索、文件整理建议等本地即时请求，
+但不会生成模型回答。</li>
+<li><strong>已配置 / 已连接</strong>：已在模型管理中保存模型配置；通过连通性测试后显示「已连接」。
+模型的配置方法见 <a href="#62-%E6%A8%A1%E5%9E%8B%E7%AE%A1%E7%90%86%E4%B8%AD%E5%BF%83">6.2</a>。</li>
+</ul>
+<p><strong>能做什么</strong>：</p>
+<ul>
+<li><strong>知识库问答</strong>：直接提问，助手会先检索全库（关键词 + 语义混合检索），再给出带来源引用的
+流式回答。回答下方的引用卡片可点击直接跳到原笔记。</li>
+<li><strong>相关笔记</strong>：配置了语义索引后，打开笔记时面板会自动浮现语义相关的笔记与相关度百分比。</li>
+<li><strong>搜索 / 检查 / 整理文件</strong>：底部快捷按钮提供「知识问答」「搜索文件」「整理建议」
+「检查内容」「每日摘要」；也可以直接输入自然语言指令。</li>
+<li><strong>写操作先预览、后执行</strong>：让 AI 改文件时，它不会直接动手，而是先给出「确认文件操作」清单，
+逐项标明只读 / 需确认 / 危险（删除不可逆）。核对后点「确认执行」才会真正写入 Vault。</li>
+<li><strong>任务模式</strong>（输入框左下开关）：开启后 AI 可以自主多轮执行「检索 → 读取 → 写入」，
+适合「把全库文件按主题整理到目录里」这类任务；所有动作仍会逐条记录。</li>
+<li><strong>模型优先</strong>（另一个开关）：默认搜索、检查等轻请求走本地快路径；开启后这些请求也优先
+调用外部模型。</li>
+<li><strong>会话与审计</strong>：对话在服务端持久化，可通过顶部下拉切换历史会话、新建或删除；
+「操作历史」标签页列出 AI 执行过的每一次文件操作（类型、路径、时间、成功 / 失败）。</li>
+<li>输入框支持 <strong>Enter 发送、Shift + Enter 换行</strong>；生成过程中可以点 ■ 随时停止，失败会显示
+上游原因并提供「重试」。</li>
+</ul>
+<blockquote>
+<p>AI 只会访问当前 Vault。配置模型后，提问与命中的笔记片段会按你的配置发送给对应模型服务商；
+完整隐私边界见<a href="#%E9%99%84%E5%BD%95%E5%85%B3%E4%BA%8E%E9%9A%90%E7%A7%81">附录</a>。</p>
+</blockquote>
+<h3 id="314-ai-写作助手">3.14 AI 写作助手</h3>
+<p>编辑 / 分栏模式下，正文上方常驻一条「✦ AI 写作」工具条（预览模式下隐藏）：</p>
+<ul>
+<li><strong>选中一段文字后</strong>，出现四个加工动作：<strong>润色、摘要、译成中文、译成英文</strong>。</li>
+<li><strong>没有选区时</strong>，可以：<strong>从标题写全文</strong>（围绕标题生成结构完整的草稿）、
+<strong>头脑风暴</strong>（列出创意 / 大纲方向）、<strong>续写</strong>（接着光标前的内容往下写）。</li>
+<li>也可以在输入框里填写<strong>自定义指令</strong>（如「改成清单格式」「写一条产品发布文案」）后运行。</li>
+<li>结果以流式方式在下方预览，生成中可停止；满意后：<ul>
+<li>加工类结果点「接受并写入」替换选区，或「丢弃」；</li>
+<li>创作类结果可「替换全文」或「追加到末尾」（正文非空时替换会再次确认）。</li>
+</ul>
+</li>
+<li>AI 写作助手需要先在模型管理中配置可用的对话模型，本地模式下这些按钮不产生模型结果。</li>
+</ul>
+<h3 id="315-画布白板">3.15 画布（白板）</h3>
+<p>画布以 <code>.canvas</code> 文件保存在 Vault 中，与 Markdown 笔记一样是可复制、可备份的本地文件；
+一个知识库可以有多个画布。入口：功能区 ▦ 新建、文件夹右键「新建画布」、侧边栏点击已有画布。</p>
+<p><strong>三类卡片</strong>：</p>
+<ul>
+<li><strong>文本卡片</strong>：自由记录，直接在卡片里编辑。</li>
+<li><strong>笔记卡片</strong>：引用知识库中的笔记，单击 / 双击卡片即打开原文；卡片上标注文件路径与字数。</li>
+<li><strong>图片卡片</strong>：引用 Vault 中已有的图片，不复制、不修改原图；图片缺失时显示占位提示。</li>
+</ul>
+<p><strong>添加方式</strong>：工具栏「＋ 文本卡片 / 添加笔记 / 添加图片 / 新建笔记」，或在画布空白处右键；
+<strong>双击空白处</strong>可快速新建文本卡片。添加笔记 / 图片时弹出选择器，可搜索后点选。</p>
+<p><strong>布局与连接</strong>：</p>
+<ul>
+<li>拖动卡片移动位置，右下角手柄调整大小；拖动时显示<strong>对齐辅助线</strong>。</li>
+<li>从卡片四边的连接点按住拖到目标卡片的任意连接点松开，即建立带箭头的方向连接；
+<strong>拖到空白处会直接生成一张新卡片并连好线</strong>。在连接上右键可「反转方向」或删除连接。</li>
+<li>在空白处按住拖出选框可批量选择；卡片底部可切换多种预设颜色。</li>
+<li>按住<strong>空格</strong>或鼠标中键拖动画布，<strong>滚轮</strong>缩放。</li>
+</ul>
+<p><strong>撤销重做与视图</strong>：画布操作支持撤销 / 重做；工具栏提供缩放控制、<strong>适配全部节点</strong>、
+<strong>聚焦选中节点</strong>和<strong>重置视图</strong>。容器大小变化不会覆盖你手动调整过的视图。</p>
+<p>画布内容<strong>停止操作 0.5 秒后自动保存</strong>，右下角状态点会显示 加载 / 保存中 / 已保存 / 保存失败，
+并显示当前对象数与连接数。</p>
+<h3 id="316-标签页右键菜单">3.16 标签页右键菜单</h3>
+<blockquote>
+<p>标签页栏的完整右键菜单：</p>
+<ul>
+<li><strong>关闭类</strong>：关闭、关闭左侧、关闭右侧、关闭其他——已锁定标签一律保留。</li>
+<li><strong>锁定 / 解锁</strong>：保护常用标签，批量关闭与 <code>Ctrl + W</code> 都不会关掉它。</li>
+<li><strong>收藏 / 取消收藏</strong>：即置顶这篇笔记，列表中排到最前。</li>
+<li><strong>重命名</strong>：直接修改笔记文件名（等价于改标题）。</li>
+<li><strong>将文件移动到…</strong>：在子菜单里选择目标目录或根目录。</li>
+<li><strong>复制路径</strong>：相对路径、完整路径，或复制 <code>[[双链]]</code>。</li>
+<li><strong>使用默认应用打开</strong>、<strong>在系统资源管理器中显示</strong>、<strong>在文件列表中显示当前文件</strong>。</li>
+<li><strong>打开当前笔记的…</strong>：按出链快速跳到相关笔记。</li>
+<li><strong>删除文件</strong>（有确认）。</li>
+</ul>
+<p>菜单中灰色项（如分屏、多窗口、导出图片）是为后续版本预留的，当前版本暂不可用。</p>
+</blockquote>
+<hr>
+<h2 id="四快捷键">四、快捷键</h2>
+<h3 id="全局">全局</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>快捷键</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Ctrl + K</code> / <code>Ctrl + O</code></td>
+<td>快速切换笔记（不存在可直接创建，可在设置中关闭）</td>
+</tr>
+<tr>
+<td><code>Ctrl + J</code></td>
+<td>打开 / 关闭 AI 知识库助手</td>
+</tr>
+<tr>
+<td><code>Ctrl + N</code></td>
+<td>新建笔记</td>
+</tr>
+<tr>
+<td><code>Ctrl + T</code></td>
+<td>新建标签页</td>
+</tr>
+<tr>
+<td><code>Ctrl + W</code></td>
+<td>关闭当前标签页（锁定标签除外）</td>
+</tr>
+<tr>
+<td><code>Ctrl + B</code></td>
+<td>展开 / 收起侧边栏</td>
+</tr>
+<tr>
+<td><code>Ctrl + ,</code></td>
+<td>打开设置</td>
+</tr>
+<tr>
+<td><code>Alt</code></td>
+<td>唤出自动隐藏的菜单栏（文件 / 编辑 / 视图、开发者工具、全屏等）</td>
+</tr>
+<tr>
+<td><code>Ctrl + 加号</code> / <code>Ctrl + 减号</code> / <code>Ctrl + 0</code></td>
+<td>界面放大 / 缩小 / 恢复实际大小</td>
+</tr>
+<tr>
+<td><code>F11</code></td>
+<td>全屏切换</td>
+</tr>
+<tr>
+<td><code>Ctrl + Shift + I</code></td>
+<td>打开开发者工具（排障用）</td>
+</tr>
+</tbody></table></div>
+<h3 id="编辑区">编辑区</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>快捷键</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Ctrl + S</code></td>
+<td>立即保存</td>
+</tr>
+<tr>
+<td><code>Ctrl + E</code></td>
+<td>在编辑与预览模式之间切换</td>
+</tr>
+<tr>
+<td><code>Ctrl + Z</code> / <code>Ctrl + Y</code></td>
+<td>撤销 / 重做</td>
+</tr>
+<tr>
+<td><code>Ctrl + X</code> / <code>C</code> / <code>V</code></td>
+<td>剪切 / 复制 / 粘贴</td>
+</tr>
+<tr>
+<td><code>Ctrl + A</code></td>
+<td>全选</td>
+</tr>
+<tr>
+<td><code>Tab</code></td>
+<td>插入空格（2 或 4 个，可在设置中改）</td>
+</tr>
+</tbody></table></div>
+<h3 id="画布">画布</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>快捷键</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>T</code> / <code>N</code> / <code>I</code></td>
+<td>添加文本卡片 / 笔记卡片 / 图片卡片</td>
+</tr>
+<tr>
+<td><code>Ctrl + Z</code> / <code>Ctrl + Shift + Z</code>（或 <code>Ctrl + Y</code>）</td>
+<td>撤销 / 重做</td>
+</tr>
+<tr>
+<td><code>Ctrl + A</code></td>
+<td>全选画布对象</td>
+</tr>
+<tr>
+<td><code>+</code> / <code>-</code> / <code>0</code></td>
+<td>放大 / 缩小 / 回到 100%</td>
+</tr>
+<tr>
+<td><code>空格</code>（或鼠标中键）拖动</td>
+<td>平移画布</td>
+</tr>
+<tr>
+<td><code>Delete</code> / <code>Backspace</code></td>
+<td>删除选中的卡片或连接</td>
+</tr>
+<tr>
+<td><code>方向键</code> / <code>Shift + 方向键</code></td>
+<td>移动选中对象 2 px / 16 px</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>取消正在拖拽的连接，或清除选择</td>
+</tr>
+<tr>
+<td>双击空白</td>
+<td>新建文本卡片</td>
+</tr>
+</tbody></table></div>
+<hr>
+<h2 id="五数据备份与迁移">五、数据、备份与迁移</h2>
+<h3 id="51-数据放在哪">5.1 数据放在哪</h3>
+<p>Lattice 与 Obsidian 一样使用本地 Vault 文件夹。<strong>笔记正文、目录结构、附件、画布与版本快照
+都是 Vault 里的普通文件</strong>；SQLite 只用于搜索、标签、双链、图谱与 AI 语义索引，可以随时从
+文件重新生成。</p>
+<p>首次启动时通过系统对话框选择 Vault，之后可以在「设置 → 知识库位置」查看路径、打开目录、
+复制路径，或重新选择（应用会自动重启）。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>发行形态</th>
+<th>Markdown Vault</th>
+<th>SQLite 索引与日志</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>安装版</td>
+<td>首次启动时选择的文件夹</td>
+<td><code>%APPDATA%\Lattice\data\lattice.db</code></td>
+</tr>
+<tr>
+<td>绿色版</td>
+<td>首次启动时选择的文件夹</td>
+<td><code>&lt;exe 所在目录&gt;\LatticeData\data\lattice.db</code></td>
+</tr>
+</tbody></table></div>
+<p><code>%APPDATA%</code> 的完整路径通常是 <code>C:\Users\&lt;你的用户名&gt;\AppData\Roaming</code>。
+<strong>快速定位</strong>：在资源管理器地址栏直接粘贴 <code>%APPDATA%\Lattice</code> 回车即可。</p>
+<p>Vault 与数据目录的典型内容：</p>
+<pre><code>Vault/
+├── 工程笔记/                  真实目录
+│   └── 架构设计.md             真实 Markdown 笔记（带 frontmatter）
+├── 根级笔记.md
+├── attachments/              通过编辑器上传的附件（单文件 ≤ 25 MB）
+├── _templates/               笔记模板（可选，自己放 .md）
+├── Daily/                    每日笔记 YYYY-MM-DD.md
+├── Journal/                  AI 每日摘要
+├── 画板.canvas                画布文件（可以有多个）
+└── .lattice/
+    └── history/              笔记历史快照（Markdown 原文，按笔记 id 分目录）
+
+Lattice/
+├── data/lattice.db           可重建的 SQLite 索引（含 FTS 与语义向量索引）
+└── logs/lattice.log          运行日志
+</code></pre>
+<blockquote>
+<p><code>.lattice/</code> 以点开头，部分资源管理器中默认不显示，需要开启「显示隐藏的项目」。</p>
+</blockquote>
+<h3 id="52-备份">5.2 备份</h3>
+<p>最稳的做法是<strong>在软件关闭的状态下，直接复制整个 Vault 文件夹</strong>：</p>
+<ul>
+<li>Markdown、<code>.canvas</code> 画布、<code>attachments/</code> 附件、<code>_templates/</code> 模板、
+<code>.lattice/history/</code> 历史快照会一起保留。</li>
+<li>Markdown 文件可以直接用 Obsidian 或其他编辑器打开。</li>
+</ul>
+<p>SQLite 文件只保存索引。即使索引损坏，也可以重新扫描 Vault 目录恢复；
+AI 语义索引在重新配置 embedding 模型后可一键重建。</p>
+<blockquote>
+<p>之所以建议先关软件再拷：数据库使用 WAL 模式，运行中会同时存在
+<code>lattice.db-wal</code> 等辅助文件。运行中拷贝可能拿到不完整的中间状态。</p>
+</blockquote>
+<h3 id="53-换机器">5.3 换机器</h3>
+<p><strong>绿色版</strong>：把整个文件夹（exe + <code>LatticeData\</code>）连同你的 Vault 一起拷到新机器即可。
+<strong>安装版</strong>：在新机器上装好，首次启动时选择原来的 Vault 文件夹即可。</p>
+<h3 id="54-恢复">5.4 恢复</h3>
+<p>把备份的 Vault 文件夹重新选择为知识库即可。应用启动后会根据其中的文件自动建立索引，
+不需要手动编辑 SQLite 文件。</p>
+<p>「设置 → 数据迁移」还提供把旧版 SQLite 中的笔记导出为 Markdown 的功能，
+原数据库不会被删除。</p>
+<hr>
+<h2 id="六设置模型与集成">六、设置、模型与集成</h2>
+<p>设置窗口左侧是分组导航，顶部可搜索设置项；修改大多立即生效并保存在本机。</p>
+<h3 id="61-设置项总览">6.1 设置项总览</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分类</th>
+<th>可调整内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>AI 助手 → 模型</strong></td>
+<td>对话模型、语义索引（embedding）、索引状态与重建、检索调试（见 6.2）</td>
+</tr>
+<tr>
+<td>关于</td>
+<td>当前版本、<strong>检查更新</strong>（访问 GitHub Releases）、自动保存开关、快速切换开关</td>
+</tr>
+<tr>
+<td>外观</td>
+<td>浅色 / 深色主题、背景图片、自定义主题导入（带对比度校验）、界面密度</td>
+</tr>
+<tr>
+<td>界面</td>
+<td>界面字号（小 / 标准 / 大）、编辑器与预览的内容最大宽度（720 / 860 / 1040 px）</td>
+</tr>
+<tr>
+<td>编辑器</td>
+<td>默认编辑模式、Tab 缩进空格数、自动保存开关与延迟（500 / 900 / 1500 ms）</td>
+</tr>
+<tr>
+<td>知识库位置</td>
+<td>查看 / 打开 / 复制知识库目录、索引实时状态</td>
+</tr>
+<tr>
+<td>快捷键</td>
+<td>常用快捷键速查</td>
+</tr>
+<tr>
+<td>数据迁移</td>
+<td>将旧数据库内容导出为 Markdown，原数据库保留</td>
+</tr>
+<tr>
+<td><strong>MCP Server</strong></td>
+<td>查看与导出 Lattice 的 MCP 配置（见 6.3）</td>
+</tr>
+</tbody></table></div>
+<p>背景图片支持 PNG、JPG、WebP、GIF 和 AVIF，单张最大 2 MB。
+自定义主题支持 JSON 或 CSS 颜色令牌，导入后可随时恢复默认。</p>
+<h3 id="62-模型管理中心">6.2 模型管理中心</h3>
+<p>在「设置 → AI 助手 → 模型」中管理 AI 使用的外部模型。<strong>不配模型不影响笔记功能，软件照常
+离线使用</strong>；配置后 AI 助手与 AI 写作才会产生模型回答。</p>
+<p><strong>添加对话模型</strong>：</p>
+<ol>
+<li>点「＋ 添加模型」，从服务商预设中选择（智谱、DeepSeek、Kimi、硅基流动、火山引擎、
+腾讯云、阿里云、AWS、OpenRouter、PPIO、MiniMax、字节豆包、MiMo、ModelForce、Z.ai 等），
+或选「自定义模型」填写任意 OpenAI Chat Completions 兼容接口。</li>
+<li>填写模型 ID 与 API Key（密钥以密文框显示，可切换显示 / 隐藏）。高级配置里可改请求地址
+与认证方式（<code>Bearer</code> / <code>x-api-key</code>）。</li>
+<li>保存前会<strong>强制进行一次连通性测试</strong>：测试不通过（Key 错误、模型 ID 不存在、无网络等）
+会直接拦下，不写入列表。测试会发起一次真实请求，可能消耗极少量 Token。</li>
+<li>可以添加多个模型，点列表行即可切换「当前使用」，下一条消息立即生效；也可以停用 / 删除。
+API Key 只保存在本机，不会出现在界面与操作审计记录中。</li>
+</ol>
+<p><strong>语义索引（Embedding）</strong>：</p>
+<ul>
+<li>在同一页面下方填写 embedding 接口（如硅基流动的 <code>BAAI/bge-m3</code>）、模型 ID 与 Key 并启用。</li>
+<li>启用后笔记会自动按标题分块、计算向量并<strong>增量入库</strong>，解锁三样能力：
+语义搜索路（与关键词路融合）、相关笔记推荐、知识库问答的语义召回。</li>
+<li>「语义索引状态」实时显示 <code>已索引 x/y 篇 · 共 z 个分块</code>、待处理与失败数量；
+需要时可手动「重建索引」。</li>
+<li><strong>「检索调试」</strong>：输入一句话，直接看到关键词路 / 语义路各自命中了哪些分块、
+融合后最终注入模型的是哪些——当你觉得「问答为什么没引用某篇笔记」时，用它排查。</li>
+</ul>
+<blockquote>
+<p>隐私提示：启用云端 embedding 后，笔记的分块文本会发送给你填写的 embedding 服务商；
+不启用则只使用本地关键词检索。</p>
+</blockquote>
+<h3 id="63-mcp-server进阶-可选">6.3 MCP Server（进阶 / 可选）</h3>
+<p>「设置 → 集成 → MCP Server」面向希望让外部 Agent（如 Claude Desktop）读写本知识库的用户。</p>
+<ul>
+<li>内置的 <strong>Lattice MCP Server</strong> 通过标准输入输出（stdio）暴露五个工具：
+<code>list_notes</code>、<code>search_notes</code>、<code>read_note</code>、<code>create_note</code>、<code>update_note</code>。</li>
+<li>页面会生成一份现成的 JSON 配置（含 server 路径以及 <code>DB_FILE</code> / <code>VAULT_DIR</code> 两个环境变量，
+指向与当前应用相同的数据目录和 Vault），点「复制 JSON」粘贴到 MCP 客户端的配置中即可；
+也支持导入、新建、启停其他 stdio / SSE Server。</li>
+<li>注意：<strong>界面里的开关只管理本机配置，真正拉起进程的是 Claude Desktop 等 MCP 客户端</strong>；
+运行 server 脚本需要本机安装 Node.js。普通日常使用完全用不到这一页，忽略即可。</li>
+</ul>
+<h3 id="64-日志文件">6.4 日志文件</h3>
+<ul>
+<li>位置：数据目录下的 <code>logs\lattice.log</code></li>
+<li>内容：启动步骤、数据库迁移、每一次页面请求、界面里发生的错误，全部按行记录</li>
+<li><strong>超过 2 MB 自动轮转</strong>为 <code>lattice.log.1</code>，不会无限增长</li>
+</ul>
+<p>日志是排查问题的重要线索（桌面软件没有控制台），反馈问题时附上这个文件即可。</p>
+<hr>
+<h2 id="七升级与卸载">七、升级与卸载</h2>
+<h3 id="71-升级">7.1 升级</h3>
+<ul>
+<li><strong>检查更新</strong>：「设置 → 关于 → 检查更新」会访问 GitHub Releases（仅在点击时联网）。
+有新版本时会显示版本名，并提供 Windows 安装包的下载链接；没有新版本则提示当前已是最新。</li>
+<li><strong>安装版</strong>：下载新版 <code>setup.exe</code> 覆盖安装即可，<strong>笔记数据不受影响</strong>。</li>
+<li><strong>绿色版</strong>：用新版 exe 替换旧的 exe，保留 <code>LatticeData\</code> 目录与你的 Vault 不动。</li>
+<li>数据库结构升级（包括 AI 语义表、任务表等新迁移）在启动时自动完成，不需要手动操作。</li>
+</ul>
+<h3 id="72-卸载">7.2 卸载</h3>
+<p><strong>安装版</strong>：设置 → 应用 → 找到「格物 Lattice」→ 卸载。
+也可以从开始菜单里的卸载快捷方式进入。</p>
+<blockquote>
+<p><strong>卸载时你的笔记会被保留</strong>。这是刻意的设计——避免手滑卸载把笔记库一起删掉。
+如果确实要彻底清除，卸载后手动删除 <code>%APPDATA%\Lattice\</code> 目录（以及你的 Vault，如不再需要）。</p>
+</blockquote>
+<p><strong>绿色版</strong>：直接删掉文件夹就卸载完了。删之前记得把 Vault 和 <code>LatticeData\</code> 挪走或备份。</p>
+<hr>
+<h2 id="八故障排查">八、故障排查</h2>
+<h3 id="81-双击没反应-闪一下就没了">8.1 双击没反应 / 闪一下就没了</h3>
+<p>最常见的原因是当前系统环境<strong>拦截了 Chromium 的 GPU 子进程沙箱</strong>，
+多见于：受限的虚拟机、远程桌面会话、安全软件的深度防护模式。</p>
+<p>软件内置了<strong>自愈机制</strong>：</p>
+<ol>
+<li>第一次启动若 GPU 进程反复崩溃，会在数据目录落下标记并退出。</li>
+<li><strong>再启动一次即可</strong>——检测到标记后会自动关闭 GPU 沙箱（仅影响 GPU 进程，
+笔记功能完全不受影响），窗口正常打开。</li>
+</ol>
+<p>所以遇到这种情况：<strong>再双击一次</strong>。若第二次仍然打不开，请继续看下一条。</p>
+<h3 id="82-窗口一片空白或弹出界面无法渲染">8.2 窗口一片空白，或弹出「界面无法渲染」</h3>
+<p>如果界面进程连续崩溃 3 次，软件会弹出明确提示并告知日志位置，而不是让你对着白屏发呆。</p>
+<p>处理办法：</p>
+<ol>
+<li>把本程序加入安全软件的信任 / 白名单（重点检查主动防御、沙箱类功能）。</li>
+<li>尽量在本机物理桌面会话下运行，而不是远程桌面或受限虚拟机。</li>
+<li>弹出提示时，按提示路径取 <code>logs\lattice.log</code>，里面会记录崩溃原因。</li>
+</ol>
+<h3 id="83-提示页面加载失败">8.3 提示「页面加载失败」</h3>
+<p>说明本地服务没能正常起来。按顺序排查：</p>
+<ol>
+<li>是否有另一个实例已经在运行？软件是单实例，重复启动只会聚焦已有窗口。</li>
+<li>端口 <code>5188</code> 被别的程序占用了？正常情况下会自动改用随机端口，
+若仍失败，关掉可疑程序后重试。</li>
+<li>检查 <code>logs\lattice.log</code> 里有没有数据库相关报错。</li>
+</ol>
+<h3 id="84-提示启动失败">8.4 提示「启动失败」</h3>
+<p>启动时会集中校验全部配置，任何一项非法都立即报错并退出，而不是带病运行。
+弹窗里会写明确原因和日志路径。</p>
+<h3 id="85-数据找不到了">8.5 数据找不到了</h3>
+<p>先确认用的是哪个版本——安装版和绿色版的索引数据<strong>不在同一个地方</strong>（见 <a href="#51-%E6%95%B0%E6%8D%AE%E6%94%BE%E5%9C%A8%E5%93%AA">5.1</a>）。
+绿色版如果被放在了只读目录里，数据会自动回退到 <code>%APPDATA%\Lattice\</code>，去那里找找。
+笔记本体始终在你首次启动时选择的 Vault 文件夹里。</p>
+<h3 id="86-中文搜索搜不到">8.6 中文搜索搜不到</h3>
+<ul>
+<li>两个字的短词走模糊匹配，能搜到但结果可能不如长词精准。</li>
+<li>尝试把关键词加长（3 个字以上会走全文索引，匹配质量更好）。</li>
+<li>检索范围是标题 + 正文，确认关键词确实出现在笔记里。</li>
+<li>若刚从外部拷入大量文件，等索引同步完成后再搜；仍异常可点功能区 ↻ 手动刷新。</li>
+</ul>
+<h3 id="87-ai-助手不能用-一直显示本地模式">8.7 AI 助手不能用 / 一直显示「本地模式」</h3>
+<ul>
+<li>「本地模式」表示还没有配置外部对话模型，到「设置 → AI 助手 → 模型」里添加一个。</li>
+<li>显示「已配置」但不回答：配置保存前需要通过连通性测试；网络代理、API Key 余额、
+模型 ID 填写错误都会导致失败，点模型的「编辑 → 测试连接」看具体报错。</li>
+<li><strong>问答没有引用到某篇笔记</strong>：先用「检索调试」看命中情况；如果没配 embedding，
+检索只有关键词一路，换个关键词或补上语义索引再试。</li>
+<li><strong>语义索引一直显示「索引中 / 有失败」</strong>：点「重建索引」；仍失败时查看
+<code>logs\lattice.log</code>，多数情况是 embedding 服务商临时不可用或额度不足。</li>
+<li>AI 写作条没有反应：它只在编辑 / 分栏模式下出现，并且同样需要可用的对话模型。</li>
+</ul>
+<h3 id="88-杀毒软件报警">8.8 杀毒软件报警</h3>
+<p>Electron 打包的桌面程序偶尔会被误报，尤其是新发布的、没有数字签名的版本。
+把程序目录加入信任列表即可，不影响功能。</p>
+<h3 id="89-菜单栏不见了">8.9 菜单栏不见了</h3>
+<p>菜单栏默认自动隐藏（避免占版面）。<strong>按一下 <code>Alt</code> 键</strong>就会显示出来，里面有
+文件 / 编辑 / 视图三组菜单，以及「开发者工具」和「全屏」等入口。</p>
+<h3 id="810-需要提交问题时请附上这些">8.10 需要提交问题时请附上这些</h3>
+<ol>
+<li>你用的是安装版还是绿色版，以及具体版本号（设置 → 关于 中可见）</li>
+<li><code>logs\lattice.log</code>（如果有 <code>lattice.log.1</code> 也一起）</li>
+<li>具体现象：什么时候出现、窗口上显示了什么；AI 相关问题请注明使用的服务商与模型 ID
+（<strong>不要</strong>附上 API Key）</li>
+</ol>
+<hr>
+<h2 id="九已知限制">九、已知限制</h2>
+<p>当前版本的边界，都是刻意划定的：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>限制</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>版本快照不自动清理</td>
+<td>每次保存都会在 <code>.lattice/history/</code> 留一份原文快照；高频编辑下可手动定期清理，按天归并与自动清理尚未实现</td>
+</tr>
+<tr>
+<td>HTML 导出为单篇</td>
+<td>单篇导出已支持图片内联、双链与嵌入展开；整个 Vault 的批量站点导出、导航页尚未实现</td>
+</tr>
+<tr>
+<td>附件约束</td>
+<td>单文件最大 25 MB，且需在类型白名单内；附件以文件形式存于 Vault 的 <code>attachments/</code>，不做数据库内嵌</td>
+</tr>
+<tr>
+<td>AI 需要自备模型</td>
+<td>软件不提供模型账号与额度；对话质量取决于你配置的模型，云端请求按服务商规则计费</td>
+</tr>
+<tr>
+<td>MCP / CLI 偏进阶</td>
+<td>让外部 Agent 访问知识库需要自行安装 Node.js 并配置 MCP 客户端，普通使用不需要</td>
+</tr>
+<tr>
+<td>无实时协作</td>
+<td>单机单用户设计，没有多端同步与协同编辑</td>
+</tr>
+<tr>
+<td>图谱规模</td>
+<td>数百到数千节点流畅；上万节点需要换近似算法</td>
+</tr>
+<tr>
+<td>仅 Windows</td>
+<td>目前只产出 Windows 版本</td>
+</tr>
+<tr>
+<td>数据格式</td>
+<td>知识库是本地 Markdown 文件夹，SQLite 只保存可重建索引（含语义向量），可直接用 Obsidian 打开</td>
+</tr>
+</tbody></table></div>
+<blockquote>
+<p>最后一条值得强调：<strong>这不是 Obsidian 的兼容替代品</strong>。它借鉴了双链笔记的交互体验，
+但以自己的 Markdown Vault 与 <code>.canvas</code> 画布格式保存内容；SQLite 只保存可重建的索引。</p>
+</blockquote>
+<hr>
+<h2 id="附录关于隐私">附录：关于隐私</h2>
+<ul>
+<li><strong>默认完全离线</strong>：不注册、无账号、无遥测、无云同步。本地服务只监听 <code>127.0.0.1</code>，
+局域网内其他设备无法访问。</li>
+<li><strong>仅有两处会在你主动操作后联网</strong>：<ol>
+<li><strong>AI 功能</strong>：配置外部对话 / embedding 模型后，你的提问、对话上下文以及检索命中的
+笔记片段会发送给所选模型服务商；启用云端 embedding 时，笔记分块会用于生成向量。
+使用哪家服务商、发送到哪个地址，完全由你在模型管理中的配置决定；不配置就不发送。</li>
+<li><strong>检查更新</strong>：只有手动点击「设置 → 关于 → 检查更新」时，才会访问 GitHub Releases
+查询版本，不会后台自动检查。</li>
+</ol>
+</li>
+<li><strong>API Key 只保存在本机</strong>（界面本地设置与本机服务端），不会写入日志或 AI 操作审计记录。</li>
+<li><strong>AI 文件操作全程留痕</strong>：所有由 AI（含 CLI / MCP）执行的文件读写都记录在
+「操作历史」中；默认写操作必须先经你在预览清单上确认，只有手动开启「任务模式」后
+才允许自动执行，且同样逐条审计。</li>
+<li>笔记正文、目录、附件、画布与版本快照都在 Vault 文件夹中；标签、链接、语义向量由
+索引自动生成。备份时复制整个 Vault 文件夹即可全部带走。</li>
+<li>笔记正文里的外部链接点击后会交给系统默认浏览器打开，笔记界面本身不会被导航走。</li>
+</ul>
+<hr>
+<p><em>格物 Lattice 0.1.2 · 本地优先的双链笔记知识库</em></p>
+</div>
+          <footer class="footer"><span>格物 Lattice · 本地优先的双链笔记知识库</span><span><a href="lattice-docs.html">产品文档</a> · <a href="lattice-download.html">下载 Lattice</a></span></footer>
+        </article>
+      </main>
+
+      <nav class="toc" aria-label="章节目录"><span class="toc-label">章节目录</span><a href="#一安装与启动">一、安装与启动</a>
+<a href="#二界面导览">二、界面导览</a>
+<a href="#三日常操作">三、日常操作</a>
+<a href="#四快捷键">四、快捷键</a>
+<a href="#五数据备份与迁移">五、数据、备份与迁移</a>
+<a href="#六设置模型与集成">六、设置、模型与集成</a>
+<a href="#七升级与卸载">七、升级与卸载</a>
+<a href="#八故障排查">八、故障排查</a>
+<a href="#九已知限制">九、已知限制</a>
+<a href="#附录关于隐私">附录：关于隐私</a></nav>
+    </div>
+
+    <script>
+      (() => {
+        const root = document.documentElement;
+        const body = document.body;
+        const searchInput = document.querySelector("#guide-search");
+        const searchResults = document.querySelector("#search-results");
+        const themeToggle = document.querySelector("#theme-toggle");
+        const printButton = document.querySelector("#print-guide");
+        const menuToggle = document.querySelector("#menu-toggle");
+        const backdrop = document.querySelector("#backdrop");
+        const sidebar = document.querySelector("#sidebar");
+        const headings = [...document.querySelectorAll("#guide-content h2, #guide-content h3")];
+        const navLinks = [...document.querySelectorAll(".nav-link")];
+        const tocLinks = [...document.querySelectorAll(".toc a")];
+        const sectionText = (heading) => {
+          const parts = [heading.textContent];
+          let node = heading.nextElementSibling;
+          while (node && !["H2", "H1"].includes(node.tagName)) {
+            parts.push(node.textContent);
+            node = node.nextElementSibling;
+          }
+          return parts.join(" ");
+        };
+        const searchIndex = headings.map((heading) => ({ heading, text: sectionText(heading).toLowerCase() }));
+        const storedTheme = localStorage.getItem("lattice-guide-theme");
+        const preferredTheme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        const setTheme = (theme) => {
+          root.dataset.theme = theme;
+          themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
+          localStorage.setItem("lattice-guide-theme", theme);
+        };
+        setTheme(storedTheme || preferredTheme);
+        themeToggle.addEventListener("click", () => setTheme(root.dataset.theme === "dark" ? "light" : "dark"));
+        printButton.addEventListener("click", () => window.print());
+
+        const closeMenu = () => { body.classList.remove("nav-open"); menuToggle.setAttribute("aria-expanded", "false"); };
+        menuToggle.addEventListener("click", () => {
+          const open = body.classList.toggle("nav-open");
+          menuToggle.setAttribute("aria-expanded", String(open));
+        });
+        backdrop.addEventListener("click", closeMenu);
+        sidebar.addEventListener("click", (event) => { if (event.target.closest("a")) closeMenu(); });
+
+        const renderSearch = (query) => {
+          const value = query.trim().toLowerCase();
+          if (!value) { searchResults.classList.remove("is-visible"); searchResults.innerHTML = ""; return; }
+          const matches = searchIndex.filter((item) => item.text.includes(value)).slice(0, 8);
+          searchResults.innerHTML = matches.length
+            ? matches.map(({ heading }) => '<a class="search-result" href="#' + heading.id + '"><strong>' + heading.textContent + '</strong><span>跳转到相关章节</span></a>').join("")
+            : '<div class="search-empty">没有找到匹配的章节</div>';
+          searchResults.classList.add("is-visible");
+        };
+        searchInput.addEventListener("input", (event) => renderSearch(event.target.value));
+        searchInput.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") { searchInput.value = ""; renderSearch(""); searchInput.blur(); }
+        });
+        searchResults.addEventListener("click", () => { searchInput.value = ""; renderSearch(""); });
+        document.addEventListener("click", (event) => { if (!event.target.closest(".search-wrap")) renderSearch(""); });
+        document.addEventListener("keydown", (event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); searchInput.focus(); searchInput.select(); }
+        });
+
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            const id = entry.target.id;
+            navLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === "#" + id));
+            tocLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === "#" + id));
+          });
+        }, { rootMargin: "-18% 0px -70% 0px", threshold: 0 });
+        headings.forEach((heading) => observer.observe(heading));
+      })();
+    </script>
+  </body>
+</html>
