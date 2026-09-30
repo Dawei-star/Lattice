@@ -664,6 +664,215 @@
           transition-duration: 0.01ms !important;
         }
       }
+
+      /* The download page follows a focused, product-first release layout. */
+      :root {
+        color-scheme: dark;
+        --canvas: #0d0d0f;
+        --surface: #151517;
+        --surface-soft: #1c1c20;
+        --surface-tint: #202027;
+        --ink: #f5f5f7;
+        --muted: #a6a6af;
+        --subtle: #777780;
+        --line: #29292e;
+        --line-strong: #3b3b43;
+        --brand: #8b9cff;
+        --brand-dark: #aebaff;
+        --brand-soft: #252b48;
+        --teal: #65d0c3;
+        --teal-soft: #183a38;
+        --orange: #ffb86b;
+        --orange-soft: #42301d;
+        --shadow: 0 24px 70px rgba(0, 0, 0, 0.36);
+        --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.24);
+      }
+
+      :root[data-theme="light"] {
+        color-scheme: light;
+        --canvas: #f4f6f9;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --surface-tint: #f0f4ff;
+        --ink: #111827;
+        --muted: #667085;
+        --subtle: #98a2b3;
+        --line: #e4e7ec;
+        --line-strong: #d0d5dd;
+        --brand: #3e55c7;
+        --brand-dark: #2f3e98;
+        --brand-soft: #e8ecff;
+        --teal: #198f82;
+        --teal-soft: #e2f5f1;
+        --orange: #d97726;
+        --orange-soft: #fff0dc;
+        --shadow: 0 18px 48px rgba(18, 32, 63, 0.08);
+        --shadow-soft: 0 8px 22px rgba(18, 32, 63, 0.06);
+      }
+
+      body {
+        background: var(--canvas);
+      }
+
+      .topbar {
+        background: rgba(13, 13, 15, 0.88);
+      }
+
+      :root[data-theme="light"] .topbar {
+        background: rgba(255, 255, 255, 0.9);
+      }
+
+      .page {
+        max-width: none;
+        padding: var(--header-height) 28px 80px;
+      }
+
+      .page > .breadcrumb {
+        display: none;
+      }
+
+      .download-hero {
+        display: flex;
+        min-height: calc(100vh - var(--header-height));
+        padding: 72px 0 104px;
+        align-items: center;
+        justify-content: center;
+        border-bottom: 0;
+        text-align: center;
+      }
+
+      .download-hero > div:first-child {
+        display: flex;
+        width: min(100%, 680px);
+        align-items: center;
+        flex-direction: column;
+      }
+
+      .download-icon-frame {
+        display: grid;
+        width: 292px;
+        height: 292px;
+        margin-bottom: 34px;
+        padding: 18px;
+        place-items: center;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 38px;
+        background: #242426;
+        box-shadow: 0 28px 58px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }
+
+      .download-icon-frame img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border-radius: 28px;
+        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.26);
+      }
+
+      .download-hero .eyebrow {
+        margin-bottom: 12px;
+        color: var(--subtle);
+        font-size: 11px;
+        letter-spacing: 0.14em;
+      }
+
+      .download-hero .eyebrow::before {
+        display: none;
+      }
+
+      .download-hero h1 {
+        margin-bottom: 10px;
+        font-size: clamp(42px, 5vw, 66px);
+        letter-spacing: -0.035em;
+      }
+
+      .download-hero h1 em {
+        color: var(--ink);
+      }
+
+      .download-hero .hero-copy {
+        margin-bottom: 28px;
+        color: var(--muted);
+        font-size: 16px;
+      }
+
+      .download-hero .hero-actions {
+        justify-content: center;
+      }
+
+      .download-hero .button-secondary,
+      .download-hero .release-panel {
+        display: none;
+      }
+
+      .download-hero .button-primary {
+        min-width: 224px;
+        min-height: 58px;
+        border-radius: 10px;
+        background: #7655e8;
+        box-shadow: 0 13px 30px rgba(118, 85, 232, 0.26);
+        color: #ffffff;
+        font-size: 16px;
+      }
+
+      .download-hero .button-primary:hover {
+        background: #886cf0;
+        box-shadow: 0 16px 34px rgba(118, 85, 232, 0.34);
+      }
+
+      .download-update {
+        margin: 28px 0 0;
+        color: var(--subtle);
+        font-size: 13px;
+      }
+
+      .download-hero + .section,
+      .download-hero ~ .footer {
+        max-width: 1040px;
+        margin-right: auto;
+        margin-left: auto;
+      }
+
+      .download-hero + .section {
+        border-top: 1px solid var(--line);
+      }
+
+      @media (max-width: 560px) {
+        .page {
+          padding-right: 18px;
+          padding-left: 18px;
+        }
+
+        .download-hero {
+          min-height: calc(100vh - var(--header-height));
+          padding-top: 48px;
+          padding-bottom: 72px;
+        }
+
+        .download-icon-frame {
+          width: 224px;
+          height: 224px;
+          margin-bottom: 28px;
+          padding: 14px;
+          border-radius: 30px;
+        }
+
+        .download-icon-frame img {
+          border-radius: 22px;
+        }
+
+        .download-hero h1 {
+          font-size: 42px;
+        }
+
+        .download-hero .hero-copy {
+          font-size: 14px;
+        }
+
+        .download-hero .button-primary {
+          width: min(100%, 224px);
+        }
+      }
     </style>
   </head>
   <body>
@@ -702,17 +911,19 @@
     <main class="page">
       <div class="breadcrumb"><a href="lattice-docs.html">文档</a><span>/</span><strong>下载 Lattice</strong></div>
 
-      <section class="hero">
+      <section class="hero download-hero">
         <div>
-          <p class="eyebrow">Windows desktop release</p>
-          <h1>下载 <em>格物 Lattice</em></h1>
-          <p class="hero-copy">
-            Lattice 是本地优先的双链笔记知识库。根据你的使用方式选择 Windows 安装版或绿色版，版本文件统一从 GitHub Releases 获取。
-          </p>
+          <div class="download-icon-frame">
+            <img src="../web/public/lattice-icon.svg" alt="格物 Lattice 图标" />
+          </div>
+          <p class="eyebrow">LOCAL-FIRST KNOWLEDGE BASE</p>
+          <h1>格物 <em>Lattice</em></h1>
+          <p class="hero-copy">本地优先的双链笔记知识库</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases" target="_blank" rel="noreferrer">打开 GitHub Releases <span class="external-arrow" aria-hidden="true">↗</span></a>
+            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases" target="_blank" rel="noreferrer">下载 Windows</a>
             <a class="button button-secondary" href="lattice-docs.html">查看产品文档</a>
           </div>
+          <p class="download-update">最新版本与发布日期以 GitHub Releases 为准</p>
         </div>
 
         <div class="release-panel" aria-label="下载信息">
@@ -777,7 +988,7 @@
         const root = document.documentElement;
         const themeToggle = document.querySelector('#theme-toggle');
         const storedTheme = localStorage.getItem('lattice-docs-theme');
-        const preferredTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        const preferredTheme = 'dark';
 
         const setTheme = (theme) => {
           root.dataset.theme = theme;
