@@ -753,20 +753,20 @@
         width: 292px;
         height: 292px;
         margin-bottom: 34px;
-        padding: 18px;
+        padding: 0;
         place-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 38px;
-        background: #242426;
-        box-shadow: 0 28px 58px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
       }
 
       .download-icon-frame img {
         display: block;
         width: 100%;
         height: 100%;
-        border-radius: 28px;
-        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.26);
+        border-radius: 0;
+        filter: drop-shadow(0 18px 26px rgba(0, 0, 0, 0.22));
       }
 
       .download-hero .eyebrow {
@@ -806,18 +806,27 @@
       }
 
       .download-hero .button-primary {
-        min-width: 224px;
+        min-width: 252px;
         min-height: 58px;
-        border-radius: 10px;
+        padding: 12px 24px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 14px;
         background: #7655e8;
-        box-shadow: 0 13px 30px rgba(118, 85, 232, 0.26);
+        box-shadow: 0 14px 30px rgba(118, 85, 232, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
         color: #ffffff;
         font-size: 16px;
+        font-weight: 780;
+        letter-spacing: 0.01em;
+      }
+
+      :root[data-theme="dark"] .download-hero .button-primary,
+      :root[data-theme="light"] .download-hero .button-primary {
+        color: #ffffff;
       }
 
       .download-hero .button-primary:hover {
-        background: #886cf0;
-        box-shadow: 0 16px 34px rgba(118, 85, 232, 0.34);
+        background: #8568ee;
+        box-shadow: 0 17px 36px rgba(118, 85, 232, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.18);
       }
 
       .download-update {
@@ -853,12 +862,7 @@
           width: 224px;
           height: 224px;
           margin-bottom: 28px;
-          padding: 14px;
-          border-radius: 30px;
-        }
-
-        .download-icon-frame img {
-          border-radius: 22px;
+          padding: 0;
         }
 
         .download-hero h1 {
@@ -920,10 +924,10 @@
           <h1>格物 <em>Lattice</em></h1>
           <p class="hero-copy">本地优先的双链笔记知识库</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases" target="_blank" rel="noreferrer">下载 Windows</a>
+            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases/download/init/Lattice-0.1.1-setup.exe" target="_blank" rel="noreferrer">下载 Windows 安装版</a>
             <a class="button button-secondary" href="lattice-docs.html">查看产品文档</a>
           </div>
-          <p class="download-update">最新版本与发布日期以 GitHub Releases 为准</p>
+          <p class="download-update">Windows 安装版 · v0.1.1</p>
         </div>
 
         <div class="release-panel" aria-label="下载信息">
@@ -946,7 +950,7 @@
             <span class="card-tag">推荐日常使用</span>
             <h3>Windows 安装版</h3>
             <p>通过安装向导完成安装，提供开始菜单入口和标准卸载方式。适合固定在当前 Windows 设备上使用。</p>
-            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases" target="_blank" rel="noreferrer">前往发布页下载 <span class="external-arrow" aria-hidden="true">↗</span></a>
+            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases/download/init/Lattice-0.1.1-setup.exe" target="_blank" rel="noreferrer">直接下载 v0.1.1 <span class="external-arrow" aria-hidden="true">↗</span></a>
           </article>
           <article class="download-card">
             <span class="card-tag">便携使用</span>
