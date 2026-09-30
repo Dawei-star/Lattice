@@ -39,3 +39,7 @@ output/
 
 # Vite 临时文件
 *.timestamp-*
+
+# 设计走查 / QA 过程记录（仅本地保留）
+design-qa.md
+*-qa.md
