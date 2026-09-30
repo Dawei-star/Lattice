@@ -9,7 +9,7 @@
 
 ---
 
-![Lattice logo](./FILES/README.md/v6-b-final.png)
+![Lattice logo](./FILES/README.md/lattice-icon.svg)
 
 [![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#发行版说明)

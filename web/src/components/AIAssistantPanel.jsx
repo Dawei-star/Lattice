@@ -78,11 +78,21 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     }
   }, [requestOptions]);
 
+  const refreshHistory = useCallback(async ({ reportError = false } = {}) => {
+    try {
+      const response = await aiApi.history({ query: { limit: 80 }, ...requestOptions });
+      setHistory(response?.data ?? response ?? []);
+    } catch (requestError) {
+      if (reportError) setError(requestError?.message ?? '审计记录加载失败');
+    }
+  }, [requestOptions]);
+
   useEffect(() => {
     if (!open) return;
     setSessionsReady(false);
     refreshSessions();
-  }, [open, refreshSessions]);
+    refreshHistory();
+  }, [open, refreshHistory, refreshSessions]);
 
   // 切换会话时从服务端拉取历史消息
   useEffect(() => {
@@ -221,6 +231,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         meta: payload?.meta,
       };
       appendMessage(assistant);
+      if (settings.autoApprove === true) refreshHistory();
       if (payload?.actions?.length) {
         const previewResponse = await aiApi.preview({ actions: payload.actions, actor: 'local-user', role: settings.role }, requestOptions);
         setPreview(previewResponse?.data ?? previewResponse);
@@ -293,6 +304,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         content: `已完成 ${result.completed ?? 0} 项操作${result.failed ? `，${result.failed} 项失败` : ''}。`,
       });
       await onOperationComplete?.();
+      await refreshHistory();
     } catch (requestError) {
       setError(requestError?.message ?? '执行失败，请检查权限或文件状态');
     } finally {
@@ -302,12 +314,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
 
   const loadHistory = async () => {
     setTab('history');
-    try {
-      const response = await aiApi.history({ query: { limit: 80 }, ...requestOptions });
-      setHistory(response?.data ?? response ?? []);
-    } catch (requestError) {
-      setError(requestError?.message ?? '审计记录加载失败');
-    }
+    await refreshHistory({ reportError: true });
   };
 
   // 每日摘要：生成/更新今天的 Journal 摘要笔记并打开
