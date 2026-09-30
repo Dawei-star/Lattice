@@ -17,6 +17,18 @@
 [![GitHub issues](https://img.shields.io/github/issues/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/issues)
 [![GitHub last commit](https://img.shields.io/github/last-commit/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/commits/main)
 
+## 网站入口
+
+**格物 Lattice 文档站**：[`website/lattice-docs.html`](../website/lattice-docs.html)
+集中查看产品介绍、功能预览、隐私边界、技术构成和快速开始说明。
+
+**格物 Lattice 下载中心**：[`website/lattice-download.html`](../website/lattice-download.html)
+提供 Windows 安装版与绿色版的 GitHub Releases 入口；具体版本、文件名和校验信息以发布页为准。
+
+**源码与反馈**：[`Dawei-star/Lattice`](https://github.com/Dawei-star/Lattice)
+
+下载仓库后可以直接双击打开上述 HTML 页面；在线发布和正式安装包请以 GitHub Releases 为准。
+
 ## 界面预览
 
 ### 知识库工作区
@@ -78,6 +90,7 @@
 | AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、自然语言文件操作（任务模式可自主多轮执行并自动审计）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
 | 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成，并对同一天幂等更新 |
 | MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露 `list_notes`、`search_notes`、`read_note`、`create_note`、`update_note` |
+| 单篇 HTML 导出 | 从编辑区导出带 Lattice 品牌页眉、页脚、图片内联、双链可点击和嵌入展开的独立 HTML 文件 |
 | 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建 |
 | 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
 | 个性化设置 | 浅色 / 深色主题、背景图片、自定义主题、界面密度、字号、内容宽度与编辑器偏好 |

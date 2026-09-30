@@ -1,0 +1,1801 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="格物 Lattice：本地优先的双链笔记知识库，支持 Markdown、关系图谱、白板与 AI 助手。"
+    />
+    <title>关于 Lattice · 格物</title>
+    <link rel="icon" href="../web/public/lattice-icon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #f4f6f9;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --surface-tint: #f0f4ff;
+        --ink: #111827;
+        --muted: #667085;
+        --subtle: #98a2b3;
+        --line: #e4e7ec;
+        --line-strong: #d0d5dd;
+        --brand: #3e55c7;
+        --brand-dark: #2f3e98;
+        --brand-soft: #e8ecff;
+        --teal: #198f82;
+        --teal-soft: #e2f5f1;
+        --orange: #d97726;
+        --orange-soft: #fff0dc;
+        --yellow: #9b6d08;
+        --yellow-soft: #fff7d7;
+        --shadow: 0 18px 48px rgba(18, 32, 63, 0.08);
+        --shadow-soft: 0 8px 22px rgba(18, 32, 63, 0.06);
+        --sidebar-width: 256px;
+        --toc-width: 214px;
+        --header-height: 68px;
+        --radius-sm: 8px;
+        --radius-md: 14px;
+        --radius-lg: 20px;
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --canvas: #111522;
+        --surface: #171c2b;
+        --surface-soft: #1d2434;
+        --surface-tint: #222a46;
+        --ink: #f2f4f7;
+        --muted: #b1b8c8;
+        --subtle: #8993aa;
+        --line: #2b3447;
+        --line-strong: #3a465c;
+        --brand: #91a2ff;
+        --brand-dark: #c1caff;
+        --brand-soft: #29345e;
+        --teal: #62d2c5;
+        --teal-soft: #193b3a;
+        --orange: #ffb566;
+        --orange-soft: #48311c;
+        --yellow: #f2ce72;
+        --yellow-soft: #443b1c;
+        --shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+        --shadow-soft: 0 8px 22px rgba(0, 0, 0, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 15px;
+        line-height: 1.75;
+        letter-spacing: 0;
+        transition: background 180ms ease, color 180ms ease;
+      }
+
+      body.nav-open {
+        overflow: hidden;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button,
+      a {
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      :focus-visible {
+        outline: 3px solid rgba(62, 85, 199, 0.36);
+        outline-offset: 3px;
+      }
+
+      .topbar {
+        position: fixed;
+        z-index: 30;
+        top: 0;
+        right: 0;
+        left: 0;
+        display: flex;
+        align-items: center;
+        height: var(--header-height);
+        padding: 0 28px;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(16px);
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        width: var(--sidebar-width);
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 720;
+        letter-spacing: 0.01em;
+      }
+
+      .brand img {
+        width: 27px;
+        height: 27px;
+        border-radius: 8px;
+        box-shadow: 0 4px 11px rgba(62, 85, 199, 0.2);
+      }
+
+      .brand small {
+        margin-left: 2px;
+        color: var(--subtle);
+        font-size: 11px;
+        font-weight: 550;
+      }
+
+      .topbar-tools {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-width: 0;
+        flex: 1;
+        gap: 20px;
+      }
+
+      .search-wrap {
+        position: relative;
+        width: min(340px, 36vw);
+      }
+
+      .search-box {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 38px;
+        padding: 0 10px 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface-soft);
+        color: var(--muted);
+        transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+      }
+
+      .search-box:focus-within {
+        border-color: var(--brand);
+        background: var(--surface);
+        box-shadow: 0 0 0 4px var(--brand-soft);
+      }
+
+      .search-box svg {
+        flex: 0 0 auto;
+      }
+
+      .search-box input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--ink);
+        font-size: 13px;
+      }
+
+      .search-box input::placeholder {
+        color: var(--subtle);
+      }
+
+      .key-hint {
+        flex: 0 0 auto;
+        padding: 1px 6px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: var(--surface);
+        color: var(--subtle);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+      }
+
+      .search-results {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        left: 0;
+        display: none;
+        max-height: 320px;
+        overflow: auto;
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .search-results.is-visible {
+        display: block;
+      }
+
+      .search-result {
+        display: block;
+        padding: 9px 10px;
+        border-radius: 8px;
+      }
+
+      .search-result:hover,
+      .search-result:focus-visible {
+        background: var(--surface-tint);
+        outline: 0;
+      }
+
+      .search-result strong {
+        display: block;
+        color: var(--ink);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .search-result span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .search-empty {
+        padding: 12px 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .topnav {
+        display: flex;
+        align-items: center;
+        gap: 23px;
+        color: var(--muted);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .topnav a {
+        transition: color 150ms ease;
+      }
+
+      .topnav a:hover,
+      .topnav a[aria-current="page"] {
+        color: var(--brand);
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding-left: 4px;
+      }
+
+      .icon-button,
+      .mobile-menu {
+        display: inline-grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--muted);
+        transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+      }
+
+      .icon-button:hover,
+      .mobile-menu:hover {
+        border-color: var(--brand);
+        color: var(--brand);
+        background: var(--brand-soft);
+      }
+
+      .github-link {
+        color: var(--muted);
+      }
+
+      .github-link svg {
+        display: block;
+      }
+
+      .theme-icon-sun,
+      :root[data-theme="dark"] .theme-icon-moon {
+        display: none;
+      }
+
+      :root[data-theme="dark"] .theme-icon-sun {
+        display: block;
+      }
+
+      .mobile-menu {
+        display: none;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--toc-width);
+        gap: 0;
+        min-height: 100vh;
+        padding-top: var(--header-height);
+      }
+
+      .sidebar {
+        position: fixed;
+        z-index: 20;
+        top: var(--header-height);
+        bottom: 0;
+        left: 0;
+        width: var(--sidebar-width);
+        overflow-y: auto;
+        padding: 30px 22px 36px 28px;
+        border-right: 1px solid var(--line);
+        background: var(--surface);
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-strong) transparent;
+      }
+
+      .sidebar-intro {
+        margin: 0 0 25px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .sidebar-intro strong {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .nav-group {
+        padding: 0 0 19px;
+        margin-bottom: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .nav-group:last-child {
+        margin-bottom: 0;
+        border-bottom: 0;
+      }
+
+      .nav-label {
+        display: block;
+        margin-bottom: 7px;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 750;
+        letter-spacing: 0.04em;
+      }
+
+      .nav-link {
+        display: flex;
+        align-items: center;
+        min-height: 31px;
+        padding: 5px 8px;
+        border-radius: 7px;
+        color: var(--muted);
+        font-size: 13px;
+        transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+      }
+
+      .nav-link:hover {
+        color: var(--brand);
+        background: var(--surface-tint);
+        transform: translateX(2px);
+      }
+
+      .nav-link.active {
+        color: var(--brand);
+        background: var(--brand-soft);
+        font-weight: 680;
+      }
+
+      .main {
+        grid-column: 2;
+        min-width: 0;
+        padding: 60px clamp(42px, 6vw, 94px) 100px;
+      }
+
+      .article {
+        max-width: 920px;
+        margin: 0 auto;
+      }
+
+      .breadcrumb {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-bottom: 18px;
+        color: var(--subtle);
+        font-size: 12px;
+      }
+
+      .breadcrumb strong {
+        color: var(--brand);
+        font-weight: 650;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(240px, 0.85fr);
+        align-items: stretch;
+        gap: 38px;
+        padding-bottom: 45px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0 0 13px;
+        color: var(--brand);
+        font-size: 12px;
+        font-weight: 760;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 22px;
+        height: 2px;
+        background: var(--orange);
+        content: "";
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 650px;
+        margin-bottom: 17px;
+        color: var(--ink);
+        font-size: clamp(34px, 4.2vw, 56px);
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        line-height: 1.12;
+      }
+
+      h1 em {
+        color: var(--brand);
+        font-style: normal;
+      }
+
+      .hero-copy {
+        max-width: 650px;
+        margin-bottom: 24px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.9;
+      }
+
+      .hero-copy strong {
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      .tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 3px 10px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .tag.brand {
+        border-color: transparent;
+        background: var(--brand-soft);
+        color: var(--brand);
+      }
+
+      .hero-card {
+        position: relative;
+        min-height: 280px;
+        overflow: hidden;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--surface-soft);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .hero-card::before,
+      .hero-card::after {
+        position: absolute;
+        width: 120px;
+        height: 120px;
+        border: 1px solid var(--line-strong);
+        border-radius: 25px;
+        content: "";
+        opacity: 0.75;
+        transform: rotate(45deg);
+      }
+
+      .hero-card::before {
+        top: -62px;
+        right: -35px;
+        background: var(--orange-soft);
+      }
+
+      .hero-card::after {
+        right: 20px;
+        bottom: -86px;
+        background: var(--teal-soft);
+      }
+
+      .hero-card-top {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 27px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+      }
+
+      .hero-card-top span:last-child {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--teal);
+      }
+
+      .hero-card-top span:last-child::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        content: "";
+      }
+
+      .hero-card h2 {
+        position: relative;
+        z-index: 1;
+        max-width: 230px;
+        margin-bottom: 12px;
+        color: var(--ink);
+        font-size: 23px;
+        font-weight: 800;
+        line-height: 1.28;
+      }
+
+      .hero-card p {
+        position: relative;
+        z-index: 1;
+        max-width: 250px;
+        margin-bottom: 22px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .mini-stack {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        gap: 7px;
+        max-width: 250px;
+      }
+
+      .mini-stack span {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mini-stack span strong {
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      .section {
+        scroll-margin-top: calc(var(--header-height) + 28px);
+        padding: 54px 0 0;
+      }
+
+      .section-heading {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+
+      h2 {
+        margin-bottom: 0;
+        color: var(--ink);
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: -0.015em;
+        line-height: 1.25;
+      }
+
+      h3 {
+        margin-bottom: 7px;
+        color: var(--ink);
+        font-size: 16px;
+        font-weight: 760;
+        line-height: 1.35;
+      }
+
+      .section-lead {
+        max-width: 650px;
+        margin-bottom: 22px;
+        color: var(--muted);
+        line-height: 1.85;
+      }
+
+      .status-note {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 10px;
+        border-radius: 7px;
+        background: var(--teal-soft);
+        color: var(--teal);
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .status-note::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        content: "";
+      }
+
+      .principles {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 11px;
+        margin: 29px 0 0;
+      }
+
+      .principle {
+        min-height: 136px;
+        padding: 17px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--surface);
+      }
+
+      .principle .number {
+        display: block;
+        margin-bottom: 11px;
+        color: var(--brand);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .principle h3 {
+        margin-bottom: 5px;
+        font-size: 14px;
+      }
+
+      .principle p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .feature-card {
+        padding: 21px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--surface);
+        transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease;
+      }
+
+      .feature-card:hover {
+        border-color: var(--line-strong);
+        box-shadow: var(--shadow-soft);
+        transform: translateY(-3px);
+      }
+
+      .feature-icon {
+        display: inline-grid;
+        width: 33px;
+        height: 33px;
+        margin-bottom: 15px;
+        place-items: center;
+        border-radius: 9px;
+        background: var(--brand-soft);
+        color: var(--brand);
+      }
+
+      .feature-card:nth-child(2) .feature-icon,
+      .feature-card:nth-child(5) .feature-icon {
+        background: var(--teal-soft);
+        color: var(--teal);
+      }
+
+      .feature-card:nth-child(3) .feature-icon,
+      .feature-card:nth-child(6) .feature-icon {
+        background: var(--orange-soft);
+        color: var(--orange);
+      }
+
+      .feature-card h3 {
+        margin-bottom: 6px;
+      }
+
+      .feature-card p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.75;
+      }
+
+      .preview-list {
+        display: grid;
+        gap: 20px;
+      }
+
+      .preview-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 0.38fr;
+        gap: 23px;
+        align-items: center;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .preview-item:last-child {
+        padding-bottom: 0;
+        border-bottom: 0;
+      }
+
+      .preview-image {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--surface-soft);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .preview-image img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top left;
+        transition: transform 350ms ease;
+      }
+
+      .preview-image:hover img {
+        transform: scale(1.025);
+      }
+
+      .preview-meta .kicker {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--brand);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .preview-meta p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.8;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .flow-step {
+        position: relative;
+        min-height: 165px;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--surface-soft);
+      }
+
+      .flow-step::after {
+        position: absolute;
+        top: 27px;
+        right: -14px;
+        z-index: 2;
+        width: 25px;
+        height: 1px;
+        background: var(--line-strong);
+        content: "";
+      }
+
+      .flow-step:last-child::after {
+        display: none;
+      }
+
+      .flow-step .number {
+        display: block;
+        margin-bottom: 17px;
+        color: var(--orange);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .flow-step p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.7;
+      }
+
+      .privacy-panel {
+        display: grid;
+        grid-template-columns: 0.9fr 1.1fr;
+        gap: 30px;
+        padding: 25px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--surface-tint);
+      }
+
+      .privacy-panel h3 {
+        margin-bottom: 7px;
+      }
+
+      .privacy-panel p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.8;
+      }
+
+      .privacy-list {
+        display: grid;
+        gap: 11px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .privacy-list li {
+        position: relative;
+        padding-left: 20px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .privacy-list li::before {
+        position: absolute;
+        top: 10px;
+        left: 0;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--teal);
+        content: "";
+      }
+
+      .code-panel {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-md);
+        background: #151b2b;
+        box-shadow: var(--shadow-soft);
+      }
+
+      .code-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 13px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        color: #aab4c9;
+        font-size: 11px;
+      }
+
+      .code-dots {
+        display: flex;
+        gap: 6px;
+      }
+
+      .code-dots i {
+        display: block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #ff9f72;
+      }
+
+      .code-dots i:nth-child(2) {
+        background: #f6d469;
+      }
+
+      .code-dots i:nth-child(3) {
+        background: #6bd5ad;
+      }
+
+      .copy-button {
+        padding: 4px 7px;
+        border-radius: 5px;
+        background: transparent;
+        color: #aab4c9;
+        font-size: 11px;
+      }
+
+      .copy-button:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+      }
+
+      pre {
+        overflow: auto;
+        margin: 0;
+        padding: 18px;
+        color: #e5e7eb;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.8;
+      }
+
+      .code-comment {
+        color: #7e8aa3;
+      }
+
+      .code-command {
+        color: #98b5ff;
+      }
+
+      .version-list {
+        display: grid;
+        gap: 0;
+        padding-left: 2px;
+      }
+
+      .version-item {
+        display: grid;
+        grid-template-columns: 110px minmax(0, 1fr);
+        gap: 21px;
+        padding: 0 0 23px 18px;
+        border-left: 1px solid var(--line-strong);
+      }
+
+      .version-item:last-child {
+        padding-bottom: 0;
+      }
+
+      .version-item::before {
+        position: absolute;
+        width: 8px;
+        height: 8px;
+        margin: 5px 0 0 -23px;
+        border: 3px solid var(--canvas);
+        border-radius: 50%;
+        background: var(--brand);
+        box-shadow: 0 0 0 1px var(--brand);
+        content: "";
+      }
+
+      .version-item {
+        position: relative;
+      }
+
+      .version-date {
+        color: var(--subtle);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .version-content strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--ink);
+        font-size: 14px;
+      }
+
+      .version-content p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.7;
+      }
+
+      .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 40px 0 0;
+        color: var(--subtle);
+        font-size: 12px;
+      }
+
+      .footer a {
+        color: var(--brand);
+      }
+
+      .toc {
+        position: fixed;
+        z-index: 10;
+        top: calc(var(--header-height) + 61px);
+        right: 28px;
+        width: var(--toc-width);
+        max-height: calc(100vh - var(--header-height) - 92px);
+        overflow: auto;
+        padding-left: 17px;
+        border-left: 1px solid var(--line);
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-strong) transparent;
+      }
+
+      .toc-label {
+        display: block;
+        margin-bottom: 12px;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .toc a {
+        display: block;
+        padding: 5px 0;
+        color: var(--subtle);
+        font-size: 12px;
+        line-height: 1.4;
+        transition: color 150ms ease;
+      }
+
+      .toc a:hover,
+      .toc a.active {
+        color: var(--brand);
+      }
+
+      .backdrop {
+        position: fixed;
+        z-index: 15;
+        inset: var(--header-height) 0 0;
+        display: none;
+        background: rgba(16, 24, 40, 0.35);
+      }
+
+      @media (max-width: 1180px) {
+        :root {
+          --toc-width: 190px;
+        }
+
+        .topbar {
+          padding: 0 20px;
+        }
+
+        .brand {
+          width: 220px;
+        }
+
+        .sidebar {
+          width: 220px;
+        }
+
+        .shell {
+          grid-template-columns: 220px minmax(0, 1fr) var(--toc-width);
+        }
+
+        .main {
+          padding-right: 48px;
+          padding-left: 48px;
+        }
+      }
+
+      @media (max-width: 940px) {
+        :root {
+          --sidebar-width: 240px;
+        }
+
+        .topnav {
+          display: none;
+        }
+
+        .mobile-menu {
+          display: inline-grid;
+        }
+
+        .brand {
+          width: auto;
+          margin-right: auto;
+        }
+
+        .search-wrap {
+          width: min(300px, 43vw);
+        }
+
+        .shell {
+          display: block;
+        }
+
+        .sidebar {
+          transform: translateX(-102%);
+          transition: transform 200ms ease;
+        }
+
+        .nav-open .sidebar {
+          box-shadow: var(--shadow);
+          transform: translateX(0);
+        }
+
+        .nav-open .backdrop {
+          display: block;
+        }
+
+        .main {
+          padding: 46px clamp(32px, 8vw, 84px) 80px;
+        }
+
+        .toc {
+          display: none;
+        }
+      }
+
+      @media (max-width: 690px) {
+        :root {
+          --header-height: 60px;
+        }
+
+        .topbar {
+          padding: 0 14px;
+        }
+
+        .brand {
+          gap: 8px;
+          font-size: 14px;
+        }
+
+        .brand img {
+          width: 25px;
+          height: 25px;
+        }
+
+        .brand small,
+        .top-actions .icon-button:first-child {
+          display: none;
+        }
+
+        .topbar-tools {
+          gap: 9px;
+        }
+
+        .search-wrap {
+          width: min(145px, 38vw);
+        }
+
+        .search-box {
+          height: 35px;
+        }
+
+        .key-hint {
+          display: none;
+        }
+
+        .main {
+          padding: 34px 20px 60px;
+        }
+
+        .hero {
+          grid-template-columns: 1fr;
+          gap: 24px;
+          padding-bottom: 33px;
+        }
+
+        h1 {
+          font-size: 37px;
+        }
+
+        .hero-copy {
+          font-size: 14px;
+        }
+
+        .hero-card {
+          min-height: 250px;
+        }
+
+        .section {
+          padding-top: 40px;
+        }
+
+        .section-heading {
+          display: block;
+        }
+
+        .section-heading .status-note {
+          margin-top: 13px;
+        }
+
+        h2 {
+          font-size: 25px;
+        }
+
+        .principles,
+        .feature-grid,
+        .flow,
+        .privacy-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .preview-item {
+          grid-template-columns: 1fr;
+          gap: 14px;
+        }
+
+        .preview-meta {
+          padding: 0 3px;
+        }
+
+        .flow-step::after {
+          top: auto;
+          right: auto;
+          bottom: -14px;
+          left: 50%;
+          width: 1px;
+          height: 25px;
+        }
+
+        .version-item {
+          grid-template-columns: 1fr;
+          gap: 2px;
+        }
+
+        .footer {
+          display: block;
+        }
+
+        .footer span:last-child {
+          display: block;
+          margin-top: 6px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="返回 Lattice 文档首页">
+        <img src="../web/public/lattice-icon.svg" alt="Lattice" />
+        <span>格物 Lattice</span>
+        <small>DOCS</small>
+      </a>
+
+      <div class="topbar-tools">
+        <div class="search-wrap">
+          <label class="search-box" for="doc-search">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" />
+              <path d="m16 16 4.2 4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+            <input id="doc-search" type="search" placeholder="搜索文档" autocomplete="off" />
+            <span class="key-hint">Ctrl K</span>
+          </label>
+          <div class="search-results" id="search-results" aria-live="polite"></div>
+        </div>
+
+        <nav class="topnav" aria-label="顶部导航">
+          <a href="#about" aria-current="page">文档</a>
+          <a href="#features">功能</a>
+          <a href="#previews">预览</a>
+          <a href="#getting-started">开始使用</a>
+          <a href="lattice-download.html">下载</a>
+        </nav>
+
+        <div class="top-actions">
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题" aria-pressed="false" title="切换主题">
+            <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20.3 15.4A8.5 8.5 0 0 1 8.6 3.7 8.5 8.5 0 1 0 20.3 15.4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+            </svg>
+            <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7" />
+              <path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+            </svg>
+          </button>
+          <a class="icon-button github-link" href="https://github.com/Dawei-star/Lattice" target="_blank" rel="noreferrer" aria-label="在 GitHub 查看 Lattice 项目" title="在 GitHub 查看 Lattice 项目">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 2.75a9.25 9.25 0 0 0-2.93 18.02c.46.08.63-.2.63-.44v-1.56c-2.56.56-3.1-1.1-3.1-1.1-.42-1.08-1.03-1.37-1.03-1.37-.84-.58.06-.57.06-.57.93.07 1.42.96 1.42.96.83 1.42 2.18 1.01 2.71.77.08-.6.33-1.01.59-1.24-2.04-.23-4.19-1.02-4.19-4.55 0-1.01.36-1.83.95-2.48-.1-.23-.41-1.17.09-2.44 0 0 .77-.25 2.53.95A8.8 8.8 0 0 1 12 8.5c.78 0 1.56.1 2.29.33 1.76-1.2 2.53-.95 2.53-.95.5 1.27.19 2.21.09 2.44.59.65.95 1.47.95 2.48 0 3.54-2.15 4.32-4.2 4.55.33.29.62.84.62 1.7v2.53c0 .24.17.52.64.43A9.25 9.25 0 0 0 12 2.75Z" fill="currentColor" />
+            </svg>
+          </a>
+          <button class="mobile-menu" id="menu-toggle" type="button" aria-label="打开文档导航" aria-expanded="false" title="打开文档导航">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="backdrop" id="backdrop"></div>
+
+    <div class="shell" id="top">
+      <aside class="sidebar" id="sidebar" aria-label="文档导航">
+        <p class="sidebar-intro">
+          <strong>产品文档</strong>
+          了解格物的设计、能力与工作方式
+        </p>
+
+        <div class="nav-group">
+          <span class="nav-label">开始</span>
+          <a class="nav-link active" href="#about">关于 Lattice</a>
+          <a class="nav-link" href="#principles">核心原则</a>
+          <a class="nav-link" href="#getting-started">快速开始</a>
+          <a class="nav-link" href="lattice-download.html">下载 Lattice</a>
+        </div>
+
+        <div class="nav-group">
+          <span class="nav-label">能力</span>
+          <a class="nav-link" href="#features">核心功能</a>
+          <a class="nav-link" href="#previews">界面预览</a>
+          <a class="nav-link" href="#workflow">工作方式</a>
+          <a class="nav-link" href="#privacy">隐私与数据</a>
+        </div>
+
+        <div class="nav-group">
+          <span class="nav-label">工程</span>
+          <a class="nav-link" href="#stack">技术构成</a>
+          <a class="nav-link" href="#updates">更新记录</a>
+        </div>
+      </aside>
+
+      <main class="main">
+        <article class="article">
+          <div class="breadcrumb"><span>文档</span><span>/</span><strong>关于 Lattice</strong></div>
+
+          <section class="hero" id="about" data-searchable="关于 Lattice 本地优先 双链笔记知识库">
+            <div>
+              <p class="eyebrow">Local-first knowledge workspace</p>
+              <h1>关于 <em>格物 Lattice</em></h1>
+              <p class="hero-copy">
+                Lattice 是一款<strong>本地优先的双链笔记知识库</strong>。它把 Markdown 笔记、关系图谱、可视化白板和 AI 助手放在同一个工作区，让知识留在自己的设备上，也让思考保持连贯。
+              </p>
+              <div class="tag-row" aria-label="产品特性">
+                <span class="tag brand">本地优先</span>
+                <span class="tag">Markdown 源文件</span>
+                <span class="tag">Windows</span>
+                <span class="tag">无需注册</span>
+              </div>
+            </div>
+
+            <div class="hero-card" aria-label="Lattice 产品摘要">
+              <div class="hero-card-top"><span>WORKSPACE / 0.1.1</span><span>LOCAL READY</span></div>
+              <h2>把零散想法，整理成可继续的知识。</h2>
+              <p>在本地写下、连接、检索和复用，让工具服务于思考本身。</p>
+              <div class="mini-stack">
+                <span><strong>Markdown</strong><span>可读、可迁移</span></span>
+                <span><strong>SQLite</strong><span>可重建索引</span></span>
+                <span><strong>AI</strong><span>按需连接模型</span></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="principles" data-searchable="核心原则 本地优先 可迁移 可理解">
+            <div class="section-heading">
+              <div>
+                <h2>为长期工作而设计</h2>
+                <p class="section-lead">Lattice 的核心不是把功能堆在一起，而是让你的知识库在几年后依然可读、可带走、可继续。</p>
+              </div>
+              <span class="status-note">数据掌握在你手里</span>
+            </div>
+            <div class="principles">
+              <div class="principle">
+                <span class="number">01 / LOCAL</span>
+                <h3>内容属于你</h3>
+                <p>笔记以 Markdown 文件保存，默认无需联网，换设备也能带走自己的 Vault。</p>
+              </div>
+              <div class="principle">
+                <span class="number">02 / LINKED</span>
+                <h3>知识自然连接</h3>
+                <p>双向链接、标签、嵌入和关系图谱，让一条笔记成为知识网络的一部分。</p>
+              </div>
+              <div class="principle">
+                <span class="number">03 / OPEN</span>
+                <h3>底层保持透明</h3>
+                <p>SQLite 只负责可重建索引，核心内容仍是普通文件，不被专有数据库锁定。</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="features" data-searchable="核心功能 Markdown 双向链接 全文检索 白板 AI MCP">
+            <div class="section-heading">
+              <div>
+                <h2>核心功能</h2>
+                <p class="section-lead">从一篇笔记开始，到一个可以检索、连接、推演的知识工作区。</p>
+              </div>
+            </div>
+            <div class="feature-grid">
+              <div class="feature-card">
+                <span class="feature-icon" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M5 4.5h14v15H5zM8.5 8h7M8.5 12h7M8.5 16h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </span>
+                <h3>Markdown 编辑</h3>
+                <p>编辑、分栏、预览三种模式，900ms 静默自动保存，内容始终以可读文件为源。</p>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="7" cy="7" r="2.3" stroke="currentColor" stroke-width="1.7" /><circle cx="17" cy="8" r="2.3" stroke="currentColor" stroke-width="1.7" /><circle cx="12" cy="17" r="2.3" stroke="currentColor" stroke-width="1.7" /><path d="m8.9 8.2 6 1.9M8.2 8.8l2.4 6M15.8 9.9l-2.4 4.9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
+                </span>
+                <h3>双向链接与图谱</h3>
+                <p>支持 `[[标题]]`、别名和小节链接，自动生成反向链接与可拖拽的知识关系图。</p>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="10.5" cy="10.5" r="5.8" stroke="currentColor" stroke-width="1.7" /><path d="m15 15 4.5 4.5M8 10.5h5M10.5 8v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
+                </span>
+                <h3>中文全文检索</h3>
+                <p>SQLite FTS5 + trigram 分词，支持中文子串匹配，搜索结果会高亮命中的关键词。</p>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.7" /><path d="M8 9h8M8 13h3M15 13h1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
+                </span>
+                <h3>本地白板</h3>
+                <p>用 `.canvas` 文件保存卡片和连线，支持拖拽、缩放、对齐与笔记、图片之间的连接。</p>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 4.5a7.5 7.5 0 0 0-4.3 13.6L7 21l4-1.4c.3.1.7.1 1 .1a7.5 7.5 0 1 0 0-15.2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" /><path d="M8.5 12h.1M12 12h.1M15.5 12h.1" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" /></svg>
+                </span>
+                <h3>AI 知识库助手</h3>
+                <p>基于关键词与语义混合检索进行问答，回答带来源引用，也支持写作、摘要、翻译与文件操作。</p>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M8 8.5 4.5 12 8 15.5M16 8.5l3.5 3.5-3.5 3.5M14 5 10 19" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </span>
+                <h3>MCP Server</h3>
+                <p>通过 stdio 向外部 Agent 暴露笔记读写工具，让 Claude 等客户端可以访问你的知识库。</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="previews" data-searchable="界面预览 工作区 白板 AI 助手 MCP">
+            <div class="section-heading">
+              <div>
+                <h2>界面预览</h2>
+                <p class="section-lead">一个安静、密度可调的工作区：左边组织内容，中间专注写作，右边查看关系与上下文。</p>
+              </div>
+            </div>
+            <div class="preview-list">
+              <div class="preview-item">
+                <a class="preview-image" href="../FILES/README.md/lattice-workspace-light.png" target="_blank" rel="noreferrer" aria-label="打开 Lattice 浅色工作区大图">
+                  <img src="../FILES/README.md/lattice-workspace-light.png" alt="Lattice 浅色知识库工作区" loading="lazy" />
+                </a>
+                <div class="preview-meta">
+                  <span class="kicker">Workspace</span>
+                  <h3>让笔记回到工作流里</h3>
+                  <p>目录树、笔记列表、标签页、编辑器和关系面板在一个稳定的布局中协作，减少视线跳转。</p>
+                </div>
+              </div>
+              <div class="preview-item">
+                <a class="preview-image" href="../FILES/README.md/lattice-canvas.png" target="_blank" rel="noreferrer" aria-label="打开 Lattice 本地白板大图">
+                  <img src="../FILES/README.md/lattice-canvas.png" alt="Lattice 本地白板与关系连线" loading="lazy" />
+                </a>
+                <div class="preview-meta">
+                  <span class="kicker">Canvas</span>
+                  <h3>把线性笔记变成空间关系</h3>
+                  <p>用卡片和连线快速整理问题、方案、参考资料，再把关系落回可检索的笔记。</p>
+                </div>
+              </div>
+              <div class="preview-item">
+                <a class="preview-image" href="../FILES/README.md/lattice-ai-assistant.png" target="_blank" rel="noreferrer" aria-label="打开 Lattice AI 助手大图">
+                  <img src="../FILES/README.md/lattice-ai-assistant.png" alt="Lattice AI 知识库助手" loading="lazy" />
+                </a>
+                <div class="preview-meta">
+                  <span class="kicker">Assistant</span>
+                  <h3>问自己的知识库</h3>
+                  <p>AI 只在你配置并发起请求时联网，并把回答涉及的笔记来源展示出来，便于回看与核验。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="workflow" data-searchable="工作方式 Vault Markdown 索引 AI">
+            <div class="section-heading">
+              <div>
+                <h2>工作方式</h2>
+                <p class="section-lead">内容、索引与 AI 能力各司其职，既保持本地文件的自由，也保留现代工具的效率。</p>
+              </div>
+            </div>
+            <div class="flow">
+              <div class="flow-step">
+                <span class="number">01</span>
+                <h3>写入 Vault</h3>
+                <p>笔记、附件和白板直接写入你选择的本地文件夹，格式清晰，随时可以复制或备份。</p>
+              </div>
+              <div class="flow-step">
+                <span class="number">02</span>
+                <h3>建立索引</h3>
+                <p>SQLite 维护可重建的搜索、标签、链接和语义索引，让大量内容依然容易找到。</p>
+              </div>
+              <div class="flow-step">
+                <span class="number">03</span>
+                <h3>按需调用 AI</h3>
+                <p>配置外部模型后，只有 AI 对话与 embedding 会按你的选择发送到对应服务。</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="privacy" data-searchable="隐私 数据 本地 网络 API Key">
+            <div class="section-heading">
+              <div>
+                <h2>隐私与数据边界</h2>
+                <p class="section-lead">默认离线不是一句口号，而是应用的默认状态。联网能力需要你主动配置或点击触发。</p>
+              </div>
+            </div>
+            <div class="privacy-panel">
+              <div>
+                <h3>本地优先，按需联网</h3>
+                <p>你可以把 Lattice 当作一个完全本地的 Markdown 工作区使用。AI 能力是可选层，不会改变笔记文件的归属。</p>
+              </div>
+              <ul class="privacy-list">
+                <li>无需注册账号，也没有默认云端同步。</li>
+                <li>API Key 只保存在本机，不写入日志或操作审计记录。</li>
+                <li>AI 文件操作需要预览与确认，任务模式也会留下审计痕迹。</li>
+              </ul>
+            </div>
+          </section>
+
+          <section class="section" id="stack" data-searchable="技术构成 React Vite Express SQLite Canvas">
+            <div class="section-heading">
+              <div>
+                <h2>技术构成</h2>
+                <p class="section-lead">前端、服务端与数据文件边界清楚，方便调试，也方便在未来替换其中的一层。</p>
+              </div>
+            </div>
+            <div class="feature-grid">
+              <div class="feature-card"><h3>Web</h3><p>React 18 + Vite 5，组件按工作区、编辑器、图谱、白板和 AI 助手拆分。</p></div>
+              <div class="feature-card"><h3>Server</h3><p>Express 5 + Node.js 内置 SQLite，模块按 routes / controller / service / repository 分层。</p></div>
+              <div class="feature-card"><h3>Search</h3><p>SQLite FTS5 trigram 处理中文子串匹配，短词查询使用 LIKE 兜底复核。</p></div>
+              <div class="feature-card"><h3>Graph</h3><p>原生 Canvas 渲染关系图与本地白板，保持拖拽、缩放和连线交互的轻量。</p></div>
+            </div>
+          </section>
+
+          <section class="section" id="getting-started" data-searchable="快速开始 安装 npm run dev npm run setup">
+            <div class="section-heading">
+              <div>
+                <h2>快速开始</h2>
+                <p class="section-lead">发行版用户直接运行 Windows 安装版即可。下面的命令适用于开发、调试和二次开发。</p>
+              </div>
+            </div>
+            <div class="code-panel">
+              <div class="code-toolbar">
+                <span class="code-dots"><i></i><i></i><i></i></span>
+                <span>PowerShell / Terminal</span>
+                <button class="copy-button" type="button" data-copy="npm run setup&#10;npm run db:migrate&#10;npm run dev" aria-label="复制快速开始命令">复制</button>
+              </div>
+              <pre><span class="code-comment"># 安装前后端与 MCP 依赖</span>
+<span class="code-command">npm run setup</span>
+
+<span class="code-comment"># 初始化本地索引数据库</span>
+<span class="code-command">npm run db:migrate</span>
+
+<span class="code-comment"># 启动开发模式：前端 5173，后端 5177</span>
+<span class="code-command">npm run dev</span></pre>
+            </div>
+          </section>
+
+          <section class="section" id="updates" data-searchable="更新记录 v0.1.1 AI 知识库助手">
+            <div class="section-heading">
+              <div>
+                <h2>更新记录</h2>
+                <p class="section-lead">最近的版本重点放在 AI 知识库助手、画布交互和更可靠的本地数据流。</p>
+              </div>
+            </div>
+            <div class="version-list">
+              <div class="version-item">
+                <div class="version-date">2026.09.29</div>
+                <div class="version-content"><strong>v0.1.1 · AI 知识库助手</strong><p>加入流式问答、相关笔记推荐、自然语言文件操作、每日摘要、模型管理中心与 MCP Server。</p></div>
+              </div>
+              <div class="version-item">
+                <div class="version-date">持续迭代</div>
+                <div class="version-content"><strong>下一步方向</strong><p>继续完善历史快照自动清理、完整 Vault 静态站点导出与 PWA 支持。</p></div>
+              </div>
+            </div>
+          </section>
+
+          <footer class="footer">
+            <span>格物 Lattice · 本地优先的双链笔记知识库</span>
+            <span><a href="lattice-download.html">下载 Lattice</a> · <a href="#privacy">查看隐私边界</a></span>
+          </footer>
+        </article>
+      </main>
+
+      <nav class="toc" aria-label="本页目录">
+        <span class="toc-label">本页目录</span>
+        <a href="#about" class="active">关于 Lattice</a>
+        <a href="#principles">核心原则</a>
+        <a href="#features">核心功能</a>
+        <a href="#previews">界面预览</a>
+        <a href="#workflow">工作方式</a>
+        <a href="#privacy">隐私与数据</a>
+        <a href="#stack">技术构成</a>
+        <a href="#getting-started">快速开始</a>
+        <a href="#updates">更新记录</a>
+      </nav>
+    </div>
+
+    <script>
+      (() => {
+        const root = document.documentElement;
+        const body = document.body;
+        const themeToggle = document.querySelector("#theme-toggle");
+        const menuToggle = document.querySelector("#menu-toggle");
+        const backdrop = document.querySelector("#backdrop");
+        const sidebar = document.querySelector("#sidebar");
+        const searchInput = document.querySelector("#doc-search");
+        const searchResults = document.querySelector("#search-results");
+        const searchable = [...document.querySelectorAll("[data-searchable]")];
+        const navLinks = [...document.querySelectorAll(".nav-link")];
+        const tocLinks = [...document.querySelectorAll(".toc a")];
+
+        const storedTheme = localStorage.getItem("lattice-docs-theme");
+        const preferredTheme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
+        const setTheme = (theme) => {
+          root.dataset.theme = theme;
+          themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
+          localStorage.setItem("lattice-docs-theme", theme);
+        };
+
+        setTheme(storedTheme || preferredTheme);
+
+        themeToggle.addEventListener("click", () => {
+          setTheme(root.dataset.theme === "dark" ? "light" : "dark");
+        });
+
+        const closeMenu = () => {
+          body.classList.remove("nav-open");
+          menuToggle.setAttribute("aria-expanded", "false");
+        };
+
+        menuToggle.addEventListener("click", () => {
+          const isOpen = body.classList.toggle("nav-open");
+          menuToggle.setAttribute("aria-expanded", String(isOpen));
+        });
+        backdrop.addEventListener("click", closeMenu);
+        sidebar.addEventListener("click", (event) => {
+          if (event.target.closest("a")) closeMenu();
+        });
+
+        const renderSearch = (query) => {
+          const value = query.trim().toLowerCase();
+          if (!value) {
+            searchResults.classList.remove("is-visible");
+            searchResults.innerHTML = "";
+            return;
+          }
+
+          const matches = searchable
+            .filter((section) => section.dataset.searchable.toLowerCase().includes(value))
+            .slice(0, 7);
+
+          searchResults.innerHTML = matches.length
+            ? matches.map((section) => {
+                const heading = section.querySelector("h1, h2")?.textContent || "文档章节";
+                const summary = section.querySelector(".section-lead, .hero-copy")?.textContent.trim() || "查看此章节";
+                return `<a class="search-result" href="#${section.id}"><strong>${heading}</strong><span>${summary.slice(0, 48)}${summary.length > 48 ? "…" : ""}</span></a>`;
+              }).join("")
+            : '<div class="search-empty">没有找到匹配的章节</div>';
+
+          searchResults.classList.add("is-visible");
+        };
+
+        searchInput.addEventListener("input", (event) => renderSearch(event.target.value));
+        searchInput.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            searchInput.value = "";
+            renderSearch("");
+            searchInput.blur();
+          }
+        });
+        document.addEventListener("click", (event) => {
+          if (!event.target.closest(".search-wrap")) renderSearch("");
+        });
+
+        document.addEventListener("keydown", (event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+            event.preventDefault();
+            searchInput.focus();
+            searchInput.select();
+          }
+        });
+
+        document.querySelectorAll("[data-copy]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const original = button.textContent;
+            try {
+              await navigator.clipboard.writeText(button.dataset.copy);
+              button.textContent = "已复制";
+            } catch {
+              button.textContent = "请手动复制";
+            }
+            window.setTimeout(() => { button.textContent = original; }, 1600);
+          });
+        });
+
+        const sectionObserver = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            const id = entry.target.id;
+            navLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
+            tocLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
+          });
+        }, { rootMargin: "-20% 0px -65% 0px", threshold: 0 });
+
+        searchable.forEach((section) => sectionObserver.observe(section));
+      })();
+    </script>
+  </body>
+</html>

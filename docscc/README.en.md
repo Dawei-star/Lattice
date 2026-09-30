@@ -17,6 +17,18 @@ All data stays on your own machine. No registration or network connection is req
 [![GitHub issues](https://img.shields.io/github/issues/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/issues)
 [![GitHub last commit](https://img.shields.io/github/last-commit/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/commits/main)
 
+## Website
+
+**格物 Lattice Documentation Site**: [`website/lattice-docs.html`](../website/lattice-docs.html)
+Read the product overview, feature previews, privacy boundaries, technical architecture, and quick-start guide.
+
+**格物 Lattice Download Center**: [`website/lattice-download.html`](../website/lattice-download.html)
+Open the GitHub Releases page for the Windows installer and portable build. The release page is the source of truth for versions, filenames, and checksums.
+
+**Source and feedback**: [`Dawei-star/Lattice`](https://github.com/Dawei-star/Lattice)
+
+After downloading the repository, you can open the HTML pages directly. For online releases and official installers, use GitHub Releases.
+
 ## Screenshots
 
 ### Knowledge workspace
@@ -78,6 +90,7 @@ Release packages are provided by the corresponding release; packaging steps are 
 | AI knowledge assistant | Streaming chat, source-cited knowledge-base Q&A (hybrid FTS + semantic retrieval), persistent sessions, related-note recommendations, natural-language file operations (task mode can execute multiple rounds and audit them automatically), editor writing assistant (polish / summarize / translate / continue / create a full document from a title / custom instructions, with streaming preview), retrieval debugging, and CLI task mode |
 | Daily digest | Manually generate a Journal digest for notes modified today; set `AI_DIGEST_HOUR` to generate it on a local-time schedule with idempotent updates for the same day |
 | MCP Server | Expose `list_notes`, `search_notes`, `read_note`, `create_note`, and `update_note` to external agents such as Claude over stdio |
+| Single-document HTML export | Export a standalone HTML file with Lattice branding, inlined images, clickable backlinks, and expanded embeds from the editor |
 | Quick switcher | Fuzzy-jump by title with `Ctrl / Cmd + K`, and create a missing title with one action |
 | Unresolved links | Mark references to missing notes as unresolved and complete them with one action |
 | Personalization | Light / dark themes, background images, custom themes, interface density, font size, content width, and editor preferences |

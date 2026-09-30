@@ -23,6 +23,9 @@ const html = await buildStaticHtml({
 });
 
 assert.equal(fetchCalls, 1);
+assert.match(html, /<title>Exported note · 格物 Lattice<\/title>/);
+assert.match(html, /class="export-brand" href="https:\/\/github\.com\/Dawei-star\/Lattice"/);
+assert.match(html, /由 格物 Lattice 导出/);
 assert.match(html, /href="\.\/Guides\/Linked%20note\.html#intro"/);
 assert.match(html, /Embedded content/);
 assert.match(html, /src="data:image\/png;base64,/);
