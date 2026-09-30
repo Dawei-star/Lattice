@@ -4,8 +4,8 @@
 - Focused icon reference: `C:/Users/Lenovo/AppData/Local/Temp/codex-clipboard-c4eb1305-8349-4679-815c-2d4a08cd0cfc.png`
 - Focused button reference: `C:/Users/Lenovo/AppData/Local/Temp/codex-clipboard-52c1f23f-cb1e-4e63-9042-cb646d542e9c.png`
 - Implementation: `website/lattice-download.html`
-- Desktop implementation screenshot: `output/playwright/lattice-download-final-desktop.png`
-- Mobile implementation screenshot: `output/playwright/lattice-download-final-mobile.png`
+- Desktop implementation screenshot: `output/playwright/lattice-download-blue-desktop.png`
+- Mobile implementation screenshot: `output/playwright/lattice-download-blue-mobile.png`
 - Comparison image: `output/playwright/lattice-download-final-comparison.png`
 - State: dark theme, download page, no prior interaction except the theme toggle used for the light-theme check
 
@@ -36,6 +36,6 @@
 ## Comparison History
 
 - Initial pass: the desktop and mobile composition had no P0-P2 mismatch; the extra icon container and low-contrast button were refined in this iteration.
-- Final pass: the icon has no added black border, the CTA has readable contrast, and the direct installer download was verified in the browser.
+- Final pass: the icon has no added black border, the CTA now uses the Lattice blue palette instead of purple, and the direct installer download was verified in the browser.
 
 final result: passed
