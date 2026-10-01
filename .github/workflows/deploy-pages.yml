@@ -29,7 +29,7 @@ jobs:
         run: |
           rm -rf _site
           mkdir -p _site/website _site/web/public _site/FILES
-          cp website/lattice-docs.html website/lattice-download.html _site/website/
+          cp website/lattice-docs.html website/lattice-download.html website/download-release.mjs _site/website/
           cp -R web/public/. _site/web/public/
           cp -R FILES/. _site/FILES/
           cp index.html _site/index.html

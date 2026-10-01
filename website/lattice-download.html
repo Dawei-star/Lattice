@@ -924,10 +924,10 @@
           <h1>格物 <em>Lattice</em></h1>
           <p class="hero-copy">本地优先的双链笔记知识库</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases/download/init/Lattice-0.1.1-setup.exe" target="_blank" rel="noreferrer">下载 Windows 安装版</a>
+            <a class="button button-primary" data-download="setup" data-download-role="hero" href="https://github.com/Dawei-star/Lattice/releases/latest" target="_blank" rel="noreferrer"><span data-download-label>下载 Windows 安装版</span></a>
             <a class="button button-secondary" href="lattice-docs.html">查看产品文档</a>
           </div>
-          <p class="download-update">Windows 安装版 · v0.1.1</p>
+          <p class="download-update" data-release-status>正在获取最新版本...</p>
         </div>
 
         <div class="release-panel" aria-label="下载信息">
@@ -950,13 +950,13 @@
             <span class="card-tag">推荐日常使用</span>
             <h3>Windows 安装版</h3>
             <p>通过安装向导完成安装，提供开始菜单入口和标准卸载方式。适合固定在当前 Windows 设备上使用。</p>
-            <a class="button button-primary" href="https://github.com/Dawei-star/Lattice/releases/download/init/Lattice-0.1.1-setup.exe" target="_blank" rel="noreferrer">直接下载 v0.1.1 <span class="external-arrow" aria-hidden="true">↗</span></a>
+            <a class="button button-primary" data-download="setup" data-download-role="card" href="https://github.com/Dawei-star/Lattice/releases/latest" target="_blank" rel="noreferrer"><span data-download-label>下载最新 Windows 安装版</span> <span class="external-arrow" aria-hidden="true">↗</span></a>
           </article>
           <article class="download-card">
             <span class="card-tag">便携使用</span>
             <h3>Windows 绿色版</h3>
             <p>无需安装，可放在指定目录中直接运行。更换设备前请先备份 Vault 与 LatticeData 数据目录。</p>
-            <a class="button button-secondary" href="https://github.com/Dawei-star/Lattice/releases" target="_blank" rel="noreferrer">前往发布页下载 <span class="external-arrow" aria-hidden="true">↗</span></a>
+            <a class="button button-secondary" data-download="portable" href="https://github.com/Dawei-star/Lattice/releases/latest" target="_blank" rel="noreferrer"><span data-download-label>下载最新绿色版</span> <span class="external-arrow" aria-hidden="true">↗</span></a>
           </article>
         </div>
       </section>
@@ -966,7 +966,7 @@
           <span class="notice-mark" aria-hidden="true">i</span>
           <div>
             <h3>下载前请确认</h3>
-            <p>当前页面不硬编码某个版本的 exe 文件地址。这样可以避免版本更新后链接失效；打开 GitHub Releases 后，选择最新的 Windows 安装包或绿色版即可。</p>
+            <p>页面会在打开时从 GitHub Releases 获取最新稳定版本，并自动更新安装版与绿色版下载地址；如果网络不可用，可从最新发布页手动选择文件。</p>
           </div>
         </div>
       </section>
@@ -1005,6 +1005,13 @@
           setTheme(root.dataset.theme === 'dark' ? 'light' : 'dark');
         });
       })();
+    </script>
+    <script type="module">
+      import { applyLatestRelease, applyReleaseFallback, fetchLatestRelease } from './download-release.mjs';
+
+      fetchLatestRelease()
+        .then((release) => applyLatestRelease(release))
+        .catch(() => applyReleaseFallback());
     </script>
   </body>
 </html>
