@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { aiApi } from '../api/ai.js';
+import { filesApi } from '../api/files.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { getActiveAiProvider, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.js';
 
 const LAST_SESSION_KEY = 'lattice-ai-active-session-v2';
+const SYSTEM_ROOT_FOLDERS = new Set(['inbox', 'daily', 'journal']);
+const FILE_KERNEL_ACTIONS = new Set(['create', 'update', 'delete', 'move', 'copy']);
 
 const WELCOME_MESSAGE = {
   id: 'ai-welcome',
@@ -23,7 +26,7 @@ function displayStreamText(raw) {
   return visible.replace(/\[\[自动读取文件中…\]\]/g, '').trimEnd();
 }
 
-export default function AIAssistantPanel({ open, onClose, noteIndex = [], folders = [], activeNote, onOpenNote, onOperationComplete }) {
+export default function AIAssistantPanel({ open, onClose, noteIndex = [], folders = [], activeNote, onOpenNote, onOperationComplete, initialPrompt = '', initialPromptPreferModel = false, onInitialPromptConsumed }) {
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -49,13 +52,34 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const [retryMessage, setRetryMessage] = useState('');
   const [related, setRelated] = useState([]);
   const [relatedOpen, setRelatedOpen] = useState(true);
+  const [contextScope, setContextScope] = useState('auto');
   const abortRef = useRef(null);
+  const forceModelRef = useRef(false);
+  const loadedSessionRef = useRef(null);
   const messagesRef = useRef(null);
   const draftRef = useRef(null);
+  const streamTextRef = useRef('');
+  const streamStatusRef = useRef('');
+  const streamFrameRef = useRef(0);
+  const stickToBottomRef = useRef(true);
 
   const activeProvider = getActiveAiProvider(settings);
   const connectionState = !hasExternalAi(settings) ? 'local' : activeProvider?.verified ? 'connected' : 'configured';
   const composerBusy = sending || digesting;
+
+  const flushStream = () => {
+    streamFrameRef.current = 0;
+    setStreamText(streamTextRef.current);
+    setStreamStatus(streamStatusRef.current);
+  };
+  const queueStreamFlush = () => {
+    if (streamFrameRef.current) return;
+    streamFrameRef.current = requestAnimationFrame(flushStream);
+  };
+
+  useEffect(() => () => {
+    if (streamFrameRef.current) cancelAnimationFrame(streamFrameRef.current);
+  }, []);
 
   useEffect(() => subscribeAiSettings(setSettings), []);
   useEffect(() => {
@@ -81,8 +105,24 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
 
   const refreshHistory = useCallback(async ({ reportError = false } = {}) => {
     try {
-      const response = await aiApi.history({ query: { limit: 80 }, ...requestOptions });
-      setHistory(response?.data ?? response ?? []);
+      const [aiEntries, fileEntries] = await Promise.all([
+        aiApi.history({ query: { limit: 80 }, ...requestOptions }),
+        filesApi.log({ query: { limit: 80 }, ...requestOptions }),
+      ]);
+      const aiHistory = aiEntries?.data ?? aiEntries ?? [];
+      const fileHistory = (fileEntries?.data ?? fileEntries ?? [])
+        // AI agent writes are already represented by /ai/history. The file API
+        // is the source of truth for the GUI's confirmed local operations.
+        .filter((entry) => entry.source === 'files-api')
+        .map((entry) => ({
+          ...entry,
+          action: {
+            type: entry.type,
+            path: entry.path,
+            targetPath: entry.targetPath,
+          },
+        }));
+      setHistory([...aiHistory, ...fileHistory].sort((left, right) => String(right.at ?? '').localeCompare(String(left.at ?? ''))));
     } catch (requestError) {
       if (reportError) setError(requestError?.message ?? '审计记录加载失败');
     }
@@ -90,6 +130,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
 
   useEffect(() => {
     if (!open) return;
+    loadedSessionRef.current = null;
     setSessionsReady(false);
     refreshSessions();
     refreshHistory();
@@ -98,6 +139,9 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   // 切换会话时从服务端拉取历史消息
   useEffect(() => {
     if (!open || !sessionId || !sessionsReady) return;
+    // 刷新会话列表不等于切换会话；避免覆盖正在等待确认的文件预览。
+    if (loadedSessionRef.current === sessionId) return;
+    loadedSessionRef.current = sessionId;
     if (!sessions.some((session) => session.id === sessionId)) {
       setMessages([WELCOME_MESSAGE]);
       setPreview(null);
@@ -160,8 +204,19 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   // 新消息 / 流式输出时滚到最新
   useEffect(() => {
     const container = messagesRef.current;
-    if (container) container.scrollTop = container.scrollHeight;
+    if (container && stickToBottomRef.current) container.scrollTop = container.scrollHeight;
   }, [messages, streamText, sending, preview, execution]);
+
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (!container) return undefined;
+    const updateScrollIntent = () => {
+      stickToBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
+    };
+    updateScrollIntent();
+    container.addEventListener('scroll', updateScrollIntent, { passive: true });
+    return () => container.removeEventListener('scroll', updateScrollIntent);
+  }, [open]);
 
   // 输入框随内容自动增高，超过上限后内部滚动
   useEffect(() => {
@@ -171,32 +226,121 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     el.style.height = `${Math.min(el.scrollHeight, 148)}px`;
   }, [draft, tab]);
 
+  const folderEntries = useMemo(() => flattenFolders(folders), [folders]);
+  const projectContext = useMemo(() => {
+    const activeFolder = folderEntries.find((folder) => folder.id === activeNote?.folderId);
+    if (!activeFolder) return null;
+    const rootPath = activeFolder.path.split('/')[0];
+    if (SYSTEM_ROOT_FOLDERS.has(rootPath.toLowerCase())) return null;
+    const rootFolder = folderEntries.find((folder) => folder.path === rootPath);
+    const projectFolderIds = new Set(
+      folderEntries
+        .filter((folder) => folder.path === rootPath || folder.path.startsWith(`${rootPath}/`))
+        .map((folder) => folder.id),
+    );
+    return {
+      name: rootPath,
+      path: rootPath,
+      folderId: rootFolder?.id ?? null,
+      folderIds: projectFolderIds,
+    };
+  }, [activeNote?.folderId, folderEntries]);
+
+  const effectiveContextScope = useMemo(() => {
+    if (contextScope === 'current') return activeNote ? 'current' : 'all';
+    if (contextScope === 'project') return projectContext ? 'project' : 'all';
+    if (contextScope === 'auto') return projectContext ? 'project' : 'all';
+    return 'all';
+  }, [activeNote, contextScope, projectContext]);
+
+  const contextScopeLabel = effectiveContextScope === 'current'
+    ? '当前笔记'
+    : effectiveContextScope === 'project'
+      ? `项目：${projectContext.name}`
+      : '全库';
+
+  const scopedNoteIndex = useMemo(() => {
+    if (effectiveContextScope === 'current') return activeNote ? [activeNote] : [];
+    if (effectiveContextScope === 'project' && projectContext) {
+      return noteIndex.filter((note) => projectContext.folderIds.has(note.folderId));
+    }
+    return noteIndex;
+  }, [activeNote, effectiveContextScope, noteIndex, projectContext]);
+
+  const inboxItems = useMemo(
+    () => noteIndex.filter((note) => note.properties?.type === 'inbox'),
+    [noteIndex],
+  );
+  const pendingInboxItems = useMemo(
+    () => inboxItems.filter((note) => ['captured', 'processing'].includes(note.properties?.status ?? 'captured')),
+    [inboxItems],
+  );
+
   const context = useMemo(() => ({
     activeFile: activeNote?.filePath ?? activeNote?.title ?? null,
     activeFileContent: typeof activeNote?.content === 'string' ? activeNote.content.slice(0, 12_000) : null,
-    files: noteIndex.slice(0, 100).map((note) => ({
+    project: projectContext ? {
+      name: projectContext.name,
+      path: projectContext.path,
+      folderId: projectContext.folderId,
+      fileCount: scopedNoteIndex.length,
+    } : null,
+    inbox: {
+      total: inboxItems.length,
+      pending: pendingInboxItems.length,
+    },
+    files: scopedNoteIndex.slice(0, 100).map((note) => ({
       id: note.id,
       title: note.title,
       path: note.filePath ?? note.title,
       folderId: note.folderId,
       updatedAt: note.updatedAt,
       wordCount: note.wordCount,
+      properties: note.properties ?? {},
     })),
-    folders: flattenFolders(folders).slice(0, 80).map((folder) => ({ id: folder.id, name: folder.name, path: folder.path })),
-  }), [activeNote, folders, noteIndex]);
+    inboxFiles: inboxItems.slice(0, 80).map((note) => ({
+      id: note.id,
+      title: note.title,
+      path: note.filePath ?? note.title,
+      folderId: note.folderId,
+      updatedAt: note.updatedAt,
+      wordCount: note.wordCount,
+      properties: note.properties ?? {},
+    })),
+    folders: folderEntries.slice(0, 80).map((folder) => ({ id: folder.id, name: folder.name, path: folder.path })),
+    scope: effectiveContextScope,
+    scopeLabel: contextScopeLabel,
+  }), [activeNote, contextScopeLabel, effectiveContextScope, folderEntries, inboxItems, pendingInboxItems, projectContext, scopedNoteIndex]);
 
-  if (!open) return null;
+  const historyStats = useMemo(() => ({
+    total: history.length,
+    completed: history.filter((entry) => entry.status === 'completed').length,
+    failed: history.filter((entry) => entry.status === 'failed').length,
+  }), [history]);
 
   const appendMessage = (message) => setMessages((current) => [...current, message]);
 
-  const send = async (value = draft) => {
+  // 流式请求跨会话保护：请求期间用户切换/新建会话时，旧请求的
+  // 流式增量、最终回复与预览面板不得写入新会话
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  const send = async (value = draft, options = {}) => {
     const message = String(value).trim();
     if (!message || composerBusy) return;
+    const preferModel = options.preferModel ?? (forceModelRef.current || settings.preferModel === true);
+    forceModelRef.current = false;
+    const requestSessionId = sessionId;
+    const stale = () => sessionIdRef.current !== requestSessionId;
     setDraft('');
     setError('');
     setRetryMessage('');
     setExecution(null);
     setPreview(null);
+    streamTextRef.current = '';
+    streamStatusRef.current = '';
     setStreamText('');
     setStreamStatus('');
     appendMessage({ id: `user-${Date.now()}`, role: 'user', content: message });
@@ -210,7 +354,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         context,
         sessionId,
         mode: settings.autoApprove ? 'agent' : 'assist',
-        preferModel: settings.preferModel === true,
+        preferModel,
         autoApprove: settings.autoApprove === true,
         actor: 'local-user',
         role: settings.role,
@@ -218,18 +362,29 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         ...requestOptions,
         signal: controller.signal,
         onEvent: (event) => {
-          if (event.type === 'meta') setStreamStatus(`模型 ${event.model ?? ''} 生成中…`);
-          else if (event.type === 'delta') setStreamText((current) => current + event.text);
+          if (stale()) return;
+          if (event.type === 'meta') {
+            streamStatusRef.current = `模型 ${event.model ?? ''} 生成中…`;
+            queueStreamFlush();
+          }
+          else if (event.type === 'delta') {
+            streamTextRef.current += String(event.text ?? '');
+            queueStreamFlush();
+          }
           else if (event.type === 'round') {
-            setStreamText('');
-            setStreamStatus(`第 ${event.round} 轮 · 继续执行任务…`);
+            streamTextRef.current = '';
+            streamStatusRef.current = `第 ${event.round} 轮 · 继续执行任务…`;
+            queueStreamFlush();
           } else if (event.type === 'status') {
-            setStreamStatus(event.text ?? '');
+            streamStatusRef.current = event.text ?? '';
+            queueStreamFlush();
           } else if (event.type === 'done') {
-            setStreamStatus('');
+            streamStatusRef.current = '';
+            queueStreamFlush();
           }
         },
       });
+      if (stale()) return;
 
       const assistant = {
         id: `assistant-${Date.now()}`,
@@ -242,11 +397,13 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
       appendMessage(assistant);
       if (settings.autoApprove === true) refreshHistory();
       if (payload?.actions?.length) {
-        const previewResponse = await aiApi.preview({ actions: payload.actions, actor: 'local-user', role: settings.role }, requestOptions);
-        setPreview(previewResponse?.data ?? previewResponse);
+        const previewResponse = await buildOperationPreview(payload.actions, requestOptions, settings.role);
+        if (stale()) return;
+        setPreview(previewResponse);
       }
       refreshSessions();
     } catch (requestError) {
+      if (stale()) return;
       if (requestError?.name === 'AbortError') {
         appendMessage({ id: `system-${Date.now()}`, role: 'system', content: '已停止生成。' });
       } else {
@@ -255,12 +412,28 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         setRetryMessage(message);
       }
     } finally {
+      // 清理必须无条件执行：切换会话会 abort 旧请求，若在这里跳过 setSending，
+      // composerBusy 会永久卡住。内容写入（消息/预览/报错）才需要 stale 守卫。
       abortRef.current = null;
       setSending(false);
+      streamTextRef.current = '';
+      streamStatusRef.current = '';
       setStreamText('');
       setStreamStatus('');
     }
   };
+
+  useEffect(() => {
+    if (!open || !initialPrompt.trim()) return;
+    setTab('chat');
+    setDraft(initialPrompt.trim());
+    forceModelRef.current = initialPromptPreferModel === true;
+    setError('');
+    setRetryMessage('');
+    onInitialPromptConsumed?.();
+  }, [initialPrompt, initialPromptPreferModel, onInitialPromptConsumed, open]);
+
+  if (!open) return null;
 
   const stopGenerating = () => abortRef.current?.abort();
 
@@ -294,17 +467,54 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const executePreview = async () => {
     if (!preview || preview.blocked || sending) return;
     setSending(true);
+    setStreamStatus('正在执行文件操作…');
     setError('');
     try {
-      const response = await aiApi.execute({
-        actions: preview.operations,
-        actor: 'local-user',
-        role: settings.role,
-        source: 'ai-chat',
-        confirmed: true,
-        planHash: preview.planHash,
-      }, requestOptions);
-      const result = response?.data ?? response;
+      const results = [];
+      // 保持模型给出的顺序：后一个动作可能依赖前一个 mkdir/move。
+      for (const operation of preview.fileOperations ?? []) {
+        try {
+          const response = await filesApi.execute({ ...operation.mutation, confirmed: true }, requestOptions);
+          const result = response?.data ?? response;
+          results.push({
+            id: operation.id,
+            type: operation.originalType,
+            path: operation.path,
+            targetPath: operation.targetPath,
+            status: 'completed',
+            result,
+          });
+        } catch (requestError) {
+          results.push({
+            id: operation.id,
+            type: operation.originalType,
+            path: operation.path,
+            targetPath: operation.targetPath,
+            status: 'failed',
+            error: requestError?.message ?? '操作失败',
+          });
+        }
+      }
+
+      if (preview.aiOperations?.length) {
+        const response = await aiApi.execute({
+          actions: preview.aiOperations,
+          actor: 'local-user',
+          role: settings.role,
+          source: 'ai-chat',
+          confirmed: true,
+          planHash: preview.aiPlanHash,
+        }, requestOptions);
+        const legacyResult = response?.data ?? response;
+        results.push(...(legacyResult.results ?? []));
+      }
+
+      const result = {
+        results,
+        completed: results.filter((item) => item.status === 'completed').length,
+        failed: results.filter((item) => item.status === 'failed').length,
+        skipped: results.filter((item) => item.status === 'skipped').length,
+      };
       setExecution(result);
       setPreview(null);
       appendMessage({
@@ -318,6 +528,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
       setError(requestError?.message ?? '执行失败，请检查权限或文件状态');
     } finally {
       setSending(false);
+      setStreamStatus('');
     }
   };
 
@@ -380,6 +591,18 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
 
         {tab === 'history' ? (
           <div className="ai-assistant__history">
+            <div className="ai-assistant__history-head">
+              <div>
+                <span className="ai-assistant__eyebrow">ACTIVITY LOG</span>
+                <strong>操作记录</strong>
+              </div>
+              <button type="button" className="ai-assistant__history-refresh" onClick={() => refreshHistory({ reportError: true })} title="刷新操作记录">↻ 刷新</button>
+            </div>
+            <div className="ai-assistant__history-stats" aria-label="操作记录摘要">
+              <span><strong>{historyStats.total}</strong>总计</span>
+              <span className="is-success"><strong>{historyStats.completed}</strong>完成</span>
+              <span className="is-danger"><strong>{historyStats.failed}</strong>失败</span>
+            </div>
             {!history.length ? <div className="ai-assistant__empty">还没有 AI 操作记录</div> : history.map((entry) => <HistoryEntry key={entry.id} entry={entry} />)}
           </div>
         ) : (
@@ -399,15 +622,44 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
             </div>
 
             <div className="ai-assistant__context-strip">
-              <span className="ai-assistant__context-icon" aria-hidden="true">⌁</span>
-              <span className="ai-assistant__context-title" title={activeNote ? `当前文件：${activeNote.title}` : '当前工作区：全部文件'}>{activeNote ? `当前文件：${activeNote.title}` : '当前工作区：全部文件'}</span>
+              <label className="ai-assistant__scope-picker" title="选择 AI 检索和文件上下文范围">
+                <span className="ai-assistant__context-icon" aria-hidden="true">⌁</span>
+                <select value={contextScope} onChange={(event) => setContextScope(event.target.value)} aria-label="AI 上下文范围">
+                  <option value="auto">自动上下文 · {projectContext ? '当前项目' : '全库'}</option>
+                  <option value="current" disabled={!activeNote}>当前笔记</option>
+                  <option value="project" disabled={!projectContext}>当前项目</option>
+                  <option value="all">全库</option>
+                </select>
+              </label>
               <span className="ai-assistant__context-meta">
-                <span className="ai-assistant__context-count">{noteIndex.length} 个文件</span>
+                <span className="ai-assistant__context-count">{scopedNoteIndex.length} 个文件</span>
                 <span className={`ai-assistant__model-label is-${connectionState}`}>
                   {activeProvider?.model && connectionState !== 'local' ? `模型 · ${activeProvider.model}` : '本地响应'}
                 </span>
               </span>
             </div>
+
+            <section className="ai-assistant__workbench" aria-label="工作区脉搏">
+              <div className="ai-assistant__workbench-head">
+                <div>
+                  <span className="ai-assistant__eyebrow">WORKSPACE PULSE</span>
+                  <strong>{activeNote ? '正在协作的笔记' : '知识库概览'}</strong>
+                </div>
+                <span className="ai-assistant__workbench-scope">{contextScopeLabel}</span>
+              </div>
+              <div className="ai-assistant__pulse-grid">
+                <div><strong>{scopedNoteIndex.length}</strong><span>{effectiveContextScope === 'current' ? '当前范围' : '范围文件'}</span></div>
+                <div><strong>{pendingInboxItems.length}</strong><span>待整理 Inbox</span></div>
+                <div><strong>{related.length}</strong><span>相关笔记</span></div>
+              </div>
+              {activeNote ? (
+                <button type="button" className="ai-assistant__current-file" onClick={() => onOpenNote?.(activeNote.id)} title="打开当前笔记">
+                  <span className="ai-assistant__current-file-icon" aria-hidden="true">#</span>
+                  <span className="ai-assistant__current-file-copy"><strong>{activeNote.title}</strong><small>{activeNote.filePath ?? '当前打开的笔记'}{activeNote.wordCount ? ` · ${activeNote.wordCount} 字` : ''}</small></span>
+                  <span className="ai-assistant__current-file-arrow" aria-hidden="true">↗</span>
+                </button>
+              ) : <div className="ai-assistant__current-file is-empty"><span className="ai-assistant__current-file-icon" aria-hidden="true">⌁</span><span>打开一篇笔记后，AI 会自动锁定写作上下文</span></div>}
+            </section>
 
             {related.length ? (
               <div className="ai-assistant__related">
@@ -448,15 +700,17 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
             ) : null}
 
             <div className="ai-assistant__composer">
+              <div className="ai-assistant__quick-actions-head"><span>常用指令</span><small>{contextScopeLabel} · {settings.autoApprove ? '自动执行已开启' : '写入前确认'}</small></div>
               <div className="ai-assistant__quick-actions">
-                <button type="button" disabled={composerBusy} onClick={() => send('总结当前笔记的核心内容，并给出相关笔记')}>✦ 知识问答</button>
-                <button type="button" disabled={composerBusy} onClick={() => send('搜索最近修改的项目笔记')}>⌕ 搜索文件</button>
+                <button type="button" disabled={composerBusy} onClick={() => send('总结当前笔记的核心内容，并给出相关笔记')}><span className="ai-assistant__quick-icon">✦</span><span><strong>理解笔记</strong><small>摘要 + 关联</small></span></button>
+                <button type="button" disabled={composerBusy} onClick={() => send('搜索最近修改的项目笔记')}><span className="ai-assistant__quick-icon">⌕</span><span><strong>搜索知识库</strong><small>按内容定位</small></span></button>
                 <button type="button" disabled={composerBusy} onClick={() => send(settings.autoApprove
                   ? '把我的文件整理分类好：先检索全库了解每篇笔记的主题，再把它们移动到按主题命名的目录里，最后汇报整理结果'
                   : '整理当前 Vault 的文件')}
-                >{settings.autoApprove ? '⚡ 自动整理' : '✦ 整理建议'}</button>
-                <button type="button" disabled={composerBusy} onClick={() => send('检查当前笔记的 Markdown 问题')}>✓ 检查内容</button>
-                <button type="button" disabled={composerBusy} onClick={runDigest}>{digesting ? '⋯ 生成中' : '☰ 每日摘要'}</button>
+                ><span className="ai-assistant__quick-icon">↗</span><span><strong>{settings.autoApprove ? '自动整理' : '整理建议'}</strong><small>规划文件结构</small></span></button>
+                <button type="button" disabled={composerBusy || pendingInboxItems.length === 0} onClick={() => send('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。', { preferModel: true })}><span className="ai-assistant__quick-icon">✦</span><span><strong>整理 Inbox</strong><small>{pendingInboxItems.length ? `${pendingInboxItems.length} 条待处理` : '暂无待处理'}</small></span></button>
+                <button type="button" disabled={composerBusy} onClick={() => send('检查当前笔记的 Markdown 问题')}><span className="ai-assistant__quick-icon">✓</span><span><strong>检查内容</strong><small>结构与格式</small></span></button>
+                <button type="button" disabled={composerBusy} onClick={runDigest}><span className="ai-assistant__quick-icon">☰</span><span><strong>{digesting ? '生成中' : '每日摘要'}</strong><small>汇总今日变更</small></span></button>
               </div>
               <form onSubmit={(event) => { event.preventDefault(); send(); }}>
                 <textarea
@@ -554,7 +808,7 @@ function OperationPreview({ preview, onConfirm, onCancel, disabled }) {
   return (
     <section className="ai-operation-preview" aria-label="文件操作预览">
       <header><div><span className="ai-assistant__eyebrow">ACTION PREVIEW</span><h3>确认文件操作</h3></div><span className="ai-operation-preview__risk">{preview.summary}</span></header>
-      <div className="ai-operation-preview__list">{preview.operations.map((operation) => <div className={`ai-operation ${operation.risk}`} key={operation.id}><span className="ai-operation__icon">{operation.type === 'delete' ? '×' : operation.type === 'read' ? '⌕' : '↗'}</span><div><strong>{operation.summary}</strong><small>{operation.risk === 'destructive' ? '删除操作不可逆' : operation.requiresConfirmation ? '确认后写入 Vault' : '只读操作'}</small></div></div>)}</div>
+      <div className="ai-operation-preview__list">{preview.operations.map((operation) => <div className={`ai-operation ${operation.risk}`} key={operation.id}><span className="ai-operation__icon">{operation.type === 'delete' ? '×' : operation.type === 'read' ? '⌕' : '↗'}</span><div className="ai-operation__body"><strong>{operation.summary}</strong><small>{operation.risk === 'destructive' ? '删除操作不可逆' : operation.requiresConfirmation ? '确认后写入 Vault' : '只读操作'}</small>{operation.diff ? <pre className="ai-operation__diff">{operation.diff}</pre> : null}</div></div>)}</div>
       <footer><button type="button" onClick={onCancel} disabled={disabled}>取消</button><button type="button" className="is-primary" onClick={onConfirm} disabled={disabled || preview.blocked}>{preview.blocked ? '当前角色只读' : '确认执行'}</button></footer>
     </section>
   );
@@ -579,4 +833,60 @@ function flattenFolders(nodes, parentPath = '') {
 function formatTime(value) {
   if (!value) return '刚刚';
   try { return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value)); } catch { return '刚刚'; }
+}
+
+async function buildOperationPreview(actions, requestOptions, role) {
+  const fileActions = actions.filter((action) => FILE_KERNEL_ACTIONS.has(action?.type));
+  const archiveActions = actions.filter((action) => action?.type === 'archive');
+  const fileOperations = await Promise.all(fileActions.map(async (action, index) => {
+    const mutation = toFileMutation(action);
+    const response = await filesApi.preview(mutation, requestOptions);
+    const data = response?.data ?? response;
+    return {
+      ...data,
+      id: String(action.id ?? `file-op-${index + 1}`),
+      originalType: action.type,
+      type: action.type,
+      path: action.path,
+      targetPath: action.targetPath,
+      mutation,
+      risk: action.type === 'delete' ? 'destructive' : 'write',
+      requiresConfirmation: true,
+    };
+  }));
+
+  let archivePreview = null;
+  if (archiveActions.length) {
+    const response = await aiApi.preview({ actions: archiveActions, actor: 'local-user', role }, requestOptions);
+    archivePreview = response?.data ?? response;
+  }
+
+  const archiveOperations = (archivePreview?.operations ?? []).map((operation, index) => ({
+    ...operation,
+    id: String(operation.id ?? `archive-op-${index + 1}`),
+  }));
+  const operations = [...fileOperations, ...archiveOperations];
+  if (!operations.length) return null;
+  const blocked = role === 'viewer' || fileOperations.some((operation) => operation.blocked) || archivePreview?.blocked === true;
+  const writes = operations.filter((operation) => operation.requiresConfirmation !== false).length;
+  return {
+    id: globalThis.crypto?.randomUUID?.() ?? `preview-${Date.now()}`,
+    blocked,
+    operations,
+    fileOperations,
+    aiOperations: archiveActions,
+    aiPlanHash: archivePreview?.planHash ?? null,
+    summary: `${operations.length} 项操作 · ${writes} 项需要确认`,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function toFileMutation(action) {
+  const mutationType = action.type === 'update' ? 'write' : action.type;
+  return {
+    type: mutationType,
+    path: action.path ?? action.sourcePath ?? action.fromPath,
+    ...(action.targetPath || action.toPath || action.destination ? { targetPath: action.targetPath ?? action.toPath ?? action.destination } : {}),
+    ...(action.content !== undefined ? { content: String(action.content) } : {}),
+  };
 }
