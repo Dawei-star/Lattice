@@ -11,7 +11,9 @@ import { cors } from './middleware/cors.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { requestContext, requestLogger } from './middleware/requestContext.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
+import { authenticateWorkspace } from './middleware/workspaceAuth.js';
 import { healthRouter } from './modules/health/health.routes.js';
+import { vaultEventsRouter } from './modules/vault/vault.events.routes.js';
 import { apiRouter } from './routes/index.js';
 
 /** 单页应用的 CSP：只允许加载同源资源，禁止被嵌入 iframe */
@@ -39,13 +41,18 @@ export function createApp() {
   app.use(securityHeaders);
   app.use(cors);
 
-  // 请求体上限 2MB：单篇笔记正文上限 200 万字符，留出 JSON 转义余量
-  app.use(express.json({ limit: '2mb' }));
+  // 请求体上限 8MB：单篇笔记正文上限 200 万字符，中文 UTF-8 约 6MB，
+  // 加上 JSON 转义与属性余量取 8MB，让 zod 校验（而非 413）成为真正的边界
+  app.use(express.json({ limit: '8mb' }));
 
   // 探针放在鉴权与业务路由之前，保证永远可达
   app.use(healthRouter);
 
-  app.use('/api', apiRouter);
+  // SSE 事件流自带「令牌或一次性票据」校验，必须注册在全局鉴权链之前
+  // （EventSource 无法带请求头，长期令牌不应进 URL，见 vault.events.routes.js）
+  app.use(vaultEventsRouter);
+
+  app.use('/api', authenticateWorkspace, apiRouter);
 
   // 若前端已构建，则由同一进程托管，实现「一条命令跑生产」
   mountWebApp(app);

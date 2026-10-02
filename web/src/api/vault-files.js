@@ -36,6 +36,8 @@ export const vaultAssetsApi = {
 
 export const vaultAttachmentsApi = {
   list: () => http.get('/vault/attachments'),
+  /** 全库扫描的非笔记文件（含 attachments/ 之外的任意文件夹），旧版后端没有该接口 */
+  listAll: () => http.get('/vault/files'),
   upload: async (file, options = {}) => {
     const payload = await http.postRaw('/vault/attachments', file, {
       ...options,
@@ -81,6 +83,20 @@ export function relativeAttachmentReference(notePath, attachmentPath) {
   return parts.join('/') || target.join('/');
 }
 
+/** Markdown 链接的 URL 引用：encodeURI 不编码 ( ) [ ]，文件名含括号时会生成解析失败的链接 */
+export function encodeMarkdownUrlReference(reference) {
+  return encodeURI(reference)
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\[/g, '%5B')
+    .replace(/\]/g, '%5D');
+}
+
+/** Markdown 链接显示文本：剔除会破坏链接语法的中括号与圆括号 */
+export function markdownLinkLabel(value) {
+  return String(value ?? '').replace(/[[\]()]/g, '').trim() || '附件';
+}
+
 function writeMarkdownContent(filePath, note) {
   return window.latticeDesktop.writeMarkdownFile(filePath, writeMarkdownContentValue(note));
 }
@@ -93,6 +109,7 @@ function writeMarkdownContentValue(note) {
       `pinned: ${note.isPinned ? 'true' : 'false'}`,
       `created_at: ${note.createdAt}`,
       `updated_at: ${note.updatedAt}`,
+      ...serializeProperties(note.properties),
       '---',
       '',
     ].join('\n');
@@ -112,6 +129,20 @@ export function noteFilePath(note, folders) {
   }
   const directory = folderParts.filter(Boolean).map(safeFilePart).join('/');
   return `${directory ? `${directory}/` : ''}${safeFilePart(note.title)}.md`;
+}
+
+function serializeProperties(properties) {
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return [];
+  return Object.keys(properties)
+    .filter((key) => /^[A-Za-z_][A-Za-z0-9_-]{0,80}$/.test(key)
+      && !['id', 'title', 'pinned', 'created_at', 'updated_at'].includes(key))
+    .sort()
+    .map((key) => `${key}: ${serializePropertyValue(properties[key])}`);
+}
+
+function serializePropertyValue(value) {
+  if (Array.isArray(value)) return JSON.stringify(value.map((item) => serializePropertyValue(item)));
+  return String(value ?? '').replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').trim();
 }
 
 export function uniqueNoteFilePath(note, folders, existingNotes = []) {

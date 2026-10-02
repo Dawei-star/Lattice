@@ -14,6 +14,8 @@
 
 // import.meta.env 由 Vite 在构建时注入；用可选链兜底，
 // 这样同一份代码在非 Vite 环境（如 Node 冒烟测试）里也能安全降级到 /api
+import { workspaceHeaders } from './workspace-auth.js';
+
 const RAW_BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? '/api';
 const BASE_URL = RAW_BASE_URL.replace(/\/+$/, '');
 
@@ -106,7 +108,7 @@ async function attemptOnce(url, { method, body, rawBody, timeout, signal, header
       headers: {
         Accept: 'application/json',
         ...(body === undefined && rawBody === undefined ? {} : rawBody === undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...headers,
+        ...workspaceHeaders(headers),
       },
       body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
       signal: controller.signal,

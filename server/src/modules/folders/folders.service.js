@@ -6,6 +6,7 @@ import * as repository from './folders.repository.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
 import { sanitizeFilePart } from '../../vault/path.js';
+import { resumeWatcher, suspendWatcher } from '../../vault/watcher-control.js';
 import * as notesRepository from '../notes/notes.repository.js';
 
 const vault = new VaultAdapter(config.vaultDir);
@@ -76,10 +77,15 @@ export function update(id, patch) {
   const pathChanges = notesRepository.listByFilePathPrefix(oldPath);
 
   if (oldPath !== newPath) {
-    vault.moveDirectorySync(oldPath, newPath);
+    // 磁盘移动与 DB 事务之间存在中间态（新路径已出现、旧路径已消失、
+    // 投影尚未改写），挂起 watcher 防止其以磁盘为准的重建与事务交错
+    suspendWatcher();
   }
-
   try {
+    if (oldPath !== newPath) {
+      vault.moveDirectorySync(oldPath, newPath);
+    }
+
     const updated = withTransaction(() => {
       const saved = repository.update(id, { name, parentId, sortOrder, updatedAt: nowIso() });
       if (oldPath !== newPath) {
@@ -94,6 +100,8 @@ export function update(id, patch) {
   } catch (error) {
     if (oldPath !== newPath) vault.moveDirectorySync(newPath, oldPath);
     throw error;
+  } finally {
+    if (oldPath !== newPath) resumeWatcher();
   }
 }
 
@@ -101,24 +109,30 @@ export function remove(id) {
   const current = getById(id);
   const oldPath = getPath(current);
   const pathChanges = notesRepository.listByFilePathPrefix(oldPath);
-  const moves = vault.relocatePrefixToRootSync(oldPath);
-  const moveBySource = new Map(moves.map((move) => [move.fromPath, move.toPath]));
-
+  // 与目录改名同理：搬迁文件期间挂起 watcher，事务提交后再恢复收敛
+  suspendWatcher();
   try {
-    withTransaction(() => {
-      repository.remove(id);
-      for (const note of pathChanges) {
-        const nextPath = moveBySource.get(note.filePath);
-        if (nextPath) notesRepository.updateFilePath(note.id, nextPath);
-      }
-    });
-  } catch (error) {
-    for (const move of [...moves].reverse()) vault.moveSync(move.toPath, move.fromPath);
-    throw error;
-  }
+    const moves = vault.relocatePrefixToRootSync(oldPath);
+    const moveBySource = new Map(moves.map((move) => [move.fromPath, move.toPath]));
 
-  vault.removeDirectorySync(oldPath);
-  return { deletedFolderCount: 1, affectedNoteCount: pathChanges.length };
+    try {
+      withTransaction(() => {
+        repository.remove(id);
+        for (const note of pathChanges) {
+          const nextPath = moveBySource.get(note.filePath);
+          if (nextPath) notesRepository.updateFilePath(note.id, nextPath);
+        }
+      });
+    } catch (error) {
+      for (const move of [...moves].reverse()) vault.moveSync(move.toPath, move.fromPath);
+      throw error;
+    }
+
+    vault.removeDirectorySync(oldPath);
+    return { deletedFolderCount: 1, affectedNoteCount: pathChanges.length };
+  } finally {
+    resumeWatcher();
+  }
 }
 
 function getPath(folder) {

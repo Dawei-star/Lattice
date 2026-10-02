@@ -52,6 +52,62 @@ export function listAttachments() {
   }));
 }
 
+const NOTE_FILE_EXTENSIONS = new Set(['.md', '.markdown', '.canvas']);
+const IGNORED_VAULT_DIRECTORY_NAMES = new Set(['node_modules']);
+
+/**
+ * 列出整个 Vault 中除笔记 / 画布之外的所有文件（「显示附件」开关使用）。
+ * 与 listAttachments 不同，这里不限于 attachments/ 目录——用户可能把
+ * docx、PDF 等文件直接放在笔记文件夹里（Obsidian「检测所有文件扩展名」
+ * 的行为）。隐藏目录与临时文件不参与。
+ */
+export function listVaultFiles() {
+  const rootDir = config.vaultDir;
+  const result = [];
+  walkVaultFiles(rootDir, rootDir, '', result);
+  return result.sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'));
+}
+
+function walkVaultFiles(rootDir, absoluteDir, relativeDir, result) {
+  let entries;
+  try {
+    entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+  } catch {
+    // 目录可能刚被删除或暂时无权限，跳过而不是让整次列举失败
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name.endsWith('.tmp')) continue;
+    if (IGNORED_VAULT_DIRECTORY_NAMES.has(entry.name.toLowerCase())) continue;
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+    const absolutePath = path.join(absoluteDir, entry.name);
+    if (entry.isDirectory()) {
+      walkVaultFiles(rootDir, absolutePath, relativePath, result);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (NOTE_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+    // stat 可能因文件恰好被删除而失败，跳过单项而不是让整次列举 500
+    try {
+      result.push(getVaultFileInfo(rootDir, relativePath));
+    } catch {
+      // 忽略瞬时消失的文件
+    }
+  }
+}
+
+function getVaultFileInfo(rootDir, relativePath) {
+  const normalized = relativePath.replaceAll('\\', '/');
+  const stat = fs.statSync(resolveVaultPath(rootDir, normalized, ''));
+  return {
+    path: normalized,
+    name: path.posix.basename(normalized),
+    mimeType: MIME_BY_EXTENSION.get(path.extname(normalized).toLowerCase()) ?? null,
+    size: stat.size,
+    modifiedAt: stat.mtime.toISOString(),
+  };
+}
+
 export function uploadAttachment({ name, mimeType, body }) {
   if (!Buffer.isBuffer(body) || body.length === 0) {
     throw new ValidationError('附件内容不能为空');

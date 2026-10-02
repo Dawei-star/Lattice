@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { isComposingEvent } from '../lib/events.js';
 import { formatRelativeTime } from '../lib/format.js';
 import Modal from '../ui/Modal.jsx';
 
 /**
  * 快速切换器（Ctrl / Cmd + K）。
  * 在标题索引里做加权模糊匹配：前缀命中 > 包含命中 > 子序列命中。
+ * 「显示附件」开启时，图片、视频、PDF 等附件文件也会进入匹配结果。
  * 没有任何命中时提供「以此标题新建」的入口，这条路径同时也用于补全悬空链接。
  */
-export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCreate }) {
+export default function QuickSwitcher({ open, noteIndex, attachmentFiles = [], showAttachments = false, onClose, onSelect, onCreate }) {
   const [keyword, setKeyword] = useState('');
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef(null);
@@ -24,18 +26,28 @@ export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCr
 
   const matches = useMemo(() => {
     const trimmed = keyword.trim().toLowerCase();
+    const noteEntries = noteIndex.map((note) => ({ type: 'note', note, title: note.title.toLowerCase(), meta: note.updatedAt }));
+    const attachmentEntries = showAttachments
+      ? attachmentFiles.map((file) => ({
+          type: 'attachment',
+          attachment: file,
+          title: (file.name ?? file.path ?? '').toLowerCase(),
+          meta: file.modifiedAt,
+        }))
+      : [];
+
     if (!trimmed) {
-      return noteIndex.slice(0, 40).map((note) => ({ note, score: 0 }));
+      return [...noteEntries, ...attachmentEntries].slice(0, 40).map((entry) => ({ ...entry, score: 0 }));
     }
 
-    return noteIndex
-      .map((note) => ({ note, score: scoreTitle(note.title.toLowerCase(), trimmed) }))
+    return [...noteEntries, ...attachmentEntries]
+      .map((entry) => ({ ...entry, score: scoreTitle(entry.title, trimmed) }))
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 40);
-  }, [keyword, noteIndex]);
+  }, [keyword, noteIndex, attachmentFiles, showAttachments]);
 
-  const exactMatch = matches.some((item) => item.note.title.toLowerCase() === keyword.trim().toLowerCase());
+  const exactMatch = matches.some((item) => item.title === keyword.trim().toLowerCase());
   const showCreate = keyword.trim().length > 0 && !exactMatch;
   const optionCount = matches.length + (showCreate ? 1 : 0);
 
@@ -54,7 +66,7 @@ export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCr
     if (!open) return undefined;
 
     const handler = (event) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !isComposingEvent(event)) {
         event.preventDefault();
         onClose();
       }
@@ -68,13 +80,15 @@ export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCr
 
   const commit = (index) => {
     if (index < matches.length) {
-      onSelect(matches[index].note);
+      onSelect(matches[index]);
       return;
     }
     if (showCreate) onCreate(keyword.trim());
   };
 
   const handleKeyDown = (event) => {
+    // 输入法组词期间：Enter 确认候选、Esc 取消组词、方向键选候选，都不触发切换器行为
+    if (isComposingEvent(event)) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setCursor((current) => (current + 1) % Math.max(1, optionCount));
@@ -112,17 +126,20 @@ export default function QuickSwitcher({ open, noteIndex, onClose, onSelect, onCr
 
         <ul className="switcher__list" ref={listRef} role="listbox">
           {matches.map((item, index) => (
-            <li key={item.note.id}>
+            <li key={item.type === 'attachment' ? `attachment:${item.attachment.path}` : item.note.id}>
               <button
                 type="button"
                 role="option"
                 aria-selected={cursor === index}
                 className={`switcher__item ${cursor === index ? 'is-cursor' : ''}`}
                 onMouseEnter={() => setCursor(index)}
-                onClick={() => onSelect(item.note)}
+                onClick={() => onSelect(item)}
               >
-                <span className="switcher__title">{item.note.title}</span>
-                <span className="switcher__meta">{formatRelativeTime(item.note.updatedAt)}</span>
+                <span className="switcher__title">{item.type === 'attachment' ? item.attachment.name : item.note.title}</span>
+                <span className="switcher__meta">
+                  {item.type === 'attachment' ? '附件' : ''}
+                  {item.meta ? formatRelativeTime(item.meta) : ''}
+                </span>
               </button>
             </li>
           ))}

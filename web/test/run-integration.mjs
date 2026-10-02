@@ -29,6 +29,7 @@ const backend = spawn(process.execPath, [path.join(projectRoot, 'server', 'src',
 try {
   await waitUntilReady(baseUrl);
   await run(process.execPath, [path.join(testDir, 'canvas-navigation.test.mjs')]);
+  await run(process.execPath, [path.join(testDir, 'canvas-delete.test.mjs')]);
   await run(process.execPath, [path.join(testDir, 'run-smoke.mjs')]);
 } finally {
   backend.kill();

@@ -6,6 +6,8 @@
  * - 定时：AI_DIGEST_HOUR（0-23）设置后服务端每小时检查一次到点自动生成；
  *   未设置则只能手动触发（避免未经同意往用户库里写笔记）。
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { config } from '../../config/index.js';
 import { getDb } from '../../db/index.js';
 import { toPlainText } from '../../lib/markdown.js';
@@ -18,6 +20,8 @@ import { resolveChatProvider } from './ai.settings.js';
 const logger = createLogger({ app: 'lattice', scope: 'ai-digest' });
 
 const DIGEST_FOLDER = 'Journal';
+// 记录最近一次定时摘要的日期：机器在配置小时关机/休眠时，之后启动可补跑当天的摘要
+const DIGEST_STATE_FILE = path.join(path.dirname(config.dbFile), 'ai-digest-state.json');
 
 export function digestTitleFor(date = new Date()) {
   const iso = new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString();
@@ -123,14 +127,49 @@ function ensureJournalFolder() {
   }
 }
 
-/** 定时检查（服务端每小时跑一次）：到 AI_DIGEST_HOUR 且今天还没生成时触发 */
+/** 定时检查（服务端每小时跑一次）：到点且今天还没生成时触发；
+ *  错过配置小时（机器关机/休眠）后，当天晚些时候启动或下一次检查仍会补跑。 */
 export async function maybeRunScheduledDigest({ now = new Date() } = {}) {
   const hour = config.aiDigestHour;
-  if (hour === null || hour === undefined || now.getHours() !== hour) return null;
+  if (hour === null || hour === undefined) return null;
+
+  const today = localDateString(now);
+  if (readDigestState().lastRunDate === today) return null;
+  // 还没到配置时刻（补跑也只在当天过了配置点之后才发生）
+  if (now.getHours() < hour) return null;
+
   const db = getDb();
   const filePath = digestFilePathFor(now);
   const existing = db.prepare('SELECT id FROM notes WHERE file_path = ?').get(filePath);
-  if (existing) return null;
-  logger.info('digest_scheduled_run');
-  return generateDigest({ date: now });
+  if (existing) {
+    writeDigestState(today);
+    return null;
+  }
+  logger.info('digest_scheduled_run', { catchUp: now.getHours() !== hour });
+  const result = await generateDigest({ date: now });
+  writeDigestState(today);
+  return result;
+}
+
+function localDateString(date) {
+  const iso = new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString();
+  return iso.slice(0, 10);
+}
+
+function readDigestState() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DIGEST_STATE_FILE, 'utf8'));
+    return typeof parsed?.lastRunDate === 'string' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDigestState(date) {
+  try {
+    fs.mkdirSync(path.dirname(DIGEST_STATE_FILE), { recursive: true });
+    fs.writeFileSync(DIGEST_STATE_FILE, JSON.stringify({ lastRunDate: date }), 'utf8');
+  } catch (error) {
+    logger.warn('digest_state_write_failed', { err: error });
+  }
 }

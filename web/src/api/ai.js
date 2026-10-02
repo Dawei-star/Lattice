@@ -1,4 +1,5 @@
 import { http } from './client.js';
+import { workspaceHeaders } from './workspace-auth.js';
 
 // 与 client.js 相同的同源约定；SSE 用原生 fetch（http 封装不支持流式读取）
 const RAW_BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? '/api';
@@ -49,16 +50,42 @@ export const aiApi = {
   streamChat: (input, options = {}) => postSse('/ai/chat/stream', input, options),
 };
 
-/** 通用 SSE POST：解析 data 行事件；streamError 时抛出 */
-async function postSse(path, input, { signal = null, onEvent = () => {}, headers = {} } = {}) {
+/** 通用 SSE POST：解析 data 行事件；streamError 时抛出。
+ *  空闲超时：连接建立后连续 idleTimeoutMs 没有任何数据则中断（上游 hang 住时
+ *  UI 不再永远停在"生成中"）。外部 signal 取消仍原样透传。 */
+async function postSse(path, input, { signal = null, onEvent = () => {}, headers = {}, idleTimeoutMs = 120_000 } = {}) {
   // 与 client.js 同款解析：同源相对路径在浏览器里可用，测试环境补上 origin
   const url = new URL(`${BASE_URL}${path}`, window.location.origin).toString();
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify(input),
-    signal,
-  });
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  let idleTimer = null;
+  let idleTimedOut = false;
+  const armIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true;
+      controller.abort();
+    }, idleTimeoutMs);
+  };
+
+  let response;
+  try {
+    armIdleTimer();
+    response = await fetch(url, {
+      method: 'POST',
+      headers: workspaceHeaders({ 'Content-Type': 'application/json', ...headers }),
+      body: JSON.stringify(input),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (idleTimedOut) throw new Error(`AI 已 ${Math.round(idleTimeoutMs / 1000)} 秒没有响应，连接已中断`);
+    throw error;
+  }
   if (!response.ok || !response.body) {
     let message = `AI 流式请求失败（${response.status}）`;
     try {
@@ -67,6 +94,8 @@ async function postSse(path, input, { signal = null, onEvent = () => {}, headers
     } catch {
       // 保留默认消息
     }
+    clearTimeout(idleTimer);
+    signal?.removeEventListener('abort', onExternalAbort);
     throw new Error(message);
   }
 
@@ -81,22 +110,36 @@ async function postSse(path, input, { signal = null, onEvent = () => {}, headers
     onEvent(event);
   };
 
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (!data) continue;
-      try {
-        handleEvent(JSON.parse(data));
-      } catch {
-        // 非 JSON 行（心跳等）忽略
+  try {
+    for await (const chunk of response.body) {
+      armIdleTimer();
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data) continue;
+        try {
+          handleEvent(JSON.parse(data));
+        } catch {
+          // 非 JSON 行（心跳等）忽略
+        }
       }
     }
+  } catch (error) {
+    // 用户主动取消原样上抛；空闲超时给出明确原因
+    if (idleTimedOut && !signal?.aborted) {
+      throw new Error(`AI 已 ${Math.round(idleTimeoutMs / 1000)} 秒没有返回内容，连接已中断，请重试`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(idleTimer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
   if (streamError) throw streamError;
+  // 流结束却没收到 done 事件：网络抖动断流，不能让上层把 null 当成"已收到请求"
+  if (!finalPayload) throw new Error('AI 连接中断，回复未完成，请重试');
   return finalPayload;
 }

@@ -2,16 +2,25 @@ import path from 'node:path';
 
 const WINDOWS_RESERVED = /[<>:"|?*\u0000]/;
 const ILLEGAL_FILE_CHARS = /[<>:"/\\|?*\u0000-\u001f\u007f]/g;
+// Win32 保留设备名：CON.md 这类路径 Windows 上无法创建，需在词法层拦截
+const RESERVED_DEVICE_NAMES = new Set(
+  ['CON', 'PRN', 'AUX', 'NUL',
+    ...Array.from({ length: 10 }, (_, i) => `COM${i}`),
+    ...Array.from({ length: 10 }, (_, i) => `LPT${i}`)],
+);
 
 /**
  * Sanitize one path segment (file or folder name) for portable filesystem safety.
  * Strips every reserved char plus all control characters, and trailing dots/spaces.
  */
 export function sanitizeFilePart(value, fallback = '未命名笔记') {
-  return String(value || fallback)
+  const cleaned = String(value || fallback)
     .replace(ILLEGAL_FILE_CHARS, '_')
     .replace(/[. ]+$/g, '')
     .trim() || fallback;
+  const stem = cleaned.includes('.') ? cleaned.slice(0, cleaned.indexOf('.')) : cleaned;
+  if (RESERVED_DEVICE_NAMES.has(stem.toUpperCase())) return `_${cleaned}`;
+  return cleaned;
 }
 
 /** Normalize a user-visible note path without allowing filesystem escape. */

@@ -5,4 +5,6 @@ export const canvasApi = {
   get: (path = '画板.canvas') => http.get('/canvas', { query: { path } }),
   save: (path, document) => http.put('/canvas', document, { query: { path } }),
   move: (fromPath, toPath) => http.patch('/canvas/file', { fromPath, toPath }),
+  rename: (fromPath, toPath) => http.patch('/canvas/file', { fromPath, toPath }),
+  remove: (path) => http.delete('/canvas/file', { query: { path } }),
 };

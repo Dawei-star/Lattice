@@ -26,11 +26,23 @@ export function requestLogger(req, res, next) {
 
     req.log[level]('http_request', {
       method: req.method,
-      path: req.originalUrl,
+      path: sanitizeRequestUrl(req.originalUrl),
       status: res.statusCode,
       durationMs: Number(durationMs.toFixed(2)),
     });
   });
 
   next();
+}
+
+export function sanitizeRequestUrl(value = '') {
+  try {
+    const url = new URL(value, 'http://lattice.local');
+    for (const key of ['accessToken', 'authorization', 'token', 'workspaceToken']) {
+      url.searchParams.delete(key);
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return value;
+  }
 }

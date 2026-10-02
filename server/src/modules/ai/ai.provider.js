@@ -8,6 +8,8 @@
  * 凭据安全：本模块不含任何静态凭据，Key 永远来自运行时传入的 provider 配置
  * （由用户在模型管理中心填写、经服务端设置存储下发）。
  */
+import dns from 'node:dns/promises';
+import net from 'node:net';
 import { config } from '../../config/index.js';
 import { AiProviderError } from '../../lib/errors.js';
 
@@ -16,6 +18,48 @@ const CHAT_TIMEOUT_MS = () => config.aiChatTimeoutMs;
 // 自定义网关常用的 API-Key 认证头。按 RFC 9110 头名称大小写不敏感，
 // 这里运行时拼装而非写字面量，避免被静态凭据扫描误判为硬编码密钥。
 const API_KEY_HEADER = ['x-api', '-key'].join('');
+
+/** IPv4 私网/保留段与 IPv6 唯一本地/链路本地地址 */
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true; // link-local（含云元数据 169.254.169.254）
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    return false;
+  }
+  if (net.isIPv4(ip.replace(/^::ffff:/i, ''))) return isPrivateIp(ip.replace(/^::ffff:/i, ''));
+  const lower = ip.toLowerCase();
+  if (lower === '::1' || lower === '::') return true;
+  return /^(f[cd]|fe[89ab])/.test(lower); // fc00::/7 唯一本地、fe80::/10 链路本地
+}
+
+/**
+ * SSRF 防护：endpoint 不可指向内网/回环地址。
+ * 服务端会代发携带 API Key 的请求并把上游错误回显给调用方，
+ * 若 endpoint 可控为内网地址，就成了一条打内网的跳板。
+ * 本地模型用户可用 AI_ALLOW_PRIVATE_ENDPOINTS=true 显式开启。
+ * 注意：DNS 解析与实际请求之间存在重绑定窗口，这里做的是主机名级基础防护。
+ */
+export async function assertPublicEndpoint(endpoint) {
+  if (config.aiAllowPrivateEndpoints) return;
+  const host = endpoint.hostname.replace(/^\[|\]$/g, '');
+  let addresses;
+  if (net.isIP(host)) {
+    addresses = [host];
+  } else {
+    try {
+      addresses = (await dns.lookup(host, { all: true, verbatim: true })).map((row) => row.address);
+    } catch {
+      throw new AiProviderError('AI endpoint 域名无法解析，请检查地址是否正确');
+    }
+  }
+  if (addresses.some(isPrivateIp)) {
+    throw new AiProviderError('AI endpoint 不允许指向内网或回环地址；如需连接本地模型，请设置环境变量 AI_ALLOW_PRIVATE_ENDPOINTS=true');
+  }
+}
 
 export function normalizeChatEndpoint(value) {
   const endpoint = new URL(String(value).trim());
@@ -93,6 +137,7 @@ async function readErrorPayload(response) {
  */
 export async function callChatProvider({ messages, provider, signal = null, temperature = 0.2, maxTokens = null }) {
   const endpoint = normalizeChatEndpoint(provider.endpoint);
+  await assertPublicEndpoint(endpoint);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
   try {
@@ -132,8 +177,15 @@ export async function callChatProvider({ messages, provider, signal = null, temp
  */
 export async function streamChatProvider({ messages, provider, signal = null, onDelta, temperature = 0.2 }) {
   const endpoint = normalizeChatEndpoint(provider.endpoint);
+  await assertPublicEndpoint(endpoint);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+  // 空闲超时而非总时长：每收到一段数据就重置计时，长回复不会被误中断；
+  // 上游 hang 住（连接建立后不再出数据）超过阈值仍会被 abort。
+  let timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+  const resetIdleTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+  };
   try {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -156,6 +208,7 @@ export async function streamChatProvider({ messages, provider, signal = null, on
     const decoder = new TextDecoder();
     let buffer = '';
     for await (const chunk of response.body) {
+      resetIdleTimeout();
       buffer += decoder.decode(chunk, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
@@ -184,7 +237,7 @@ export async function streamChatProvider({ messages, provider, signal = null, on
   } catch (error) {
     if (error?.name === 'AbortError') {
       if (signal?.aborted) throw new Error('请求已取消');
-      throw new Error(`外部 AI 响应超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
+      throw new Error(`外部 AI 连接空闲超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒未收到新内容），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
     }
     throw error;
   } finally {
@@ -199,6 +252,7 @@ export async function streamChatProvider({ messages, provider, signal = null, on
 export async function callEmbeddingProvider({ inputs, provider, signal = null }) {
   if (!inputs.length) return [];
   const endpoint = normalizeEmbeddingEndpoint(provider.endpoint);
+  await assertPublicEndpoint(endpoint);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
   try {
@@ -250,6 +304,7 @@ export async function testChatProvider({ provider }) {
     const endpoint = normalizeChatEndpoint(provider?.endpoint ?? '');
     if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('AI endpoint 必须使用 HTTP 或 HTTPS');
     if (!provider?.apiKey?.trim()) throw new Error('API Key 不能为空');
+    await assertPublicEndpoint(endpoint);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
     try {

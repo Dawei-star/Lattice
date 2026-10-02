@@ -59,9 +59,26 @@ async function buildEntry() {
 
 const FIXTURE_TITLE = `前端冒烟-嵌入样例-${Date.now()}`;
 
+async function seedCanvasFixture() {
+  const response = await fetch(`${BASE_URL}/api/canvas/files`);
+  const payload = await response.json();
+  const existing = (payload?.data ?? []).find((file) => !file.folderPath);
+  if (existing) return { path: existing.path, created: false };
+
+  const path = '画板.canvas';
+  const createResponse = await fetch(`${BASE_URL}/api/canvas?path=${encodeURIComponent(path)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes: [], edges: [] }),
+  });
+  if (!createResponse.ok) throw new Error(`无法准备画布样例：HTTP ${createResponse.status}`);
+  return { path, created: true };
+}
+
 async function seedFolderTreeFixture() {
   const parentName = `__codex-folder-tree-parent-${Date.now()}`;
   const childName = `__codex-folder-tree-child-${Date.now()}`;
+  const rootNoteTitle = `__codex-root-tree-note-${Date.now()}`;
   const parentResponse = await fetch(`${BASE_URL}/api/folders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -75,11 +92,22 @@ async function seedFolderTreeFixture() {
     body: JSON.stringify({ name: childName, parentId: parent?.id }),
   });
   const childPayload = await childResponse.json();
+  const rootNoteResponse = await fetch(`${BASE_URL}/api/notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: rootNoteTitle,
+      content: '# 根目录笔记\n\n用于验证文件树显示工作区根目录下的 Markdown 文件。',
+    }),
+  });
+  const rootNotePayload = await rootNoteResponse.json();
   return {
     parent,
     child: childPayload?.data,
     parentName,
     childName,
+    rootNote: rootNotePayload?.data,
+    rootNoteTitle,
   };
 }
 
@@ -97,7 +125,8 @@ async function cleanupFixtures() {
     const title = typeof note.title === 'string' ? note.title : '';
     return title === FIXTURE_TITLE
       || title.startsWith('前端冒烟-嵌入样例-')
-      || title.startsWith('前端冒烟-不存在-');
+      || title.startsWith('前端冒烟-不存在-')
+      || title.startsWith('__codex-root-tree-note-');
   });
 
   for (const note of leftovers) {
@@ -168,6 +197,8 @@ async function main() {
   const cleaned = await cleanupFixtures();
   const fixtureId = await seedEmbedFixture();
   const folderTreeFixture = await seedFolderTreeFixture();
+  const canvasFixture = await seedCanvasFixture();
+  let renamedCanvasPath = null;
   check('后端可用并写入嵌入样例', typeof fixtureId === 'string', cleaned > 0 ? `（清理了 ${cleaned} 篇历史残留）` : '');
 
   const { triggerResize } = installDom(BASE_URL);
@@ -201,6 +232,11 @@ async function main() {
   );
   check('目录树渲染出「开始使用」', folderButtons.some((button) => button.textContent.includes('开始使用')));
   check('目录树渲染出「工程笔记」', folderButtons.some((button) => button.textContent.includes('工程笔记')));
+  const rootNoteTrigger = await waitFor(
+    () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === folderTreeFixture.rootNoteTitle),
+    { label: '根目录笔记加载' },
+  );
+  check('目录树渲染出根目录 Markdown 笔记', Boolean(rootNoteTrigger));
   const nestedFolderButtons = await waitFor(
     () => {
       const buttons = [...container.querySelectorAll('.nav-item__main')];
@@ -221,6 +257,52 @@ async function main() {
   );
   check('至少渲染一篇笔记卡片', container.querySelectorAll('.notecard').length > 0);
 
+  section('目录创建');
+  container.querySelector('button[aria-label="新建目录"]')?.click();
+  let toolbarFolderNode = null;
+  try {
+    toolbarFolderNode = await waitFor(
+      () => container.querySelector('[role="treeitem"][data-folder-path="未命名"]'),
+      { label: '顶部按钮创建未命名目录', timeout: 2500 },
+    );
+  } catch {
+    // Keep the assertion below focused on the user's visible symptom.
+  }
+  check('点击顶部新建目录立即出现「未命名」', Boolean(toolbarFolderNode));
+  let toolbarRenameInput = null;
+  try {
+    toolbarRenameInput = await waitFor(
+      () => container.querySelector('.inline-form--inline input'),
+      { label: '顶部新建目录进入就地重命名', timeout: 2500 },
+    );
+  } catch {
+    // Keep the assertion below focused on the user's visible symptom.
+  }
+  check('新建目录后进入就地重命名', Boolean(toolbarRenameInput));
+
+  const parentContextTrigger = [...container.querySelectorAll('.nav-item__main')]
+    .find((button) => button.dataset.folderPath === folderTreeFixture.parentName);
+  parentContextTrigger?.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 120,
+    clientY: 120,
+  }));
+  await waitFor(() => document.querySelector('.context-menu'), { label: '打开父目录菜单' });
+  [...document.querySelectorAll('.context-menu .menu__item')]
+    .find((button) => button.textContent.includes('新建文件夹'))
+    ?.click();
+  let childCreatedButton = null;
+  try {
+    childCreatedButton = await waitFor(
+      () => container.querySelector(`[role="treeitem"][data-folder-path="${folderTreeFixture.parentName}/未命名"]`),
+      { label: '父目录内创建未命名子目录', timeout: 2500 },
+    );
+  } catch {
+    // Keep the assertion below focused on the user's visible symptom.
+  }
+  check('在父目录中新建文件夹后出现子目录', Boolean(childCreatedButton));
+
   section('AI 知识库助手');
   const aiButton = container.querySelector('.ribbon__button[aria-label="AI 文件助手"]');
   check('AI 文件助手入口存在', Boolean(aiButton));
@@ -238,6 +320,30 @@ async function main() {
     { label: 'AI 本地助手响应' },
   );
   check('AI 本地助手返回整理建议', aiResponse?.classList.contains('ai-message__suggestions'), container.querySelector('.ai-assistant__error')?.textContent ?? '');
+
+  const aiFilePath = `__codex-ai-file-${Date.now()}.md`;
+  const aiInput = container.querySelector('textarea[aria-label="输入 AI 指令"]');
+  setFieldValue(aiInput, `创建 "${aiFilePath}"`);
+  aiInput.closest('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  const filePreview = await waitFor(
+    () => container.querySelector('.ai-operation-preview'),
+    { label: 'AI 文件操作预览' },
+  );
+  check('AI 文件操作走本地预览接口', Boolean(filePreview));
+  check('AI 文件预览显示 diff', Boolean(filePreview?.querySelector('.ai-operation__diff')));
+  filePreview?.querySelector('button.is-primary')?.click();
+  const executionSummary = await waitFor(
+    () => container.querySelector('.ai-execution-summary'),
+    { label: 'AI 文件操作执行完成' },
+  );
+  const createdFileResponse = await fetch(`${BASE_URL}/api/files/read?path=${encodeURIComponent(aiFilePath)}`);
+  const createdFilePayload = await createdFileResponse.json();
+  check('确认后 AI 文件已落盘', createdFileResponse.ok && createdFilePayload?.data?.content?.includes('# 新文件'));
+  await fetch(`${BASE_URL}/api/files/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'delete', path: aiFilePath, confirmed: true }),
+  });
   container.querySelector('.ai-assistant__header-actions button[aria-label="关闭 AI 知识库助手"]')?.click();
   await waitFor(() => !container.querySelector('.ai-assistant'), { label: 'AI 面板关闭' });
 
@@ -281,10 +387,7 @@ async function main() {
     'get_note_links',
     'list_tags',
     'get_vault_statistics',
-    'create_note',
-    'update_note',
     'list_note_history',
-    'restore_note_version',
   ];
   check('MCP 页面列出笔记工具',
     mcpToolNames.length === expectedMcpTools.length && expectedMcpTools.every((name) => mcpToolNames.includes(name)),
@@ -318,7 +421,7 @@ async function main() {
   await waitFor(() => document.querySelector('.context-menu'), { label: '目录右键菜单打开' });
   const folderMenuText = document.querySelector('.context-menu')?.textContent ?? '';
   check('目录菜单包含 Obsidian 常用动作', ['新建笔记', '新建文件夹', '新建白板', '创建副本', '将文件夹移动到', '在文件夹中查找', '收藏', '复制路径', '重命名', '删除'].every((label) => folderMenuText.includes(label)));
-  check('数据库入口明确为暂未支持', Boolean(document.querySelector('.context-menu .menu__item:disabled')));
+  check('目录菜单不再显示数据库入口', !folderMenuText.includes('新建数据库'));
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await waitFor(() => !document.querySelector('.context-menu'), { label: '目录右键菜单关闭' });
 
@@ -334,6 +437,16 @@ async function main() {
   const noteMenuText = document.querySelector('.context-menu')?.textContent ?? '';
   check('文件菜单包含文件操作', ['在新标签页中打开', '创建副本', '将文件移动到', '收藏', '复制路径', '重命名', '删除'].every((label) => noteMenuText.includes(label)));
   check('文件菜单保留暂未支持功能的明确状态', Boolean(document.querySelector('.context-menu .menu__item:disabled')));
+  const notePathItem = [...document.querySelectorAll('.context-menu .menu__item')]
+    .find((button) => button.textContent.includes('复制路径'));
+  notePathItem?.click();
+  await waitFor(() => document.querySelector('.context-menu .menu__submenu'), { label: '打开文件路径子菜单' });
+  notePathItem?.closest('.menu__item-wrap')?.dispatchEvent(new window.MouseEvent('mouseout', {
+    bubbles: true,
+    relatedTarget: document.body,
+  }));
+  await waitFor(() => !document.querySelector('.context-menu .menu__submenu'), { label: '鼠标移出后关闭文件路径子菜单' });
+  check('鼠标移出后文件路径子菜单收起', true);
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await waitFor(() => !document.querySelector('.context-menu'), { label: '文件右键菜单关闭' });
 
@@ -341,8 +454,9 @@ async function main() {
   check('统计区块渲染出数据', overviewStats.length >= 5);
 
   section('打开笔记与 Markdown 预览');
-  const firstCard = container.querySelector('.notecard__main');
-  firstCard.click();
+  const linkedNoteCard = [...container.querySelectorAll('.notecard__main')]
+    .find((card) => card.textContent.includes('关系图谱怎么看'));
+  linkedNoteCard?.click();
 
   const titleInput = await waitFor(() => {
     const input = container.querySelector('.editor__title');
@@ -435,6 +549,64 @@ async function main() {
   canvasTab.click();
   await waitFor(() => container.querySelector('.canvas-view'), { label: '画布组件挂载' });
   check('画布提供图片入口', Boolean([...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('添加图片'))));
+
+  check('画布提供新建笔记入口', Boolean([...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('新建笔记'))));
+  const canvasTrigger = await waitFor(
+    () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.title === canvasFixture.path),
+    { label: '画布文件加载' },
+  );
+  check('画布文件右键菜单存在', Boolean(canvasTrigger));
+  canvasTrigger.click();
+  await waitFor(() => container.querySelector('.canvas-view'), { label: '打开样例画布' });
+  const activeCanvasTrigger = [...container.querySelectorAll('.tree__canvas-file')]
+    .find((button) => button.title === canvasFixture.path);
+  activeCanvasTrigger?.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 180,
+    clientY: 180,
+  }));
+  await waitFor(() => document.querySelector('.context-menu'), { label: '打开画布文件菜单' });
+  const canvasMenu = document.querySelector('.context-menu');
+  check('画布菜单提供重命名', canvasMenu?.textContent.includes('重命名'));
+  check('画布菜单提供新建笔记', canvasMenu?.textContent.includes('新建笔记'));
+  check('画布菜单提供系统打开和定位', ['使用系统默认应用打开', '在系统资源管理器中显示'].every((label) => canvasMenu?.textContent.includes(label)));
+  check('画布菜单提供删除', canvasMenu?.textContent.includes('删除画布'));
+  const canvasPathItem = [...canvasMenu.querySelectorAll('.menu__item')]
+    .find((button) => button.textContent.includes('复制路径'));
+  check('画布菜单提供路径子菜单', canvasPathItem?.getAttribute('aria-haspopup') === 'menu');
+  canvasPathItem?.click();
+  await waitFor(() => document.querySelector('.context-menu .menu__submenu'), { label: '画布路径子菜单打开' });
+  const canvasPathMenu = document.querySelector('.context-menu .menu__submenu');
+  check('画布路径子菜单包含相对和完整路径', ['复制相对路径', '复制完整路径'].every((label) => canvasPathMenu?.textContent.includes(label)));
+  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await waitFor(() => !document.querySelector('.context-menu'), { label: '画布路径子菜单关闭' });
+  activeCanvasTrigger?.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 180,
+    clientY: 180,
+  }));
+  await waitFor(() => document.querySelector('.context-menu'), { label: '重新打开画布文件菜单' });
+  const reopenedCanvasMenu = document.querySelector('.context-menu');
+  [...reopenedCanvasMenu.querySelectorAll('.menu__item')]
+    .find((button) => button.textContent.includes('重命名'))
+    ?.click();
+  const canvasRenameInput = await waitFor(
+    () => container.querySelector('input[aria-label^="重命名画布"]'),
+    { label: '打开画布重命名输入框' },
+  );
+  const renamedCanvasBase = `__codex-canvas-renamed-${Date.now()}`;
+  renamedCanvasPath = `${renamedCanvasBase}.canvas`;
+  setFieldValue(canvasRenameInput, renamedCanvasBase);
+  canvasRenameInput.closest('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  const renamedCanvasTrigger = await waitFor(
+    () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.title === renamedCanvasPath),
+    { label: '画布重命名完成' },
+  );
+  check('画布重命名后扩展名保留', Boolean(renamedCanvasTrigger));
+  check('画布重命名后旧名称消失', ![...container.querySelectorAll('.tree__canvas-file')].some((button) => button.title === canvasFixture.path));
+
   const addCanvasNoteButton = [...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('添加笔记'));
   addCanvasNoteButton.click();
   await waitFor(() => container.querySelector('.canvas-picker-modal'), { label: '笔记选择器打开' });
@@ -509,8 +681,18 @@ async function main() {
   if (fixtureId) {
     await fetch(`${BASE_URL}/api/notes/${fixtureId}`, { method: 'DELETE' });
   }
+  if (folderTreeFixture.rootNote?.id) {
+    await fetch(`${BASE_URL}/api/notes/${folderTreeFixture.rootNote.id}`, { method: 'DELETE' });
+  }
   if (folderTreeFixture.parent?.id) {
     await fetch(`${BASE_URL}/api/folders/${folderTreeFixture.parent.id}`, { method: 'DELETE' });
+  }
+  if (renamedCanvasPath && renamedCanvasPath !== canvasFixture.path) {
+    await fetch(`${BASE_URL}/api/canvas/file`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromPath: renamedCanvasPath, toPath: canvasFixture.path }),
+    });
   }
 
   console.error = originalError;

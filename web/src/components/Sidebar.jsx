@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ArrowDownUp, FilePlus2, FolderPlus, PanelLeftClose, RefreshCw } from 'lucide-react';
 import FolderTree from './FolderTree.jsx';
 import TagCloud from './TagCloud.jsx';
 import RepositorySwitcher from './RepositorySwitcher.jsx';
 import { formatNumber } from '../lib/format.js';
+import { nextFolderName } from '../lib/folder-naming.js';
 import { SORT_LABELS } from './NoteListPane.jsx';
 
 const SORT_ORDER = Object.keys(SORT_LABELS);
@@ -16,15 +17,18 @@ export default function Sidebar({
   folders,
   noteIndex,
   canvasFiles = [],
+  attachmentFiles = [],
   tags,
   overview,
   filter,
+  inboxCount = 0,
   activeNoteId,
   sort,
   onSelectFolder,
   onOpenNote,
   onSelectTag,
   onClearFilter,
+  onSelectInbox,
   onSortChange,
   onCreateFolder,
   onDeleteFolder,
@@ -48,6 +52,14 @@ export default function Sidebar({
   onDuplicateNote,
   onMoveNote,
   onMoveCanvas,
+  onRenameCanvas,
+  onDeleteCanvas,
+  onOpenAttachment,
+  onRevealAttachment,
+  onCopyAttachmentPath,
+  onOpenCanvasDefault,
+  onRevealCanvas,
+  onCopyCanvasPath,
   onCopyNotePath,
   onOpenDefault,
   onRevealNote,
@@ -55,8 +67,9 @@ export default function Sidebar({
   onDeleteNote,
 }) {
   const [collapsed, setCollapsed] = useState({ tags: false, stats: false });
-  const [newFolderName, setNewFolderName] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [renameFolderId, setRenameFolderId] = useState(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const creatingFolderRef = useRef(false);
 
   const toggle = (key) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
 
@@ -65,62 +78,57 @@ export default function Sidebar({
     onSortChange(SORT_ORDER[(index + 1) % SORT_ORDER.length]);
   };
 
-  const submitNewFolder = async (event) => {
-    event.preventDefault();
-    const name = newFolderName.trim();
-    if (!name) return;
-    const created = await onCreateFolder(name, null);
-    if (created) {
-      setNewFolderName('');
-      setCreating(false);
+  const handleCreateFolder = useCallback(async (name, parentId = null) => {
+    const created = await onCreateFolder(name, parentId);
+    if (created?.id) setRenameFolderId(created.id);
+    return created;
+  }, [onCreateFolder]);
+
+  const handleCreateRootFolder = async () => {
+    if (creatingFolderRef.current) return;
+    creatingFolderRef.current = true;
+    setCreatingFolder(true);
+    try {
+      await handleCreateFolder(nextFolderName(folders), null);
+    } finally {
+      creatingFolderRef.current = false;
+      setCreatingFolder(false);
     }
   };
+
+  const handleRenameFolderReady = useCallback((id) => {
+    setRenameFolderId((current) => (current === id ? null : current));
+  }, []);
 
   return (
     <aside className="sidebar" aria-label="知识库导航">
       <div className="sidebar__toolbar" role="toolbar" aria-label="文件列表操作">
-        <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记">
+        <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记" title="新建笔记">
           <FilePlus2 size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button
           type="button"
-          className={`sidebar__toolbtn ${creating ? 'is-active' : ''}`}
-          onClick={() => setCreating((value) => !value)}
+          className="sidebar__toolbtn"
+          onClick={handleCreateRootFolder}
+          disabled={creatingFolder}
           aria-label="新建目录"
+          title="新建文件夹"
         >
           <FolderPlus size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
-        <button type="button" className="sidebar__toolbtn" onClick={cycleSort} aria-label="切换排序">
+        <button type="button" className="sidebar__toolbtn" onClick={cycleSort} aria-label="切换排序" title="切换排序">
           <ArrowDownUp size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
-        <button type="button" className="sidebar__toolbtn" onClick={onRefresh} disabled={refreshing} aria-label="刷新">
+        <button type="button" className="sidebar__toolbtn" onClick={onRefresh} disabled={refreshing} aria-label="刷新" title="刷新">
           <RefreshCw size={18} strokeWidth={1.75} className={refreshing ? 'is-spinning' : undefined} aria-hidden="true" />
         </button>
         <span className="sidebar__toolbar-space" aria-hidden="true" />
-        <button type="button" className="sidebar__toolbtn" onClick={onCollapseSidebar} aria-label="收起侧边栏">
+        <button type="button" className="sidebar__toolbtn" onClick={onCollapseSidebar} aria-label="收起侧边栏" title="收起侧边栏">
           <PanelLeftClose size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>
 
       <div className="sidebar__explorer">
-        {creating ? (
-          <form className="inline-form" onSubmit={submitNewFolder}>
-            <input
-              autoFocus
-              value={newFolderName}
-              maxLength={120}
-              placeholder="目录名称，回车确认"
-              onChange={(event) => setNewFolderName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  setCreating(false);
-                  setNewFolderName('');
-                }
-              }}
-            />
-          </form>
-        ) : null}
-
         <button
           type="button"
           className={`nav-item ${filter.kind === 'all' ? 'is-active' : ''}`}
@@ -130,16 +138,28 @@ export default function Sidebar({
           <span className="nav-item__badge">{formatNumber(overview?.noteCount ?? 0)}</span>
         </button>
 
+        <button
+          type="button"
+          className={`nav-item nav-item--inbox ${filter.kind === 'inbox' ? 'is-active' : ''}`}
+          onClick={() => onSelectInbox?.('all')}
+        >
+          <span className="nav-item__label">Inbox</span>
+          <span className="nav-item__badge">{formatNumber(inboxCount)}</span>
+        </button>
+
         <FolderTree
           nodes={folders}
           notes={noteIndex}
           canvasFiles={canvasFiles}
+          attachmentFiles={attachmentFiles}
           filter={filter}
           activeNoteId={activeNoteId}
           loading={loading}
           onSelectFolder={onSelectFolder}
           onOpenNote={onOpenNote}
-          onCreateFolder={onCreateFolder}
+          onCreateFolder={handleCreateFolder}
+          renameFolderId={renameFolderId}
+          onRenameFolderReady={handleRenameFolderReady}
           onCreateNote={onCreateNote}
           onRevealFolder={onRevealFolder}
           onDeleteFolder={onDeleteFolder}
@@ -157,6 +177,14 @@ export default function Sidebar({
           onDuplicateNote={onDuplicateNote}
           onMoveNote={onMoveNote}
           onMoveCanvas={onMoveCanvas}
+          onRenameCanvas={onRenameCanvas}
+          onDeleteCanvas={onDeleteCanvas}
+          onOpenAttachment={onOpenAttachment}
+          onRevealAttachment={onRevealAttachment}
+          onCopyAttachmentPath={onCopyAttachmentPath}
+          onOpenCanvasDefault={onOpenCanvasDefault}
+          onRevealCanvas={onRevealCanvas}
+          onCopyCanvasPath={onCopyCanvasPath}
           onCopyNotePath={onCopyNotePath}
           onOpenDefault={onOpenDefault}
           onRevealNote={onRevealNote}

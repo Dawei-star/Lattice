@@ -16,11 +16,117 @@ const DAILY_FOLDER = 'Daily';
 const TEMPLATE_FILE_PATTERN = /^[^/\\<>:"|?*\u0000-\u001f]+\.md$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+const BUILTIN_TEMPLATES = Object.freeze({
+  bug: `---
+type: bug
+status: open
+priority: medium
+project:
+---
+# {{title}}
+
+## 现象
+
+
+## 复现步骤
+
+1.
+
+## 预期结果
+
+
+## 实际结果
+
+
+## 根因与修复
+
+`,
+  decision: `---
+type: decision
+status: proposed
+project:
+---
+# {{title}}
+
+## 背景
+
+
+## 方案
+
+
+## 决策
+
+
+## 影响
+
+`,
+  meeting: `---
+type: meeting
+status: open
+project:
+---
+# {{title}}
+
+日期：{{date}}
+时间：{{time}}
+
+## 参与者
+
+
+## 讨论
+
+
+## 结论与行动项
+
+- [ ]
+
+`,
+  learning: `---
+type: learning
+status: draft
+project:
+---
+# {{title}}
+
+## 问题
+
+
+## 结论
+
+
+## 示例
+
+\`\`\`
+\`\`\`
+
+## 相关链接
+
+`,
+  retrospective: `---
+type: retrospective
+status: draft
+project:
+---
+# {{title}}
+
+## 做得好的地方
+
+
+## 遇到的问题
+
+
+## 下一步改进
+
+- [ ]
+
+`,
+});
+
 const vault = new VaultAdapter(config.vaultDir);
 
 export function listTemplates() {
+  ensureBuiltinTemplates();
   const directory = templateDirectory();
-  fs.mkdirSync(directory, { recursive: true });
 
   return fs
     .readdirSync(directory, { withFileTypes: true })
@@ -39,6 +145,20 @@ export function listTemplates() {
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+}
+
+/** 首次使用空 Vault 时提供开发者模板，不覆盖用户已有模板。 */
+export function ensureBuiltinTemplates() {
+  const directory = templateDirectory();
+  fs.mkdirSync(directory, { recursive: true });
+  const hasUserTemplates = fs.readdirSync(directory, { withFileTypes: true })
+    .some((entry) => entry.isFile() && TEMPLATE_FILE_PATTERN.test(entry.name));
+  if (hasUserTemplates) return false;
+
+  for (const [name, content] of Object.entries(BUILTIN_TEMPLATES)) {
+    fs.writeFileSync(path.join(directory, `${name}.md`), content, 'utf8');
+  }
+  return true;
 }
 
 export function createFromTemplate({ template, title, date, folderId = null }) {

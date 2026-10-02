@@ -44,8 +44,10 @@ const cleanupBody = z.object({
 const rawAttachmentBody = express.raw({ type: '*/*', limit: '25mb' });
 
 vaultRouter.get('/info', controller.getInfo);
-vaultRouter.get('/events', controller.streamEvents);
+// GET /events 已迁至 vault.events.routes.js：EventSource 无法带请求头，
+// 事件流的「令牌或一次性票据」校验需要注册在全局鉴权链之前
 vaultRouter.get('/attachments', controller.listAttachments);
+vaultRouter.get('/files', controller.listVaultFiles);
 vaultRouter.post('/attachments', rawAttachmentBody, validate({ query: uploadQuery }), controller.uploadAttachment);
 vaultRouter.get('/attachments/references', validate({ query: attachmentPathQuery }), controller.attachmentReferences);
 vaultRouter.post('/attachments/validate', validate({ body: validateReferencesBody }), controller.validateAttachmentReferences);

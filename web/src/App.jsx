@@ -4,6 +4,7 @@ import EditorPane from './components/EditorPane.jsx';
 import GraphView from './components/GraphView.jsx';
 import CanvasView from './components/CanvasView.jsx';
 import AIAssistantPanel from './components/AIAssistantPanel.jsx';
+import InboxCaptureModal from './components/InboxCaptureModal.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
 import NoteListPane from './components/NoteListPane.jsx';
 import QuickSwitcher from './components/QuickSwitcher.jsx';
@@ -14,6 +15,7 @@ import { useVault } from './hooks/useVault.js';
 import Ribbon from './shell/Ribbon.jsx';
 import TabBar from './shell/TabBar.jsx';
 import StatusBar from './shell/StatusBar.jsx';
+import StartupSplash from './components/StartupSplash.jsx';
 import SettingsModal from './settings/SettingsModal.jsx';
 import Modal from './ui/Modal.jsx';
 import Resizer from './ui/Resizer.jsx';
@@ -25,7 +27,19 @@ import { applySettings, loadSettings, subscribeSettings } from './settings/setti
 const THEME_STORAGE_KEY = 'lattice-theme';
 const FAVORITE_FOLDERS_STORAGE_KEY = 'lattice-favorite-folders';
 
-const revealFolder = (relativePath) => window.latticeDesktop?.revealVaultPath?.(relativePath);
+function findRootFolder(nodes, name) {
+  return (nodes ?? []).find((folder) => folder?.name?.trim().toLowerCase() === name.toLowerCase()) ?? null;
+}
+
+function captureTitle() {
+  return `收集 ${new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date()).replaceAll('/', '-').replace(',', '')}`;
+}
 
 export default function App() {
   const toast = useToast();
@@ -43,6 +57,7 @@ export default function App() {
     pageCount,
     noteIndex,
     canvasFiles,
+    attachmentFiles,
     activeNote,
     graph,
     graphStale,
@@ -57,6 +72,7 @@ export default function App() {
     setPage,
     selectFolder,
     selectTag,
+    selectInbox,
     clearFilter,
     setActiveNote,
     openNote,
@@ -67,7 +83,11 @@ export default function App() {
     renameFolder,
     deleteFolder,
     moveNote,
+    updateInboxStatus,
+    archiveInboxNote,
     moveCanvas,
+    renameCanvas,
+    deleteCanvas,
     createCanvas,
     togglePin,
     duplicateNote,
@@ -79,12 +99,16 @@ export default function App() {
     refreshSidebar,
     refreshGraph,
     registerNavigationGuard,
+    registerDirtyProbe,
     confirmNavigation,
   } = vault;
 
   const [view, setView] = useState('notes');
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [inboxBusy, setInboxBusy] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiInitialPrompt, setAiInitialPrompt] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -106,6 +130,8 @@ export default function App() {
   const resizePane = (key, delta) => setLayout((current) => saveLayout({ ...current, [key]: current[key] + delta }));
   const resetPane = (key) => setLayout((current) => saveLayout({ ...current, [key]: DEFAULT_LAYOUT[key] }));
   const [canvasPath, setCanvasPath] = useState('画板.canvas');
+  // 已删除画布的路径集合：CanvasView 的挂起自动保存据此跳过，避免把刚删掉的文件复活
+  const deletedCanvasPathsRef = useRef(new Set());
 
   const handleViewChange = useCallback((nextView) => {
     setView(nextView);
@@ -113,6 +139,7 @@ export default function App() {
   }, []);
 
   const handleOpenCanvas = useCallback((nextPath = '画板.canvas') => {
+    deletedCanvasPathsRef.current.delete(nextPath);
     setCanvasPath(nextPath);
     handleViewChange('canvas');
   }, [handleViewChange]);
@@ -120,6 +147,7 @@ export default function App() {
   const handleCreateCanvas = useCallback(async (folderPath = '') => {
     const createdPath = await createCanvas(folderPath);
     if (!createdPath) return null;
+    deletedCanvasPathsRef.current.delete(createdPath);
     setCanvasPath(createdPath);
     handleViewChange('canvas');
     const name = createdPath.split('/').pop()?.replace(/\.canvas$/i, '') ?? createdPath;
@@ -135,15 +163,38 @@ export default function App() {
   const [renameDialog, setRenameDialog] = useState(null);
   const [renameSaving, setRenameSaving] = useState(false);
   const tabSeq = useRef(2);
+  // noteId → 连续缺失次数。noteIndex 会在 SSE 事件与轮询间被整体替换，
+  // 单次快照里缺一条不代表笔记被删；连续多轮都缺失才关标签页
+  const missingStrikesRef = useRef(new Map());
 
   useEffect(() => {
     const validNoteIds = new Set((noteIndex ?? []).map((note) => note.id));
-    const invalidTabs = tabs.filter((tab) => tab.noteId && !validNoteIds.has(tab.noteId));
+    const strikes = missingStrikesRef.current;
+    for (const tab of tabs) {
+      if (!tab.noteId) continue;
+      if (validNoteIds.has(tab.noteId)) {
+        strikes.delete(tab.noteId);
+        continue;
+      }
+      strikes.set(tab.noteId, (strikes.get(tab.noteId) ?? 0) + 1);
+    }
+
+    // 索引瞬时空窗不等于笔记被删：连续 GRACE 轮刷新都缺失才关标签页，
+    // 且关闭当前活动标签前要过导航守卫（有未保存草稿时用户可拒绝）
+    const GRACE = 5;
+    const invalidTabs = tabs.filter((tab) => tab.noteId && (strikes.get(tab.noteId) ?? 0) >= GRACE);
     if (!invalidTabs.length) return;
+
+    if (invalidTabs.some((tab) => tab.id === activeTabId) && !confirmNavigation()) {
+      for (const tab of invalidTabs) strikes.set(tab.noteId, 0);
+      return;
+    }
 
     const remaining = tabs.filter((tab) => !invalidTabs.some((invalid) => invalid.id === tab.id));
     const activeWasRemoved = invalidTabs.some((tab) => tab.id === activeTabId);
     setLockedTabIds((current) => current.filter((tabId) => remaining.some((tab) => tab.id === tabId)));
+
+    for (const tab of invalidTabs) strikes.delete(tab.noteId);
 
     if (!remaining.length) {
       const fresh = { id: tabSeq.current++, noteId: null };
@@ -164,7 +215,7 @@ export default function App() {
       } else if (next.noteId) openNote(next.noteId);
       else setActiveNote(null);
     }
-  }, [activeTabId, externalNotes, noteIndex, openNote, setActiveNote, tabs]);
+  }, [activeTabId, confirmNavigation, externalNotes, noteIndex, openNote, setActiveNote, tabs]);
 
   const noteTitles = useMemo(() => new Map((noteIndex ?? []).map((n) => [n.id, n.title])), [noteIndex]);
 
@@ -207,6 +258,11 @@ export default function App() {
 
   const tagLookup = useMemo(() => new Map((tags ?? []).map((tag) => [tag.id, tag.name])), [tags]);
 
+  const inboxCount = useMemo(
+    () => (noteIndex ?? []).filter((note) => note.properties?.type === 'inbox').length,
+    [noteIndex],
+  );
+
   /** 新建笔记时默认落进当前正在浏览的目录 */
   const targetFolderId = filter.kind === 'folder' ? filter.folderId : null;
 
@@ -220,6 +276,61 @@ export default function App() {
     toast.success('画布文件已移动');
     return true;
   }, [canvasPath, moveCanvas, toast]);
+
+  const handleRenameCanvas = useCallback(async (fromPath, nextName) => {
+    const separator = fromPath.lastIndexOf('/');
+    const folderPath = separator === -1 ? '' : fromPath.slice(0, separator);
+    const toPath = folderPath ? `${folderPath}/${nextName}` : nextName;
+    if (!fromPath || !nextName || toPath === fromPath) return true;
+    const renamed = await renameCanvas(fromPath, toPath);
+    if (!renamed) return false;
+    if (canvasPath === fromPath) setCanvasPath(toPath);
+    toast.success('画布已重命名');
+    return true;
+  }, [canvasPath, renameCanvas, toast]);
+
+  const handleOpenCanvasDefault = useCallback(async (relativePath) => {
+    if (!window.latticeDesktop?.openVaultFile) {
+      toast.info('浏览器开发模式不支持使用系统默认应用打开画布');
+      return;
+    }
+    const opened = await window.latticeDesktop.openVaultFile(relativePath);
+    if (!opened) toast.error('无法使用默认应用打开画布');
+  }, [toast]);
+
+  const handleRevealFolder = useCallback(async (relativePath) => {
+    if (!window.latticeDesktop?.revealVaultPath) {
+      toast.info('浏览器开发模式不支持在资源管理器中显示文件夹');
+      return;
+    }
+    const revealed = await window.latticeDesktop.revealVaultPath(relativePath);
+    if (!revealed) toast.error('无法在资源管理器中定位文件夹');
+  }, [toast]);
+
+  const handleRevealCanvas = useCallback(async (relativePath) => {
+    if (!window.latticeDesktop?.revealVaultPath) {
+      toast.info('浏览器开发模式不支持在资源管理器中显示画布');
+      return;
+    }
+    const revealed = await window.latticeDesktop.revealVaultPath(relativePath);
+    if (!revealed) toast.error('无法在资源管理器中定位画布');
+  }, [toast]);
+
+  const handleDeleteCanvas = useCallback(async (filePath) => {
+    deletedCanvasPathsRef.current.add(filePath);
+    const deleted = await deleteCanvas(filePath);
+    if (!deleted) {
+      deletedCanvasPathsRef.current.delete(filePath);
+      return false;
+    }
+    if (canvasPath === filePath) {
+      const fallback = canvasFiles.find((file) => file.path !== filePath && file.exists !== false)?.path ?? '画板.canvas';
+      deletedCanvasPathsRef.current.delete(fallback);
+      setCanvasPath(fallback);
+    }
+    toast.success('画布已删除');
+    return true;
+  }, [canvasFiles, canvasPath, deleteCanvas, toast]);
 
   // ── 嵌入内容缓存 ────────────────────────────────────────────
   // 键为「笔记 id + updatedAt」：笔记改动后索引里的 updatedAt 会变，
@@ -552,6 +663,36 @@ export default function App() {
     }
   }, [createNote, openInTab, targetFolderId, toast]);
 
+  const handleCaptureInbox = useCallback(async ({ title, content }) => {
+    setInboxBusy(true);
+    try {
+      const folder = findRootFolder(folders, 'Inbox') ?? await createFolder('Inbox');
+      if (!folder?.id) return false;
+      const created = await createNote({
+        title: title || captureTitle(),
+        content,
+        folderId: folder.id,
+        properties: { type: 'inbox', status: 'captured' },
+      });
+      if (!created) return false;
+      setInboxOpen(false);
+      openInTab(created.id);
+      setView('notes');
+      toast.success('内容已收集到 Inbox');
+      return true;
+    } catch (error) {
+      toast.error(error?.message ?? '收集失败');
+      return false;
+    } finally {
+      setInboxBusy(false);
+    }
+  }, [createFolder, createNote, folders, openInTab, toast]);
+
+  const handleOpenInboxAi = useCallback(() => {
+    setAiInitialPrompt('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。');
+    setAiOpen(true);
+  }, []);
+
   const handleCreateFromTemplate = useCallback(async (template) => {
     try {
       const created = await notesApi.createFromTemplate({ template, folderId: targetFolderId });
@@ -641,6 +782,13 @@ export default function App() {
         return;
       }
 
+      // 收集箱快捷键（Ctrl/Cmd + Shift + I），与 EditorPane 空状态页、TopBar 的提示一致
+      if (meta && event.shiftKey && key === 'i') {
+        event.preventDefault();
+        setInboxOpen(true);
+        return;
+      }
+
       if (meta && event.key === ',') {
         event.preventDefault();
         setSettingsOpen(true);
@@ -723,6 +871,49 @@ export default function App() {
     copyText(absolutePath, '完整路径');
   }, [copyText, toast]);
 
+  const handleCopyCanvasPath = useCallback(async (relativePath, mode = 'relative') => {
+    const normalizedPath = String(relativePath ?? '').replaceAll('\\', '/');
+    if (!normalizedPath) return;
+    if (mode === 'relative') {
+      await copyText(normalizedPath, '路径');
+      return;
+    }
+
+    const info = await window.latticeDesktop?.getVaultInfo?.();
+    if (!info?.path) {
+      toast.error('浏览器开发模式无法获取完整路径');
+      return;
+    }
+    const separator = info.path.includes('\\') ? '\\' : '/';
+    const absolutePath = `${info.path.replace(/[\\/]+$/, '')}${separator}${normalizedPath.split('/').join(separator)}`;
+    await copyText(absolutePath, '完整路径');
+  }, [copyText, toast]);
+
+  // ── 附件：「显示附件」开启时出现在文件树与快速切换中 ─────────
+  const handleOpenAttachment = useCallback(async (relativePath) => {
+    const normalizedPath = String(relativePath ?? '').replaceAll('\\', '/');
+    if (!normalizedPath) return;
+    if (!window.latticeDesktop?.openVaultFile) {
+      toast.info('浏览器开发模式不支持使用系统默认应用打开附件');
+      return;
+    }
+    const opened = await window.latticeDesktop.openVaultFile(normalizedPath);
+    if (!opened) toast.error('无法使用默认应用打开附件');
+  }, [toast]);
+
+  const handleRevealAttachment = useCallback(async (relativePath) => {
+    const normalizedPath = String(relativePath ?? '').replaceAll('\\', '/');
+    if (!normalizedPath) return;
+    if (!window.latticeDesktop?.revealVaultPath) {
+      toast.info('浏览器开发模式不支持在资源管理器中显示附件');
+      return;
+    }
+    const revealed = await window.latticeDesktop.revealVaultPath(normalizedPath);
+    if (!revealed) toast.error('无法在资源管理器中定位附件');
+  }, [toast]);
+
+  const handleCopyAttachmentPath = handleCopyCanvasPath;
+
   const handleToggleFavorite = useCallback((folderId) => {
     setFavoriteFolderIds((current) => {
       const isFavorite = current.includes(folderId);
@@ -802,6 +993,7 @@ export default function App() {
         toast.error(result?.message ?? '无法获取文件写入权限');
         return false;
       }
+
       setExternalNotes((current) => {
         const existing = current.get(note.externalToken);
         if (!existing) return current;
@@ -847,6 +1039,7 @@ export default function App() {
           onOpenSwitcher={handleOpenSwitcher}
           onToggleAi={handleToggleAi}
           onCreateNote={handleCreateNote}
+          onCaptureInbox={() => setInboxOpen(true)}
           onCreateCanvas={handleCreateCanvas}
           onRefresh={handleRefreshAll}
           refreshing={refreshing}
@@ -862,6 +1055,7 @@ export default function App() {
         view={view}
         onViewChange={handleViewChange}
         onCreateNote={handleCreateNote}
+        onCaptureInbox={() => setInboxOpen(true)}
         onOpenSwitcher={handleOpenSwitcher}
         onRefresh={handleRefreshAll}
         refreshing={refreshing}
@@ -922,28 +1116,33 @@ export default function App() {
             folders={folders}
             noteIndex={noteIndex}
             canvasFiles={canvasFiles}
+            attachmentFiles={settings.showAttachments ? attachmentFiles : []}
             tags={tags}
             overview={overview}
             filter={filter}
-            activeNoteId={activeNote?.id ?? null}
+            inboxCount={inboxCount}
+            // 树内高亮跟随当前视图：画布视图里不再高亮上次打开的笔记，反之亦然，
+            // 避免「同名笔记 + 同名画布」两行同时挂选中态
+            activeNoteId={view === 'notes' ? (activeNote?.id ?? null) : null}
             sort={sort}
             loading={loading.sidebar}
             onSelectFolder={selectFolder}
             onOpenNote={handleOpenNote}
             onSelectTag={selectTag}
             onClearFilter={clearFilter}
+            onSelectInbox={selectInbox}
             onSortChange={setSort}
             onCreateFolder={createFolder}
             onDeleteFolder={deleteFolder}
             onRenameFolder={renameFolder}
             onCreateNote={handleCreateNote}
-            onRevealFolder={revealFolder}
+            onRevealFolder={handleRevealFolder}
             onRefresh={handleRefreshAll}
             refreshing={refreshing}
             onCollapseSidebar={() => setSidebarOpen(false)}
             onOpenCanvas={handleOpenCanvas}
             onCreateCanvas={handleCreateCanvas}
-            canvasPath={canvasPath}
+            canvasPath={view === 'canvas' ? canvasPath : null}
             favoriteFolderIds={favoriteFolderIds}
             onDuplicateFolder={duplicateFolder}
             onMoveFolder={moveFolder}
@@ -954,6 +1153,14 @@ export default function App() {
             onDuplicateNote={handleDuplicateNote}
             onMoveNote={handleMoveNote}
             onMoveCanvas={handleMoveCanvas}
+            onRenameCanvas={handleRenameCanvas}
+            onDeleteCanvas={handleDeleteCanvas}
+            onOpenAttachment={handleOpenAttachment}
+            onRevealAttachment={handleRevealAttachment}
+            onCopyAttachmentPath={handleCopyAttachmentPath}
+            onCopyCanvasPath={handleCopyCanvasPath}
+            onOpenCanvasDefault={handleOpenCanvasDefault}
+            onRevealCanvas={handleRevealCanvas}
             onCopyNotePath={handleCopyNotePath}
             onOpenDefault={handleOpenDefault}
             onRevealNote={handleRevealFile}
@@ -985,12 +1192,17 @@ export default function App() {
           showSearch={shellMode === 'obsidian'}
           folderLookup={folderLookup}
           tagLookup={tagLookup}
+          folders={folders}
           activeNoteId={activeNote?.id ?? null}
           loading={loading.notes}
           onSortChange={setSort}
           onPageChange={setPage}
           onOpenNote={handleOpenNote}
           onTogglePin={togglePin}
+          onInboxStatusChange={selectInbox}
+          onOpenInboxAi={handleOpenInboxAi}
+          onUpdateInboxStatus={updateInboxStatus}
+          onArchiveInbox={archiveInboxNote}
           onDeleteNote={handleDeleteNote}
            onCreateNote={handleCreateNote}
            onDuplicateNote={handleDuplicateNote}
@@ -1009,7 +1221,7 @@ export default function App() {
               onRefresh={refreshGraph}
             />
           ) : view === 'canvas' ? (
-            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateCanvasNote} />
+            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateCanvasNote} blockedPaths={deletedCanvasPathsRef.current} />
           ) : (
             <div
               className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}
@@ -1030,7 +1242,9 @@ export default function App() {
                 onOpenWikiLink={handleOpenWikiLink}
                 onCreateWikiLink={handleCreateByTitle}
                 registerNavigationGuard={registerNavigationGuard}
+                registerDirtyProbe={registerDirtyProbe}
                 onCreateNote={handleCreateNote}
+                onCaptureInbox={() => setInboxOpen(true)}
                 onCreateFromTemplate={handleCreateFromTemplate}
                 onCreateDaily={handleCreateDaily}
                 onOpenSwitcher={handleOpenSwitcher}
@@ -1085,12 +1299,24 @@ export default function App() {
       <QuickSwitcher
         open={switcherOpen}
         noteIndex={noteIndex}
+        attachmentFiles={attachmentFiles}
+        showAttachments={settings.showAttachments}
         onClose={handleCloseSwitcher}
-        onSelect={(note) => {
+        onSelect={(entry) => {
           setSwitcherOpen(false);
-          handleOpenNote(note.id);
+          if (entry?.type === 'attachment') {
+            handleOpenAttachment(entry.attachment?.path);
+            return;
+          }
+          handleOpenNote(entry?.note?.id);
         }}
         onCreate={handleCreateByTitle}
+      />
+      <InboxCaptureModal
+        open={inboxOpen}
+        busy={inboxBusy}
+        onClose={() => setInboxOpen(false)}
+        onSubmit={handleCaptureInbox}
       />
       <SettingsModal
         open={settingsOpen}
@@ -1106,6 +1332,9 @@ export default function App() {
         activeNote={activeNote}
         onOpenNote={handleOpenNote}
         onOperationComplete={handleRefreshAll}
+        initialPrompt={aiInitialPrompt}
+        initialPromptPreferModel
+        onInitialPromptConsumed={() => setAiInitialPrompt('')}
       />
       <RenameDialog
         open={Boolean(renameDialog)}
@@ -1116,6 +1345,12 @@ export default function App() {
           if (!renameSaving) setRenameDialog(null);
         }}
         onSubmit={handleRenameDialogSubmit}
+      />
+
+      <StartupSplash
+        ready={!loading.sidebar && !loading.notes}
+        connectionDown={connectionDown}
+        loading={loading.sidebar || loading.notes}
       />
     </div>
   );

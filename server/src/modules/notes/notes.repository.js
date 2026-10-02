@@ -19,6 +19,7 @@ function mapNote(row) {
     filePath: row.file_path || null,
     isPinned: row.is_pinned === 1,
     wordCount: row.word_count,
+    contentHash: row.content_hash ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -74,10 +75,16 @@ export function updateFilePath(id, filePath) {
 
 export function listByFilePathPrefix(prefix) {
   const normalizedPrefix = `${prefix.replace(/\/$/, '')}/`;
+  // LIKE 模式中的 % _ \ 必须转义，否则目录名含通配符时会命中无关笔记的路径
+  const likePattern = `${escapeLikePattern(normalizedPrefix)}%`;
   return getDb()
-    .prepare('SELECT id, file_path FROM notes WHERE file_path = ? OR file_path LIKE ?')
-    .all(prefix, `${normalizedPrefix}%`)
+    .prepare("SELECT id, file_path FROM notes WHERE file_path = ? OR file_path LIKE ? ESCAPE '\\'")
+    .all(prefix, likePattern)
     .map((row) => ({ id: row.id, filePath: row.file_path }));
+}
+
+function escapeLikePattern(value) {
+  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 }
 
 export function insert({ id, title, content, folderId, filePath, wordCount, contentHash, createdAt, updatedAt }) {
@@ -107,9 +114,9 @@ export function remove(id) {
 
 /**
  * 带过滤条件的列表查询。
- * @param {{ folderId?: string | null, tagId?: string | null, sort?: keyof SORT_SQL, limit: number, offset: number }} options
+ * @param {{ folderId?: string | null, tagId?: string | null, sort?: keyof SORT_SQL, limit: number, offset: number, paginate?: boolean }} options
  */
-export function list({ folderId, tagId, sort = 'updated', limit, offset }) {
+export function list({ folderId, tagId, sort = 'updated', limit, offset, paginate = true }) {
   const db = getDb();
   const conditions = [];
   const params = [];
@@ -132,15 +139,15 @@ export function list({ folderId, tagId, sort = 'updated', limit, offset }) {
   const total = db.prepare(`SELECT COUNT(*) AS total FROM notes n ${where}`).get(...params).total;
 
   // 摘要只需要正文开头一小段：substr 避免把整篇正文拖进内存再截断
+  const pagination = paginate ? ' LIMIT ? OFFSET ?' : '';
   const rows = db
     .prepare(
       `SELECT n.id, n.title, n.folder_id, n.file_path, n.is_pinned, n.word_count, n.created_at, n.updated_at,
               substr(n.content, 1, 400) AS content_excerpt
          FROM notes n ${where}
-        ORDER BY ${orderBy}
-        LIMIT ? OFFSET ?`,
+        ORDER BY ${orderBy}${pagination}`,
     )
-    .all(...params, limit, offset)
+    .all(...params, ...(paginate ? [limit, offset] : []))
     .map((row) => mapSummary({ ...row, content: row.content_excerpt }));
 
   return { items: rows, total };

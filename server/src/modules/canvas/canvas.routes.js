@@ -33,9 +33,11 @@ const canvasPath = z.string().min(1).max(2048).superRefine((value, ctx) => {
 });
 const canvasPathQuery = z.object({ path: canvasPath.default('画板.canvas') });
 const moveBody = z.object({ fromPath: canvasPath, toPath: canvasPath });
+const deleteQuery = z.object({ path: canvasPath });
 
 export const canvasRouter = Router();
 canvasRouter.get('/files', controller.listCanvasFiles);
 canvasRouter.patch('/file', validate({ body: moveBody }), controller.moveCanvas);
+canvasRouter.delete('/file', validate({ query: deleteQuery }), controller.deleteCanvas);
 canvasRouter.get('/', validate({ query: canvasPathQuery }), controller.readCanvas);
 canvasRouter.put('/', validate({ query: canvasPathQuery, body: documentBody }), controller.writeCanvas);

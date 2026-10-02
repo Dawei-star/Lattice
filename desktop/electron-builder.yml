@@ -1,0 +1,91 @@
+appId: com.lattice.desktop
+productName: 格物 Lattice
+copyright: Copyright © 2026 Lattice
+
+directories:
+  output: release
+  buildResources: build
+
+# 不用 asar：后端要保持 ESM 的 import 语义、运行时还要读 migrations/*.sql，
+# 以普通文件分发最确定，也省掉「Node 的 ESM 加载器能否穿透 asar」这类不确定性。
+# 代价是启动略慢一点、源码可见 —— 对本地优先的自用工具来说是划算的。
+asar: false
+
+# Verify the exact files copied into each Electron artifact before it is emitted.
+afterPack: ./build/verify-package.cjs
+
+files:
+  - package.json
+  - src/**/*
+  # 运行时窗口图标。build/ 是 buildResources，不会被拷进应用，
+  # 所以 make-icon.py 会另存一份到 assets/（见 src/main.js 的 ICON_PATH）。
+  - assets/icon.ico
+  # ⚠️ `.mimosa/` 是宿主开发工具的钩子状态目录，属于本机开发态痕迹：
+  #    hook-status/*.json 里有本机绝对路径，hook-state/*.source 是源码基线快照。
+  #    它会散落在 server/src、web/dist、desktop/src 等「整目录拷贝」的位置，
+  #    不排掉就会随包发出去。见 scripts/packaged-smoke.mjs 的泄漏判据。
+  - '!**/.mimosa/**'
+  - from: ../server/src
+    to: server/src
+    filter:
+      - '**/*'
+      - '!**/.mimosa/**'
+  # server 的 package.json 必须一并带上：它声明了 "type": "module"。
+  # 少了它，Node 找不到最近的模块类型声明，会对每个后端文件先按 CommonJS 解析失败、
+  # 再按 ES module 重新解析（启动变慢，并刷 MODULE_TYPELESS_PACKAGE_JSON 警告）。
+  - from: ../server
+    to: server
+    filter:
+      - 'src/**/*'
+      - '!**/.mimosa/**'
+      - 'package.json'
+  - from: ../web/dist
+    to: web
+    filter:
+      - '**/*'
+      - '!**/.mimosa/**'
+  # ⚠️ 服务端有两个模块**跨出 server/ 目录**引用仓库根的 scripts/fc-core.mjs：
+  #    server/src/modules/files/files.service.js
+  #    server/src/modules/ai/ai.operations.js
+  #    两处都写死 `'../../../../scripts/fc-core.mjs'`。以包内层级换算：
+  #    resources/app/server/src/modules/<mod>/ → 上溯四级 = resources/app/
+  #    所以必须把 fc-core.mjs 放到 resources/app/scripts/ 才能解析。
+  #    漏掉它 = ESM 静态 import 失败 = 整个后端**启动即崩**（不是单个接口 404）。
+  #    fc-core.mjs 只依赖 node: 内置模块，单文件自带、无其它依赖，故只拷这一个文件。
+  - from: ../scripts
+    to: scripts
+    filter:
+      - 'fc-core.mjs'
+      - '!**/.mimosa/**'
+
+# exe 文件名保持 ASCII，避开各类工具链的路径编码问题；
+# 用户看到的快捷方式、窗口标题、安装向导仍然是中文 productName。
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  executableName: lattice
+  icon: build/icon.ico
+  artifactName: Lattice-${version}-${arch}.${ext}
+
+fileAssociations:
+  - ext: md
+    name: Markdown document
+    description: Open Markdown files in Lattice
+    role: Editor
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 格物 Lattice
+  # 卸载时保留用户数据，避免误删笔记库
+  deleteAppDataOnUninstall: false
+  artifactName: Lattice-${version}-setup.${ext}
+
+portable:
+  artifactName: Lattice-${version}-portable.${ext}

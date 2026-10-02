@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ContextMenu from '../ui/ContextMenu.jsx';
+import { nextFolderName } from '../lib/folder-naming.js';
+import { canvasDisplayName, toCanvasFileName } from '../lib/canvas-naming.js';
 
 /**
  * 目录树。递归渲染任意层级，支持就地重命名与删除。
@@ -14,6 +16,8 @@ export default function FolderTree({
   onSelectFolder,
   onOpenNote,
   onCreateFolder,
+  renameFolderId,
+  onRenameFolderReady,
   onCreateNote,
   onRevealFolder,
   onDeleteFolder,
@@ -22,6 +26,10 @@ export default function FolderTree({
   onCreateCanvas,
   canvasPath = '画板.canvas',
   canvasFiles = [],
+  attachmentFiles = [],
+  onOpenAttachment,
+  onRevealAttachment,
+  onCopyAttachmentPath,
   onDuplicateFolder,
   onMoveFolder,
   onFindInFolder,
@@ -31,6 +39,11 @@ export default function FolderTree({
   onDuplicateNote,
   onMoveNote,
   onMoveCanvas,
+  onRenameCanvas,
+  onDeleteCanvas,
+  onCopyCanvasPath,
+  onOpenCanvasDefault,
+  onRevealCanvas,
   onCopyNotePath,
   onOpenDefault,
   onRevealNote,
@@ -38,6 +51,10 @@ export default function FolderTree({
   onDeleteNote,
 }) {
   const folderOptions = flattenFolderNodes(nodes);
+  const rootNotes = notes.filter((note) => note.folderId == null);
+  // 附件子目录若没有对应的文件夹节点（如未建笔记的纯附件目录），回落到根级展示，避免文件凭空消失
+  const folderPaths = new Set(folderOptions.map((folder) => folder.path));
+  const rootAttachments = attachmentFiles.filter((file) => !file.folderPath || !folderPaths.has(file.folderPath));
 
   return (
     <ul className="tree" role="tree">
@@ -53,6 +70,8 @@ export default function FolderTree({
           onOpenNote={onOpenNote}
           onSelectFolder={onSelectFolder}
           onCreateFolder={onCreateFolder}
+          renameFolderId={renameFolderId}
+          onRenameFolderReady={onRenameFolderReady}
           onCreateNote={onCreateNote}
           onRevealFolder={onRevealFolder}
           onDeleteFolder={onDeleteFolder}
@@ -61,6 +80,10 @@ export default function FolderTree({
           onCreateCanvas={onCreateCanvas}
           canvasPath={canvasPath}
           canvasFiles={canvasFiles}
+          attachmentFiles={attachmentFiles}
+          onOpenAttachment={onOpenAttachment}
+          onRevealAttachment={onRevealAttachment}
+          onCopyAttachmentPath={onCopyAttachmentPath}
           folderOptions={folderOptions}
           favoriteFolderIds={favoriteFolderIds}
           onDuplicateFolder={onDuplicateFolder}
@@ -72,6 +95,11 @@ export default function FolderTree({
           onDuplicateNote={onDuplicateNote}
           onMoveNote={onMoveNote}
           onMoveCanvas={onMoveCanvas}
+          onRenameCanvas={onRenameCanvas}
+          onDeleteCanvas={onDeleteCanvas}
+          onOpenCanvasDefault={onOpenCanvasDefault}
+          onRevealCanvas={onRevealCanvas}
+          onCopyCanvasPath={onCopyCanvasPath}
           onCopyNotePath={onCopyNotePath}
           onOpenDefault={onOpenDefault}
           onRevealNote={onRevealNote}
@@ -87,7 +115,42 @@ export default function FolderTree({
           active={file.path === canvasPath}
           folderOptions={folderOptions}
           onOpenCanvas={onOpenCanvas}
+          onCreateNote={onCreateNote}
           onMoveCanvas={onMoveCanvas}
+          onRenameCanvas={onRenameCanvas}
+          onDeleteCanvas={onDeleteCanvas}
+          onCopyCanvasPath={onCopyCanvasPath}
+          onOpenCanvasDefault={onOpenCanvasDefault}
+          onRevealCanvas={onRevealCanvas}
+        />
+      ))}
+      {rootAttachments.map((file) => (
+        <AttachmentFile
+          key={file.path}
+          file={file}
+          depth={0}
+          folderOptions={folderOptions}
+          onOpenAttachment={onOpenAttachment}
+          onRevealAttachment={onRevealAttachment}
+          onCopyAttachmentPath={onCopyAttachmentPath}
+        />
+      ))}
+      {rootNotes.map((note) => (
+        <NoteFile
+          key={note.id}
+          note={note}
+          depth={0}
+          activeNoteId={activeNoteId}
+          folderOptions={folderOptions}
+          onOpenNote={onOpenNote}
+          onToggleNotePin={onToggleNotePin}
+          onDuplicateNote={onDuplicateNote}
+          onMoveNote={onMoveNote}
+          onCopyNotePath={onCopyNotePath}
+          onOpenDefault={onOpenDefault}
+          onRevealNote={onRevealNote}
+          onRenameNote={onRenameNote}
+          onDeleteNote={onDeleteNote}
         />
       ))}
       <li>
@@ -114,6 +177,8 @@ function FolderNode({
   onOpenNote,
   onSelectFolder,
   onCreateFolder,
+  renameFolderId,
+  onRenameFolderReady,
   onCreateNote,
   onRevealFolder,
   onDeleteFolder,
@@ -122,6 +187,10 @@ function FolderNode({
   onCreateCanvas,
   canvasPath,
   canvasFiles,
+  attachmentFiles,
+  onOpenAttachment,
+  onRevealAttachment,
+  onCopyAttachmentPath,
   folderOptions,
   favoriteFolderIds,
   onDuplicateFolder,
@@ -133,6 +202,11 @@ function FolderNode({
   onDuplicateNote,
   onMoveNote,
   onMoveCanvas,
+  onRenameCanvas,
+  onDeleteCanvas,
+  onOpenCanvasDefault,
+  onRevealCanvas,
+  onCopyCanvasPath,
   onCopyNotePath,
   onOpenDefault,
   onRevealNote,
@@ -142,27 +216,63 @@ function FolderNode({
   const [expanded, setExpanded] = useState(depth < 2);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
+  const [creatingChild, setCreatingChild] = useState(false);
+  const renameCommitRef = useRef(false);
+  const skipRenameBlurRef = useRef(false);
+  const creatingChildRef = useRef(false);
+
+  useEffect(() => {
+    if (renameFolderId !== node.id) return;
+    setDraftName(node.name);
+    setRenaming(true);
+    onRenameFolderReady?.(node.id);
+  }, [node.id, node.name, onRenameFolderReady, renameFolderId]);
+
+  useEffect(() => {
+    if (!renaming) setDraftName(node.name);
+  }, [node.name, renaming]);
 
   const isActive = filter.kind === 'folder' && filter.folderId === node.id;
   const hasChildren = node.children?.length > 0;
   const folderNotes = notes.filter((note) => note.folderId === node.id);
   const folderCanvasFiles = canvasFiles.filter((file) => file.folderPath === path);
-  const hasItems = hasChildren || folderNotes.length > 0 || folderCanvasFiles.length > 0;
+  const folderAttachmentFiles = attachmentFiles.filter((file) => file.folderPath === path);
+  const hasItems = hasChildren || folderNotes.length > 0 || folderCanvasFiles.length > 0 || folderAttachmentFiles.length > 0;
   const isFavorite = favoriteFolderIds.includes(node.id);
   const blockedMoveTargets = new Set([node.id, ...collectDescendantIds(node)]);
 
   const commitRename = async () => {
-    const name = draftName.trim();
-    if (name && name !== node.name) {
-      const ok = await onRenameFolder(node.id, name);
-      if (!ok) {
-        setDraftName(node.name);
-        return;
-      }
-    } else {
-      setDraftName(node.name);
+    if (skipRenameBlurRef.current) {
+      skipRenameBlurRef.current = false;
+      return;
     }
+    if (renameCommitRef.current) return;
+    renameCommitRef.current = true;
+
+    try {
+      const name = draftName.trim();
+      if (name && name !== node.name) {
+        const ok = await onRenameFolder(node.id, name);
+        if (!ok) {
+          setDraftName(node.name);
+          return;
+        }
+      } else {
+        setDraftName(node.name);
+      }
+      setRenaming(false);
+    } finally {
+      renameCommitRef.current = false;
+    }
+  };
+
+  const cancelRename = () => {
+    skipRenameBlurRef.current = true;
+    setDraftName(node.name);
     setRenaming(false);
+    window.setTimeout(() => {
+      skipRenameBlurRef.current = false;
+    }, 0);
   };
 
   const confirmDelete = () => {
@@ -172,15 +282,20 @@ function FolderNode({
     }
   };
 
-  const createChild = (kind) => {
-    if (kind === 'note') {
-      onCreateNote?.(node.id);
-      return;
-    }
-    const name = window.prompt('子文件夹名称');
-    if (name?.trim()) {
+  const createChild = async (kind) => {
+    if (creatingChildRef.current) return;
+    creatingChildRef.current = true;
+    setCreatingChild(true);
+    try {
+      if (kind === 'note') {
+        await onCreateNote?.(node.id);
+        return;
+      }
       setExpanded(true);
-      onCreateFolder?.(name.trim(), node.id);
+      await onCreateFolder?.(nextFolderName(node.children), node.id);
+    } finally {
+      creatingChildRef.current = false;
+      setCreatingChild(false);
     }
   };
 
@@ -203,10 +318,9 @@ function FolderNode({
   ];
 
   const getMenuItems = () => [
-    { id: 'new-note', label: '新建笔记', icon: '✎', onSelect: () => createChild('note') },
-    { id: 'new-folder', label: '新建文件夹', icon: '▱', onSelect: () => createChild('folder') },
+    { id: 'new-note', label: '新建笔记', icon: '✎', disabled: creatingChild, onSelect: () => createChild('note') },
+    { id: 'new-folder', label: '新建文件夹', icon: '▱', disabled: creatingChild, onSelect: () => createChild('folder') },
     { id: 'new-canvas', label: '新建白板', icon: '▦', onSelect: () => onCreateCanvas?.(path) },
-    { id: 'new-database', label: '新建数据库', icon: '☷', disabled: true, title: '数据库功能尚未支持' },
     { separator: true },
     { id: 'duplicate', label: '创建副本', icon: '▣', onSelect: () => onDuplicateFolder?.(node) },
     { id: 'move', label: '将文件夹移动到…', icon: '↳', submenuItems: moveItems },
@@ -257,8 +371,9 @@ function FolderNode({
             onBlur={commitRename}
             onKeyDown={(event) => {
               if (event.key === 'Escape') {
-                setDraftName(node.name);
-                setRenaming(false);
+                event.preventDefault();
+                event.stopPropagation();
+                cancelRename();
               }
             }}
           />
@@ -305,38 +420,22 @@ function FolderNode({
       {hasItems && expanded ? (
         <ul role="group">
           {folderNotes.map((note) => (
-            <li key={note.id} role="treeitem">
-              <ContextMenu
-                className="tree__note-context"
-                label={`文件「${note.title}」操作`}
-                getItems={() => buildNoteMenu(note, {
-                  folderOptions,
-                  onOpenNote,
-                  onToggleNotePin,
-                  onDuplicateNote,
-                  onMoveNote,
-                  onCopyNotePath,
-                  onOpenDefault,
-                  onRevealNote,
-                  onRenameNote,
-                  onDeleteNote,
-                })}
-              >
-              <button
-                type="button"
-                className={`tree__note ${note.id === activeNoteId ? 'is-active' : ''}`}
-                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
-                onClick={() => onOpenNote?.(note.id)}
-                title={note.title}
-              >
-                <span className="tree__note-icon" aria-hidden="true">·</span>
-                <span className="nav-item__label">{note.title}</span>
-                <span className={`tree__file-type tree__file-type--${fileTypeClass(note.filePath)}`} title={fileTypeLabel(note.filePath)}>
-                  {fileTypeLabel(note.filePath)}
-                </span>
-              </button>
-              </ContextMenu>
-            </li>
+            <NoteFile
+              key={note.id}
+              note={note}
+              depth={depth + 1}
+              activeNoteId={activeNoteId}
+              folderOptions={folderOptions}
+              onOpenNote={onOpenNote}
+              onToggleNotePin={onToggleNotePin}
+              onDuplicateNote={onDuplicateNote}
+              onMoveNote={onMoveNote}
+              onCopyNotePath={onCopyNotePath}
+              onOpenDefault={onOpenDefault}
+              onRevealNote={onRevealNote}
+              onRenameNote={onRenameNote}
+              onDeleteNote={onDeleteNote}
+            />
           ))}
           {(node.children ?? []).map((child) => (
             <FolderNode
@@ -350,6 +449,8 @@ function FolderNode({
               onOpenNote={onOpenNote}
               onSelectFolder={onSelectFolder}
               onCreateFolder={onCreateFolder}
+              renameFolderId={renameFolderId}
+              onRenameFolderReady={onRenameFolderReady}
               onCreateNote={onCreateNote}
               onRevealFolder={onRevealFolder}
               onDeleteFolder={onDeleteFolder}
@@ -358,6 +459,10 @@ function FolderNode({
               onCreateCanvas={onCreateCanvas}
               canvasPath={canvasPath}
               canvasFiles={canvasFiles}
+              attachmentFiles={attachmentFiles}
+              onOpenAttachment={onOpenAttachment}
+              onRevealAttachment={onRevealAttachment}
+              onCopyAttachmentPath={onCopyAttachmentPath}
               folderOptions={folderOptions}
               favoriteFolderIds={favoriteFolderIds}
               onDuplicateFolder={onDuplicateFolder}
@@ -369,11 +474,27 @@ function FolderNode({
               onDuplicateNote={onDuplicateNote}
               onMoveNote={onMoveNote}
               onMoveCanvas={onMoveCanvas}
+              onRenameCanvas={onRenameCanvas}
+              onDeleteCanvas={onDeleteCanvas}
+              onOpenCanvasDefault={onOpenCanvasDefault}
+              onRevealCanvas={onRevealCanvas}
+              onCopyCanvasPath={onCopyCanvasPath}
               onCopyNotePath={onCopyNotePath}
               onOpenDefault={onOpenDefault}
               onRevealNote={onRevealNote}
               onRenameNote={onRenameNote}
               onDeleteNote={onDeleteNote}
+            />
+          ))}
+          {folderAttachmentFiles.map((file) => (
+            <AttachmentFile
+              key={file.path}
+              file={file}
+              depth={depth + 1}
+              folderOptions={folderOptions}
+              onOpenAttachment={onOpenAttachment}
+              onRevealAttachment={onRevealAttachment}
+              onCopyAttachmentPath={onCopyAttachmentPath}
             />
           ))}
           {folderCanvasFiles.map((file) => (
@@ -384,7 +505,13 @@ function FolderNode({
               active={file.path === canvasPath}
               folderOptions={folderOptions}
               onOpenCanvas={onOpenCanvas}
+              onCreateNote={onCreateNote}
               onMoveCanvas={onMoveCanvas}
+              onRenameCanvas={onRenameCanvas}
+              onDeleteCanvas={onDeleteCanvas}
+              onCopyCanvasPath={onCopyCanvasPath}
+              onOpenCanvasDefault={onOpenCanvasDefault}
+              onRevealCanvas={onRevealCanvas}
             />
           ))}
         </ul>
@@ -393,8 +520,139 @@ function FolderNode({
   );
 }
 
-function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onMoveCanvas }) {
+function NoteFile({
+  note,
+  depth,
+  activeNoteId,
+  folderOptions,
+  onOpenNote,
+  onToggleNotePin,
+  onDuplicateNote,
+  onMoveNote,
+  onCopyNotePath,
+  onOpenDefault,
+  onRevealNote,
+  onRenameNote,
+  onDeleteNote,
+}) {
+  return (
+    <li role="treeitem">
+      <ContextMenu
+        className="tree__note-context"
+        label={`文件「${note.title}」操作`}
+        getItems={() => buildNoteMenu(note, {
+          folderOptions,
+          onOpenNote,
+          onToggleNotePin,
+          onDuplicateNote,
+          onMoveNote,
+          onCopyNotePath,
+          onOpenDefault,
+          onRevealNote,
+          onRenameNote,
+          onDeleteNote,
+        })}
+      >
+        <button
+          type="button"
+          className={`tree__note ${note.id === activeNoteId ? 'is-active' : ''}`}
+          style={{ paddingLeft: 8 + depth * 14 }}
+          onClick={() => onOpenNote?.(note.id)}
+          title={note.title}
+        >
+          <span className="tree__note-icon" aria-hidden="true">·</span>
+          <span className="nav-item__label">{note.title}</span>
+          <span className={`tree__file-type tree__file-type--${fileTypeClass(note.filePath)}`} title={fileTypeLabel(note.filePath)}>
+            {fileTypeLabel(note.filePath)}
+          </span>
+        </button>
+      </ContextMenu>
+    </li>
+  );
+}
+
+function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onCreateNote, onMoveCanvas, onRenameCanvas, onDeleteCanvas, onCopyCanvasPath, onOpenCanvasDefault, onRevealCanvas }) {
   const name = file.name ?? file.path.split('/').pop() ?? file.path;
+  const displayName = canvasDisplayName(name);
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(displayName);
+  const renameCommitRef = useRef(false);
+  const skipRenameBlurRef = useRef(false);
+
+  useEffect(() => {
+    if (!renaming) setDraftName(displayName);
+  }, [displayName, renaming]);
+
+  const commitRename = async () => {
+    if (skipRenameBlurRef.current) {
+      skipRenameBlurRef.current = false;
+      return;
+    }
+    if (renameCommitRef.current) return;
+    renameCommitRef.current = true;
+
+    try {
+      const nextName = toCanvasFileName(draftName);
+      if (!nextName) {
+        setDraftName(displayName);
+        return;
+      }
+      if (nextName !== file.path.split('/').pop()) {
+        const ok = await onRenameCanvas?.(file.path, nextName);
+        if (ok === false) return;
+      }
+      setRenaming(false);
+    } finally {
+      renameCommitRef.current = false;
+    }
+  };
+
+  const cancelRename = () => {
+    skipRenameBlurRef.current = true;
+    setDraftName(displayName);
+    setRenaming(false);
+    window.setTimeout(() => {
+      skipRenameBlurRef.current = false;
+    }, 0);
+  };
+
+  const startRename = () => {
+    if (file.exists === false) return;
+    setDraftName(displayName);
+    setRenaming(true);
+  };
+
+  if (renaming) {
+    return (
+      <li role="treeitem">
+        <form
+          className="inline-form inline-form--inline canvas-file-rename"
+          style={{ paddingLeft: 8 + depth * 14 }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            commitRename();
+          }}
+        >
+          <input
+            autoFocus
+            value={draftName}
+            maxLength={120}
+            aria-label={`重命名画布 ${displayName}`}
+            onChange={(event) => setDraftName(event.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                cancelRename();
+              }
+            }}
+          />
+        </form>
+      </li>
+    );
+  }
+
   const moveItems = [
     {
       id: 'move-canvas-root',
@@ -411,6 +669,7 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onMoveCa
       onSelect: () => onMoveCanvas?.(file.path, target.path),
     })),
   ];
+  const folderId = folderOptions.find((folder) => folder.path === file.folderPath)?.id ?? null;
 
   return (
     <li role="treeitem">
@@ -419,12 +678,30 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onMoveCa
         label={`文件「${name}」操作`}
         getItems={() => [
           { id: 'open-canvas', label: '打开画布', icon: '↗', onSelect: () => onOpenCanvas?.(file.path) },
+          { id: 'new-note', label: '新建笔记', icon: '✎', onSelect: () => onCreateNote?.(folderId) },
+          { id: 'rename-canvas', label: '重命名', icon: '✎', disabled: file.exists === false, onSelect: startRename },
           { id: 'move-canvas', label: '将文件移动到…', icon: '↳', disabled: file.exists === false, submenuItems: moveItems },
           {
             id: 'copy-canvas-path',
             label: '复制路径',
             icon: '□',
-            onSelect: () => navigator.clipboard?.writeText(file.path),
+            submenuItems: [
+              { id: 'copy-canvas-relative', label: '复制相对路径', onSelect: () => onCopyCanvasPath?.(file.path, 'relative') },
+              { id: 'copy-canvas-absolute', label: '复制完整路径', onSelect: () => onCopyCanvasPath?.(file.path, 'absolute') },
+              ],
+            },
+          { id: 'open-canvas-default', label: '使用系统默认应用打开', icon: '↗', disabled: file.exists === false, onSelect: () => onOpenCanvasDefault?.(file.path) },
+          { id: 'reveal-canvas', label: '在系统资源管理器中显示', icon: '↗', disabled: file.exists === false, onSelect: () => onRevealCanvas?.(file.path) },
+          { separator: true },
+          {
+            id: 'delete-canvas',
+            label: '删除画布',
+            icon: '×',
+            danger: true,
+            disabled: file.exists === false,
+            onSelect: () => {
+              if (window.confirm(`确定删除画布「${displayName}」吗？此操作不可撤销。`)) onDeleteCanvas?.(file.path);
+            },
           },
         ]}
       >
@@ -436,8 +713,47 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onMoveCa
           title={file.path}
         >
           <span className="tree__note-icon tree__canvas-file-icon" aria-hidden="true">▦</span>
-          <span className="nav-item__label" title={file.path}>{name.replace(/\.canvas$/i, '')}</span>
+          <span className="nav-item__label" title={file.path}>{displayName}</span>
           <span className="tree__file-type tree__file-type--canvas">CANVAS</span>
+        </button>
+      </ContextMenu>
+    </li>
+  );
+}
+
+function AttachmentFile({ file, depth, folderOptions, onOpenAttachment, onRevealAttachment, onCopyAttachmentPath }) {
+  const name = file.name ?? file.path.split('/').pop() ?? file.path;
+  return (
+    <li role="treeitem">
+      <ContextMenu
+        className="tree__note-context"
+        label={`附件「${name}」操作`}
+        getItems={() => [
+          { id: 'open-attachment', label: '使用默认应用打开', icon: '↗', onSelect: () => onOpenAttachment?.(file.path) },
+          {
+            id: 'copy-attachment-path',
+            label: '复制路径',
+            icon: '□',
+            submenuItems: [
+              { id: 'copy-attachment-relative', label: '复制相对路径', onSelect: () => onCopyAttachmentPath?.(file.path, 'relative') },
+              { id: 'copy-attachment-absolute', label: '复制完整路径', onSelect: () => onCopyAttachmentPath?.(file.path, 'absolute') },
+            ],
+          },
+          { id: 'reveal-attachment', label: '在系统资源管理器中显示', icon: '↗', onSelect: () => onRevealAttachment?.(file.path) },
+        ]}
+      >
+        <button
+          type="button"
+          className="tree__note tree__attachment-file"
+          style={{ paddingLeft: 8 + depth * 14 }}
+          onClick={() => onOpenAttachment?.(file.path)}
+          title={file.path}
+        >
+          <span className="tree__note-icon" aria-hidden="true">▪</span>
+          <span className="nav-item__label" title={file.path}>{name}</span>
+          <span className={`tree__file-type tree__file-type--${fileTypeClass(name)}`} title={fileTypeLabel(name)}>
+            {fileTypeLabel(name)}
+          </span>
         </button>
       </ContextMenu>
     </li>

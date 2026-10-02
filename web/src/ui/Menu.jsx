@@ -46,6 +46,7 @@ export function Menu({ items, label = '菜单', className = '' }) {
             key={itemId}
             className="menu__item-wrap"
             onMouseEnter={() => hasSubmenu && setOpenSubmenu(itemId)}
+            onMouseLeave={() => setOpenSubmenu(null)}
           >
             <MenuItem
               item={item}

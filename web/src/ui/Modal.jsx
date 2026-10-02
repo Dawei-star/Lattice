@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isComposingEvent } from '../lib/events.js';
 
 /** Shared modal shell with Escape, backdrop close, and a small focus trap. */
 export default function Modal({ open, title, ariaLabel, onClose, children, className = '', initialFocusRef }) {
@@ -15,7 +16,8 @@ export default function Modal({ open, title, ariaLabel, onClose, children, class
     (initialFocusRef?.current ?? focusable[0])?.focus();
 
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
+      // 输入法组词期间的 Esc 是取消候选词，不能顺带把弹窗关掉
+      if (event.key === 'Escape' && !isComposingEvent(event)) {
         event.preventDefault();
         onClose?.();
         return;

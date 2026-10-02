@@ -15,3 +15,7 @@ export async function listCanvasFiles(_req, res) {
 export async function moveCanvas(req, res) {
   res.json({ data: service.move(req.valid.body.fromPath, req.valid.body.toPath) });
 }
+
+export async function deleteCanvas(req, res) {
+  res.json({ data: await service.remove(req.valid.query.path) });
+}

@@ -11,7 +11,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    strictPort: true,
+    // 保持 5173 为首选，但已有开发实例时自动选择下一个端口，
+    // 避免前端端口冲突连带终止后端开发服务。
+    strictPort: false,
     proxy: {
       '/api': { target: API_TARGET, changeOrigin: false },
       '/health': { target: API_TARGET, changeOrigin: false },

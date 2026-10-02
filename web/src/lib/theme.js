@@ -26,7 +26,7 @@ export async function importThemeFile(file) {
   const text = await file.text();
   const extension = file.name.toLowerCase().split('.').pop();
   const raw = extension === 'css' ? parseCssTheme(text) : parseJsonTheme(text);
-  const tokens = sanitizeTokens(raw);
+  const tokens = sanitizeTokens(raw.tokens);
   if (Object.keys(tokens).length === 0) throw new Error('主题文件没有可识别的颜色令牌');
 
   const contrastIssues = validateThemeContrast(tokens);

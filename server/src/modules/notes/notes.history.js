@@ -9,6 +9,9 @@ import { VaultAdapter } from '../../vault/vault.adapter.js';
 const HISTORY_ROOT = '.lattice/history';
 const VERSION_PATTERN = /^(\d{8}T\d{9}Z)-([a-f0-9]{64})$/;
 const NOTE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// 单篇笔记的历史快照上限：自动保存会高频触发快照，不设上限磁盘会被写爆。
+// 超出后从最旧开始删除；内容与最新快照相同的直接跳过不写。
+const MAX_SNAPSHOTS_PER_NOTE = 200;
 
 const vault = new VaultAdapter(config.vaultDir);
 
@@ -21,6 +24,13 @@ export function createSnapshot(note, rawOverride = null) {
   assertNoteId(note.id);
   const raw = rawOverride ?? readCurrentRaw(note);
   const hash = hashRaw(raw);
+
+  const existing = listSnapshots(note.id);
+  // 内容与最新快照一致时不重复写：编辑器自动保存会以相同内容反复触发保存
+  if (existing.length && existing[0].hash === hash) {
+    return { version: existing[0].version, hash, createdAt: existing[0].createdAt, size: existing[0].size, skipped: true };
+  }
+
   const directory = historyDirectory(note.id);
   fs.mkdirSync(directory, { recursive: true });
 
@@ -32,12 +42,25 @@ export function createSnapshot(note, rawOverride = null) {
   }
 
   vault.writeRawSync(`${HISTORY_ROOT}/${note.id}/${version}.md`, raw);
+  pruneSnapshots(note.id);
   return {
     version,
     hash,
     createdAt: versionCreatedAt(version),
     size: Buffer.byteLength(raw, 'utf8'),
   };
+}
+
+/** 快照数量超出上限时从最旧开始删除（按版本名排序，时间戳前缀保证字典序即时间序） */
+function pruneSnapshots(noteId) {
+  const snapshots = listSnapshots(noteId);
+  for (const snapshot of snapshots.slice(MAX_SNAPSHOTS_PER_NOTE)) {
+    try {
+      fs.rmSync(versionPath(noteId, snapshot.version), { force: true });
+    } catch {
+      // 单个快照删除失败不阻断保存流程，下次写入会再尝试
+    }
+  }
 }
 
 export function listSnapshots(noteId) {

@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { config } from '../../config/index.js';
 import { UnauthorizedError } from '../../lib/errors.js';
+import { readBearerToken } from '../../middleware/workspaceAuth.js';
 
 /**
  * Optional single-workspace authentication. Local installs stay passwordless;
@@ -12,8 +13,7 @@ export function authenticateAi(req, _res, next) {
     return;
   }
 
-  const authorization = req.get('authorization') ?? '';
-  const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
+  const token = readBearerToken(req.get('authorization'));
   if (!token || !sameSecret(token, config.aiAccessToken)) {
     throw new UnauthorizedError('AI 工作区访问令牌缺失或无效');
   }
@@ -26,8 +26,9 @@ export function authenticateAi(req, _res, next) {
 }
 
 export function applyAiPrincipal(req, body) {
-  if (!req.aiPrincipal) return body;
-  return { ...body, ...req.aiPrincipal };
+  const principal = req.aiPrincipal ?? req.workspacePrincipal;
+  if (!principal) return body;
+  return { ...body, ...principal };
 }
 
 function sameSecret(candidate, expected) {

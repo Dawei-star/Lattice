@@ -7,6 +7,27 @@ const MAX_SCALE = 3.5;
 // block. Larger graphs reveal labels for important nodes and on hover instead.
 const LABEL_ALWAYS_LIMIT = 18;
 const ALPHA_REHEAT = { drag: 0.5, hover: 0, click: 0.35 };
+const GRAPH_COLOR_FALLBACKS = {
+  edge: '#c9d1da',
+  edgeActive: '#4a6cf7',
+  node: '#8b95a1',
+  nodeActive: '#4a6cf7',
+  label: '#3d4653',
+  surface: '#ffffff',
+};
+
+function readGraphColors(canvas) {
+  const styles = getComputedStyle(canvas);
+  const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+  return {
+    edge: color('--graph-edge', GRAPH_COLOR_FALLBACKS.edge),
+    edgeActive: color('--graph-edge-active', GRAPH_COLOR_FALLBACKS.edgeActive),
+    node: color('--graph-node', GRAPH_COLOR_FALLBACKS.node),
+    nodeActive: color('--graph-node-active', GRAPH_COLOR_FALLBACKS.nodeActive),
+    label: color('--graph-label', GRAPH_COLOR_FALLBACKS.label),
+    surface: color('--bg-panel', GRAPH_COLOR_FALLBACKS.surface),
+  };
+}
 
 /**
  * 关系图谱。
@@ -36,6 +57,7 @@ export default function GraphView({
   const hoverRef = useRef(null);
   const needFitRef = useRef(true);
   const settledRef = useRef(false);
+  const colorsRef = useRef(null);
 
   const [hovered, setHovered] = useState(null);
   const [settled, setSettled] = useState(false);
@@ -98,14 +120,13 @@ export default function GraphView({
     ctx.clearRect(0, 0, width, height);
 
     // 颜色全部取自 CSS 变量，主题切换时自动跟随
-    const styles = getComputedStyle(canvas);
-    const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
-    const colorEdge = color('--graph-edge', '#c9d1da');
-    const colorEdgeActive = color('--graph-edge-active', '#4a6cf7');
-    const colorNode = color('--graph-node', '#8b95a1');
-    const colorNodeActive = color('--graph-node-active', '#4a6cf7');
-    const colorLabel = color('--graph-label', '#3d4653');
-    const colorSurface = color('--bg-panel', '#ffffff');
+    const colors = colorsRef.current ?? GRAPH_COLOR_FALLBACKS;
+    const colorEdge = colors.edge;
+    const colorEdgeActive = colors.edgeActive;
+    const colorNode = colors.node;
+    const colorNodeActive = colors.nodeActive;
+    const colorLabel = colors.label;
+    const colorSurface = colors.surface;
 
     const { scale, offsetX, offsetY } = viewRef.current;
     const toScreen = (node) => ({ x: node.x * scale + offsetX, y: node.y * scale + offsetY });
@@ -179,6 +200,24 @@ export default function GraphView({
     ctx.globalAlpha = 1;
   }, [activeNoteId, activeNeighborhood]);
 
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const refreshColors = () => {
+      colorsRef.current = readGraphColors(canvas);
+      drawRef.current();
+    };
+    refreshColors();
+    if (typeof globalThis.MutationObserver !== 'function') return undefined;
+    const observer = new MutationObserver(refreshColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+    return () => observer.disconnect();
+  }, []);
+
   // ── 视图适配 ────────────────────────────────────────────────
   const applyFit = useCallback(() => {
     const layout = layoutRef.current;
@@ -188,8 +227,8 @@ export default function GraphView({
 
   // ── 模拟 + 重绘循环 ─────────────────────────────────────────
   const startLoop = useCallback(() => {
-    cancelAnimationFrame(frameRef.current);
     setSettledOnce(false);
+    if (frameRef.current) return;
 
     const tick = () => {
       const layout = layoutRef.current;
@@ -355,6 +394,16 @@ export default function GraphView({
     startLoop();
   };
 
+  // 指针滑出画布只终止拖拽，不触发"点击打开"语义
+  const handlePointerLeave = (event) => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (drag?.kind === 'node') drag.node.fixed = false;
+    layoutRef.current?.reheat(0.25);
+    startLoop();
+  };
+
   const handleWheel = (event) => {
     event.preventDefault();
     const canvas = canvasRef.current;
@@ -376,6 +425,20 @@ export default function GraphView({
 
     draw();
   };
+
+  // React 的 onWheel 是被动监听，preventDefault 不生效（Ctrl+滚轮会连页面一起缩放）；
+  // 改挂原生 wheel 监听并声明 passive: false
+  const handleWheelRef = useRef(handleWheel);
+  useEffect(() => {
+    handleWheelRef.current = handleWheel;
+  });
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const handler = (event) => handleWheelRef.current(event);
+    canvas.addEventListener('wheel', handler, { passive: false });
+    return () => canvas.removeEventListener('wheel', handler);
+  }, []);
 
   const resetView = () => {
     layoutRef.current?.reheat(0.7);
@@ -416,8 +479,7 @@ export default function GraphView({
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerUp}
-          onWheel={handleWheel}
+          onPointerLeave={handlePointerLeave}
         />
 
         {loading && !graph ? <div className="graph__overlay">正在加载图谱…</div> : null}

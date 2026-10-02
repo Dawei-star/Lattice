@@ -24,8 +24,11 @@ const schema = z
     CORS_ORIGINS: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
     AUTO_MIGRATE: booleanish.default('true'),
+    WORKSPACE_ACCESS_TOKEN: z.string().min(16).max(500).optional(),
+    WORKSPACE_ACCESS_ROLE: z.enum(['viewer', 'editor', 'admin']).default('editor'),
     AI_ACCESS_TOKEN: z.string().min(16).max(500).optional(),
     AI_ACCESS_ROLE: z.enum(['viewer', 'editor', 'admin']).default('editor'),
+    AI_SETTINGS_ENCRYPTION_KEY: z.string().min(43).max(128).optional(),
     // 聊天类上游调用的超时：推理型模型生成完整回复可能需要 1-2 分钟，
     // 连通性测试仍固定 20 秒（探针只请求 max_tokens=1，慢说明不可用）
     AI_CHAT_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(600_000).default(120_000),
@@ -34,6 +37,9 @@ const schema = z
     WEB_DIST_DIR: z.string().min(1).optional(),
     // 每日摘要自动生成时刻（本地时区 0-23 点）。留空 = 不定时，仅手动触发
     AI_DIGEST_HOUR: z.coerce.number().int().min(0).max(23).optional(),
+    // 默认拒绝指向内网/回环地址的 AI endpoint（SSRF 防护）。
+    // 自建本地模型（Ollama 等）的用户可显式开启；test 环境始终放行（mock 上游在 127.0.0.1）。
+    AI_ALLOW_PRIVATE_ENDPOINTS: booleanish.default('false'),
   })
   .superRefine((value, ctx) => {
     if (value.NODE_ENV === 'production' && value.CORS_ORIGINS.split(',').some((o) => o.trim() === '*')) {
@@ -43,14 +49,13 @@ const schema = z
         message: '生产环境禁止使用通配符来源 *，请显式列出允许的前端域名',
       });
     }
-    // 全部 /api 写端点（除 AI Bearer Token 外）没有认证：绑定到非回环地址
-    // 等于向局域网开放无鉴权的笔记增删，必须在启动时显式承担风险
+    // All /api endpoints must have a workspace boundary when listening beyond loopback.
     const loopback = ['127.0.0.1', '::1', 'localhost'];
-    if (!loopback.includes(value.HOST) && !value.AI_ACCESS_TOKEN) {
+    if (!loopback.includes(value.HOST) && !value.WORKSPACE_ACCESS_TOKEN) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['HOST'],
-        message: `HOST=${value.HOST} 会向局域网暴露无鉴权的 API；请绑定 127.0.0.1，或配置 AI_ACCESS_TOKEN（≥16 位）后继续`,
+        message: `HOST=${value.HOST} requires WORKSPACE_ACCESS_TOKEN (>=16 chars) to protect the workspace API`,
       });
     }
   });
@@ -85,8 +90,11 @@ export const config = Object.freeze({
   corsOrigins: Object.freeze(corsOrigins),
   logLevel: env.LOG_LEVEL,
   autoMigrate: env.AUTO_MIGRATE,
+  workspaceAccessToken: env.WORKSPACE_ACCESS_TOKEN ?? '',
+  workspaceAccessRole: env.WORKSPACE_ACCESS_ROLE,
   aiAccessToken: env.AI_ACCESS_TOKEN ?? '',
   aiAccessRole: env.AI_ACCESS_ROLE,
+  aiSettingsEncryptionKey: env.AI_SETTINGS_ENCRYPTION_KEY ?? '',
   aiChatTimeoutMs: env.AI_CHAT_TIMEOUT_MS,
   /** 前端构建产物目录，存在时由后端一并托管（单进程生产模式） */
   webDistDir: env.WEB_DIST_DIR
@@ -94,4 +102,7 @@ export const config = Object.freeze({
     : path.join(serverRoot, '..', 'web', 'dist'),
   /** 每日摘要自动生成时刻；未设置则不启用定时 */
   aiDigestHour: env.AI_DIGEST_HOUR ?? null,
+  /** 是否允许 AI endpoint 指向内网/回环地址；测试运行时恒为 true（mock 上游在回环） */
+  aiAllowPrivateEndpoints:
+    env.AI_ALLOW_PRIVATE_ENDPOINTS || env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT !== undefined,
 });

@@ -54,3 +54,33 @@ test('internal agent approval can execute without a preview hash', async () => {
   assert.equal(result.completed, 1);
   assert.ok(fs.existsSync(path.join(vaultDir, 'agent.md')));
 });
+
+test('archive moves an Inbox note and removes its Inbox marker', async () => {
+  const source = path.join(vaultDir, 'Inbox', 'capture.md');
+  const target = path.join(vaultDir, 'Project', 'capture.md');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, [
+    '---',
+    'id: 11111111-1111-4111-8111-111111111111',
+    'title: capture',
+    'pinned: false',
+    'created_at: 2026-10-01T00:00:00.000Z',
+    'updated_at: 2026-10-01T00:00:00.000Z',
+    'status: captured',
+    'type: inbox',
+    '---',
+    '',
+    '# Capture',
+  ].join('\n'), 'utf8');
+  const actions = [{ type: 'archive', path: 'Inbox/capture.md', targetPath: 'Project/capture.md' }];
+  const preview = operations.preview(actions);
+  const result = await operations.execute(actions, { confirmed: true, planHash: preview.planHash, source: 'api' });
+
+  assert.equal(result.completed, 1);
+  assert.equal(fs.existsSync(source), false);
+  assert.equal(fs.existsSync(target), true);
+  const archived = fs.readFileSync(target, 'utf8');
+  assert.match(archived, /^status: processed$/m);
+  assert.doesNotMatch(archived, /^type: inbox$/m);
+  assert.match(archived, /# Capture/);
+});

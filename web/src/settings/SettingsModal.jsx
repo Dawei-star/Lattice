@@ -9,14 +9,14 @@ import { createMcpServer, loadMcpSettings, saveMcpSettings } from './mcpSettings
 import ModelCenter from './ModelCenter.jsx';
 import { checkGithubReleases } from '../lib/update.js';
 
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.1.3';
 const LATTICE_ICON_URL = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHg9IjEwNCIgeT0iMTQ3IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzA0MEE0NiIvPjxyZWN0IHg9IjEwNCIgeT0iMTA0IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzE2MjU4NSIvPjxyZWN0IHg9IjEwMCIgeT0iMTQyIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzFGMkVBMiIvPjxyZWN0IHg9IjEwMCIgeT0iMTAwIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzNCNTBERiIvPjxyZWN0IHg9Ijk2IiB5PSIxMzgiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM0QzY4RUIiLz48cmVjdCB4PSI5NiIgeT0iOTYiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM3Qjk2RkYiLz48cmVjdCB4PSI5MiIgeT0iMTM0IiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjOTBBOUZGIi8+PHJlY3QgeD0iOTIiIHk9IjkyIiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjQzZENkZGIi8+PC9zdmc+';
 const MAX_BACKGROUND_IMAGE_SIZE = 2 * 1024 * 1024;
 const ALLOWED_BACKGROUND_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 const GROUPS = [
   { title: 'AI 助手', items: [['models', '模型', 'layout']] },
   { title: '选项', items: [['about', '关于', 'info'], ['appearance', '外观', 'sun'], ['interface', '界面', 'layout'], ['editor', '编辑器', 'edit'], ['shortcuts', '快捷键', 'command']] },
-  { title: '知识库', items: [['vault', '知识库位置', 'home'], ['migration', '数据迁移', 'refresh']] },
+  { title: '知识库', items: [['vault', '知识库位置', 'home'], ['migration', '备份与迁移', 'refresh']] },
   { title: '集成', items: [['mcp', 'MCP Server', 'link']] },
 ];
 
@@ -25,6 +25,8 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
   const [search, setSearch] = useState('');
   const [settings, setSettings] = useState(() => loadSettings());
   const [migration, setMigration] = useState('idle');
+  const [backup, setBackup] = useState('idle');
+  const [backupResult, setBackupResult] = useState(null);
   const [vaultPath, setVaultPath] = useState('');
   const [vaultNotice, setVaultNotice] = useState(null);
   const [updateState, setUpdateState] = useState('idle');
@@ -39,6 +41,8 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
     setSettings(loadSettings());
     setSearch('');
     setMigration('idle');
+    setBackup('idle');
+    setBackupResult(null);
     setVaultNotice(null);
     setUpdateState('idle');
     loadVaultPath();
@@ -96,13 +100,34 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
   };
 
   const migrate = async () => {
-    if (!window.confirm('将当前 SQLite 笔记导出为 Markdown 文件？原数据库不会被删除。')) return;
+    if (!window.confirm('将旧版 SQLite 笔记导出为 Markdown 文件？原数据库不会被删除。')) return;
     setMigration('running');
     try {
       await vaultApi.migrate();
       setMigration('done');
     } catch {
       setMigration('error');
+    }
+  };
+
+  const backupVault = async () => {
+    if (!window.latticeDesktop?.backupVault) {
+      setBackup('unavailable');
+      return;
+    }
+    if (!window.confirm('备份当前知识库？将复制 Markdown、Canvas、附件、模板和历史快照，不会复制 AI API Key。')) return;
+    setBackup('running');
+    setBackupResult(null);
+    try {
+      const result = await window.latticeDesktop.backupVault();
+      if (result?.canceled) {
+        setBackup('idle');
+        return;
+      }
+      setBackupResult(result);
+      setBackup('done');
+    } catch {
+      setBackup('error');
     }
   };
 
@@ -141,9 +166,23 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
         {active === 'interface' && <Section title="界面"><Row title="界面字号" description="调整设置、列表和工具栏的基础字号。"><select aria-label="界面字号" value={settings.fontSize} onChange={(event) => updateSetting('fontSize', event.target.value)}><option value="13">小</option><option value="14">标准</option><option value="15">大</option></select></Row><Row title="内容最大宽度" description="控制编辑器和 Markdown 预览的阅读宽度。"><select aria-label="内容最大宽度" value={settings.contentWidth} onChange={(event) => updateSetting('contentWidth', event.target.value)}><option value="720">720px</option><option value="860">860px</option><option value="1040">1040px</option></select></Row></Section>}
         {active === 'editor' && <Section title="编辑器"><Row title="默认编辑模式" description="打开笔记时使用的初始视图。"><select aria-label="默认编辑模式" value={settings.editorMode} onChange={(event) => updateSetting('editorMode', event.target.value)}><option value="split">分栏</option><option value="edit">编辑</option><option value="preview">预览</option></select></Row><Row title="Tab 缩进" description={`按 Tab 插入 ${settings.tabSize} 个空格。`}><select aria-label="Tab 缩进" value={settings.tabSize} onChange={(event) => updateSetting('tabSize', event.target.value)}><option value="2">2 个空格</option><option value="4">4 个空格</option></select></Row><Row title="自动保存" description="停止输入后自动写入 Markdown 文件。"><Toggle checked={settings.autoSave} onChange={(value) => updateSetting('autoSave', value)} /></Row><Row title="自动保存延迟" description="停止输入后等待多久写入磁盘。"><select aria-label="自动保存延迟" value={settings.autoSaveDelay} disabled={!settings.autoSave} onChange={(event) => updateSetting('autoSaveDelay', event.target.value)}><option value="500">500 ms</option><option value="900">900 ms</option><option value="1500">1500 ms</option></select></Row></Section>}
         {active === 'shortcuts' && <Section title="快捷键"><div className="shortcut-list">{[['快速切换', 'Ctrl / Cmd + K'], ['新建笔记', 'Ctrl / Cmd + N'], ['保存笔记', 'Ctrl / Cmd + S'], ['设置', 'Ctrl / Cmd + ,'], ['编辑 / 预览', 'Ctrl / Cmd + E']].map(([name, key]) => <div className="shortcut-row" key={name}><span>{name}</span><kbd>{key}</kbd></div>)}</div></Section>}
-        {active === 'vault' && <><Section title="知识库位置"><div className="settings-vault"><div className="settings-vault__info"><strong>当前知识库目录</strong><code className="settings-vault__path" title={vaultPath ? '点击可全选路径' : undefined}>{vaultPath || '正在读取知识库目录...'}</code><p>笔记以 Markdown 文件保存在该目录，可直接被其他工具读取。</p></div><div className="settings-vault__actions"><button type="button" className="btn" onClick={loadVaultPath}>重新读取</button><button type="button" className="btn" disabled={!vaultPath || !window.latticeDesktop?.revealVault} onClick={revealVault}>打开目录</button><button type="button" className="btn btn--primary" disabled={!vaultPath} onClick={copyVaultPath}>复制路径</button></div></div></Section>{vaultNotice ? <Notice tone={vaultNotice.tone}>{vaultNotice.text}</Notice> : null}<Section title="索引状态"><div className="settings-health"><span className="settings-health__dot" aria-hidden="true" /><div className="settings-health__copy"><strong>索引正常</strong><p>笔记、标签与双链会随文件变化自动更新。</p></div><span className="settings-health__badge">实时</span></div></Section></>}
+        {active === 'vault' && <><Section title="知识库位置"><div className="settings-vault"><div className="settings-vault__info"><strong>当前知识库目录</strong><code className="settings-vault__path" title={vaultPath ? '点击可全选路径' : undefined}>{vaultPath || '正在读取知识库目录...'}</code><p>笔记以 Markdown 文件保存在该目录，可直接被其他工具读取。</p></div><div className="settings-vault__actions"><button type="button" className="btn" onClick={loadVaultPath}>重新读取</button><button type="button" className="btn" disabled={!vaultPath || !window.latticeDesktop?.revealVault} onClick={revealVault}>打开目录</button><button type="button" className="btn btn--primary" disabled={!vaultPath} onClick={copyVaultPath}>复制路径</button></div></div></Section>{vaultNotice ? <Notice tone={vaultNotice.tone}>{vaultNotice.text}</Notice> : null}<Section title="附件显示"><Row title="显示附件" description="在文件列表和快速切换中显示图片、视频、PDF、Word 文档等非笔记文件，包括知识库任意文件夹中的这类文件。关闭时它们不会出现在 Lattice 中。"><Toggle checked={settings.showAttachments} onChange={(value) => updateSetting('showAttachments', value)} /></Row></Section><Section title="索引状态"><div className="settings-health"><span className="settings-health__dot" aria-hidden="true" /><div className="settings-health__copy"><strong>索引正常</strong><p>笔记、标签与双链会随文件变化自动更新。</p></div><span className="settings-health__badge">实时</span></div></Section></>}
         {active === 'mcp' && <McpServerSettings />}
-        {active === 'migration' && <Section title="数据迁移"><Row title="导出为 Markdown" description="原数据库会保留，不会被删除。"><button type="button" className="btn btn--primary" onClick={migrate} disabled={migration === 'running'}>{migration === 'running' ? '迁移中...' : '开始迁移'}</button></Row>{migration === 'done' && <Notice tone="success">迁移完成，Markdown 文件已写入当前知识库。</Notice>}{migration === 'error' && <Notice tone="danger">迁移失败，请检查后端服务后重试。</Notice>}</Section>}
+        {active === 'migration' && <>
+          <Section title="数据安全">
+            <Row title="备份知识库" description="复制 Markdown、Canvas、附件、模板和历史快照到一个新的备份目录。AI API Key 不会写入备份。">
+              <button type="button" className="btn btn--primary" onClick={backupVault} disabled={backup === 'running'}>{backup === 'running' ? '备份中...' : '备份到文件夹'}</button>
+            </Row>
+          </Section>
+          {backup === 'done' && backupResult ? <Notice tone="success">备份完成：已复制 {backupResult.fileCount ?? 0} 个文件，共 {formatBytes(backupResult.byteCount)}。位置：<code>{backupResult.backupPath}</code></Notice> : null}
+          {backup === 'error' && <Notice tone="danger">备份失败，请确认目标磁盘可写且空间充足。</Notice>}
+          {backup === 'unavailable' && <Notice tone="neutral">浏览器开发版不能直接复制本地文件，请在 Windows 桌面版中执行备份。</Notice>}
+          <Section title="旧版迁移">
+            <Row title="从 SQLite 导出为 Markdown" description="仅用于旧版数据库迁移，原数据库会保留，不会被删除。"><button type="button" className="btn" onClick={migrate} disabled={migration === 'running'}>{migration === 'running' ? '迁移中...' : '开始迁移'}</button></Row>
+            {migration === 'done' && <Notice tone="success">迁移完成，Markdown 文件已写入当前知识库。</Notice>}
+            {migration === 'error' && <Notice tone="danger">迁移失败，请检查后端服务后重试。</Notice>}
+          </Section>
+        </>}
       </div>
     </main>
   </div></Modal>;
@@ -273,6 +312,7 @@ function McpServerSettings() {
     env: {
       DB_FILE: serverInfo?.dbFile || 'D:\\path\\to\\data\\lattice.db',
       VAULT_DIR: serverInfo?.vaultDir || 'D:\\path\\to\\data\\vault',
+      LATTICE_MCP_ALLOW_WRITES: serverInfo?.writesEnabled ? 'true' : 'false',
     },
     transport: 'stdio',
     enabled: true,
@@ -446,6 +486,7 @@ function McpServerSettings() {
     <section className="mcp-manager__block">
       <div className="mcp-manager__section-head"><div><h4>当前 Server 工具</h4><p>Lattice MCP Server 暴露以下知识库操作。</p></div><span className="settings-value">{loading ? '读取中...' : info ? 'stdio · 配置可用' : '未读取'}</span></div>
       <div className="mcp-manager__panel mcp-settings__tools">{toolList.map((tool) => <div className="mcp-settings__tool" key={tool.name}><code>{tool.name}</code><span>{tool.description}</span></div>)}</div>
+      <Notice tone={info?.writesEnabled ? 'warning' : 'success'}>{info?.writesEnabled ? '写入工具已开启：外部 Agent 可以修改 Vault，请确认每次写入。' : '默认只读：写入工具未暴露。导出配置后如需写入，请将 LATTICE_MCP_ALLOW_WRITES 改为 true。'}</Notice>
     </section>
     <section className="mcp-manager__block">
       <div className="mcp-manager__section-head"><div><h4>导出配置</h4><p>复制当前启用的 Server，粘贴到 Claude Desktop 或其他 MCP 客户端。</p></div><button type="button" className="btn btn--primary" onClick={copyConfig}>复制 JSON</button></div>
@@ -511,6 +552,12 @@ function Section({ title, children }) { return <section className="settings-sect
 function Row({ title, description, children }) { return <div className="settings-row"><div><strong>{title}</strong><p>{description}</p></div><div className="settings-row__control">{children}</div></div>; }
 function Toggle({ checked, onChange }) { return <button type="button" className={`settings-toggle ${checked ? 'is-on' : ''}`} role="switch" aria-checked={checked} aria-label={checked ? '已启用' : '已停用'} onClick={() => onChange(!checked)}><span aria-hidden="true" /></button>; }
 function Notice({ children, tone = 'neutral' }) { return <div className={'settings-notice settings-notice--' + tone}>{children}</div>; }
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 function NavIcon({ name }) { const paths = { info: 'M12 17v-5m0-4h.01M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0', sun: 'M12 3v2m0 14v2M3 12h2m14 0h2m-3.4-6.6-1.4 1.4M7.8 16.2l-1.4 1.4m0-11.4 1.4 1.4m8.4 8.4 1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0', layout: 'M4 5h16v14H4zM4 10h16M10 10v9', edit: 'M4 20h4L19 9l-4-4L4 16v4z', link: 'M10 13a5 5 0 0 0 7.1.1l1.4-1.4a5 5 0 0 0-7.1-7.1L10.6 5.4M14 11a5 5 0 0 0-7.1-.1l-1.4 1.4a5 5 0 0 0 7.1 7.1l.8-.8', command: 'M6 4v16M18 4v16M4 6h16M4 18h16', home: 'M3 11l9-7 9 7v9H3z', refresh: 'M20 11a8 8 0 1 0 2 5m0-5v-5m0 5h-5' }; return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name] ?? paths.info} /></svg>; }
 function ThemeImportPanel({ theme, onChange }) {
   const [error, setError] = useState(''); const [inputKey, setInputKey] = useState(0);

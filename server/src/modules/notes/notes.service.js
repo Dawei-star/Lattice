@@ -178,6 +178,12 @@ export function update(id, patch) {
   const current = repository.findById(id);
   if (!current) throw new NotFoundError('笔记不存在');
 
+  // 乐观锁：客户端携带读取时的 contentHash（expectedHash）时校验，
+  // 防止两个窗口并发编辑后写者静默覆盖先写者
+  if (patch.expectedHash && current.contentHash && patch.expectedHash !== current.contentHash) {
+    throw new ConflictError('笔记已在其他窗口被修改，请刷新后再保存');
+  }
+
   const oldFilePath = noteFilePath(current);
   const nextTitle = patch.title === undefined ? current.title : normalizeTitle(patch.title, patch.content ?? current.content);
   const nextContent = patch.content === undefined ? current.content : patch.content;
@@ -284,25 +290,44 @@ export function getDetail(id) {
 }
 
 export function list(options) {
-  const { items, total } = repository.list(options);
-  const ids = items.map((item) => item.id);
+  const inboxStatus = options.inboxStatus;
+  const hasInboxFilter = inboxStatus !== undefined;
+  const { items, total } = repository.list({ ...options, paginate: !hasInboxFilter });
+  const enrichedItems = items.map((item) => {
+    const filePath = noteFilePath(item);
+    return {
+      ...item,
+      filePath,
+      properties: readProperties({ ...item, filePath }),
+    };
+  });
+  const filteredItems = hasInboxFilter
+    ? enrichedItems.filter((item) => item.properties?.type === 'inbox'
+      && (inboxStatus === 'all' || item.properties?.status === inboxStatus))
+    : enrichedItems;
+  const visibleItems = hasInboxFilter
+    ? filteredItems.slice(options.offset, options.offset + options.limit)
+    : filteredItems;
+  const ids = visibleItems.map((item) => item.id);
   const tagMap = tagsRepository.findTagsForNotes(ids);
   const { outgoing, incoming } = linksService.countsForNotes(ids);
 
   return {
-    items: items.map((item) => ({
+    items: visibleItems.map((item) => ({
       ...item,
-      filePath: noteFilePath(item),
       tags: tagMap.get(item.id) ?? [],
       outgoingCount: outgoing.get(item.id) ?? 0,
       backlinkCount: incoming.get(item.id) ?? 0,
     })),
-    total,
+    total: hasInboxFilter ? filteredItems.length : total,
   };
 }
 
 export function index() {
-  return repository.listIndex();
+  return repository.listIndex().map((item) => ({
+    ...item,
+    properties: readProperties(item),
+  }));
 }
 
 export function statistics() {

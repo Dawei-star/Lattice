@@ -2,7 +2,7 @@ import path from 'node:path';
 import { serverRoot, config } from '../../config/index.js';
 import { resolveVaultDir } from '../../vault/config.js';
 
-const tools = [
+const allTools = [
   { name: 'list_notes', description: '列出知识库中的笔记' },
   { name: 'search_notes', description: '全文搜索笔记' },
   { name: 'read_note', description: '按 ID、标题或路径读取笔记内容' },
@@ -15,6 +15,13 @@ const tools = [
   { name: 'restore_note_version', description: '把笔记恢复到指定历史版本' },
 ];
 
+const writesEnabled = ['true', '1', 'yes'].includes(
+  String(process.env.LATTICE_MCP_ALLOW_WRITES ?? '').trim().toLowerCase(),
+);
+const tools = writesEnabled
+  ? allTools
+  : allTools.filter((tool) => !['create_note', 'update_note', 'restore_note_version'].includes(tool.name));
+
 export function getInfo(_req, res) {
   res.json({
     data: {
@@ -24,6 +31,7 @@ export function getInfo(_req, res) {
       serverPath: path.resolve(serverRoot, '..', 'scripts', 'mcp-server', 'server.mjs'),
       dbFile: config.dbFile,
       vaultDir: resolveVaultDir(config.vaultDir),
+      writesEnabled,
       tools,
     },
   });

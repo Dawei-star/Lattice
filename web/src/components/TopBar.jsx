@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Inbox } from 'lucide-react';
 
 /**
  * 顶栏：品牌、全局检索入口、视图切换、新建、主题与手动刷新。
@@ -9,6 +10,7 @@ export default function TopBar({
   view,
   onViewChange,
   onCreateNote,
+  onCaptureInbox,
   onOpenSwitcher,
   onRefresh,
   refreshing,
@@ -95,6 +97,10 @@ export default function TopBar({
 
         <button type="button" className="btn btn--primary" onClick={onCreateNote} title="新建笔记（Ctrl / Cmd + N）">
           新建笔记
+        </button>
+
+        <button type="button" className="btn btn--icon" onClick={onCaptureInbox} title="收集到 Inbox（Ctrl / Cmd + Shift + I）" aria-label="收集到 Inbox">
+          <Inbox size={17} strokeWidth={1.8} aria-hidden="true" />
         </button>
 
         <button

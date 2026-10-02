@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { validateThemeContrast } from '../src/lib/theme.js';
+import { installDom } from './dom-setup.mjs';
+import { clearImportedTheme, importThemeFile, validateThemeContrast } from '../src/lib/theme.js';
+
+installDom();
 
 const readableTheme = {
   bg: '#eaf3ff',
@@ -39,5 +42,29 @@ const lowContrastButton = validateThemeContrast({
   'accent-contrast': '#ffffff',
 });
 assert.ok(lowContrastButton.some((issue) => issue.foreground === 'accent-contrast' && issue.background === 'accent'));
+
+const jsonFile = {
+  name: 'sample-theme.json',
+  size: 80,
+  text: async () => JSON.stringify({
+    name: 'Sample JSON theme',
+    colors: { bg: '#f3f7f4', text: '#18352a', accent: '#0f766e', 'accent-contrast': '#ffffff' },
+  }),
+};
+const importedJson = await importThemeFile(jsonFile);
+assert.equal(importedJson.name, 'Sample JSON theme');
+assert.equal(importedJson.tokens.bg, '#f3f7f4');
+assert.equal(document.documentElement.style.getPropertyValue('--accent'), '#0f766e');
+
+const cssFile = {
+  name: 'sample-theme.css',
+  size: 70,
+  text: async () => ':root { --bg: #f3f7f4; --text: #18352a; --accent: #0f766e; --accent-contrast: #ffffff; }',
+};
+const importedCss = await importThemeFile(cssFile);
+assert.equal(importedCss.name, 'CSS theme');
+assert.equal(importedCss.tokens.text, '#18352a');
+assert.equal(document.documentElement.style.getPropertyValue('--text'), '#18352a');
+clearImportedTheme();
 
 console.log('theme contrast tests passed');

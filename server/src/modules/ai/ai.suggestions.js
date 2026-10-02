@@ -13,6 +13,7 @@ import { getDb } from '../../db/index.js';
 import { toPlainText } from '../../lib/markdown.js';
 import * as searchService from '../search/search.service.js';
 import { noteMeanVector, searchVectors } from './ai.embeddings.js';
+import { loadServerSettings } from './ai.settings.js';
 
 const DEFAULT_LIMIT = 6;
 const MAX_TITLE_TERMS = 4;
@@ -62,8 +63,7 @@ async function suggestLinks(note, { limit }) {
 
   // 语义路优先
   try {
-    const settingsRow = getDb().prepare("SELECT value FROM ai_settings WHERE key = 'model-config'").get();
-    const model = JSON.parse(settingsRow?.value ?? 'null')?.embedding?.model ?? null;
+    const model = loadServerSettings().embedding?.model ?? null;
     if (model) {
       const mean = noteMeanVector(note.id, model);
       if (mean) {

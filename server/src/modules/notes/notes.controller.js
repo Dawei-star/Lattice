@@ -3,8 +3,8 @@ import * as service from './notes.service.js';
 import * as templates from './notes.templates.js';
 
 export async function listNotes(req, res) {
-  const { folderId, tagId, sort, limit, offset } = req.valid.query;
-  const result = service.list({ folderId, tagId, sort, limit, offset });
+  const { folderId, tagId, inboxStatus, sort, limit, offset } = req.valid.query;
+  const result = service.list({ folderId, tagId, inboxStatus, sort, limit, offset });
   res.json({ data: result.items, meta: { total: result.total, limit, offset } });
 }
 

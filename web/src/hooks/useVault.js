@@ -9,11 +9,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, BASE_URL } from '../api/client.js';
 import { canvasApi } from '../api/canvas.js';
 import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
-import { noteFilePath, uniqueNoteFilePath, vaultFiles } from '../api/vault-files.js';
+import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
+import { createSseTicket, getWorkspaceAccessToken } from '../api/workspace-auth.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
 
-const DEFAULT_FILTER = { kind: 'all', folderId: null, tagId: null };
+const DEFAULT_FILTER = { kind: 'all', folderId: null, tagId: null, inboxStatus: null };
 const PAGE_SIZE = 60;
 const SEARCH_DEBOUNCE_MS = 280;
 
@@ -31,7 +32,7 @@ function flattenFolderTree(nodes, result = []) {
 
 function ensureDefaultCanvas(files) {
   const normalized = Array.isArray(files) ? files : [];
-  if (normalized.some((file) => file?.path === DEFAULT_CANVAS_PATH)) return normalized;
+  if (normalized.length > 0) return normalized;
   return [
     ...normalized,
     { path: DEFAULT_CANVAS_PATH, name: DEFAULT_CANVAS_PATH, folderPath: '', exists: false },
@@ -59,6 +60,16 @@ function normalizeNoteFilePath(value) {
     .toLowerCase();
 }
 
+/** 附件固定位于 attachments/ 根下；去掉前缀后即可与目录树路径对齐。 */
+function normalizeAttachmentFiles(files) {
+  return (Array.isArray(files) ? files : []).map((file) => {
+    const path = String(file?.path ?? '').replaceAll('\\', '/');
+    const separator = path.lastIndexOf('/');
+    const folderPath = separator === -1 ? '' : path.slice(0, separator).replace(/^attachments\/?/, '');
+    return { ...file, folderPath };
+  });
+}
+
 export function useVault() {
   const toast = useToast();
 
@@ -67,6 +78,7 @@ export function useVault() {
   const [overview, setOverview] = useState(null);
   const [noteIndex, setNoteIndex] = useState([]);
   const [canvasFiles, setCanvasFiles] = useState([]);
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
 
   const [filter, setFilter] = useState(DEFAULT_FILTER);
   const [sort, setSort] = useState('updated');
@@ -83,15 +95,24 @@ export function useVault() {
   const [graphStale, setGraphStale] = useState(true);
   const [loading, setLoading] = useState({ sidebar: true, notes: true, note: false, graph: false });
   const [connectionDown, setConnectionDown] = useState(false);
+  const [workspaceToken, setWorkspaceToken] = useState(() => getWorkspaceAccessToken());
 
   /** 编辑器未保存内容的重载保护：切换笔记前由编辑区注册拦截器 */
   const navigationGuard = useRef(null);
   const openRequest = useRef(0);
+  const listRequestIdRef = useRef(0);
+  const sseConnectedRef = useRef(false);
   const activeNoteRef = useRef(activeNote);
 
   useEffect(() => {
     activeNoteRef.current = activeNote;
   }, [activeNote]);
+
+  useEffect(() => {
+    const syncWorkspaceToken = () => setWorkspaceToken(getWorkspaceAccessToken());
+    window.addEventListener('lattice:ai-settings-change', syncWorkspaceToken);
+    return () => window.removeEventListener('lattice:ai-settings-change', syncWorkspaceToken);
+  }, []);
 
   const handleError = useCallback(
     (error, fallbackMessage) => {
@@ -146,6 +167,22 @@ export function useVault() {
             handleError(error, '加载画布文件列表失败');
           }
         }
+        try {
+          // 优先用全库扫描接口（attachments/ 之外的任意文件夹也算），
+          // 旧版后端没有该接口时回退到仅列 attachments/ 目录。
+          let files;
+          try {
+            files = await vaultAttachmentsApi.listAll();
+          } catch (error) {
+            if (!(error instanceof ApiError && error.status === 404)) throw error;
+            files = await vaultAttachmentsApi.list();
+          }
+          setAttachmentFiles(normalizeAttachmentFiles(files));
+        } catch (error) {
+          // 附件列举失败不应拖垮侧边栏，静默降级为空列表。
+          setAttachmentFiles([]);
+          handleError(error, '加载附件列表失败');
+        }
         setConnectionDown(false);
       } catch (error) {
         handleError(error, '加载侧边栏数据失败');
@@ -157,20 +194,27 @@ export function useVault() {
   );
 
   const refreshNotes = useCallback(async () => {
+    // 请求序号防竞态：快速切换目录/排序/翻页时，旧请求晚到会覆盖新筛选的结果
+    const requestId = ++listRequestIdRef.current;
     setLoading((current) => ({ ...current, notes: true }));
     try {
       const params = { sort, limit: PAGE_SIZE, offset: page * PAGE_SIZE };
       if (filter.kind === 'folder') params.folderId = filter.folderId ?? UNFILED;
       if (filter.kind === 'tag') params.tagId = filter.tagId;
+      if (filter.kind === 'inbox') params.inboxStatus = filter.inboxStatus ?? 'all';
 
       const result = await notesApi.list(params);
+      if (requestId !== listRequestIdRef.current) return;
       setNotes(result.items);
       setNotesTotal(result.total);
       setConnectionDown(false);
     } catch (error) {
+      if (requestId !== listRequestIdRef.current) return;
       handleError(error, '加载笔记列表失败');
     } finally {
-      setLoading((current) => ({ ...current, notes: false }));
+      if (requestId === listRequestIdRef.current) {
+        setLoading((current) => ({ ...current, notes: false }));
+      }
     }
   }, [filter, page, sort, handleError]);
 
@@ -216,9 +260,10 @@ export function useVault() {
     setSearch((current) => ({ ...current, loading: true, query: keyword }));
 
     const searchFolderId = filter.kind === 'folder' ? (filter.folderId ?? UNFILED) : undefined;
+    const searchInboxStatus = filter.kind === 'inbox' ? (filter.inboxStatus ?? 'all') : undefined;
 
     searchApi
-      .query(keyword, { limit: 40, folderId: searchFolderId })
+      .query(keyword, { limit: 40, folderId: searchFolderId, inboxStatus: searchInboxStatus })
       .then((result) => {
         if (cancelled) return;
         setSearch({ loading: false, items: result.items, strategy: result.strategy, query: keyword });
@@ -233,7 +278,7 @@ export function useVault() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, filter.folderId, filter.kind, handleError]);
+  }, [debouncedQuery, filter.folderId, filter.inboxStatus, filter.kind, handleError]);
 
   // ── 标题索引：双链解析、快速切换、嵌入目标定位都依赖它 ─────────
   const titleIndex = useMemo(() => {
@@ -255,6 +300,14 @@ export function useVault() {
   const registerNavigationGuard = useCallback((guard) => {
     navigationGuard.current = guard;
   }, []);
+
+  // 无副作用探针：编辑器报告"当前是否有未保存草稿"，供 SSE 外部更新
+  // 决定是否自动刷新（有草稿时自动刷新会静默覆盖外部修改或本地草稿）
+  const dirtyProbe = useRef(null);
+  const registerDirtyProbe = useCallback((probe) => {
+    dirtyProbe.current = probe;
+  }, []);
+  const hasUnsavedChanges = useCallback(() => dirtyProbe.current?.() === true, []);
 
   /** 返回 true 允许切换；返回 false 表示被拦下（守卫返回 false，通常因未保存内容） */
   const confirmNavigation = useCallback(() => {
@@ -348,6 +401,7 @@ export function useVault() {
             content: input.content ?? '',
             folderId: input.folderId ?? null,
             isPinned: false,
+            properties: input.properties ?? {},
             createdAt: timestamp,
             updatedAt: timestamp,
           };
@@ -383,9 +437,23 @@ export function useVault() {
     [folders, handleError, noteIndex, refreshNotes, refreshSidebar],
   );
 
+  /** 保存后即时更新列表中的对应行；与服务器/磁盘的完整同步交给 SSE 驱动的刷新 */
+  const patchNoteListItem = useCallback((saved) => {
+    if (!saved?.id) return;
+    setNotes((current) => current.map((item) => (
+      item.id === saved.id
+        ? { ...item, title: saved.title ?? item.title, filePath: saved.filePath ?? item.filePath, updatedAt: saved.updatedAt ?? item.updatedAt }
+        : item
+    )));
+  }, []);
+
   /**
    * 保存笔记。成功后直接用返回体更新编辑区，省掉一次回读请求。
    * 错误会继续向上抛，让编辑区保留未保存状态并给出内联提示。
+   *
+   * 保存后的列表/侧栏同步交给 SSE（watcher 投影完成后会带 80ms 去抖广播，
+   * useVault 的事件订阅统一刷新），这里只做即时的本地行内更新，
+   * 不再人为等待 + 全量刷新——否则连续自动保存就是每秒十几个请求的风暴。
    */
   const saveNote = useCallback(
     async (id, patch) => {
@@ -407,23 +475,23 @@ export function useVault() {
         saved.filePath = nextPath;
         setActiveNote(saved);
         setGraphStale(true);
-        await new Promise((resolve) => setTimeout(resolve, 260));
-        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        patchNoteListItem(saved);
         return saved;
       }
       try {
         const saved = await notesApi.update(id, patch);
         setActiveNote((current) => (current && current.id === saved.id ? saved : current));
         setGraphStale(true);
-        refreshNotes();
-        refreshSidebar({ silent: true });
+        patchNoteListItem(saved);
+        // SSE 未连接时兜底刷一次列表，保证标题/路径变化立即可见
+        if (!sseConnectedRef.current) refreshNotes();
         return saved;
       } catch (error) {
         handleError(error, '保存失败');
         throw error;
       }
     },
-    [activeNote, folders, handleError, noteIndex, refreshNotes, refreshSidebar],
+    [activeNote, folders, handleError, noteIndex, patchNoteListItem, refreshNotes],
   );
 
   const deleteNote = useCallback(
@@ -536,8 +604,10 @@ export function useVault() {
     const EventSourceCtor = window.EventSource ?? globalThis.EventSource;
     if (typeof EventSourceCtor !== 'function') return undefined;
 
-    const eventsUrl = new URL(`${BASE_URL}/vault/events`, window.location.origin);
-    const source = new EventSourceCtor(eventsUrl.toString());
+    let source = null;
+    let disposed = false;
+    let reconnectTimer = null;
+    let reconnectAttempts = 0;
     let refreshTimer = null;
     let refreshInFlight = false;
 
@@ -554,8 +624,7 @@ export function useVault() {
       }, 80);
     };
 
-    source.onopen = refreshFromVault;
-    source.onmessage = (message) => {
+    const handleMessage = (message) => {
       let change;
       try {
         change = JSON.parse(message.data);
@@ -571,17 +640,76 @@ export function useVault() {
         setActiveNote(null);
         toast.info('当前笔记已从本地文件夹删除，界面已同步');
       } else if (change.action === 'updated' && current?.id === change.id) {
-        openNote(current.id);
+        if (hasUnsavedChanges()) {
+          toast.info('笔记已被外部程序修改；当前有未保存的草稿，已保留你的编辑，可手动保存覆盖');
+        } else {
+          openNote(current.id);
+        }
       }
       setGraphStale(true);
       refreshFromVault();
     };
 
-    return () => {
-      clearTimeout(refreshTimer);
-      source.close();
+    // 无令牌（默认本机模式）：直连，EventSource 自带断线重连
+    if (!workspaceToken) {
+      const eventsUrl = new URL(`${BASE_URL}/vault/events`, window.location.origin);
+      source = new EventSourceCtor(eventsUrl.toString());
+      source.onopen = () => {
+        sseConnectedRef.current = true;
+        refreshFromVault();
+      };
+      source.onerror = () => {
+        sseConnectedRef.current = false;
+      };
+      source.onmessage = handleMessage;
+      return () => {
+        disposed = true;
+        clearTimeout(refreshTimer);
+        source?.close();
+      };
+    }
+
+    // 配置了工作区令牌：长期令牌不进 URL，先换取一次性短时票据再开流；
+    // 票据核销后 EventSource 的自动重连必然 401，因此出错时手动关闭、
+    // 换新票据重连（指数退避）
+    const connect = async () => {
+      if (disposed) return;
+      try {
+        const ticket = await createSseTicket();
+        if (disposed) return;
+        if (!ticket?.ticket) throw new Error('事件流票据获取失败');
+        const eventsUrl = new URL(`${BASE_URL}/vault/events`, window.location.origin);
+        eventsUrl.searchParams.set('sseTicket', ticket.ticket);
+        source = new EventSourceCtor(eventsUrl.toString());
+        source.onopen = () => {
+          sseConnectedRef.current = true;
+          reconnectAttempts = 0;
+          refreshFromVault();
+        };
+        source.onmessage = handleMessage;
+        source.onerror = () => {
+          sseConnectedRef.current = false;
+          if (disposed) return;
+          source?.close();
+          source = null;
+          reconnectAttempts += 1;
+          reconnectTimer = setTimeout(connect, Math.min(1000 * 2 ** reconnectAttempts, 15_000));
+        };
+      } catch {
+        if (disposed) return;
+        reconnectTimer = setTimeout(connect, 5_000);
+      }
     };
-  }, [openNote, refreshNotes, refreshSidebar, toast]);
+
+    connect();
+
+    return () => {
+      disposed = true;
+      clearTimeout(refreshTimer);
+      clearTimeout(reconnectTimer);
+      source?.close();
+    };
+  }, [hasUnsavedChanges, openNote, refreshNotes, refreshSidebar, toast, workspaceToken]);
 
   const moveCanvas = useCallback(
     async (fromPath, toPath) => {
@@ -591,6 +719,34 @@ export function useVault() {
         return true;
       } catch (error) {
         handleError(error, '移动画布文件失败');
+        return false;
+      }
+    },
+    [handleError, refreshSidebar],
+  );
+
+  const renameCanvas = useCallback(
+    async (fromPath, toPath) => {
+      try {
+        await canvasApi.rename(fromPath, toPath);
+        await refreshSidebar({ silent: true });
+        return true;
+      } catch (error) {
+        handleError(error, '重命名画布失败');
+        return false;
+      }
+    },
+    [handleError, refreshSidebar],
+  );
+
+  const deleteCanvas = useCallback(
+    async (filePath) => {
+      try {
+        await canvasApi.remove(filePath);
+        await refreshSidebar({ silent: true });
+        return true;
+      } catch (error) {
+        handleError(error, '删除画布失败');
         return false;
       }
     },
@@ -709,6 +865,42 @@ export function useVault() {
     [handleError, saveNote],
   );
 
+  const updateInboxStatus = useCallback(
+    async (note, status) => {
+      if (!note?.id || !['captured', 'processing', 'processed'].includes(status)) return false;
+      try {
+        const saved = await saveNote(note.id, {
+          properties: { ...(note.properties ?? {}), type: 'inbox', status },
+        });
+        setActiveNote((current) => (current && current.id === saved.id ? saved : current));
+        toast.success(status === 'processed' ? 'Inbox 内容已标记为已处理' : 'Inbox 状态已更新');
+        return true;
+      } catch (error) {
+        handleError(error, '更新 Inbox 状态失败');
+        return false;
+      }
+    },
+    [handleError, saveNote, toast],
+  );
+
+  const archiveInboxNote = useCallback(
+    async (note, folderId) => {
+      if (!note?.id || folderId === undefined) return false;
+      try {
+        const properties = { ...(note.properties ?? {}), status: 'processed' };
+        delete properties.type;
+        const saved = await saveNote(note.id, { folderId, properties });
+        setActiveNote((current) => (current && current.id === saved.id ? saved : current));
+        toast.success('内容已归档到项目');
+        return true;
+      } catch (error) {
+        handleError(error, '归档 Inbox 内容失败');
+        return false;
+      }
+    },
+    [handleError, saveNote, toast],
+  );
+
   const togglePin = useCallback(
     async (note) => {
       try {
@@ -735,6 +927,12 @@ export function useVault() {
     setQuery('');
   }, []);
 
+  const selectInbox = useCallback((status = 'all') => {
+    setFilter({ kind: 'inbox', folderId: null, tagId: null, inboxStatus: status });
+    setPage(0);
+    setQuery('');
+  }, []);
+
   const clearFilter = useCallback(() => {
     setFilter(DEFAULT_FILTER);
     setPage(0);
@@ -751,6 +949,7 @@ export function useVault() {
     pageCount: Math.max(1, Math.ceil(notesTotal / PAGE_SIZE)),
     noteIndex,
     canvasFiles,
+    attachmentFiles,
     activeNote,
     graph,
     graphStale,
@@ -767,6 +966,7 @@ export function useVault() {
     setPage,
     selectFolder,
     selectTag,
+    selectInbox,
     clearFilter,
     setActiveNote,
 
@@ -782,17 +982,22 @@ export function useVault() {
     createFolder,
     moveFolder,
     moveCanvas,
+    renameCanvas,
+    deleteCanvas,
     createCanvas,
     duplicateFolder,
     renameFolder,
     deleteFolder,
     moveNote,
+    updateInboxStatus,
+    archiveInboxNote,
     togglePin,
     resolveTitle,
     refreshNotes,
     refreshSidebar,
     refreshGraph,
     registerNavigationGuard,
+    registerDirtyProbe,
     confirmNavigation,
   };
 }

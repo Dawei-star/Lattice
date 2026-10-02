@@ -6,7 +6,8 @@ import { normalizeVaultRelativePath, resolveVaultPath, sanitizeFilePart } from '
 import { parseMarkdownDocument, serializeMarkdownDocument } from './markdown.js';
 
 const INTERNAL_DIR = '.lattice';
-const SPECIAL_DIRS = new Set([INTERNAL_DIR, '_templates']);
+const FC_INTERNAL_DIR = '.fc';
+const SPECIAL_DIRS = new Set([INTERNAL_DIR, FC_INTERNAL_DIR, '_templates']);
 
 export class VaultAdapter {
   constructor(rootDir) {
@@ -267,7 +268,7 @@ async function walkDirectories(root, relativeDir, result) {
 }
 
 /** assertWritablePath 的同步版：writeSync / writeRawSync 在同步写入路径上使用。 */
-function assertWritablePathSync(rootDir, absolutePath) {
+export function assertWritablePathSync(rootDir, absolutePath) {
   let current = absolutePath;
   while (current !== path.dirname(current)) {
     let stat = null;

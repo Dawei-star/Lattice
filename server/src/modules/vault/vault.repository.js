@@ -64,7 +64,13 @@ async function walkImages(rootDir, relativeDir, result) {
     if (!entry.isFile()) continue;
     const mimeType = imageType(relativePath);
     if (!mimeType) continue;
-    const stat = await fs.stat(path.join(rootDir, relativePath));
+    // 与 attachments 的 walk 同理：readdir 与 stat 之间文件可能被删，跳过而不是整接口 500
+    let stat;
+    try {
+      stat = await fs.stat(path.join(rootDir, relativePath));
+    } catch {
+      continue;
+    }
     result.push({
       path: relativePath.replaceAll('\\', '/'),
       name: entry.name,

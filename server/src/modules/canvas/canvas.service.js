@@ -71,6 +71,15 @@ export function move(fromPath, toPath) {
   return { fromPath, toPath };
 }
 
+export async function remove(filePath) {
+  const file = vaultFile(filePath);
+  // 幂等：文件已不在磁盘（如被外部删除、树列表过期）时按成功处理，让前端能把过期条目清掉
+  if (!fs.existsSync(file)) return { path: filePath, deleted: true };
+  await vaultGuard.assertWritablePath(file);
+  await fsp.unlink(file);
+  return { path: filePath, deleted: true };
+}
+
 function parseCanvasDocument(raw, filePath) {
   let value;
   try {

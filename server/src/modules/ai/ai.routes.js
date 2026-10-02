@@ -14,7 +14,18 @@ const provider = z.object({
 const context = z.object({
   activeFile: z.string().max(2048).nullable().optional(),
   activeFileContent: z.string().max(20_000).nullable().optional(),
+  project: z.object({
+    name: z.string().max(200),
+    path: z.string().max(2048),
+    folderId: z.string().uuid().nullable().optional(),
+    fileCount: z.number().int().min(0).max(100000).optional(),
+  }).nullable().optional(),
+  inbox: z.object({
+    total: z.number().int().min(0).max(100000),
+    pending: z.number().int().min(0).max(100000),
+  }).nullable().optional(),
   files: z.array(z.record(z.unknown())).max(120).optional(),
+  inboxFiles: z.array(z.record(z.unknown())).max(120).optional(),
   folders: z.array(z.union([z.string(), z.record(z.unknown())])).max(80).optional(),
 }).default({});
 const historyEntry = z.object({
@@ -23,7 +34,7 @@ const historyEntry = z.object({
 });
 const action = z.object({
   id: z.string().max(100).optional(),
-  type: z.enum(['read', 'create', 'update', 'delete', 'move', 'copy']),
+  type: z.enum(['read', 'create', 'update', 'delete', 'move', 'copy', 'archive']),
   path: z.string().max(2048).optional(),
   sourcePath: z.string().max(2048).optional(),
   fromPath: z.string().max(2048).optional(),

@@ -52,7 +52,9 @@ const SAFE_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 function isSafeUrl(rawValue) {
   const value = rawValue.trim();
   if (value === '') return false;
-  // 相对路径与锚点放行
+  // 相对路径与锚点放行；//host 形式的协议相对 URL 不放行——
+  // 它指向外部站点（如 //evil.com/pixel.gif），属于绕过白名单的外链
+  if (value.startsWith('//')) return false;
   if (value.startsWith('/') || value.startsWith('#') || value.startsWith('./') || value.startsWith('../')) return true;
   // 协议外的 data: 一律拒绝（data:text/html 可执行脚本），只允许 data:image
   if (/^data:/i.test(value)) return /^data:image\//i.test(value);

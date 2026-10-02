@@ -6,10 +6,12 @@ import { config } from './config/index.js';
 import { closeDatabase, openDatabase } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
 import { maybeRunScheduledDigest } from './modules/ai/ai.digest.js';
+import { warnIfPlaintextKeys } from './modules/ai/ai.settings.js';
 import { logger } from './lib/logger.js';
 import { recoverJobs } from './lib/jobs.js';
 import { resolveVaultDir } from './vault/config.js';
 import { closeVaultEventClients, publishVaultEvent } from './vault/events.js';
+import { registerWatcherControl } from './vault/watcher-control.js';
 import { VaultAdapter } from './vault/vault.adapter.js';
 import { reconcileVault } from './vault/sync.js';
 import { watchVault } from './vault/watcher.js';
@@ -25,12 +27,18 @@ async function bootstrap() {
     logger.info('migrations_checked', { newlyApplied: applied.length });
   }
   recoverJobs();
+  warnIfPlaintextKeys(logger);
 
   await syncMarkdownVault();
-  stopVaultWatcher = watchVault(resolveVaultDir(config.vaultDir), {
+  const watcherHandle = watchVault(resolveVaultDir(config.vaultDir), {
     log: (event) => logger.info('markdown_vault_changed', event),
     onChange: publishVaultEvent,
   });
+  registerWatcherControl(watcherHandle);
+  stopVaultWatcher = () => {
+    registerWatcherControl(null);
+    watcherHandle();
+  };
 
   const app = createApp();
   const server = app.listen(config.port, config.host, () => {

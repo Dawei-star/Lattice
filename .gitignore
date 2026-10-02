@@ -7,11 +7,34 @@ dist/
 # 冒烟测试的临时打包产物
 web/test/.build/
 
-# 本地工作目录，不入库（桌面壳、文档、脚本、打包配置）
-desktop/
+# 本地工作目录，不入库（桌面壳、文档、打包配置）
 docs/
-scripts/
+# Keep desktop source, tests and package metadata; ignore generated releases and design assets.
+desktop/*
+!desktop/src/
+!desktop/src/**
+!desktop/test/
+!desktop/test/**
+!desktop/assets/
+!desktop/assets/**
+!desktop/package.json
+!desktop/package-lock.json
+!desktop/electron-builder.yml
+!desktop/build/
+desktop/build/*
+!desktop/build/icon.ico
+!desktop/build/verify-package.cjs
+!desktop/build/make-icon.py
+# Keep the runnable CLI, smoke tests and MCP server source in version control.
+# Ignore only local script artifacts and dependencies.
+scripts/*
+!scripts/*.mjs
+!scripts/mcp-server/
+!scripts/mcp-server/*.mjs
+!scripts/mcp-server/package.json
+!scripts/mcp-server/package-lock.json
 packaging/
+downloads/
 
 # SQLite 数据库文件（本地数据，不入库）
 server/data/
@@ -43,3 +66,4 @@ output/
 # 设计走查 / QA 过程记录（仅本地保留）
 design-qa.md
 *-qa.md
+examples/

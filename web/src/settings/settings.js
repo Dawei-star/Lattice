@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoSaveDelay: '900',
   autoSave: true,
   quickSwitcher: true,
+  showAttachments: false,
   backgroundImage: '',
 });
 
@@ -73,6 +74,7 @@ function normalizeSettings(value) {
   }
   if (typeof value?.autoSave === 'boolean') next.autoSave = value.autoSave;
   if (typeof value?.quickSwitcher === 'boolean') next.quickSwitcher = value.quickSwitcher;
+  if (typeof value?.showAttachments === 'boolean') next.showAttachments = value.showAttachments;
   if (value?.backgroundImage === '' || (typeof value?.backgroundImage === 'string' && SAFE_BACKGROUND_IMAGE.test(value.backgroundImage))) {
     next.backgroundImage = value.backgroundImage;
   }

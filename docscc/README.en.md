@@ -19,10 +19,10 @@ All data stays on your own machine. No registration or network connection is req
 
 ## Website
 
-**格物 Lattice Documentation Site**: [Open online](https://dawei-star.github.io/Lattice/website/lattice-docs.html) · [`website/lattice-docs.html`](../website/lattice-docs.html)
+**Lattice Documentation Site**: [Open online](https://dawei-star.github.io/Lattice/website/lattice-docs.html) · [`website/lattice-docs.html`](../website/lattice-docs.html)
 Read the product overview, feature previews, privacy boundaries, technical architecture, and quick-start guide.
 
-**格物 Lattice Download Center**: [Open online](https://dawei-star.github.io/Lattice/website/lattice-download.html) · [`website/lattice-download.html`](../website/lattice-download.html)
+**Lattice Download Center**: [Open online](https://dawei-star.github.io/Lattice/website/lattice-download.html) · [`website/lattice-download.html`](../website/lattice-download.html)
 Open the GitHub Releases page for the Windows installer and portable build. The release page is the source of truth for versions, filenames, and checksums.
 
 **Source and feedback**: [`Dawei-star/Lattice`](https://github.com/Dawei-star/Lattice)
@@ -59,7 +59,7 @@ After downloading the repository, you can open the HTML pages directly. For onli
 
 ### MCP integration
 
-![Lattice MCP Server settings](../FILES/README.md/lattice-mcp-server.png)
+![Lattice MCP Server settings page](../FILES/README.md/lattice-mcp-server.png)
 
 ## Documentation
 
@@ -82,20 +82,23 @@ Release packages are provided by the corresponding release; packaging steps are 
 | Embedded references | A standalone `![[title]]` expands into an embedded card, with two nesting levels and circular-reference detection |
 | Relationship graph | A hand-built Canvas force-directed layout with degree-based node sizing, dragging, zooming, and click-to-navigate |
 | Full-text search | SQLite FTS5 with a trigram tokenizer, substring matching for Chinese, and highlighted keywords in results |
+| Inbox work queue | Quickly capture temporary items, filter by to-triage / triaging / processed, and mark complete or archive into a project |
 | Tags | Write `#tag` in the body for automatic categorization; nested tags such as `#engineering/frontend` are supported |
 | Folder tree | Arbitrary nesting, in-place renaming, and automatic return to “Uncategorized” after deleting a folder |
 | Multiple tabs | Open multiple notes in parallel with pinning, favorites, renaming, moving, and close-left / close-right / close-other actions |
 | Local canvas | Store text cards, note cards, Vault images, and card connections in `.canvas` files; supports four-sided connection points, dragging, zooming, and alignment |
-| Vault browser | Browse Markdown and Canvas files in the sidebar; open, move, copy paths, and use the context menu |
-| AI knowledge assistant | Streaming chat, source-cited knowledge-base Q&A (hybrid FTS + semantic retrieval), persistent sessions, related-note recommendations, natural-language file operations (task mode can execute multiple rounds and audit them automatically), editor writing assistant (polish / summarize / translate / continue / create a full document from a title / custom instructions, with streaming preview), retrieval debugging, and CLI task mode |
-| Daily digest | Manually generate a Journal digest for notes modified today; set `AI_DIGEST_HOUR` to generate it on a local-time schedule with idempotent updates for the same day |
-| MCP Server | Expose `list_notes`, `search_notes`, `read_note`, `create_note`, and `update_note` to external agents such as Claude over stdio |
+| Vault browser | Browse Markdown and Canvas files in the sidebar; open, move, copy paths, and use the context menu; with the “show attachments” toggle, browse non-note files in any folder |
+| Deterministic file assistant fc | The local `npm run fc` command (read/stat/find/grep/create/write/append/edit/copy/move/delete/mkdir/batch/undo/log) and the `GET/POST /api/files/*` share one core: traversal/symlink protection, atomic writes, `.fc/trash` snapshots and audit, and undo — routine file work does not depend on a model round trip |
+| AI knowledge assistant | Streaming chat, source-cited knowledge-base Q&A (hybrid FTS + semantic retrieval), persistent sessions, related-note recommendations, Inbox triage suggestions with safe archiving, natural-language file operations (task mode can execute multiple rounds and audit them automatically), editor writing assistant (polish / summarize / translate / continue / create a full document from a title / custom instructions, with streaming preview), retrieval debugging, and CLI task mode |
+| Daily digest | Manually generate a Journal digest for notes modified today; set `AI_DIGEST_HOUR` to generate it on a local-time schedule (missed runs are caught up later) with idempotent updates for the same day |
+| MCP Server | Expose `list_notes`, `search_notes`, `read_note`, `get_note_links`, `list_tags`, `get_vault_statistics`, and `list_note_history` to external agents such as Claude over stdio; read-only by default — `create_note`, `update_note`, and `restore_note_version` are provided only after `LATTICE_MCP_ALLOW_WRITES` is enabled, and writes are recorded in the MCP audit |
 | Single-document HTML export | Export a standalone HTML file with Lattice branding, inlined images, clickable backlinks, and expanded embeds from the editor |
-| Quick switcher | Fuzzy-jump by title with `Ctrl / Cmd + K`, and create a missing title with one action |
+| Vault backup and restore | In the desktop build, “Settings → Backup & Migration” copies Markdown, Canvas, attachments, templates, and history snapshots into a new timestamped directory with one click; restore by selecting the backup folder. AI API keys are never written into backups |
+| Quick switcher | Fuzzy-jump by title with `Ctrl / Cmd + K`, and create a missing title with one action; with attachments shown, results also include attachment files |
 | Unresolved links | Mark references to missing notes as unresolved and complete them with one action |
 | Personalization | Light / dark themes, background images, custom themes, interface density, font size, content width, and editor preferences |
 
-Keyboard shortcuts: `Ctrl+K` quick switcher · `Ctrl+N` new note · `Ctrl+S` save now · `Ctrl+E` toggle edit/preview
+Keyboard shortcuts: `Ctrl/Cmd+K` quick switcher · `Ctrl/Cmd+N` new note · `Ctrl/Cmd+S` save now · `Ctrl/Cmd+E` toggle edit/preview · `Ctrl/Cmd+Shift+I` capture to Inbox
 
 ---
 
@@ -114,11 +117,11 @@ npm run db:migrate
 # 3. Optional: seed a linked sample knowledge base
 npm run db:seed
 
-# 4. Development mode (starts backend on 5177 and frontend on 5173)
+# 4. Development mode (backend on 5177; frontend prefers 5173 and auto-increments when busy)
 npm run dev
 ```
 
-Open <http://localhost:5173> to use the application.
+Open the frontend address printed in the terminal; when the port is free it is usually <http://localhost:5173>.
 
 ### Production mode (single process)
 
@@ -148,12 +151,18 @@ Copy `server/.env.example` to `server/.env` and edit it as needed. All configura
 | `CORS_ORIGINS` | `http://localhost:5173,...` | Allowed frontend origins; production must not use `*` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `AUTO_MIGRATE` | `true` | Automatically apply pending migrations at startup |
-| `AI_ACCESS_TOKEN` | empty | Optional. When set, `/api/ai` requires `Authorization: Bearer <token>` |
+| `WORKSPACE_ACCESS_TOKEN` | empty | Required when listening beyond loopback; once set, all `/api` endpoints require `X-Workspace-Token`, with Bearer as a CLI-compatible fallback |
+| `WORKSPACE_ACCESS_ROLE` | `editor` | Server role after workspace-token authentication: `viewer` / `editor` / `admin` |
+| `AI_ACCESS_TOKEN` | empty | Optional. In addition to workspace authentication, when set, `/api/ai` also requires `Authorization: Bearer <token>` |
 | `AI_ACCESS_ROLE` | `editor` | Server role after token authentication: `viewer` / `editor` / `admin` |
+| `LATTICE_MCP_ALLOW_WRITES` | `false` | MCP is read-only by default; write tools are exposed only when set to `true`, `1`, or `yes` |
+| `AI_SETTINGS_ENCRYPTION_KEY` | empty | Optional. A 32-byte hex/base64 key for encrypting AI settings in SQLite on standalone deployments; the desktop build uses Windows `safeStorage` automatically |
+| `AI_CHAT_TIMEOUT_MS` | `120000` | Upstream AI timeout (connectivity tests are fixed at 20 seconds) |
+| `AI_ALLOW_PRIVATE_ENDPOINTS` | `false` | AI endpoints pointing at private/loopback addresses are rejected by default (SSRF protection); local-model users can enable this explicitly |
 | `AI_DIGEST_HOUR` | empty | Optional local hour from `0` to `23`; when set, the server generates `Journal/Daily Digest YYYY-MM-DD.md` automatically |
 | `WEB_DIST_DIR` | `../web/dist` | Frontend build directory; points to the unpacked directory in the desktop build |
 
-Configure external models (chat and embedding) in the model management center. Saving automatically syncs the settings to the local server (the SQLite `ai_settings` table). Chat, the semantic-index pipeline, and the CLI share the same configuration; the browser stores only UI cache. The CLI uses the same API and can pass a workspace token through `LATTICE_AI_ACCESS_TOKEN`; once the server token is enabled, the server-side role takes precedence.
+Configure external models (chat and embedding) in the model management center. Saving automatically syncs the settings to the local server (the SQLite `ai_settings` table, encrypted at rest in the desktop build). Chat, the semantic-index pipeline, and the CLI share the same configuration; the browser stores only UI cache. The CLI uses the same API and can pass a workspace token through `LATTICE_AI_ACCESS_TOKEN`; once the server token is enabled, the server-side role takes precedence. The browser sends `X-Workspace-Token` automatically from the access token stored in AI settings.
 The semantic index is incrementally updated after an embedding model is configured under “Settings → Model Management”. When cloud embedding is enabled, note chunks are sent to that provider.
 
 ```bash
@@ -171,7 +180,7 @@ npm run mcp         # Start the MCP Server over stdio
 npm run test:mcp    # Run MCP protocol and read/write e2e tests
 ```
 
-Clients such as Claude Desktop must configure `scripts/mcp-server/server.mjs` as an stdio command and use `DB_FILE` / `VAULT_DIR` to point to the same data directories as Lattice.
+Clients such as Claude Desktop must configure `scripts/mcp-server/server.mjs` as an stdio command and use `DB_FILE` / `VAULT_DIR` to point to the same data directories as Lattice. MCP is read-only by default; to allow external agents to modify the Vault, explicitly add `LATTICE_MCP_ALLOW_WRITES: "true"` to the configured `env`. Write tools are registered only when the switch is enabled, and writes are recorded in the MCP audit.
 
 ---
 
@@ -181,12 +190,12 @@ Clients such as Claude Desktop must configure `scripts/mcp-server/server.mjs` as
 | --- | --- | --- |
 | Database driver | Node built-in `node:sqlite` | Zero native dependencies at the database layer, avoiding the difficulty of compiling better-sqlite3 on Windows |
 | Chinese search | FTS5 `trigram` tokenizer | The default `unicode61` treats a full Chinese string as one token, so searching for “knowledge” does not match “knowledge management”; trigram indexing uses a three-character sliding window and naturally supports Chinese substring matching |
-| Short queries | `LIKE` fallback | Trigram requires at least three characters, so two-character queries such as “笔记” must fall back; an empty FTS result is also checked with LIKE to avoid misses at tokenizer boundaries |
-| Graph rendering | Native Canvas, without d3 | The requirements are only drawing points and lines, dragging, and zooming; the size and abstraction cost of a chart library outweigh its benefit |
+| Short queries | LIKE fallback | Trigram requires at least three characters, so two-character queries must fall back; an empty FTS result is also checked with LIKE to avoid misses at tokenizer boundaries |
+| Graph rendering | Native Canvas, without d3 | The requirements are only drawing points and lines, dragging, and zooming; the size and abstraction cost of a chart library outweighs its benefit |
 | Markdown sanitization | In-house allowlist sanitizer | Body content may come from clipped web pages, and direct `innerHTML` would be a real XSS path. Parsing with DOMParser and trimming by an allowlist avoids another dependency |
 | Real-time collaboration | Not implemented | A single-machine, single-user scenario has no collaboration requirement; autosave and local state are sufficient without overdesign |
-| AI authentication | Optional Bearer token | Without configuration, local single-machine mode is preserved; with `AI_ACCESS_TOKEN`, the server validates the token and fixes the role to prevent client-side permission forgery |
-| Frontend routing | No react-router | There are only two views, “Notes” and “Graph”; internal state is enough and removes a dependency |
+| API authentication | Workspace token plus optional secondary AI token | Loopback addresses can stay in local single-machine mode; listening beyond loopback requires `WORKSPACE_ACCESS_TOKEN`, `AI_ACCESS_TOKEN` can additionally protect AI routes, and roles are fixed by the server |
+| Frontend routing | No react-router | Views are handled with internal state, removing a dependency |
 
 ---
 
@@ -203,13 +212,14 @@ lattice/
 │   │   │   └── seed.js              Idempotent sample data (programmable call + CLI entry point)
 │   │   ├── migrations/              Versioned SQL migrations
 │   │   ├── lib/                     Error system, structured logging, Markdown semantic parsing
-│   │   ├── middleware/              Request IDs, access logs, CORS, security headers, validation, error handling
+│   │   ├── middleware/              Request IDs, access logs, CORS, security headers, validation, error handling, workspace auth
 │   │   ├── modules/                 Feature-oriented organization, four layers per module
-│   │   │   └── notes|folders|links|tags|search|graph|canvas|vault|meta|health/
+│   │   │   └── notes|folders|files|links|tags|search|graph|canvas|vault|workspace|meta|health/
 │   │   │       ├── *.routes.js      Routes + zod boundary validation
 │   │   │       ├── *.controller.js  Request/response conversion only
 │   │   │       ├── *.service.js     Business rules and transaction orchestration
 │   │   │       └── *.repository.js  SQL only
+│   │   ├── vault/                   Vault read/write adapter, indexing, watcher, and path sanitization
 │   │   ├── app.js                   Middleware assembly; ordering is the security boundary
 │   │   └── index.js                 Startup, migrations, graceful shutdown
 │   └── test/                        Pure-function unit tests
@@ -219,8 +229,12 @@ lattice/
 │       ├── api/                     Typed HTTP client + resource access layer
 │       ├── hooks/                   Knowledge-base state, debouncing, lightweight notifications
 │       ├── lib/                     Markdown pipeline, HTML sanitization, force-directed layout, formatting
-│       ├── components/              Top bar / sidebar / list / editor / relation panel / graph / canvas / switcher
+│       ├── components/              Sidebar / list / editor / relation panel / graph / canvas / switcher
+│       ├── settings/                Settings modal and model management center
 │       └── styles.css               Design tokens + dual themes
+├── desktop/                         Electron shell (main / preload / backend / menu)
+├── scripts/                         Development / smoke scripts, MCP server, and the fc deterministic file assistant
+└── website/                         Documentation site, download center, and user guide
 ```
 
 ### Application icon
@@ -295,24 +309,27 @@ All failure responses use this shape:
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/health` `/ready` | Liveness / readiness probes |
-| `GET` | `/api/notes` | List notes; supports `folderId` (`__none__` means uncategorized), `tagId`, `sort`, `limit`, and `offset` |
+| `GET` | `/api/notes` | List notes; supports `folderId` (`__none__` means uncategorized), `tagId`, `inboxStatus` (`all` / `captured` / `processing` / `processed`), `sort`, `limit`, and `offset` |
 | `GET` | `/api/notes/index` | Lightweight full index for quick switching and backlink parsing |
-| `GET` | `/api/notes/:id` | Details including tags, outgoing links, and backlinks |
+| `GET` | `/api/notes/:id` | Details including tags, outgoing links, backlinks, and `contentHash` |
 | `POST` | `/api/notes` | Create a note; accepts a client UUID for retry idempotency |
-| `PATCH` | `/api/notes/:id` | Partial update (`title` / `content` / `folderId` / `isPinned` / `properties`) |
+| `PATCH` | `/api/notes/:id` | Partial update (`title` / `content` / `folderId` / `isPinned` / `properties` / `expectedHash`; a version mismatch returns 409) |
 | `DELETE` | `/api/notes/:id` | Delete; idempotent |
 | `GET` | `/api/notes/templates` | List Markdown templates under Vault `_templates/` |
 | `POST` | `/api/notes/from-template` | Create a note from a template; supports `{{date}}` / `{{time}}` / `{{title}}` |
 | `POST` | `/api/notes/daily` | Create an idempotent `Daily/YYYY-MM-DD.md` daily note |
-| `GET` | `/api/notes/:id/history` etc. | View, preview, and restore note version history |
+| `GET` | `/api/notes/:id/history` etc. | View, preview, and restore note version history (at most the latest 200 snapshots per note) |
 | `GET` `POST` `PATCH` `DELETE` | `/api/folders` | Folder tree and create/update/delete operations |
+| `GET` `POST` | `/api/files` | Deterministic file assistant: read / find / grep / preview / execute / undo / log (execute requires confirmation; viewers cannot execute) |
 | `GET` `DELETE` | `/api/tags` | Tag list with reference counts and deletion |
 | `GET` `PUT` `PATCH` | `/api/canvas` | Read, save, and move `.canvas` files in the Vault |
 | `GET` | `/api/canvas/files` | List canvas files in the Vault |
+| `GET` | `/api/vault/files` | List all non-note files in the Vault except notes / canvas (data source for the show-attachments toggle) |
 | `GET` | `/api/vault/assets` | List image assets available for canvas references |
 | `GET` | `/api/vault/asset?path=` | Read an image asset from the Vault |
 | `GET` `POST` `DELETE` | `/api/vault/attachments` etc. | List, upload, read, delete, check references to, and clean up orphaned attachments |
-| `GET` | `/api/search?q=` | Full-text search; `meta.strategy` reports whether `fts` or `like` was used |
+| `POST` | `/api/workspace/sse-ticket` | Exchange a long-term token for a one-time SSE ticket valid for 30 seconds (consumed on use) |
+| `GET` | `/api/search?q=` | Full-text search; can include `inboxStatus` to limit Inbox state; `meta.strategy` reports whether `fts` or `like` was used |
 | `GET` | `/api/graph` | Graph nodes, edges, unresolved references, and statistics |
 | `GET` | `/api/meta/overview` | Knowledge-base overview statistics |
 | `POST` | `/api/ai/chat` | Non-streaming chat (CLI / compatibility entry point) with source-cited replies, suggestions, and structured operations |
@@ -323,8 +340,9 @@ All failure responses use this shape:
 | `GET` | `/api/ai/related?noteId=` | Related-note recommendations (semantic; requires embedding configuration) |
 | `POST` | `/api/ai/retrieval/preview` | Retrieval debugging: keyword and semantic hits plus merged results |
 | `POST` | `/api/ai/operations/preview` | Preview file operations, existence, and risks; write operations are marked as requiring confirmation |
-| `POST` | `/api/ai/operations/execute` | Execute `read/create/update/delete/move/copy` after role permission and explicit confirmation pass |
+| `POST` | `/api/ai/operations/execute` | Execute `read/create/update/delete/move/copy/archive` after role permission and explicit confirmation pass; `archive` only archives files with `type: inbox` and removes the Inbox mark |
 | `GET` | `/api/ai/history` | View the AI/CLI file-operation audit history |
+| `GET` | `/api/update/check` | Server-side proxy for querying GitHub Releases (desktop update checks) |
 
 ---
 
@@ -354,12 +372,15 @@ npm test            # Backend unit tests (Markdown and AI-operation boundaries, 
 npm run test:api    # API smoke tests; backend must already be running (68 cases)
 npm run test:web    # Frontend rendering smoke tests; backend must already be running (49 cases)
 npm run test:mcp    # MCP stdio protocol and note read/write e2e tests
-npm run verify      # Run all of the above in sequence
+npm run test:fc     # fc deterministic file assistant unit tests
+npm run test:fc:cli # fc CLI smoke tests
+npm --prefix desktop test  # Electron shell and packaging contract tests
+npm run verify      # Run fc → server → web → mcp-server → desktop in sequence
 ```
 
 The three layers cover different responsibilities:
 
-1. **Unit tests** — boundary behavior of pure functions; the fastest suite, covering edge cases for tags, backlinks, and title inference
+1. **Unit tests** — boundary behavior of pure functions; the fastest suite, covering edge cases for tags, backlinks, title inference, and the file assistant
 2. **API smoke tests** — call real endpoints with `fetch` and verify status codes, the error contract, the CORS allowlist, and write-operation idempotency
 3. **Frontend rendering smoke tests** — bundle and mount the real React component tree in jsdom against the real backend, verify the complete “render → fetch → click → autosave → switch view” path, and assert that the console has no unhandled exceptions
 
@@ -372,10 +393,11 @@ Frontend tests temporarily create a sample note to verify embedded rendering. **
 The current implementation deliberately sets clear boundaries. The following areas are not implemented or still need improvement:
 
 - **The static site is still a single-document export**: one HTML document supports inlined images, backlinks, and embedded expansion; full Vault batch export, navigation pages, and an asset directory are not implemented
-- **History retention needs refinement**: version snapshots, preview, and restore are supported, but daily consolidation and automatic cleanup for high-frequency editing are not yet implemented
+- **Daily snapshot consolidation is not implemented**: snapshots are already pruned to a 200-per-note cap and identical content is skipped, but consolidation by day for high-frequency editing is not yet available
+- **fc has no GUI diff component**: the CLI and API already return `preview.diff`, but in-app diff rendering is not yet provided
 - **No real-time collaboration**: single-machine, single-user; WebSocket / CRDT has not been introduced
 - **Graph scale**: force-directed layout is O(n²) and smooth for hundreds to thousands of nodes; tens of thousands require a Barnes-Hut approximation
 - **`node:sqlite` stability**: Node still marks it as experimental, although it is directly usable. For absolute stability, switch to `better-sqlite3`; the APIs are nearly one-to-one and migration cost is low
 - **Mobile**: narrow screens have responsive degradation, but this is not yet a PWA
 
-Recommended order for the next steps: history retention and cleanup → complete static-site export → PWA.
+Recommended order for the next steps: GUI diff and batch plans → complete static-site export → PWA.

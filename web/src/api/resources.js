@@ -29,6 +29,7 @@ import { http } from './client.js';
  * @property {string} updatedAt
  * @property {string} filePath
  * @property {string} excerpt
+ * @property {Record<string, string|number|boolean|null|string[]>} properties
  * @property {Tag[]} tags
  * @property {number} outgoingCount
  * @property {number} backlinkCount
@@ -40,6 +41,7 @@ import { http } from './client.js';
  * @property {boolean} isPinned
  * @property {number} wordCount
  * @property {string} updatedAt
+ * @property {Record<string, string|number|boolean|null|string[]>} properties
  *
  * @typedef {Object} NoteDetail
  * @property {string} id
@@ -67,7 +69,7 @@ import { http } from './client.js';
 
 export const notesApi = {
   /**
-   * @param {{ folderId?: string, tagId?: string, sort?: 'updated'|'created'|'title', limit?: number, offset?: number }} [query]
+   * @param {{ folderId?: string, tagId?: string, inboxStatus?: 'all'|'captured'|'processing'|'processed', sort?: 'updated'|'created'|'title', limit?: number, offset?: number }} [query]
    * @returns {Promise<{ items: NoteSummary[], total: number }>}
    */
   async list(query = {}, options = {}) {
@@ -91,9 +93,11 @@ export const notesApi = {
       title: input.title,
       content: input.content ?? '',
       folderId: input.folderId ?? null,
+      properties: input.properties ?? {},
     }, options),
 
-  duplicate: (id, input = {}, options = {}) => http.post(`/notes/${id}/duplicate`, input, options),
+  // 非幂等接口：超时重试会在服务端产生重复副本，必须关闭自动重试
+  duplicate: (id, input = {}, options = {}) => http.post(`/notes/${id}/duplicate`, input, { retries: 0, ...options }),
 
   /**
    * @param {string} id
@@ -106,8 +110,8 @@ export const notesApi = {
   historyVersion: (id, version, options = {}) => http.get(`/notes/${id}/history/${version}`, options),
   restoreHistory: (id, version, body = {}, options = {}) => http.post(`/notes/${id}/history/${version}/restore`, body, options),
   templates: (options = {}) => http.get('/notes/templates', options),
-  createFromTemplate: (input = {}, options = {}) => http.post('/notes/from-template', input, options),
-  createDaily: (input = {}, options = {}) => http.post('/notes/daily', input, options),
+  createFromTemplate: (input = {}, options = {}) => http.post('/notes/from-template', input, { retries: 0, ...options }),
+  createDaily: (input = {}, options = {}) => http.post('/notes/daily', input, { retries: 0, ...options }),
 
   /** @returns {Promise<{ id: string, deleted: boolean }>} */
   remove: (id, options = {}) => http.delete(`/notes/${id}`, options),
@@ -116,7 +120,8 @@ export const notesApi = {
 export const foldersApi = {
   /** @returns {Promise<FolderNode[]>} */
   list: (options = {}) => http.get('/folders', options),
-  create: (input, options = {}) => http.post('/folders', input, options),
+  // 非幂等接口：超时重试会创建重复文件夹，关闭自动重试
+  create: (input, options = {}) => http.post('/folders', input, { retries: 0, ...options }),
   update: (id, patch, options = {}) => http.patch(`/folders/${id}`, patch, options),
   remove: (id, options = {}) => http.delete(`/folders/${id}`, options),
 };
@@ -130,11 +135,11 @@ export const tagsApi = {
 export const searchApi = {
   /**
    * @param {string} q
-   * @param {{ limit?: number }} [options]
+   * @param {{ limit?: number, folderId?: string, inboxStatus?: 'all'|'captured'|'processing'|'processed' }} [options]
    * @returns {Promise<{ items: Array<{ id: string, title: string, excerpt: string, folderId: string | null, updatedAt: string }>, strategy: string }>}
    */
   async query(q, options = {}) {
-    const payload = await http.getFull('/search', { query: { q, limit: options.limit, folderId: options.folderId } });
+    const payload = await http.getFull('/search', { query: { q, limit: options.limit, folderId: options.folderId, inboxStatus: options.inboxStatus } });
     return { items: payload?.data ?? [], strategy: payload?.meta?.strategy ?? 'unknown' };
   },
 };

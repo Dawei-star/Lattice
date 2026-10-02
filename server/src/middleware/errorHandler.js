@@ -6,6 +6,7 @@
  */
 import { AppError, InternalError, NotFoundError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
+import { sanitizeRequestUrl } from './requestContext.js';
 
 /** 未命中任何路由 */
 export function notFoundHandler(req, _res, next) {
@@ -46,7 +47,7 @@ export function errorHandler(err, req, res, next) {
   if (status >= 500) {
     log.error('unhandled_error', {
       method: req.method,
-      path: req.originalUrl,
+      path: sanitizeRequestUrl(req.originalUrl),
       status,
       err: err instanceof Error ? err : new InternalError(String(err)),
     });

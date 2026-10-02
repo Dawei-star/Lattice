@@ -167,7 +167,7 @@ export function putSettings(req, res) {
   } catch {
     // 索引入队失败不影响配置保存
   }
-  res.json({ data });
+  res.json({ data: maskServerSettings(data) });
 }
 
 // ── 会话 ─────────────────────────────────────────────────────────────

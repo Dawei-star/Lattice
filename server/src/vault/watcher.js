@@ -19,6 +19,10 @@ export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, dela
   /** @type {Set<string>} */
   const changedFiles = new Set();
   let structuralChange = false;
+  // 业务侧多步磁盘操作（目录改名/删除）期间挂起 watcher：
+  // 中间态事件不进投影，恢复时合并为一次收敛性对齐
+  let suspended = false;
+  let eventsWhileSuspended = false;
 
   const flush = async () => {
     if (flushing) return;
@@ -42,7 +46,9 @@ export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, dela
         try {
           const result = await reconcileVault(adapter, { mode: 'membership' });
           log(result);
-          if (result.added || result.updated || result.removed) onChange({ action: 'reconciled', ...result });
+          // 即使笔记投影零变化也要广播：非笔记文件（附件等）的新增删除
+          // 不影响 notes 表，但前端「显示附件」列表依赖这条事件刷新。
+          onChange({ action: 'reconciled', ...result });
         } catch (error) {
           log({ error });
         }
@@ -63,6 +69,10 @@ export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, dela
 
   fs.mkdirSync(vaultDir, { recursive: true });
   const watcher = fs.watch(vaultDir, { recursive: true }, (_event, filename) => {
+    if (suspended) {
+      eventsWhileSuspended = true;
+      return;
+    }
     if (filename === null) {
       // Windows 会报 null 文件名；无法定位文件，按结构变化处理
       structuralChange = true;
@@ -77,8 +87,22 @@ export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, dela
     schedule();
   });
 
-  return () => {
+  const stop = () => {
     clearTimeout(timer);
     watcher.close();
   };
+  /** 挂起期间事件只做标记；恢复时若有积压事件，调度一次收敛性对齐 */
+  stop.suspend = () => {
+    suspended = true;
+  };
+  stop.resume = () => {
+    if (!suspended) return;
+    suspended = false;
+    if (eventsWhileSuspended) {
+      eventsWhileSuspended = false;
+      structuralChange = true;
+      schedule();
+    }
+  };
+  return stop;
 }

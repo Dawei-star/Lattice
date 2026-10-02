@@ -90,6 +90,13 @@ test('note history snapshots preserve raw markdown and protect restores from sta
 
 test('templates and daily notes are isolated from the note projection and daily creation is idempotent', async () => {
   await fs.mkdir(path.join(vaultDir, '_templates'), { recursive: true });
+  const builtinTemplates = await request('GET', '/api/notes/templates');
+  assert.equal(builtinTemplates.response.status, 200);
+  assert.deepEqual(
+    builtinTemplates.payload.data.map((item) => item.name),
+    ['bug', 'decision', 'learning', 'meeting', 'retrospective'],
+  );
+
   await fs.writeFile(
     path.join(vaultDir, '_templates', 'meeting.md'),
     '---\nstatus: planned\npriority: 2\n---\n# {{title}}\n\nDate: {{date}}\n\nTime: {{time}}',
@@ -98,7 +105,10 @@ test('templates and daily notes are isolated from the note projection and daily 
 
   const templates = await request('GET', '/api/notes/templates');
   assert.equal(templates.response.status, 200);
-  assert.deepEqual(templates.payload.data.map((item) => item.name), ['meeting']);
+  assert.deepEqual(
+    templates.payload.data.map((item) => item.name),
+    ['bug', 'decision', 'learning', 'meeting', 'retrospective'],
+  );
 
   const generated = await request('POST', '/api/notes/from-template', {
     template: 'meeting',
@@ -152,4 +162,50 @@ test('history route rejects malformed version identifiers before touching the fi
   const result = await request('GET', `/api/notes/${created.payload.data.id}/history/not-a-version`);
   assert.equal(result.response.status, 422);
   assert.equal(result.payload.error.code, 'VALIDATION_ERROR');
+});
+
+test('Inbox list filters expose frontmatter status and preserve normal note pagination', async () => {
+  const captured = await request('POST', '/api/notes', {
+    title: 'Inbox captured',
+    content: 'capture me',
+    properties: { type: 'inbox', status: 'captured' },
+  });
+  const processed = await request('POST', '/api/notes', {
+    title: 'Inbox processed',
+    content: 'done',
+    properties: { type: 'inbox', status: 'processed' },
+  });
+  const normal = await request('POST', '/api/notes', {
+    title: 'Project note',
+    content: 'project',
+    properties: { status: 'processed' },
+  });
+  assert.equal(captured.response.status, 201);
+  assert.equal(processed.response.status, 201);
+  assert.equal(normal.response.status, 201);
+
+  const inbox = await request('GET', '/api/notes?inboxStatus=all&limit=20&offset=0');
+  assert.equal(inbox.response.status, 200);
+  assert.equal(inbox.payload.meta.total, 2);
+  assert.deepEqual(inbox.payload.data.map((note) => note.properties.type), ['inbox', 'inbox']);
+
+  const pending = await request('GET', '/api/notes?inboxStatus=captured&limit=20&offset=0');
+  assert.equal(pending.payload.meta.total, 1);
+  assert.equal(pending.payload.data[0].id, captured.payload.data.id);
+  assert.equal(pending.payload.data[0].properties.status, 'captured');
+
+  const processedInbox = await request('GET', '/api/notes?inboxStatus=processed&limit=20&offset=0');
+  assert.equal(processedInbox.payload.meta.total, 1);
+  assert.equal(processedInbox.payload.data[0].id, processed.payload.data.id);
+
+  const inboxSearch = await request('GET', '/api/search?q=Inbox&inboxStatus=captured&limit=20');
+  assert.equal(inboxSearch.response.status, 200);
+  assert.deepEqual(inboxSearch.payload.data.map((note) => note.id), [captured.payload.data.id]);
+
+  const noteIndex = await request('GET', '/api/notes/index');
+  assert.equal(noteIndex.payload.data.find((note) => note.id === captured.payload.data.id).properties.status, 'captured');
+
+  const normalList = await request('GET', '/api/notes?limit=20&offset=0');
+  assert.equal(normalList.payload.meta.total, 8);
+  assert.equal(normalList.payload.data.some((note) => note.id === normal.payload.data.id), true);
 });

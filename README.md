@@ -83,15 +83,17 @@
 | 嵌入引用 | 独占一行的 `![[标题]]` 会展开为内嵌卡片，支持两级嵌套并检测循环引用 |
 | 关系图谱 | Canvas 手写力导向布局，按度数缩放节点，支持拖拽 / 缩放 / 点击跳转 |
 | 全文检索 | SQLite FTS5 + trigram 分词，中文可做子串匹配；结果带关键词高亮 |
+| Inbox 工作队列 | 快速收集临时内容，按待整理 / 整理中 / 已处理筛选，并可标记完成或归档到项目 |
 | 标签 | 正文写 `#标签` 自动归类，支持 `#工程/前端` 嵌套写法 |
 | 目录树 | 任意层级嵌套、就地重命名、删除后笔记自动回到「未分类」 |
 | 多标签页 | 并行打开多篇笔记，支持锁定、收藏、重命名、移动，以及关闭左侧 / 右侧 / 其他标签 |
 | 本地白板 | 使用 `.canvas` 文件保存文本卡片、笔记卡片、Vault 图片和卡片连接，支持四边连接点、拖拽、缩放与对齐 |
 | Vault 文件浏览 | 侧栏显示 Markdown 与 Canvas 文件，可打开、移动、复制路径并通过右键菜单操作 |
-| AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、自然语言文件操作（任务模式可自主多轮执行并自动审计）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
+| AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、Inbox 整理建议与安全归档、自然语言文件操作（任务模式可自主多轮执行并自动审计）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
 | 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成，并对同一天幂等更新 |
-| MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露 `list_notes`、`search_notes`、`read_note`、`create_note`、`update_note` |
+| MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露笔记搜索、关系分析、统计与历史版本；默认只读，显式开启 `LATTICE_MCP_ALLOW_WRITES` 后才提供 `create_note`、`update_note`、`restore_note_version`，写入统一记录 MCP 审计 |
 | 单篇 HTML 导出 | 从编辑区导出带 Lattice 品牌页眉、页脚、图片内联、双链可点击和嵌入展开的独立 HTML 文件 |
+| Vault 备份与恢复 | 桌面版从「设置 → 备份与迁移」一键复制 Markdown、Canvas、附件、模板和历史快照到带时间戳的新目录；恢复时重新选择备份目录即可，AI API Key 不会写入备份 |
 | 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建 |
 | 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
 | 个性化设置 | 浅色 / 深色主题、背景图片、自定义主题、界面密度、字号、内容宽度与编辑器偏好 |
@@ -115,11 +117,11 @@ npm run db:migrate
 # 3. 可选：写入一套互相关联的示例知识库
 npm run db:seed
 
-# 4. 开发模式（同时拉起后端 5177 与前端 5173）
+# 4. 开发模式（后端 5177，前端首选 5173；端口占用时 Vite 自动顺延）
 npm run dev
 ```
 
-打开 <http://localhost:5173> 即可使用。
+打开终端输出的前端地址即可使用，端口空闲时通常是 <http://localhost:5173>。
 
 ### 生产模式（单进程）
 
@@ -151,14 +153,18 @@ npm start         # 后端同时托管 API 与前端静态资源
 | `CORS_ORIGINS` | `http://localhost:5173,...` | 允许的前端来源，生产环境禁止写 `*` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `AUTO_MIGRATE` | `true` | 启动时自动应用未执行的迁移 |
-| `AI_ACCESS_TOKEN` | 空 | 可选。设置后 `/api/ai` 要求 `Authorization: Bearer <token>` |
+| `WORKSPACE_ACCESS_TOKEN` | 空 | 非回环监听时必填；设置后所有 `/api` 要求 `X-Workspace-Token`，Bearer 作为 CLI 兼容回退 |
+| `WORKSPACE_ACCESS_ROLE` | `editor` | 工作区令牌认证后的服务端角色：`viewer` / `editor` / `admin` |
+| `AI_ACCESS_TOKEN` | 空 | 可选。在工作区认证之外，设置后 `/api/ai` 还要求 `Authorization: Bearer <token>` |
 | `AI_ACCESS_ROLE` | `editor` | 令牌认证后的服务端角色：`viewer` / `editor` / `admin` |
+| `LATTICE_MCP_ALLOW_WRITES` | `false` | MCP 默认只读；仅设置为 `true`、`1` 或 `yes` 时暴露 `create_note`、`update_note`、`restore_note_version` |
+| `AI_SETTINGS_ENCRYPTION_KEY` | 空 | 可选。独立服务使用 32 字节 hex/base64 密钥加密 SQLite 中的 AI 配置；桌面版自动使用 Windows `safeStorage` |
 | `AI_DIGEST_HOUR` | 空 | 可选。`0`-`23` 的本地小时；设置后服务端自动生成 `Journal/每日摘要 YYYY-MM-DD.md` |
 | `WEB_DIST_DIR` | `../web/dist` | 前端产物目录；桌面端打包后指向解包目录 |
 
-外部模型（对话与 embedding）配置在模型管理中心填写，保存后自动同步到本机服务端（SQLite `ai_settings` 表），
+外部模型（对话与 embedding）配置在模型管理中心填写，保存后自动同步到本机服务端（SQLite `ai_settings` 表，桌面版密文存储），
 聊天、语义索引管道与 CLI 共用同一份配置；浏览器本地只保留界面缓存。CLI 使用同一套 API，
-可通过 `LATTICE_AI_ACCESS_TOKEN` 传递工作区令牌；服务端令牌启用后，角色以服务端配置为准。
+可通过 `LATTICE_AI_ACCESS_TOKEN` 传递工作区令牌；服务端令牌启用后，角色以服务端配置为准。浏览器端会从 AI 设置中的访问令牌自动发送 `X-Workspace-Token`。
 语义索引在「设置 → 模型管理」配置 embedding 模型后自动增量进行；启用云端 embedding 时笔记分块内容会发往该服务商。
 
 ```bash
@@ -176,7 +182,7 @@ npm run mcp         # 以 stdio 启动 MCP Server
 npm run test:mcp    # 运行 MCP 协议与读写 e2e
 ```
 
-Claude Desktop 等客户端需要把 `scripts/mcp-server/server.mjs` 配置为 stdio command，并通过 `DB_FILE` / `VAULT_DIR` 指向与 Lattice 相同的数据目录。
+Claude Desktop 等客户端需要把 `scripts/mcp-server/server.mjs` 配置为 stdio command，并通过 `DB_FILE` / `VAULT_DIR` 指向与 Lattice 相同的数据目录。MCP 默认只读；如需允许外部 Agent 修改 Vault，在配置的 `env` 中显式加入 `LATTICE_MCP_ALLOW_WRITES: "true"`。写入工具只在该开关开启时注册，并统一记录 MCP 审计。
 
 ---
 
@@ -190,7 +196,7 @@ Claude Desktop 等客户端需要把 `scripts/mcp-server/server.mjs` 配置为 s
 | 图谱渲染 | 原生 Canvas，不用 d3 | 需求只有画点、画线、拖拽、缩放，一个图表库的体积与抽象成本高于收益 |
 | Markdown 消毒 | 自研白名单消毒器 | 正文可能来自剪藏网页，直接 `innerHTML` 是一条真实的 XSS 路径。用 DOMParser 解析后按白名单裁剪，省掉一个依赖 |
 | 实时协作 | 不实现 | 单机单用户场景没有协作需求，用自动保存 + 本地状态足够，不做过度设计 |
-| AI 认证 | 可选 Bearer token | 未配置时保持单机本地模式；配置 `AI_ACCESS_TOKEN` 后由服务端校验令牌并固定角色，避免客户端伪造权限 |
+| API 认证 | 工作区令牌 + 可选 AI 二次令牌 | 回环地址可保持单机本地模式；非回环监听必须配置 `WORKSPACE_ACCESS_TOKEN`，`AI_ACCESS_TOKEN` 可额外保护 AI 路由，角色均由服务端固定 |
 | 前端路由 | 不用 react-router | 只有「笔记 / 图谱」两个视图，内部状态即可，少一个依赖 |
 
 ---
@@ -324,7 +330,7 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/health` `/ready` | 存活 / 就绪探针 |
-| `GET` | `/api/notes` | 列表，支持 `folderId`（`__none__` 表示未分类）、`tagId`、`sort`、`limit`、`offset` |
+| `GET` | `/api/notes` | 列表，支持 `folderId`（`__none__` 表示未分类）、`tagId`、`inboxStatus`（`all` / `captured` / `processing` / `processed`）、`sort`、`limit`、`offset` |
 | `GET` | `/api/notes/index` | 全量轻量索引（供快速切换与双链解析） |
 | `GET` | `/api/notes/:id` | 详情，含标签、出链、反向链接 |
 | `POST` | `/api/notes` | 新建，可带客户端 UUID 以保证重试幂等 |
@@ -341,7 +347,7 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | `GET` | `/api/vault/assets` | 列出可在白板中引用的图片资源 |
 | `GET` | `/api/vault/asset?path=` | 读取 Vault 中的图片资源 |
 | `GET` `POST` `DELETE` | `/api/vault/attachments` 等 | 附件列举、上传、读取、删除、引用检查和孤儿清理 |
-| `GET` | `/api/search?q=` | 全文检索，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
+| `GET` | `/api/search?q=` | 全文检索；可附带 `inboxStatus` 限定 Inbox 状态，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
 | `GET` | `/api/graph` | 图谱节点、边、悬空引用与统计 |
 | `GET` | `/api/meta/overview` | 知识库总览统计 |
 | `POST` | `/api/ai/chat` | 对话（非流式，CLI / 兼容入口），返回带来源引用的回复、建议与结构化操作 |
@@ -352,7 +358,7 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | `GET` | `/api/ai/related?noteId=` | 相关笔记推荐（语义，需 embedding 配置） |
 | `POST` | `/api/ai/retrieval/preview` | 检索调试视图：关键词/语义双路命中与融合结果 |
 | `POST` | `/api/ai/operations/preview` | 预览文件操作、存在性和风险；写操作标记为需要确认 |
-| `POST` | `/api/ai/operations/execute` | 在角色权限和显式确认通过后执行 `read/create/update/delete/move/copy` |
+| `POST` | `/api/ai/operations/execute` | 在角色权限和显式确认通过后执行 `read/create/update/delete/move/copy/archive`；`archive` 只归档 `type: inbox` 文件并移除 Inbox 标记 |
 | `GET` | `/api/ai/history` | 查看 AI/CLI 文件操作审计历史 |
 
 ---
@@ -383,6 +389,7 @@ npm test            # 后端单元测试（Markdown 与 AI 操作边界，36 项
 npm run test:api    # 接口冒烟测试，需后端已启动（68 项）
 npm run test:web    # 前端渲染冒烟测试，需后端已启动（49 项）
 npm run test:mcp    # MCP stdio 协议与笔记读写 e2e
+npm --prefix desktop test  # Electron 桌面壳与打包契约测试
 npm run verify      # 依次执行以上全部
 ```
 

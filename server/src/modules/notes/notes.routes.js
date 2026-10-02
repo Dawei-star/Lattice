@@ -12,6 +12,7 @@ const duplicateBody = z.object({
 /** folderId 支持特殊值 __none__，表示「未分类」 */
 const listQuery = z.object({
   folderId: z.string().max(64).nullish(),
+  inboxStatus: z.enum(['all', 'captured', 'processing', 'processed']).optional(),
   tagId: z.string().uuid('标签 ID 必须是合法 UUID').nullish(),
   sort: z.enum(['updated', 'created', 'title']).default('updated'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -47,6 +48,8 @@ const updateBody = z
     folderId: z.string().uuid().nullish(),
     isPinned: z.boolean().optional(),
     properties: propertiesBody.optional(),
+    // 乐观锁：携带读取时返回的 contentHash，不匹配返回 409
+    expectedHash: z.string().regex(/^[a-f0-9]{64}$/i, '版本哈希无效').optional(),
   })
   .refine((value) => Object.keys(value).length > 0, { message: '至少要提供一个待更新字段' });
 

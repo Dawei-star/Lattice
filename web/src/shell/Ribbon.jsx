@@ -1,6 +1,7 @@
 import {
   FilePlus2,
   FolderOpen,
+  Inbox,
   Layers3,
   LayoutDashboard,
   Network,
@@ -17,7 +18,7 @@ function RibbonIcon({ icon: Icon, size = 18, className }) {
   return <Icon size={size} strokeWidth={1.75} className={className} aria-hidden="true" />;
 }
 
-export default function Ribbon({ view, onViewChange, onOpenSwitcher, onToggleAi, onCreateNote, onCreateCanvas, onRefresh, refreshing, onTogglePanel, onToggleTheme, onOpenSettings, theme }) {
+export default function Ribbon({ view, onViewChange, onOpenSwitcher, onToggleAi, onCreateNote, onCaptureInbox, onCreateCanvas, onRefresh, refreshing, onTogglePanel, onToggleTheme, onOpenSettings, theme }) {
   return (
     <nav className="ribbon" aria-label="主导航">
       <div className="ribbon__brand" aria-label="Lattice" title="Lattice">
@@ -27,6 +28,9 @@ export default function Ribbon({ view, onViewChange, onOpenSwitcher, onToggleAi,
       <div className="ribbon__group ribbon__group--primary">
         <button type="button" className="ribbon__button" onClick={onCreateNote} aria-label="新建笔记" title="新建笔记">
           <RibbonIcon icon={FilePlus2} />
+        </button>
+        <button type="button" className="ribbon__button" onClick={onCaptureInbox} aria-label="收集到 Inbox" title="收集到 Inbox（Ctrl / Cmd + Shift + I）">
+          <RibbonIcon icon={Inbox} />
         </button>
         <button type="button" className={`ribbon__button ${view === 'notes' ? 'is-active' : ''}`} onClick={() => onViewChange('notes')} aria-label="笔记" title="笔记">
           <RibbonIcon icon={FolderOpen} />

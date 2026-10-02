@@ -1,16 +1,18 @@
 {
   "name": "@lattice/web",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 5173",
-    "test": "node test/theme.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/ai-settings.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/update.test.mjs && node test/run-integration.mjs",
+    "test": "node test/theme.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/ai-settings.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/update.test.mjs && node test/run-integration.mjs && node test/attachments-toggle.test.mjs",
     "test:e2e": "node test/canvas-navigation.test.mjs && node test/run-smoke.mjs"
   },
   "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "gsap": "^3.15.0",
     "lucide-react": "^1.49.0",
     "marked": "^14.1.4",
     "react": "^18.3.1",

@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { CheckCircle2, Sparkles } from 'lucide-react';
 import { formatNumber, formatRelativeTime } from '../lib/format.js';
 import { highlightText } from '../lib/markdown.js';
 import ContextMenu from '../ui/ContextMenu.jsx';
@@ -7,6 +8,13 @@ export const SORT_LABELS = {
   updated: '最近更新',
   created: '创建时间',
   title: '标题',
+};
+
+const INBOX_STATUS_LABELS = {
+  all: '全部 Inbox',
+  captured: '待整理',
+  processing: '整理中',
+  processed: '已处理',
 };
 
 /**
@@ -26,12 +34,17 @@ export default function NoteListPane({
   showSearch,
   folderLookup,
   tagLookup,
+  folders,
   activeNoteId,
   loading,
   onSortChange,
   onPageChange,
   onOpenNote,
   onTogglePin,
+  onInboxStatusChange,
+  onOpenInboxAi,
+  onUpdateInboxStatus,
+  onArchiveInbox,
   onDeleteNote,
   onCreateNote,
   onDuplicateNote,
@@ -43,6 +56,7 @@ export default function NoteListPane({
   const filterLabel = useMemo(() => {
     if (filter.kind === 'folder') return filter.folderId ? folderLookup.get(filter.folderId) ?? '目录' : '未分类';
     if (filter.kind === 'tag') return `#${tagLookup.get(filter.tagId) ?? ''}`;
+    if (filter.kind === 'inbox') return 'Inbox';
     return '全部笔记';
   }, [filter, folderLookup, tagLookup]);
 
@@ -80,24 +94,50 @@ export default function NoteListPane({
           </span>
         </div>
 
-        {isSearching ? (
-          <span className="listpane__strategy" title="服务端采用的检索策略">
-            {search.loading ? '检索中…' : search.strategy === 'fts' ? 'FTS5 全文索引' : 'LIKE 匹配'}
-          </span>
-        ) : (
-          <select
-            className="select"
-            value={sort}
-            aria-label="排序方式"
-            onChange={(event) => onSortChange(event.target.value)}
-          >
-            {Object.entries(SORT_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        )}
+        <div className="listpane__controls">
+          {filter.kind === 'inbox' ? (
+            <>
+            <button
+              type="button"
+              className="btn btn--sm listpane__ai-action"
+              onClick={() => onOpenInboxAi?.()}
+              title="让 AI 读取待整理 Inbox 内容并生成可确认的归档方案"
+              disabled={loading || notesTotal === 0}
+            >
+              <Sparkles size={13} strokeWidth={1.9} aria-hidden="true" />
+              <span>AI 整理</span>
+            </button>
+            <select
+              className="select"
+              value={filter.inboxStatus ?? 'all'}
+              aria-label="Inbox 状态"
+              onChange={(event) => onInboxStatusChange?.(event.target.value)}
+            >
+              {Object.entries(INBOX_STATUS_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            </>
+          ) : null}
+          {isSearching ? (
+            <span className="listpane__strategy" title="服务端采用的检索策略">
+              {search.loading ? '检索中…' : search.strategy === 'fts' ? 'FTS5 全文索引' : 'LIKE 匹配'}
+            </span>
+          ) : (
+            <select
+              className="select"
+              value={sort}
+              aria-label="排序方式"
+              onChange={(event) => onSortChange(event.target.value)}
+            >
+              {Object.entries(SORT_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
 
       <div className="listpane__body">
@@ -105,9 +145,9 @@ export default function NoteListPane({
           <SkeletonList />
         ) : items.length === 0 ? (
           <div className="empty-state">
-            <p className="empty-state__title">{isSearching ? '没有匹配的笔记' : '这里还没有笔记'}</p>
+            <p className="empty-state__title">{isSearching ? '没有匹配的笔记' : filter.kind === 'inbox' ? `${INBOX_STATUS_LABELS[filter.inboxStatus ?? 'all']}暂无内容` : '这里还没有笔记'}</p>
             <p className="empty-state__hint">
-              {isSearching ? '换个关键词试试，或清空检索框浏览全部笔记。' : '新建一篇，开始记录你的想法。'}
+              {isSearching ? '换个关键词试试，或清空检索框浏览全部笔记。' : filter.kind === 'inbox' ? '新的收集会显示在这里。' : '新建一篇，开始记录你的想法。'}
             </p>
             {isSearching ? null : (
               <button type="button" className="btn btn--primary" onClick={onCreateNote}>
@@ -125,6 +165,9 @@ export default function NoteListPane({
                 active={note.id === activeNoteId}
                 onOpen={() => onOpenNote(note.id)}
                 onTogglePin={() => onTogglePin(note)}
+                folders={folders}
+                onUpdateInboxStatus={onUpdateInboxStatus}
+                onArchiveInbox={onArchiveInbox}
                 onDelete={() => onDeleteNote(note.id)}
                 onDuplicate={() => onDuplicateNote?.(note)}
                 onCopyPath={() => onCopyPath?.(note)}
@@ -145,8 +188,12 @@ export default function NoteListPane({
   );
 }
 
-function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplicate, onCopyPath, onCopyWikiLink }) {
+function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplicate, onCopyPath, onCopyWikiLink, folders, onUpdateInboxStatus, onArchiveInbox }) {
   const excerpt = note.excerpt ?? '';
+  const isInboxNote = note.properties?.type === 'inbox';
+  const inboxStatus = isInboxNote ? note.properties?.status ?? 'captured' : null;
+  const folderOptions = useMemo(() => flattenFolders(folders), [folders]);
+  const archiveTargets = folderOptions.filter((folder) => folder.id !== note.folderId && folder.name !== 'Inbox');
 
   return (
     <li>
@@ -154,6 +201,23 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplic
         label={`笔记「${note.title}」操作`}
         getItems={() => [
           { id: 'open', label: '打开笔记', onSelect: onOpen },
+          ...(isInboxNote ? [
+            { id: 'status-processing', label: '标记为整理中', disabled: inboxStatus === 'processing', onSelect: () => onUpdateInboxStatus?.(note, 'processing') },
+            { id: 'status-processed', label: '标记为已处理', disabled: inboxStatus === 'processed', onSelect: () => onUpdateInboxStatus?.(note, 'processed') },
+            {
+              id: 'archive',
+              label: '归档到项目',
+              submenuItems: [
+                { id: 'archive-unfiled', label: '未分类', onSelect: () => onArchiveInbox?.(note, null) },
+                ...archiveTargets.map((folder) => ({
+                  id: `archive-${folder.id}`,
+                  label: folder.path,
+                  onSelect: () => onArchiveInbox?.(note, folder.id),
+                })),
+              ],
+            },
+            { separator: true },
+          ] : []),
           { id: 'pin', label: note.isPinned ? '取消置顶' : '置顶', onSelect: onTogglePin },
           { id: 'duplicate', label: '创建副本', onSelect: onDuplicate },
           { id: 'copy-path', label: '复制路径', onSelect: onCopyPath },
@@ -169,6 +233,7 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplic
           <div className="notecard__row">
             {note.isPinned ? <span className="notecard__pin" title="已置顶">★</span> : null}
             <h3 className="notecard__title">{note.title}</h3>
+            {isInboxNote ? <span className={`inbox-status inbox-status--${inboxStatus}`}>{INBOX_STATUS_LABELS[inboxStatus] ?? '待整理'}</span> : null}
           </div>
 
           {excerpt ? (
@@ -198,6 +263,21 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplic
           ) : null}
         </button>
 
+        {isInboxNote && inboxStatus !== 'processed' ? (
+          <button
+            type="button"
+            className="icon-btn notecard__inbox-action"
+            title="标记为已处理"
+            aria-label="标记为已处理"
+            onClick={(event) => {
+              event.stopPropagation();
+              onUpdateInboxStatus?.(note, 'processed');
+            }}
+          >
+            <CheckCircle2 size={15} strokeWidth={1.9} aria-hidden="true" />
+          </button>
+        ) : null}
+
         <button
           type="button"
           className={`icon-btn notecard__pinbtn ${note.isPinned ? 'is-on' : ''}`}
@@ -211,6 +291,15 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplic
       </ContextMenu>
     </li>
   );
+}
+
+function flattenFolders(nodes, parentPath = '', result = []) {
+  for (const folder of nodes ?? []) {
+    const path = parentPath ? `${parentPath}/${folder.name}` : folder.name;
+    result.push({ id: folder.id, name: folder.name, path });
+    flattenFolders(folder.children, path, result);
+  }
+  return result;
 }
 
 function SkeletonList() {

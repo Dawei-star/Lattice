@@ -38,6 +38,10 @@ export function listAttachments(_req, res) {
   res.json({ data: attachments.listAttachments() });
 }
 
+export function listVaultFiles(_req, res) {
+  res.json({ data: attachments.listVaultFiles() });
+}
+
 export function uploadAttachment(req, res) {
   const result = attachments.uploadAttachment({
     name: req.valid.query.name,

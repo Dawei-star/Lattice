@@ -10,14 +10,33 @@ import { loadAiSettings } from '../settings/aiSettings.js';
 import { loadLayout, saveLayout } from '../lib/layout.js';
 import { loadSettings, subscribeSettings } from '../settings/settings.js';
 import Modal from '../ui/Modal.jsx';
-import { relativeAttachmentReference, resolveAttachmentPath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
+import { encodeMarkdownUrlReference, markdownLinkLabel, relativeAttachmentReference, resolveAttachmentPath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
 import { buildStaticHtml } from '../lib/static-export.js';
+import { getClipboardImageFiles } from '../lib/clipboard.js';
+import { BookOpenText, Bug, CalendarDays, FilePlus2, ImagePlus, Inbox, RefreshCw, Search, Scale, UsersRound } from 'lucide-react';
 
 const MODES = [
   { key: 'edit', label: '编辑' },
   { key: 'split', label: '分栏' },
   { key: 'preview', label: '预览' },
 ];
+
+const BUILTIN_TEMPLATE_META = Object.freeze({
+  bug: { label: 'Bug', description: '现象、复现步骤与根因', icon: Bug },
+  decision: { label: '技术决策', description: '背景、方案与影响', icon: Scale },
+  meeting: { label: '会议记录', description: '参与者、讨论与行动项', icon: UsersRound },
+  learning: { label: '学习记录', description: '问题、结论与示例', icon: BookOpenText },
+  retrospective: { label: '项目复盘', description: '做得好、问题与下一步', icon: RefreshCw },
+});
+
+function getTemplateMeta(template) {
+  const key = template?.name?.toLowerCase();
+  return BUILTIN_TEMPLATE_META[key] ?? {
+    label: template?.title || template?.name,
+    description: template?.name,
+    icon: CalendarDays,
+  };
+}
 
 /**
  * 编辑区。
@@ -40,7 +59,9 @@ export default function EditorPane({
   onOpenWikiLink,
   onCreateWikiLink,
   registerNavigationGuard,
+  registerDirtyProbe,
   onCreateNote,
+  onCaptureInbox,
   onCreateFromTemplate,
   onCreateDaily,
   onOpenSwitcher,
@@ -54,6 +75,11 @@ export default function EditorPane({
   const [mode, setMode] = useState(() => loadSettings().editorMode);
   const [status, setStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  // 乐观锁冲突：服务端返回 409（笔记已被其他窗口修改）时置位，
+  // 横幅提供「仍要保存」的显式覆盖入口；普通重试仍携带版本校验
+  const [conflict, setConflict] = useState(false);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [attachmentNotice, setAttachmentNotice] = useState('');
   const [historyState, setHistoryState] = useState({ open: false, loading: false, items: [], currentHash: '', selected: null, error: '' });
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
@@ -64,11 +90,17 @@ export default function EditorPane({
   const draftRef = useRef(draft);
   const textareaRef = useRef(null);
   const attachmentInputRef = useRef(null);
+  const attachmentNoticeTimerRef = useRef(0);
   const previewRef = useRef(null);
   const bodyRef = useRef(null);
   const [splitRatio, setSplitRatio] = useState(() => loadLayout().split);
   const isExternal = Boolean(note?.external);
   const canEdit = !isExternal || externalWriteGranted;
+  const announceAttachment = useCallback((message) => {
+    window.clearTimeout(attachmentNoticeTimerRef.current);
+    setAttachmentNotice(message);
+    if (message) attachmentNoticeTimerRef.current = window.setTimeout(() => setAttachmentNotice(''), 2400);
+  }, []);
   const resolveAsset = useCallback((reference) => {
     const attachmentPath = resolveAttachmentPath(note?.filePath, reference);
     return attachmentPath ? vaultFiles.attachmentUrl(attachmentPath) : null;
@@ -112,7 +144,12 @@ export default function EditorPane({
     setDraft({ title: note?.title ?? '', content: note?.content ?? '', properties: note?.properties ?? {} });
     setStatus('idle');
     setErrorMessage('');
+    setConflict(false);
+    setAttachmentError('');
+    setAttachmentNotice('');
   }, [note]);
+
+  useEffect(() => () => window.clearTimeout(attachmentNoticeTimerRef.current), []);
 
   const openHistory = useCallback(async () => {
     if (!note || isExternal) return;
@@ -140,6 +177,8 @@ export default function EditorPane({
     if (!note || !selected || !window.confirm(`确定恢复到 ${new Date(selected.createdAt).toLocaleString()} 吗？`)) return;
     try {
       await notesApi.restoreHistory(note.id, selected.version, { expectedCurrentHash: historyState.currentHash });
+      // 先把草稿同步为恢复后的内容：否则防抖自动保存会用旧草稿把刚恢复的版本覆盖回去
+      setDraft({ title: selected.title ?? '', content: selected.content ?? '', properties: selected.properties ?? {} });
       setHistoryState((current) => ({ ...current, open: false, selected: null }));
       await onSave(note.id, { title: selected.title, content: selected.content, isPinned: selected.isPinned, properties: selected.properties ?? {} });
     } catch (error) {
@@ -148,7 +187,7 @@ export default function EditorPane({
   }, [historyState.currentHash, historyState.selected, note, onSave]);
 
   const commit = useCallback(
-    async ({ silent = true } = {}) => {
+    async ({ silent = true, force = false } = {}) => {
       if (!note) return;
 
       if (isExternal) {
@@ -175,14 +214,19 @@ export default function EditorPane({
 
       if (Object.keys(patch).length === 0) return;
 
+      // 乐观锁：携带读取时的版本哈希；仅「仍要保存」的显式覆盖跳过校验
+      if (!force && note.contentHash) patch.expectedHash = note.contentHash;
+
       setStatus('saving');
       try {
         await onSave(note.id, patch);
         setStatus('saved');
         setErrorMessage('');
+        setConflict(false);
       } catch (error) {
         setStatus('error');
         setErrorMessage(error?.message ?? '保存失败，请重试');
+        setConflict(error?.status === 409 || error?.code === 'CONFLICT');
         if (!silent) throw error;
       }
     },
@@ -209,17 +253,24 @@ export default function EditorPane({
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
 
-  // 切换笔记前拦截未保存内容
+  // 切换笔记前拦截未保存内容；同时注册无副作用的"脏状态"探针，
+  // 供 SSE 外部更新判断能否自动刷新（见 useVault）
   useEffect(() => {
-    registerNavigationGuard?.(() => {
+    const hasPendingChanges = () => {
       const current = draftRef.current;
-      if (!note) return true;
-      const hasChanges = current.title !== note.title || current.content !== note.content || !propertiesEqual(current.properties, note.properties);
-      if (!hasChanges) return true;
+      if (!note) return false;
+      return current.title !== note.title || current.content !== note.content || !propertiesEqual(current.properties, note.properties);
+    };
+    registerNavigationGuard?.(() => {
+      if (!hasPendingChanges()) return true;
       return window.confirm('这篇笔记还有未保存的修改，确定要离开吗？');
     });
-    return () => registerNavigationGuard?.(null);
-  }, [note, registerNavigationGuard]);
+    registerDirtyProbe?.(hasPendingChanges);
+    return () => {
+      registerNavigationGuard?.(null);
+      registerDirtyProbe?.(null);
+    };
+  }, [note, registerDirtyProbe, registerNavigationGuard]);
 
   // 快捷键：Ctrl/Cmd + S 立即保存，Ctrl/Cmd + E 切换模式
   useEffect(() => {
@@ -229,7 +280,7 @@ export default function EditorPane({
 
       if (event.key.toLowerCase() === 's') {
         event.preventDefault();
-        commit({ silent: false });
+        commit({ silent: false }).catch(() => {});
       }
       if (event.key.toLowerCase() === 'e') {
         event.preventDefault();
@@ -316,10 +367,12 @@ export default function EditorPane({
     if (!file || !note || !canEdit || isExternal) return;
 
     setAttachmentBusy(true);
+    setAttachmentError('');
+    announceAttachment('正在上传附件…');
     try {
       const uploaded = await vaultAttachmentsApi.upload(file);
-      const reference = encodeURI(relativeAttachmentReference(note.filePath, uploaded.path));
-      const label = String(uploaded.name ?? file.name).replace(/[\[\]]/g, '');
+      const reference = encodeMarkdownUrlReference(relativeAttachmentReference(note.filePath, uploaded.path));
+      const label = markdownLinkLabel(uploaded.name ?? file.name);
       const syntax = uploaded.mimeType?.startsWith('image/')
         ? `![${label}](${reference})`
         : `[${label}](${reference})`;
@@ -330,6 +383,7 @@ export default function EditorPane({
       setDraft((current) => ({ ...current, content: next }));
       setSelection({ start: start + syntax.length, end: start + syntax.length, text: '' });
       setErrorMessage('');
+      announceAttachment(file.type.startsWith('image/') ? '图片已插入' : '附件已插入');
       requestAnimationFrame(() => {
         const target = textareaRef.current;
         if (!target) return;
@@ -337,11 +391,58 @@ export default function EditorPane({
         target.selectionStart = target.selectionEnd = start + syntax.length;
       });
     } catch (error) {
-      setErrorMessage(error?.message ?? '附件上传失败');
+      setAttachmentError(error?.message ?? '附件上传失败');
+      announceAttachment('附件插入失败');
     } finally {
       setAttachmentBusy(false);
     }
-  }, [canEdit, isExternal, note, selection.end, selection.start]);
+  }, [announceAttachment, canEdit, isExternal, note, selection.end, selection.start]);
+
+  const handlePaste = useCallback(async (event) => {
+    const files = getClipboardImageFiles(event.clipboardData);
+    if (!files.length || !note || !canEdit || isExternal) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (attachmentBusy) return;
+
+    const target = event.currentTarget;
+    const value = draftRef.current.content;
+    const targetStart = Number.isInteger(target?.selectionStart) ? target.selectionStart : selection.start;
+    const targetEnd = Number.isInteger(target?.selectionEnd) ? target.selectionEnd : selection.end;
+    const start = Math.min(Math.max(targetStart, 0), value.length);
+    const end = Math.min(Math.max(targetEnd, start), value.length);
+
+    setAttachmentBusy(true);
+    setAttachmentError('');
+    announceAttachment(files.length === 1 ? '正在上传图片…' : `正在上传 ${files.length} 张图片…`);
+    try {
+      const syntaxParts = [];
+      for (const file of files) {
+        const uploaded = await vaultAttachmentsApi.upload(file);
+        const reference = encodeMarkdownUrlReference(relativeAttachmentReference(note.filePath, uploaded.path));
+        const label = markdownLinkLabel(uploaded.name ?? file.name);
+        syntaxParts.push(`![${label}](${reference})`);
+      }
+      const syntax = `${syntaxParts.join('\n')}\n`;
+      const next = `${value.slice(0, start)}${syntax}${value.slice(end)}`;
+      setDraft((current) => ({ ...current, content: next }));
+      setSelection({ start: start + syntax.length, end: start + syntax.length, text: '' });
+      setErrorMessage('');
+      announceAttachment(files.length === 1 ? '图片已插入' : `${files.length} 张图片已插入`);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = start + syntax.length;
+      });
+    } catch (error) {
+      setAttachmentError(error?.message ?? '图片导入失败');
+      announceAttachment('图片插入失败');
+    } finally {
+      setAttachmentBusy(false);
+    }
+  }, [announceAttachment, attachmentBusy, canEdit, isExternal, note, selection.end, selection.start]);
 
   const handleStaticExport = useCallback(async () => {
     if (!note || exportBusy) return;
@@ -526,6 +627,28 @@ export default function EditorPane({
     return (
       <section className="editor editor--empty">
         <div className="empty-state empty-state--large">
+          <div className="empty-state__intro">
+            <span className="empty-state__eyebrow">WORKSPACE / START HERE</span>
+            <h1>从一个下一步开始</h1>
+            <p>把想法先放进 Inbox，或直接用开发者模板开始工作。</p>
+          </div>
+          <div className="empty-state__actions" role="group" aria-label="新标签页操作">
+            <button type="button" className="empty-state__action empty-state__action--primary" onClick={onCreateNote}>
+              <span className="empty-state__action-icon" aria-hidden="true"><FilePlus2 size={17} strokeWidth={1.8} /></span>
+              <span className="empty-state__action-copy"><strong>新建笔记</strong><small>从空白页面开始</small></span>
+              <kbd>Ctrl + N</kbd>
+            </button>
+            <button type="button" className="empty-state__action" onClick={onCaptureInbox}>
+              <span className="empty-state__action-icon" aria-hidden="true"><Inbox size={17} strokeWidth={1.8} /></span>
+              <span className="empty-state__action-copy"><strong>收集到 Inbox</strong><small>先记录，再整理</small></span>
+              <kbd>Ctrl + Shift + I</kbd>
+            </button>
+            <button type="button" className="empty-state__action" onClick={onOpenSwitcher}>
+              <span className="empty-state__action-icon" aria-hidden="true"><Search size={17} strokeWidth={1.8} /></span>
+              <span className="empty-state__action-copy"><strong>打开笔记</strong><small>搜索已有知识</small></span>
+              <kbd>Ctrl + K</kbd>
+            </button>
+          </div>
           <div className="empty-state__templates" aria-label="从模板创建">
             <div className="empty-state__templates-head">
               <span>从模板创建</span>
@@ -533,30 +656,23 @@ export default function EditorPane({
             </div>
             {templates.length ? (
               <div className="empty-state__template-list">
-                {templates.map((template) => (
-                  <button type="button" className="empty-state__template" key={template.name} onClick={() => onCreateFromTemplate?.(template.name)}>
-                    <strong>{template.title || template.name}</strong>
-                    <small>{template.name}</small>
-                  </button>
-                ))}
+                {templates.map((template) => {
+                  const meta = getTemplateMeta(template);
+                  const Icon = meta.icon;
+                  return (
+                    <button type="button" className="empty-state__template" key={template.name} onClick={() => onCreateFromTemplate?.(template.name)}>
+                      <span className="empty-state__template-icon" aria-hidden="true"><Icon size={16} strokeWidth={1.8} /></span>
+                      <span className="empty-state__template-copy">
+                        <strong>{meta.label}</strong>
+                        <small>{meta.description}</small>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             ) : <p className="empty-state__hint">暂无模板，可在 Vault 的 _templates 目录中添加 Markdown 文件。</p>}
           </div>
-          <p className="empty-state__title">新标签页</p>
-          <div className="empty-state__actions" role="group" aria-label="新标签页操作">
-            <button type="button" className="empty-state__action" onClick={onCreateNote}>
-              <span>创建新文件</span>
-              <kbd>Ctrl + N</kbd>
-            </button>
-            <button type="button" className="empty-state__action" onClick={onOpenSwitcher}>
-              <span>打开文件</span>
-              <kbd>Ctrl + K</kbd>
-            </button>
-            <button type="button" className="empty-state__action empty-state__action--quiet" onClick={onCloseTab}>
-              关闭标签页
-            </button>
-          </div>
-          <p className="empty-state__hint">也可以从左侧目录选择笔记，或使用双链和标签组织知识。</p>
+          <button type="button" className="empty-state__close" onClick={onCloseTab}>关闭新标签页</button>
         </div>
       </section>
     );
@@ -567,7 +683,7 @@ export default function EditorPane({
       label={`笔记「${note.title}」操作`}
       getItems={() => [
         { id: 'pin', label: note.isPinned ? '取消置顶' : '置顶', disabled: isExternal, onSelect: () => onTogglePin(note) },
-        { id: 'save', label: '立即保存', shortcut: 'Ctrl+S', disabled: !canEdit, onSelect: () => commit({ silent: false }) },
+        { id: 'save', label: '立即保存', shortcut: 'Ctrl+S', disabled: !canEdit, onSelect: () => commit({ silent: false }).catch(() => {}) },
         { id: 'duplicate', label: '创建副本', disabled: isExternal, onSelect: () => onDuplicate?.(note) },
         { id: 'copy-path', label: '复制路径', disabled: isExternal, onSelect: () => onCopyPath?.(note) },
         { id: 'copy-link', label: '复制双链', disabled: isExternal, onSelect: () => onCopyWikiLink?.(note) },
@@ -640,12 +756,12 @@ export default function EditorPane({
               <button
                 type="button"
                 className="icon-btn"
-                title="插入附件"
+                title="插入附件，也可以直接粘贴图片"
                 aria-label="插入附件"
                 disabled={attachmentBusy}
                 onClick={() => attachmentInputRef.current?.click()}
               >
-                ↑
+                <ImagePlus size={15} strokeWidth={1.8} />
               </button>
               <input
                 ref={attachmentInputRef}
@@ -695,9 +811,19 @@ export default function EditorPane({
       {errorMessage ? (
         <div className="banner banner--error">
           <span>{errorMessage}</span>
-          <button type="button" className="btn btn--sm" onClick={() => commit({ silent: false })}>
-            重试保存
-          </button>
+          {conflict ? (
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => commit({ force: true, silent: false }).catch(() => {})}
+            >
+              仍要保存（覆盖磁盘版本）
+            </button>
+          ) : (
+            <button type="button" className="btn btn--sm" onClick={() => commit({ silent: false }).catch(() => {})}>
+              重试保存
+            </button>
+          )}
         </div>
       ) : null}
 
@@ -705,6 +831,13 @@ export default function EditorPane({
         <div className="banner banner--error">
           <span>{exportError}</span>
           <button type="button" className="btn btn--sm" onClick={() => setExportError('')}>Close</button>
+        </div>
+      ) : null}
+
+      {attachmentError ? (
+        <div className="banner banner--error">
+          <span>{attachmentError}</span>
+          <button type="button" className="btn btn--sm" onClick={() => setAttachmentError('')}>关闭</button>
         </div>
       ) : null}
 
@@ -849,6 +982,7 @@ export default function EditorPane({
             value={draft.content}
             spellCheck={false}
             readOnly={!canEdit}
+            aria-busy={attachmentBusy}
             placeholder={'开始写作…\n\n用 [[标题]] 建立双链，用 #标签 归类，独占一行的 ![[标题]] 会展开为嵌入。'}
             aria-label="笔记正文"
             onChange={(event) => {
@@ -856,6 +990,7 @@ export default function EditorPane({
             }}
             onScroll={handleScroll}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onSelect={syncSelection}
             onMouseUp={syncSelection}
           />
@@ -890,6 +1025,7 @@ export default function EditorPane({
         <span>{formatNumber(stats.lines)} 行</span>
         <span>{formatNumber(stats.chars)} 字符</span>
         <span className="editor__statusbar-spacer" />
+        {attachmentNotice ? <span className={`editor__statusbar-note ${attachmentBusy ? 'is-busy' : ''}`} role="status">{attachmentNotice}</span> : null}
         <span>创建于 {formatDateTime(note.createdAt)}</span>
         <span>更新于 {formatDateTime(note.updatedAt)}</span>
       </div>

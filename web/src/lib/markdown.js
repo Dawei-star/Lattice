@@ -11,7 +11,8 @@
 import { marked } from 'marked';
 import { sanitizeHtml } from './sanitize.js';
 
-marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
+// headerIds / mangle 在 marked v5+ 已移除，v14 传了也只是静默忽略，不再保留
+marked.setOptions({ gfm: true, breaks: false });
 
 /** 捕获组：1=是否嵌入(!)，2=目标标题，3=标题锚点，4=显示别名 */
 const WIKI_LINK = /(!?)\[\[([^[\]|#]+?)(?:#([^[\]|]+?))?(?:\|([^[\]]+?))?\]\]/g;

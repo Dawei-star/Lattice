@@ -14,6 +14,7 @@ import { getDb } from '../../db/index.js';
 import { toPlainText } from '../../lib/markdown.js';
 import * as searchService from '../search/search.service.js';
 import { chunkEmbedText, embedTexts, searchVectors, noteMeanVector } from './ai.embeddings.js';
+import { loadServerSettings } from './ai.settings.js';
 
 const RRF_K = 60;
 const MAX_CONTEXT_BLOCKS = 6;
@@ -64,14 +65,7 @@ export async function retrieveContext(query, { excludeNoteId = null } = {}) {
 function currentEmbeddingModel() {
   // searchVectors 按模型过滤：只用「当前配置模型」产生的向量，
   // 换模型后的旧向量在重建前不参与检索，避免维度错配。
-  const row = getDb().prepare(
-    "SELECT value FROM ai_settings WHERE key = 'model-config'",
-  ).get();
-  try {
-    return JSON.parse(row?.value ?? 'null')?.embedding?.model ?? null;
-  } catch {
-    return null;
-  }
+  return loadServerSettings().embedding?.model ?? null;
 }
 
 /** 关键词路：FTS 命中笔记 → 取这些笔记的分块（无分块时退回笔记正文摘要） */

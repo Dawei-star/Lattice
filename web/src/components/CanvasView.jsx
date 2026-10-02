@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { gsap } from 'gsap';
+import { useGSAP } from '@gsap/react';
 import ContextMenu from '../ui/ContextMenu.jsx';
 import Modal from '../ui/Modal.jsx';
 import { canvasApi } from '../api/canvas.js';
-import { vaultAssetsApi, vaultFiles } from '../api/vault-files.js';
+import { vaultAssetsApi, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
+import { getClipboardImageFiles } from '../lib/clipboard.js';
 
 const EMPTY_DOCUMENT = { nodes: [], edges: [] };
 const NODE_WIDTH = 248;
@@ -25,7 +28,9 @@ const CARD_COLOR_OPTIONS = [
   { value: 'red', label: '红色' },
 ];
 
-export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [], activeNoteId, onOpenNote, onCreateNote }) {
+gsap.registerPlugin(useGSAP);
+
+export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [], activeNoteId, onOpenNote, onCreateNote, blockedPaths }) {
   const [canvasDocument, setCanvasDocument] = useState(EMPTY_DOCUMENT);
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [selected, setSelected] = useState([]);
@@ -34,7 +39,6 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const [connection, setConnection] = useState(null);
   const [marquee, setMarquee] = useState(null);
   const [alignmentGuides, setAlignmentGuides] = useState([]);
-  const [viewAnimating, setViewAnimating] = useState(false);
   const [historyDepth, setHistoryDepth] = useState({ undo: 0, redo: 0 });
   const [resourcePicker, setResourcePicker] = useState(null);
   const [resourcePickerPosition, setResourcePickerPosition] = useState(null);
@@ -42,6 +46,8 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const [imageAssets, setImageAssets] = useState([]);
   const [imagePickerState, setImagePickerState] = useState('idle');
   const [imagePickerError, setImagePickerError] = useState('');
+  const [clipboardState, setClipboardState] = useState('idle');
+  const [clipboardError, setClipboardError] = useState('');
   const [saveState, setSaveState] = useState('loading');
   const loadedFromVault = useRef(false);
   const hasLocalChanges = useRef(false);
@@ -52,15 +58,87 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const saveTimer = useRef(0);
   const docRef = useRef(canvasDocument);
   const viewRef = useRef(view);
+  const isViewGestureRef = useRef(false);
   const panRef = useRef(null);
   const stageRef = useRef(null);
+  const worldRef = useRef(null);
   const historyRef = useRef({ undo: [], redo: [] });
   const transactionBaseline = useRef(null);
   const nudgeTimer = useRef(0);
   const dragMovedRef = useRef(false);
-  const viewAnimatingTimer = useRef(0);
   docRef.current = canvasDocument;
-  viewRef.current = view;
+  if (!isViewGestureRef.current) viewRef.current = view;
+
+  const { contextSafe } = useGSAP({ scope: stageRef });
+
+  const applyViewTransform = contextSafe((nextView) => {
+    const stage = stageRef.current;
+    const world = worldRef.current;
+    if (!stage || !world) return;
+
+    gsap.set(world, {
+      x: nextView.x,
+      y: nextView.y,
+      scale: nextView.scale,
+      overwrite: 'auto',
+    });
+    gsap.set(stage, {
+      '--canvas-scale': nextView.scale,
+      '--canvas-x': `${nextView.x}px`,
+      '--canvas-y': `${nextView.y}px`,
+    });
+  });
+
+  const animateViewTransform = contextSafe((nextView) => {
+    const stage = stageRef.current;
+    const world = worldRef.current;
+    if (!stage || !world) return;
+
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    gsap.killTweensOf([world, stage]);
+    const timeline = gsap.timeline({
+      defaults: {
+        duration: reduceMotion ? 0 : 0.22,
+        ease: 'power2.out',
+        overwrite: 'auto',
+      },
+    });
+    timeline
+      .to(world, { x: nextView.x, y: nextView.y, scale: nextView.scale }, 0)
+      .to(stage, {
+        '--canvas-scale': nextView.scale,
+        '--canvas-x': `${nextView.x}px`,
+        '--canvas-y': `${nextView.y}px`,
+      }, 0);
+  });
+
+  const commitView = (nextView, { animate = false } = {}) => {
+    viewRef.current = nextView;
+    setView(nextView);
+    if (animate) animateViewTransform(nextView);
+    else applyViewTransform(nextView);
+  };
+
+  const updateViewWithoutRender = (nextView) => {
+    viewRef.current = nextView;
+    applyViewTransform(nextView);
+  };
+
+  const syncViewFromDom = () => {
+    const world = worldRef.current;
+    if (!world) return viewRef.current;
+    const nextView = {
+      x: Number(gsap.getProperty(world, 'x')) || 0,
+      y: Number(gsap.getProperty(world, 'y')) || 0,
+      scale: Number(gsap.getProperty(world, 'scale')) || viewRef.current.scale,
+    };
+    viewRef.current = nextView;
+    return nextView;
+  };
+
+  useEffect(() => {
+    applyViewTransform(viewRef.current);
+  }, []);
 
   const noteById = useMemo(() => new Map(noteIndex.map((note) => [note.id, note])), [noteIndex]);
 
@@ -89,6 +167,8 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     setConnection(null);
     setMarquee(null);
     setAlignmentGuides([]);
+    setClipboardState('idle');
+    setClipboardError('');
     setSaveState('loading');
 
     canvasApi.get(canvasPath).then((value) => {
@@ -125,15 +205,20 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     return () => { cancelled = true; };
   }, [resourcePicker]);
 
-  // 自动保存：防抖 500ms，拖拽过程中不逐帧请求
+  // 自动保存：防抖 500ms，拖拽过程中不逐帧请求。
+  // 仅在发生真实本地编辑后保存：加载文档本身引起的状态变化不回写，
+  // 否则打开一个不存在的画布（如刚删除后的默认画布）会立刻凭空重建文件；
+  // blockedPaths 里的路径刚被删除，挂起的保存不得把它复活。
   useEffect(() => {
-    if (!loadedFromVault.current) return undefined;
+    if (!loadedFromVault.current || !hasLocalChanges.current) return undefined;
+    if (blockedPaths?.has(canvasPath)) return undefined;
     const timer = window.setTimeout(() => {
       const revision = ++saveRevision.current;
       const snapshot = { ...canvasDocument, version: 1 };
       setSaveState('saving');
       saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
         if (revision !== saveRevision.current) return;
+        if (blockedPaths?.has(canvasPath)) return;
         await canvasApi.save(canvasPath, snapshot);
         if (revision === saveRevision.current) setSaveState('saved');
       }).catch(() => {
@@ -141,22 +226,20 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [canvasDocument, canvasPath]);
+  }, [canvasDocument, canvasPath, blockedPaths]);
 
   const applyZoom = (nextScale, anchor) => {
     const stage = stageRef.current;
     const target = clamp(nextScale, MIN_SCALE, MAX_SCALE);
-    animateView();
+    const current = syncViewFromDom();
     if (!stage || !anchor) {
-      setView((current) => ({ ...current, scale: target }));
+      commitView({ ...current, scale: target }, { animate: true });
       return;
     }
     const rect = stage.getBoundingClientRect();
     const point = { x: anchor.clientX - rect.left, y: anchor.clientY - rect.top };
-    setView((current) => {
-      const worldPoint = { x: (point.x - current.x) / current.scale, y: (point.y - current.y) / current.scale };
-      return { scale: target, x: point.x - worldPoint.x * target, y: point.y - worldPoint.y * target };
-    });
+    const worldPoint = { x: (point.x - current.x) / current.scale, y: (point.y - current.y) / current.scale };
+    commitView({ scale: target, x: point.x - worldPoint.x * target, y: point.y - worldPoint.y * target }, { animate: true });
   };
 
   const centerAnchor = () => {
@@ -168,8 +251,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const zoomOut = () => applyZoom(viewRef.current.scale / 1.25, centerAnchor());
 
   const resetView = () => {
-    animateView();
-    setView({ scale: 1, x: 0, y: 0 });
+    commitView({ scale: 1, x: 0, y: 0 }, { animate: true });
   };
 
   const fitView = (nodes = docRef.current.nodes) => {
@@ -187,12 +269,11 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       MIN_SCALE,
       1.35,
     );
-    animateView();
-    setView({
+    commitView({
       scale,
       x: rect.width / 2 - (bounds.x + bounds.width / 2) * scale,
       y: rect.height / 2 - (bounds.y + bounds.height / 2) * scale,
-    });
+    }, { animate: true });
   };
 
   const focusNode = (node = singleSelectedNode()) => {
@@ -201,12 +282,12 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     const rect = stage.getBoundingClientRect();
     const width = getNodeWidth(node);
     const height = getNodeHeight(node);
-    animateView();
-    setView((current) => ({
+    const current = syncViewFromDom();
+    commitView({
       ...current,
       x: rect.width / 2 - (node.x + width / 2) * current.scale,
       y: rect.height / 2 - (node.y + height / 2) * current.scale,
-    }));
+    }, { animate: true });
   };
 
   // 触控板手势：双指滚动平移画布，Ctrl/Cmd + 滚轮（捏合）以光标为锚点缩放
@@ -221,14 +302,14 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
         const rect = stage.getBoundingClientRect();
         const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
         const factor = Math.exp(-clamp(event.deltaY * unit, -120, 120) * 0.0022);
-        setView((current) => {
-          const scale = clamp(current.scale * factor, MIN_SCALE, MAX_SCALE);
-          const worldPoint = { x: (point.x - current.x) / current.scale, y: (point.y - current.y) / current.scale };
-          return { scale, x: point.x - worldPoint.x * scale, y: point.y - worldPoint.y * scale };
-        });
+        const current = syncViewFromDom();
+        const scale = clamp(current.scale * factor, MIN_SCALE, MAX_SCALE);
+        const worldPoint = { x: (point.x - current.x) / current.scale, y: (point.y - current.y) / current.scale };
+        updateViewWithoutRender({ scale, x: point.x - worldPoint.x * scale, y: point.y - worldPoint.y * scale });
         return;
       }
-      setView((current) => ({ ...current, x: current.x - event.deltaX * unit, y: current.y - event.deltaY * unit }));
+      const current = syncViewFromDom();
+      updateViewWithoutRender({ ...current, x: current.x - event.deltaX * unit, y: current.y - event.deltaY * unit });
     };
     stage.addEventListener('wheel', handleWheel, { passive: false });
     return () => stage.removeEventListener('wheel', handleWheel);
@@ -442,11 +523,16 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   // ── 平移 / 框选 ───────────────────────────────────────────
   const startPan = (event) => {
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    panRef.current = { x: event.clientX, y: event.clientY, view: viewRef.current };
+    const current = syncViewFromDom();
+    gsap.killTweensOf([worldRef.current, stageRef.current]);
+    applyViewTransform(current);
+    isViewGestureRef.current = true;
+    panRef.current = { x: event.clientX, y: event.clientY, view: current };
   };
 
   const handlePointerDown = (event) => {
     if (event.target.closest('button, textarea, input')) return;
+    event.currentTarget.focus();
     if (event.button === 1) {
       event.preventDefault();
       clearSelection();
@@ -515,11 +601,17 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       x: start.view.x + event.clientX - start.x,
       y: start.view.y + event.clientY - start.y,
     };
-    viewRef.current = nextView;
-    setView(nextView);
+    updateViewWithoutRender(nextView);
   };
 
-  const stopPan = () => { panRef.current = null; };
+  const stopPan = () => {
+    if (!panRef.current) return;
+    const finalView = syncViewFromDom();
+    panRef.current = null;
+    isViewGestureRef.current = false;
+    viewRef.current = finalView;
+    setView(finalView);
+  };
 
   // ── 卡片拖动（支持多选拖动 + 吸附）────────────────────────
   const moveNode = (event, node) => {
@@ -730,11 +822,41 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       : undefined;
   };
 
+  const handleClipboardPaste = async (event) => {
+    const files = getClipboardImageFiles(event.clipboardData);
+    if (!files.length || clipboardState === 'uploading') return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const anchor = centerAnchor();
+    const position = anchor ? getContextPosition(anchor) : undefined;
+    setClipboardError('');
+    setClipboardState('uploading');
+    try {
+      for (const [index, file] of files.entries()) {
+        const uploaded = await vaultAttachmentsApi.upload(file);
+        addImage(
+          { path: uploaded.path, name: uploaded.name ?? file.name },
+          position ? { x: position.x + index * 28, y: position.y + index * 28 } : undefined,
+        );
+      }
+      setClipboardState('idle');
+    } catch (error) {
+      setClipboardState('error');
+      setClipboardError(error?.message ?? '图片导入失败');
+    }
+  };
+
   // ── 键盘快捷键 ────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (event) => {
       const activeElement = globalThis.document.activeElement;
-      const isEditing = activeElement?.tagName === 'TEXTAREA' || activeElement?.tagName === 'INPUT';
+      // 弹层里的 <select> 与 contentEditable 元素也算"正在编辑"，
+      // 否则在设置弹窗里按键会在背后的画布上凭空创建卡片
+      const isEditing = activeElement?.tagName === 'TEXTAREA'
+        || activeElement?.tagName === 'INPUT'
+        || activeElement?.tagName === 'SELECT'
+        || activeElement?.isContentEditable === true;
       if (event.key === 'Escape' && connection) {
         event.preventDefault();
         setConnection(null);
@@ -867,11 +989,26 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     return () => observer.disconnect();
   }, [canvasDocument.nodes.length]);
 
-  const animateView = () => {
-    setViewAnimating(true);
-    window.clearTimeout(viewAnimatingTimer.current);
-    viewAnimatingTimer.current = window.setTimeout(() => setViewAnimating(false), 260);
-  };
+  const stageStatusText = clipboardState === 'uploading'
+    ? '正在导入图片…'
+    : clipboardState === 'error'
+      ? clipboardError
+      : alignmentGuides.length
+        ? '正在对齐…'
+        : connection
+          ? '拖到目标卡片后松开；拖到空白处会生成新卡片'
+          : saveState === 'loading'
+            ? '正在加载画布'
+            : saveState === 'saving'
+              ? '保存中…'
+              : saveState === 'error'
+                ? '保存失败'
+                : '已保存';
+  const stageStatusTone = clipboardState === 'uploading'
+    ? 'saving'
+    : clipboardState === 'error'
+      ? 'error'
+      : saveState;
 
   return (
     <section className="canvas-view" aria-label="画布">
@@ -959,6 +1096,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
           return [
             { label: '添加文本', icon: '▱', shortcut: 'T', onSelect: () => addText(position) },
             { label: '添加笔记', icon: '▤', shortcut: 'N', disabled: !noteIndex.length, onSelect: () => openResourcePicker('note', position) },
+            { label: '新建笔记', icon: '✎', onSelect: handleToolbarCreateNote },
             { label: '添加图片', icon: '▧', shortcut: 'I', onSelect: () => openResourcePicker('image', position) },
             { label: '创建分组', icon: '▦', disabled: true },
             { separator: true },
@@ -975,12 +1113,10 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       >
         <div
           ref={stageRef}
-          className={`canvas-stage ${spaceDown ? 'is-panning' : ''} ${connection ? 'is-connecting' : ''} ${alignmentGuides.length ? 'is-aligning' : ''} ${marquee ? 'is-marquee' : ''} ${viewAnimating ? 'is-animating' : ''}`}
-          style={{
-            backgroundSize: `${Math.round(22 * view.scale)}px ${Math.round(22 * view.scale)}px`,
-            backgroundPosition: `${Math.round(view.x)}px ${Math.round(view.y)}px`,
-          }}
+          tabIndex={0}
+          className={`canvas-stage ${spaceDown ? 'is-panning' : ''} ${connection ? 'is-connecting' : ''} ${alignmentGuides.length ? 'is-aligning' : ''} ${marquee ? 'is-marquee' : ''} ${clipboardState === 'uploading' ? 'is-pasting' : ''}`}
           onPointerDown={handlePointerDown}
+          onPaste={handleClipboardPaste}
           onDoubleClick={(event) => {
             if (event.target.closest('.canvas-card')) return;
             addText(getContextPosition(event));
@@ -989,7 +1125,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
           onPointerUp={stopPan}
           onPointerCancel={stopPan}
         >
-          <div className="canvas-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
+          <div ref={worldRef} className="canvas-world">
             <div className="canvas-guides" aria-hidden="true">
               {alignmentGuides.map((guide) => (
                 <div key={`${guide.axis}-${guide.value}`} className={`canvas-guide canvas-guide--${guide.axis}`} style={guide.axis === 'vertical' ? { left: guide.value } : { top: guide.value }}>
@@ -1132,6 +1268,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
               <p>把想法、笔记和关系放到同一块空间里。</p>
               <div className="canvas-empty__actions">
                 <button type="button" className="btn btn--primary" onClick={() => addText()}>添加文本卡片</button>
+                <button type="button" className="btn" onClick={handleToolbarCreateNote}>新建笔记</button>
                 <button type="button" className="btn" onClick={() => openResourcePicker('note')} disabled={!noteIndex.length}>添加笔记卡片</button>
                 <button type="button" className="btn" onClick={() => openResourcePicker('image')}>添加图片卡片</button>
               </div>
@@ -1139,18 +1276,8 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
             </div>
           ) : null}
           <div className="canvas-stage__status" aria-live="polite">
-            <span className={`canvas-stage__status-dot canvas-stage__status-dot--${saveState}`} />
-            <span>{alignmentGuides.length
-              ? '正在对齐…'
-              : connection
-                ? '拖到目标卡片后松开；拖到空白处会生成新卡片'
-                : saveState === 'loading'
-                  ? '正在加载画布'
-                  : saveState === 'saving'
-                    ? '保存中…'
-                    : saveState === 'error'
-                      ? '保存失败'
-                      : '已保存'}</span>
+            <span className={`canvas-stage__status-dot canvas-stage__status-dot--${stageStatusTone}`} />
+            <span title={clipboardError || undefined}>{stageStatusText}</span>
             <span aria-hidden="true">·</span>
             <span>{selected.length > 1
               ? `已选中 ${selected.length} 个对象`
