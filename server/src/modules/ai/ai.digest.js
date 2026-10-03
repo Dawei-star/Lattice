@@ -12,14 +12,15 @@ import { config } from '../../config/index.js';
 import { getDb } from '../../db/index.js';
 import { toPlainText } from '../../lib/markdown.js';
 import { createLogger } from '../../lib/logger.js';
+import { escapeLikePattern } from '../../lib/sql.js';
 import * as foldersService from '../folders/folders.service.js';
 import * as notesService from '../notes/notes.service.js';
+import { getVaultProfile } from '../../vault/profile.js';
 import { callChatProvider } from './ai.provider.js';
 import { resolveChatProvider } from './ai.settings.js';
 
 const logger = createLogger({ app: 'lattice', scope: 'ai-digest' });
 
-const DIGEST_FOLDER = 'Journal';
 // 记录最近一次定时摘要的日期：机器在配置小时关机/休眠时，之后启动可补跑当天的摘要
 const DIGEST_STATE_FILE = path.join(path.dirname(config.dbFile), 'ai-digest-state.json');
 
@@ -30,20 +31,21 @@ export function digestTitleFor(date = new Date()) {
 
 function digestFilePathFor(date = new Date()) {
   const iso = new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString();
-  return `${DIGEST_FOLDER}/每日摘要 ${iso.slice(0, 10)}.md`;
+  return `${getVaultProfile(config.vaultDir).paths.journal}/每日摘要 ${iso.slice(0, 10)}.md`;
 }
 
 /** 收集当天（本地时区零点起）修改的笔记（含正文，供摘录） */
 function collectRecentNotes({ date = new Date() } = {}) {
   const db = getDb();
+  const digestPrefix = `${getVaultProfile(config.vaultDir).paths.journal}/每日摘要`;
   const midnight = new Date(date);
   midnight.setHours(0, 0, 0, 0);
   const since = midnight.toISOString();
   return db.prepare(
     `SELECT id, title, content, word_count, updated_at FROM notes
-      WHERE updated_at >= ? AND COALESCE(file_path, '') NOT LIKE '${DIGEST_FOLDER}/每日摘要%'
+      WHERE updated_at >= ? AND COALESCE(file_path, '') NOT LIKE ? ESCAPE '\\'
       ORDER BY updated_at DESC LIMIT 50`,
-  ).all(since).map((row) => ({
+  ).all(since, `${escapeLikePattern(digestPrefix)}%`).map((row) => ({
     id: row.id,
     title: row.title,
     wordCount: row.word_count,
@@ -116,15 +118,24 @@ export async function generateDigest({ date = new Date() } = {}) {
 /** Journal 目录不存在则创建（走目录服务，投影与磁盘保持一致）；已存在则复用 */
 function ensureJournalFolder() {
   const db = getDb();
-  const existing = db.prepare('SELECT id FROM folders WHERE parent_id IS NULL AND name = ?').get(DIGEST_FOLDER);
-  if (existing) return existing.id;
-  try {
-    const folder = foldersService.create({ name: DIGEST_FOLDER, parentId: null });
-    return folder.id;
-  } catch (error) {
-    logger.warn('digest_folder_create_failed', { err: error });
-    return null;
+  const journalPath = getVaultProfile(config.vaultDir).paths.journal;
+  let parentId = null;
+  for (const name of journalPath.split('/')) {
+    const existing = db
+      .prepare("SELECT id FROM folders WHERE IFNULL(parent_id, '') = ? AND name = ?")
+      .get(parentId ?? '', name);
+    if (existing) {
+      parentId = existing.id;
+      continue;
+    }
+    try {
+      parentId = foldersService.create({ name, parentId }).id;
+    } catch (error) {
+      logger.warn('digest_folder_create_failed', { err: error });
+      return null;
+    }
   }
+  return parentId;
 }
 
 /** 定时检查（服务端每小时跑一次）：到点且今天还没生成时触发；

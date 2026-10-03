@@ -19,12 +19,32 @@ export function parseMarkdownDocument(raw, relativePath) {
   const match = raw.match(FRONTMATTER_RE);
   const fields = {};
   if (match) {
-    for (const line of match[1].split(/\r?\n/)) {
+    const lines = match[1].split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
       const separator = line.indexOf(':');
       if (separator < 1) continue;
       const key = line.slice(0, separator).trim();
       if (!/^[A-Za-z_][A-Za-z0-9_-]{0,80}$/.test(key) || key in fields) continue;
-      fields[key] = line.slice(separator + 1).trim();
+      const inline = line.slice(separator + 1).trim();
+      if (!inline) {
+        // YAML 块列表（Obsidian frontmatter 的主流写法）：
+        //   tags:
+        //     - 阅读
+        // 归一化成 JSON 数组字符串，交由 parsePropertyValue 解析，序列化时无损往返。
+        const items = [];
+        let cursor = index + 1;
+        while (cursor < lines.length && /^\s+-\s+\S/.test(lines[cursor])) {
+          items.push(lines[cursor].replace(/^\s+-\s*/, '').trim().replace(/^"([^"]*)"$/, '$1').replace(/^'([^']*)'$/, '$1'));
+          cursor += 1;
+        }
+        if (items.length) {
+          fields[key] = JSON.stringify(items.slice(0, 50));
+          index = cursor - 1;
+          continue;
+        }
+      }
+      fields[key] = inline;
     }
   }
 

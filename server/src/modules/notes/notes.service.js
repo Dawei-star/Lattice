@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { withTransaction } from '../../db/index.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
-import { computeWordCount, extractTags, inferTitle } from '../../lib/markdown.js';
+import { computeWordCount, extractNoteTags, inferTitle } from '../../lib/markdown.js';
 import { nowIso } from '../../lib/time.js';
 import * as foldersRepository from '../folders/folders.repository.js';
 import * as linksService from '../links/links.service.js';
@@ -147,7 +147,7 @@ export function create({ id, title, content = '', folderId = null, properties = 
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      tagsService.syncForNote(noteId, extractTags(content));
+      tagsService.syncForNote(noteId, extractNoteTags(content, properties));
       linksService.rebuildForNote(noteId, content);
       linksService.claimForTitle(finalTitle, noteId);
     });
@@ -199,10 +199,13 @@ export function update(id, patch) {
   const folderChanged = nextFolderId !== current.folderId;
   const pinnedChanged = nextPinned !== current.isPinned;
   const propertiesChanged = !propertiesEqual(nextProperties, currentProperties);
-  const nextFilePath = titleChanged || folderChanged
+  // 遗留行（file_path 为 NULL 的迁移前数据）首次回填路径时也必须走冲突分配：
+  // 派生路径可能已被其他笔记占用，直接采用会把对方文件覆写掉
+  const backfillFilePath = !current.filePath;
+  const nextFilePath = titleChanged || folderChanged || backfillFilePath
     ? allocateFilePath({ title: nextTitle, folderId: nextFolderId }, { excludeId: id })
     : oldFilePath;
-  const filePathChanged = nextFilePath !== oldFilePath || !current.filePath;
+  const filePathChanged = nextFilePath !== oldFilePath || backfillFilePath;
 
   if (!titleChanged && !contentChanged && !folderChanged && !pinnedChanged && !propertiesChanged && !filePathChanged) {
     return getDetail(id);
@@ -221,8 +224,47 @@ export function update(id, patch) {
     properties: nextProperties,
   };
 
-  if (titleChanged || contentChanged || propertiesChanged) historyStore.createSnapshot(current);
-  writeMarkdown(nextNote);
+  // 历史快照只是附属数据，写失败（如 .lattice/history 不可写）不应阻断保存
+  if (titleChanged || contentChanged || propertiesChanged) {
+    try {
+      historyStore.createSnapshot(current);
+    } catch {
+      // 下一次成功的保存会补上快照
+    }
+  }
+
+  // 改名/移动走「内容先写旧路径 → 原子 rename 到新路径」，而不是「写新文件 → 删旧文件」：
+  // 全程同一 id 只存在一个文件，watcher 不会在间隙里生成重复投影；Windows 上旧文件被
+  // 占用（网盘/杀软/预览窗格）时 rename 明确失败并整体回滚——旧行为是事务提交后才删旧
+  // 文件，删除失败会留下同 id 的两个文件，观感上就是「改名成功又自己变回去」。
+  // 「写旧路径再 rename」只适用于本笔记在盘上确有文件的情形；遗留行没有
+  // 已知路径，直接写新分配的路径即可，绝不能碰派生路径上的他人文件。
+  const renamedOnDisk = filePathChanged && current.filePath && vault.existsSync(oldFilePath);
+  if (renamedOnDisk) {
+    writeMarkdown({ ...nextNote, filePath: oldFilePath });
+    let moved = false;
+    let moveError = null;
+    for (let attempt = 0; attempt < 3 && !moved; attempt += 1) {
+      try {
+        vault.moveSync(oldFilePath, nextFilePath);
+        moved = true;
+      } catch (error) {
+        moveError = error;
+        sleepSync(80);
+      }
+    }
+    if (!moved) {
+      try {
+        writeMarkdown({ ...current, filePath: oldFilePath, properties: currentProperties });
+      } catch {
+        // 磁盘恢复失败也不阻断报错：下一次全量同步会收敛投影
+      }
+      throw new ConflictError(`文件正被其他程序占用，无法重命名（${moveError?.code ?? moveError?.message ?? '未知错误'}）`);
+    }
+  } else {
+    writeMarkdown(nextNote);
+  }
+
   try {
     withTransaction(() => {
       repository.update(id, {
@@ -235,8 +277,10 @@ export function update(id, patch) {
         contentHash: hashDocument({ ...nextNote, filePath: nextFilePath }),
         updatedAt,
       });
+      if (contentChanged || propertiesChanged) {
+        tagsService.syncForNote(id, extractNoteTags(nextContent, nextProperties));
+      }
       if (contentChanged) {
-        tagsService.syncForNote(id, extractTags(nextContent));
         linksService.rebuildForNote(id, nextContent);
       }
       if (titleChanged) {
@@ -247,16 +291,19 @@ export function update(id, patch) {
       }
     });
   } catch (error) {
-    if (nextFilePath !== oldFilePath) vault.removeSync(nextFilePath);
     try {
-      writeMarkdown({ ...current, filePath: oldFilePath, properties: currentProperties });
+      if (renamedOnDisk && vault.existsSync(nextFilePath)) vault.moveSync(nextFilePath, oldFilePath);
+      else if (nextFilePath !== oldFilePath) vault.removeSync(nextFilePath);
+      // 遗留行的旧派生路径可能属于其他笔记，回写会把对方文件覆写掉
+      if (current.filePath) {
+        writeMarkdown({ ...current, filePath: oldFilePath, properties: currentProperties });
+      }
     } catch {
       // Preserve the original database error. The next vault scan can rebuild the projection.
     }
     throw error;
   }
 
-  if (oldFilePath !== nextFilePath) vault.removeSync(oldFilePath);
   return getDetail(id);
 }
 
@@ -332,6 +379,17 @@ export function index() {
 
 export function statistics() {
   return repository.statistics();
+}
+
+/** 同步代码里的短等待：给 Windows 文件锁（杀软扫描等）一点释放时间。 */
+function sleepSync(milliseconds) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+  } catch {
+    // 环境不支持时退化为忙等
+    const deadline = Date.now() + milliseconds;
+    while (Date.now() < deadline) { /* spin */ }
+  }
 }
 
 export function listHistory(id) {

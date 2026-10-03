@@ -14,6 +14,7 @@ import { parseMarkdownDocument, serializeMarkdownDocument } from '../../vault/ma
 import { assertWritablePathSync } from '../../vault/vault.adapter.js';
 import { resolveVaultPath } from '../../vault/path.js';
 import { createFileStore } from '../../../../scripts/fc-core.mjs';
+import { auditAction, createOperationPlan } from '../../../../scripts/operation-plan.mjs';
 
 const AUDIT_FILE = path.join(path.dirname(config.dbFile), 'ai-audit.jsonl');
 export const MUTATING_ACTIONS = new Set(['create', 'update', 'delete', 'move', 'copy', 'archive']);
@@ -25,15 +26,24 @@ const fileStore = createFileStore(config.vaultDir);
 /** vault 内部目录：AI 动作不得读写或改写（.lattice 存历史快照，walker 也不扫描） */
 const FORBIDDEN_ACTION_DIRS = new Set(['.lattice', '.fc', '_templates']);
 
-export function preview(actions = [], { actor = 'local-user', role = 'editor' } = {}) {
+export function preview(actions = [], {
+  actor = 'local-user',
+  role = 'editor',
+  source = 'ai-chat',
+  planId = null,
+} = {}) {
   const normalized = normalizeActions(actions);
   const operations = normalized.map((action, index) => previewAction(action, index));
   const blocked = role === 'viewer' && operations.some((operation) => operation.requiresConfirmation);
+  const plan = createOperationPlan(normalized, { id: planId ?? randomUUID(), actor, role, source });
 
   return {
-    id: randomUUID(),
+    id: plan.id,
+    version: plan.version,
     actor,
     role,
+    source,
+    plan,
     blocked,
     operations,
     planHash: hashPlan(normalized),
@@ -48,9 +58,11 @@ export async function execute(actions = [], {
   confirmed = false,
   source = 'ai-chat',
   planHash = null,
+  planId = null,
   internalAutoApprove = false,
 } = {}) {
   const normalized = normalizeActions(actions);
+  const plan = createOperationPlan(normalized, { id: planId ?? randomUUID(), actor, role, source });
   const hasWrites = normalized.some((action) => MUTATING_ACTIONS.has(action.type));
   if (role === 'viewer' && hasWrites) {
     throw new ValidationError('当前角色只有读取权限，不能执行文件修改');
@@ -76,12 +88,18 @@ export async function execute(actions = [], {
   const results = [];
   for (const action of executable) {
     try {
-      const result = executeAction(action, { actor, source });
+      const result = executeAction(action, {
+        actor,
+        role,
+        source,
+        planId: plan.id,
+        planVersion: plan.version,
+      });
       results.push({ id: action.id, type: action.type, path: action.path, targetPath: action.targetPath, status: 'completed', result });
-      appendAudit({ actor, role, source, action, status: 'completed' });
+      appendAudit({ plan, actor, role, source, action, status: 'completed', operationId: result?.operationId ?? null });
     } catch (error) {
       results.push({ id: action.id, type: action.type, path: action.path, targetPath: action.targetPath, status: 'failed', error: error?.message ?? '操作失败' });
-      appendAudit({ actor, role, source, action, status: 'failed', error: error?.message ?? '操作失败' });
+      appendAudit({ plan, actor, role, source, action, status: 'failed', error: error?.message ?? '操作失败' });
     }
   }
   for (const action of normalized) {
@@ -91,10 +109,12 @@ export async function execute(actions = [], {
     if (executable.includes(action)) continue;
     const error = '删除操作需要用户逐次确认，不能自动执行';
     results.push({ id: action.id, type: action.type, path: action.path, targetPath: action.targetPath, status: 'skipped', error });
-    appendAudit({ actor, role, source, action, status: 'skipped', error });
+    appendAudit({ plan, actor, role, source, action, status: 'skipped', error });
   }
 
   return {
+    planId: plan.id,
+    planVersion: plan.version,
     results,
     completed: results.filter((item) => item.status === 'completed').length,
     failed: results.filter((item) => item.status === 'failed').length,
@@ -234,7 +254,13 @@ function describeAction(action, exists, targetExists) {
   return `${labels[action.type]} ${action.path}${destination}${!exists ? '（源文件不存在）' : targetExists ? '（目标已存在）' : ''}`;
 }
 
-export function executeAction(action, { actor = 'local-user', source: auditSource = 'ai-chat' } = {}) {
+export function executeAction(action, {
+  actor = 'local-user',
+  role = 'editor',
+  source: auditSource = 'ai-chat',
+  planId = null,
+  planVersion = 1,
+} = {}) {
   const source = absoluteFilePath(action.path);
   const target = action.targetPath ? absoluteFilePath(action.targetPath) : null;
   const assertWritable = (absolutePath) => assertWritablePathSync(path.resolve(config.vaultDir), absolutePath);
@@ -251,15 +277,20 @@ export function executeAction(action, { actor = 'local-user', source: auditSourc
       path: action.path,
       targetPath: action.targetPath,
       content: action.content,
-    }, { actor, source: auditSource });
-    if (['create', 'update', 'delete'].includes(action.type)) return { path: action.path };
-    return { fromPath: result.fromPath, toPath: result.toPath };
+    }, { actor, role, source: auditSource, planId, planVersion, actionId: action.id });
+    // operationId 透出：前端可凭它调用 /api/files/undo 撤销本次写入
+    const operationId = result?.operationId ?? null;
+    if (['create', 'update', 'delete'].includes(action.type)) return { path: action.path, operationId };
+    return { fromPath: result.fromPath, toPath: result.toPath, operationId };
   }
   if (action.type === 'archive') {
     if (!fs.existsSync(source)) throw new Error('源文件不存在');
     if (!fs.statSync(source).isFile()) throw new Error('只允许归档文件');
     if (!target) throw new Error('归档必须指定目标路径');
     if (fs.existsSync(target)) throw new Error('目标文件已存在');
+    // 与其余写路径同一约定：读写前拒绝穿越符号链接
+    assertWritable(source);
+    assertWritable(target);
 
     const document = parseMarkdownDocument(fs.readFileSync(source, 'utf8'), action.path);
     if (document.properties?.type !== 'inbox') throw new Error('只允许归档 Inbox 文件');
@@ -285,26 +316,9 @@ export function executeAction(action, { actor = 'local-user', source: auditSourc
     }
     return { fromPath: action.path, toPath: action.targetPath, status: 'processed' };
   }
-  if (!fs.existsSync(source)) throw new Error('源文件不存在');
-  if (!fs.statSync(source).isFile()) throw new Error('只允许移动或复制文件');
-  if (target && fs.existsSync(target)) throw new Error('目标文件已存在');
-  assertWritable(source);
-  if (target) assertWritable(target);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  if (action.type === 'move') fs.renameSync(source, target);
-  else fs.copyFileSync(source, target);
-  return { fromPath: action.path, toPath: action.targetPath };
-}
-
-/** tmp+rename 原子写：目标同一文件系统内 rename，崩溃时原文件不会被截断 */
-function writeAtomicSync(targetPath, content) {
-  const temporary = `${targetPath}.${randomUUID()}.tmp`;
-  try {
-    fs.writeFileSync(temporary, content, 'utf8');
-    fs.renameSync(temporary, targetPath);
-  } finally {
-    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
-  }
+  // read / create / update / delete / move / copy / archive 之外没有其他动作类型，
+  // 这里不应再有任何执行分支
+  throw new ValidationError(`不支持的操作类型：${action.type}`);
 }
 
 function summarizeOperations(operations) {
@@ -314,7 +328,14 @@ function summarizeOperations(operations) {
 }
 
 export function recordAudit(entry) {
-  appendAudit(entry);
+  const action = entry.action ?? {};
+  const plan = entry.plan ?? createOperationPlan([action], {
+    id: entry.planId ?? randomUUID(),
+    actor: entry.actor ?? 'local-user',
+    role: entry.role ?? 'editor',
+    source: entry.source ?? 'api',
+  });
+  appendAudit({ ...entry, plan, action });
 }
 
 function appendAudit(entry) {
@@ -322,16 +343,17 @@ function appendAudit(entry) {
   const safeEntry = {
     id: randomUUID(),
     at: new Date().toISOString(),
+    planVersion: entry.plan?.version ?? 1,
+    planId: entry.plan?.id ?? entry.planId ?? null,
     actor: entry.actor,
     role: entry.role,
     source: entry.source,
     status: entry.status,
-    action: {
-      id: entry.action.id,
-      type: entry.action.type,
-      path: entry.action.path,
-      targetPath: entry.action.targetPath,
-    },
+    type: entry.action?.type ?? null,
+    path: entry.action?.path ?? null,
+    targetPath: entry.action?.targetPath ?? null,
+    action: auditAction(entry.action),
+    ...(entry.operationId ? { operationId: entry.operationId } : {}),
     ...(entry.error ? { error: entry.error } : {}),
   };
   fs.appendFileSync(AUDIT_FILE, `${JSON.stringify(safeEntry)}\n`, 'utf8');

@@ -191,22 +191,27 @@ async function main() {
     }
 
     const base = `http://127.0.0.1:${port}`;
-    /** 公开端点：探针与前端静态资源，不该要求令牌 */
-    const get = (p) => fetch(`${base}${p}`);
+    /** 公开端点：探针与前端静态资源，不该要求令牌（30s 兜底超时防挂死） */
+    const get = (p) => fetch(`${base}${p}`, { signal: AbortSignal.timeout(30_000) });
     /** 业务 API：设置了令牌时自动带上 X-Workspace-Token */
     const api = (p, init = {}) => fetch(`${base}${p}`, {
       ...init,
       headers: { ...(init.headers ?? {}), ...(workspaceToken ? { 'X-Workspace-Token': workspaceToken } : {}) },
+      signal: init.signal ?? AbortSignal.timeout(30_000),
     });
     /**
      * 只看 SSE 响应头就断开。
      * /api/vault/events 是长连接，`await res.text()` 会永远挂住；而 fetch 在**收到响应头**时
      * 就已 resolve，所以拿到 status/content-type 后立刻 abort，既不挂死也验到了路由。
+     * 组合一个 15s 超时：响应头一直不到时 probe 也能收场（controller.abort 只在头到达后才执行）。
      */
     const probeSse = async (p, headers = {}) => {
       const controller = new AbortController();
       try {
-        const res = await fetch(`${base}${p}`, { headers, signal: controller.signal });
+        const res = await fetch(`${base}${p}`, {
+          headers,
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+        });
         const info = { status: res.status, type: res.headers.get('content-type') ?? '' };
         controller.abort();
         return info;
@@ -275,6 +280,36 @@ async function main() {
     check('包内前端 bundle 内嵌版本号 == 包版本',
       embeddedVersions.length === 1 && embeddedVersions[0] === pkgVersion,
       `包版本=${pkgVersion} bundle 内=[${embeddedVersions.join(', ') || '未找到'}]`);
+
+    // ---- PWA 静态资源（manifest + service worker）必须随包发出且能从根路径取到 ----
+    // web/public/ 下的 manifest.webmanifest 与 sw.js 由 vite **原样拷**进 web/dist 根目录，
+    // index.html 用 <link rel="manifest" href="/manifest.webmanifest"> 引用。
+    // 这类「public 目录里的非 bundle 文件」最容易被忽略：assets/ 有 hash 与体积校验，
+    // 它们没有；漏发后页面看起来完全正常，只有「安装为应用」「离线壳缓存」静默失效。
+    // service worker 更苛刻——必须落在**站点根**才能拿到覆盖全站的 scope，路径错位即功能作废。
+    const pwaFiles = ['sw.js', 'manifest.webmanifest'];
+    for (const name of pwaFiles) {
+      const packedFile = path.join(layout.appRoot, 'web', name);
+      const repoFile = path.join(REPO, 'web', 'dist', name);
+      const same = fs.existsSync(packedFile) && fs.existsSync(repoFile)
+        && fs.readFileSync(packedFile).equals(fs.readFileSync(repoFile));
+      check(`PWA 资源 ${name} 随包发出且与仓库 web/dist 逐字节一致`, same,
+        `包内=${fs.existsSync(packedFile) ? '有' : '缺失'} 仓库=${fs.existsSync(repoFile) ? '有' : '缺失'}`
+        + (fs.existsSync(packedFile) && fs.existsSync(repoFile) && !same ? ' 内容不一致' : ''));
+    }
+
+    // 「文件在包内」不等于「能取到」——静态托管若把根级非 assets 文件漏掉，页面上仍是 404。
+    const manifestRes = await get('/manifest.webmanifest');
+    const manifestType = manifestRes.headers.get('content-type') ?? '';
+    check('GET /manifest.webmanifest 能下发，且 index.html 确实引用了它',
+      manifestRes.ok && indexHtml.includes('manifest.webmanifest'),
+      `status=${manifestRes.status} type=${manifestType} index引用=${indexHtml.includes('manifest.webmanifest')}`);
+
+    const swRes = await get('/sw.js');
+    const swType = swRes.headers.get('content-type') ?? '';
+    check('GET /sw.js 在站点根能下发（service worker scope 依赖根路径）',
+      swRes.ok && /javascript|ecmascript/i.test(swType),
+      `status=${swRes.status} type=${swType}`);
 
     // ---- 桌面壳是否与仓库同版 ----
     // desktop/ 在 .gitignore 的 `!` 白名单里、且常常还没 `git add`，所以「改了壳没重打」
@@ -368,6 +403,7 @@ async function main() {
         `status=${authorized.status}`);
       const wrong = await fetch(`${base}/api/meta/overview`, {
         headers: { 'X-Workspace-Token': `${workspaceToken}-wrong` },
+        signal: AbortSignal.timeout(30_000),
       });
       check('令牌错误同样被拒（401）', wrong.status === 401, `status=${wrong.status}`);
       check('探针与前端资源不要求令牌（/health、/ready、/ 均可达）',
@@ -537,6 +573,128 @@ async function main() {
         `status=${ghost.status} body=${JSON.stringify(ghostBody)?.slice(0, 140)}`);
     }
 
+    // ---- 画布 Obsidian 兼容：读取时归一化（本轮新增） ----
+    // Obsidian 的 .canvas 与本项目格式有三处不兼容：edge 用 fromNode/toNode（本项目 from/to）、
+    // 颜色是 "1"~"6" / #hex（本项目命名色）、存在 group 节点（无 text 只有 label）。
+    // 「读取时归一化」是 canvas.service.js 里的新代码路径 —— 直接往 vault 放一份 Obsidian 格式
+    // 的文件再 GET，就能证明包里是**新版** service（旧版会原样返回 fromNode、颜色仍为 "1"，
+    // 边还会因查不到端点被整条丢弃）。
+    const obsidianCanvasPath = `产物冒烟-Obsidian-${Date.now()}.canvas`;
+    const obsidianDoc = {
+      nodes: [
+        { id: 'group-1', type: 'group', x: 0, y: 0, width: 1600, height: 900, label: '分组标题' },
+        { id: 'card-a', type: 'text', text: '卡片 A', x: 40, y: 80, width: 320, height: 200, color: '1' },
+        { id: 'card-b', type: 'text', text: '卡片 B', x: 420, y: 120, width: 260, height: 160, color: '#9b59b6' },
+      ],
+      edges: [{ id: 'edge-1', fromNode: 'card-a', toNode: 'card-b', fromSide: 'right', toSide: 'left' }],
+    };
+    fs.writeFileSync(path.join(vaultDir, obsidianCanvasPath), JSON.stringify(obsidianDoc));
+    const obsidianRes = await api(`/api/canvas?path=${encodeURIComponent(obsidianCanvasPath)}`).catch(() => null);
+    const obsidianBody = obsidianRes?.ok ? await obsidianRes.json().catch(() => null) : null;
+    const obsidianNodes = obsidianBody?.data?.nodes ?? [];
+    const obsidianEdges = obsidianBody?.data?.edges ?? [];
+    const nodeColor = (id) => obsidianNodes.find((n) => n.id === id)?.color;
+    check('Obsidian 画布边端点归一化（fromNode/toNode → from/to）',
+      obsidianEdges.length === 1 && obsidianEdges[0].from === 'card-a' && obsidianEdges[0].to === 'card-b',
+      `edges=${JSON.stringify(obsidianEdges)?.slice(0, 120)}`);
+    check('Obsidian 画布颜色归一化（"1"→red、#hex 按色相就近映射）',
+      nodeColor('card-a') === 'red' && nodeColor('card-b') === 'purple',
+      `card-a=${nodeColor('card-a') ?? '无'} card-b=${nodeColor('card-b') ?? '无'}`);
+    check('Obsidian group 节点保留并排在最前（label → text）',
+      obsidianNodes[0]?.id === 'group-1' && obsidianNodes[0]?.type === 'group' && obsidianNodes[0]?.text === '分组标题',
+      `nodes[0]=${JSON.stringify(obsidianNodes[0])?.slice(0, 140)}`);
+    try { fs.rmSync(path.join(vaultDir, obsidianCanvasPath), { force: true }); } catch { /* 清理失败不影响结论 */ }
+
+    // ---- 附件上传：按笔记归组（新 folder 参数）+ 目录穿越防护 ----
+    // 本轮给 POST /api/vault/attachments 加了可选 folder（客户端指定 attachments/ 下的子目录）。
+    // 这是**由客户端控制、且直接参与路径构造**的新参数，所以两面都要验：
+    //   ① 正常归组：文件真的落到 attachments/<folder>/ 下；
+    //   ② 穿越防护：上跳 / 绝对路径 / 超深嵌套都被服务端逐段清洗（sanitizeAttachmentFolder
+    //      与文件名同规则），**绝不逃出 attachments/**，且深度截到 4 段。
+    const ATTACHMENT_PNG = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const attachName = `产物冒烟-${Date.now()}.png`;
+    const uploadAttachment = (folder) => api(
+      `/api/vault/attachments?name=${encodeURIComponent(attachName)}`
+      + (folder === undefined ? '' : `&folder=${encodeURIComponent(folder)}`),
+      { method: 'POST', headers: { 'content-type': 'image/png' }, body: ATTACHMENT_PNG },
+    );
+    const uploadedPaths = [];
+    const insideAttachments = (relativePath) => {
+      if (typeof relativePath !== 'string' || !relativePath.startsWith('attachments/')) return false;
+      if (relativePath.split('/').includes('..')) return false;
+      const absolute = path.resolve(vaultDir, relativePath);
+      return absolute.startsWith(path.resolve(vaultDir, 'attachments') + path.sep);
+    };
+
+    const groupedRes = await uploadAttachment('产物冒烟笔记/子目录').catch(() => null);
+    const groupedBody = groupedRes?.ok ? await groupedRes.json().catch(() => null) : null;
+    const groupedPath = groupedBody?.data?.path ?? '';
+    uploadedPaths.push(groupedPath);
+    check('附件按 folder 归组到 attachments/<笔记>/ 子目录（且真落盘）',
+      groupedRes?.status === 201
+      && groupedPath === `attachments/产物冒烟笔记/子目录/${attachName}`
+      && fs.existsSync(path.resolve(vaultDir, groupedPath)),
+      `status=${groupedRes?.status ?? 'ERR'} path=${groupedPath || '无'}`);
+
+    const escapeFolders = [
+      ['上跳', '../../越界目录'],
+      ['绝对路径', 'C:\\Windows\\Temp'],
+      ['超深嵌套', 'a/b/c/d/e/f/g'],
+    ];
+    const escapedFolders = [];
+    const escapeResults = [];
+    for (const [label, folder] of escapeFolders) {
+      const res = await uploadAttachment(folder).catch(() => null);
+      const body = res?.ok ? await res.json().catch(() => null) : null;
+      const relativePath = body?.data?.path ?? '';
+      escapeResults.push({ label, status: res?.status ?? 0, path: relativePath });
+      uploadedPaths.push(relativePath);
+      if (!(res?.status === 201 && insideAttachments(relativePath)
+        && fs.existsSync(path.resolve(vaultDir, relativePath)))) {
+        escapedFolders.push(`${label}→${res?.status ?? 'ERR'} path=${relativePath || '无'}`);
+      }
+    }
+    check('附件 folder 被逐段清洗，逃不出 attachments/（上跳 / 绝对路径 / 超深嵌套）',
+      escapedFolders.length === 0,
+      escapedFolders.length ? `未被拦住：${escapedFolders.join(' | ')}` : `已验 ${escapeFolders.length} 类`);
+
+    const deepFolderSegments = (escapeResults[2]?.path ?? '').split('/').slice(1, -1).length;
+    check('附件 folder 深度上限 4 段（更深的被截断）',
+      deepFolderSegments > 0 && deepFolderSegments <= 4,
+      `路径=${escapeResults[2]?.path || '无'} 目录层数=${deepFolderSegments}`);
+
+    for (const relativePath of uploadedPaths) {
+      if (!relativePath) continue;
+      await api(`/api/vault/attachments?path=${encodeURIComponent(relativePath)}`, { method: 'DELETE' }).catch(() => {});
+    }
+
+    // ---- frontmatter tags 并入标签系统（本轮新增 extractNoteTags） ----
+    // 修复内容：frontmatter 的 tags（Obsidian 主流写法，支持 YAML 块列表）此前会被解析成空、
+    // 且改写属性时可能丢失。现在 note 的完整标签集 = 正文内联标签 ∪ frontmatter tags。
+    // 建一篇带 tags 属性的笔记，标签系统里必须能查到 —— 旧包里查不到。
+    const tagName = `产物冒烟标签-${Date.now()}`;
+    const taggedNote = await api('/api/notes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: `产物冒烟标签笔记-${Date.now()}`,
+        content: '标签冒烟',
+        properties: { tags: [tagName] },
+      }),
+    });
+    const taggedBody = taggedNote.ok ? await taggedNote.json() : null;
+    const taggedId = taggedBody?.data?.id ?? taggedBody?.id;
+    const tagsRes = await api('/api/tags');
+    const tagsBody = tagsRes.ok ? await tagsRes.json() : null;
+    const tagNames = (tagsBody?.data ?? []).map((tag) => tag?.name ?? tag);
+    check('笔记 properties.tags 并入标签系统（GET /api/tags 能查到）',
+      taggedNote.ok && tagNames.includes(tagName),
+      `status=${taggedNote.status} 标签总数=${tagNames.length} 命中=${tagNames.includes(tagName)}`);
+    if (taggedId) await api(`/api/notes/${taggedId}`, { method: 'DELETE' }).catch(() => {});
+
     check('Markdown 真落盘到 vault', fs.existsSync(vaultDir),
       `vault=${vaultDir} 存在=${fs.existsSync(vaultDir)}`);
 
@@ -573,10 +731,23 @@ async function main() {
     // 完整链路：write → read 读回 → find 找到 → log 有审计 → undo 撤销后文件消失。
     const fcRelPath = `产物冒烟-fc-${Date.now()}.txt`;
     const fcPayload = `packaged smoke ${Date.now()}`;
+    const fcAction = { type: 'write', path: fcRelPath, content: fcPayload };
+    const fcPreview = await api('/api/files/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(fcAction),
+    }).catch(() => null);
+    const fcPreviewBody = fcPreview?.ok ? await fcPreview.json().catch(() => null) : null;
+    const fcPlanId = fcPreviewBody?.data?.plan?.id;
+    const fcPlanHash = fcPreviewBody?.data?.planHash;
+    check('POST /api/files/preview 返回执行计划和计划哈希',
+      Boolean(fcPreview?.ok && fcPlanId && /^[a-f0-9]{64}$/i.test(fcPlanHash ?? '')),
+      `status=${fcPreview?.status ?? 'ERR'} body=${JSON.stringify(fcPreviewBody)?.slice(0, 180)}`);
+
     const fcWrite = await api('/api/files/execute', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'write', path: fcRelPath, content: fcPayload, confirmed: true }),
+      body: JSON.stringify({ ...fcAction, confirmed: true, planId: fcPlanId, planHash: fcPlanHash }),
     }).catch(() => null);
     const fcWriteBody = fcWrite?.ok ? await fcWrite.json().catch(() => null) : null;
     check('POST /api/files/execute 带 confirmed 写入成功',
@@ -596,6 +767,14 @@ async function main() {
         fcFind?.ok && (fcFindBody?.data?.items ?? []).some((item) => item.path === fcRelPath),
         `status=${fcFind?.status ?? 'ERR'} total=${fcFindBody?.data?.total}`);
 
+      // grep 是本轮 fc-core 改造里新增的服务端端点（此前只有 CLI 侧能力），
+      // 用它验证「正文检索」这条只读链路也随包可用。
+      const fcGrep = await api(`/api/files/grep?query=${encodeURIComponent('packaged')}`).catch(() => null);
+      const fcGrepBody = fcGrep?.ok ? await fcGrep.json().catch(() => null) : null;
+      check('GET /api/files/grep 能按正文命中刚写的文件',
+        fcGrep?.ok && (fcGrepBody?.data?.items ?? []).some((item) => item.path === fcRelPath),
+        `status=${fcGrep?.status ?? 'ERR'} total=${fcGrepBody?.data?.total}`);
+
       const fcLog = await api('/api/files/log?limit=20').catch(() => null);
       const fcLogBody = fcLog?.ok ? await fcLog.json().catch(() => null) : null;
       check('GET /api/files/log 记下了这次操作（审计链随包可用）',
@@ -605,13 +784,61 @@ async function main() {
       const fcUndo = await api('/api/files/undo', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ operationId: fcWriteBody?.data?.operationId }),
       }).catch(() => null);
       const fcUndoBody = fcUndo?.ok ? await fcUndo.json().catch(() => null) : null;
       check('POST /api/files/undo 撤销成功且文件已不在 vault（同时完成清理）',
         Boolean(fcUndo?.ok && fcUndoBody?.data?.undone === true) && !fs.existsSync(path.join(vaultDir, fcRelPath)),
         `status=${fcUndo?.status ?? 'ERR'} body=${JSON.stringify(fcUndoBody)?.slice(0, 140)}`);
     }
+
+    // ---- Vault profile（PUT /api/vault/profile，2026-10-03 新增）----
+    // profile 决定 Inbox / Daily / Journal 的落盘目录，持久化在 <vault>/.lattice/profile.json。
+    // 这类「可配置目录」接口最容易出的两类错：① 读得到但写不进（HTTP 200、盘上没变）；
+    // ② 非法值没拦住（绝对路径 / . / .. / 隐藏目录 / _templates），让内容写到 Vault 之外
+    //   或内部目录里。所以既验「正路 + 真落盘」，也验各类越界一律 422。
+    // ⚠️ 放在最后跑：它会改写 profile，而 Inbox/Daily 的落盘目录受其影响，插在前面会干扰
+    //    上面那条 inboxStatus 相关的断言。
+    const vaultInfo = await api('/api/vault/info').catch(() => null);
+    const vaultInfoBody = vaultInfo?.ok ? await vaultInfo.json().catch(() => null) : null;
+    check('GET /api/vault/info 下发 vault profile（含 inbox/daily/journal）',
+      Boolean(vaultInfoBody?.data?.profile?.paths?.inbox),
+      `status=${vaultInfo?.status ?? 'ERR'} profile=${JSON.stringify(vaultInfoBody?.data?.profile)?.slice(0, 120)}`);
+
+    const profileTarget = { inbox: 'Work/Inbox', daily: 'Work/Daily', journal: 'Work/Journal' };
+    const profilePut = await api('/api/vault/profile', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paths: profileTarget }),
+    }).catch(() => null);
+    const profilePutBody = profilePut?.ok ? await profilePut.json().catch(() => null) : null;
+    const profileDisk = path.join(vaultDir, '.lattice', 'profile.json');
+    let profileOnDisk = null;
+    try { profileOnDisk = JSON.parse(fs.readFileSync(profileDisk, 'utf8')); } catch { profileOnDisk = null; }
+    check('PUT /api/vault/profile 接受合法 profile、回读一致且真落盘到 .lattice/profile.json',
+      Boolean(profilePut?.ok
+        && profilePutBody?.data?.profile?.paths?.inbox === profileTarget.inbox
+        && profileOnDisk?.paths?.inbox === profileTarget.inbox),
+      `status=${profilePut?.status ?? 'ERR'} 响应=${profilePutBody?.data?.profile?.paths?.inbox ?? 'n/a'} 盘上=${profileOnDisk?.paths?.inbox ?? 'n/a'}`);
+
+    const badProfiles = [
+      ['绝对路径', 'C:\\Inbox'],
+      ['上跳', '../outside'],
+      ['隐藏目录', '.secret'],
+      ['内部目录 _templates', '_templates'],
+    ];
+    const profileEscaped = [];
+    for (const [label, inbox] of badProfiles) {
+      const res = await api('/api/vault/profile', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ paths: { inbox, daily: 'Daily', journal: 'Journal' } }),
+      }).catch(() => null);
+      if (res?.status !== 422) profileEscaped.push(`${label}→${res?.status ?? 'ERR'}`);
+    }
+    check('PUT /api/vault/profile 拒绝越界 profile（绝对路径/上跳/隐藏/内部目录，均 422）',
+      profileEscaped.length === 0,
+      profileEscaped.length ? `未被拒：${profileEscaped.join(', ')}` : `已验 ${badProfiles.length} 类`);
   } finally {
     try { stop(); } catch { /* 已关闭 */ }
     try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* Windows 句柄未释放 */ }

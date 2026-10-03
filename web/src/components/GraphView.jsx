@@ -7,6 +7,11 @@ const MAX_SCALE = 3.5;
 // block. Larger graphs reveal labels for important nodes and on hover instead.
 const LABEL_ALWAYS_LIMIT = 18;
 const ALPHA_REHEAT = { drag: 0.5, hover: 0, click: 0.35 };
+// 力导向整体收敛很快（125 节点 ≈ 35ms）：开图先在离线状态推进到位再首绘，
+// 而不是把 300+ 帧收敛过程逐帧演给用户看（那正是「一卡一卡」的来源）。
+// 收敛步数约 366 步且代价 O(n²)，按节点数给足迭代次数；墙钟上限只是超大图的 runaway 兜底。
+const LAYOUT_PRECOMPUTE_MAX_TICKS = 600;
+const LAYOUT_PRECOMPUTE_BUDGET_MS = 300;
 const GRAPH_COLOR_FALLBACKS = {
   edge: '#c9d1da',
   edgeActive: '#4a6cf7',
@@ -58,6 +63,8 @@ export default function GraphView({
   const needFitRef = useRef(true);
   const settledRef = useRef(false);
   const colorsRef = useRef(null);
+  // 标签宽度缓存：draw 每帧全量重绘，measureText 只需对同一 (字号, 文本) 做一次
+  const labelMetricsRef = useRef(new Map());
 
   const [hovered, setHovered] = useState(null);
   const [settled, setSettled] = useState(false);
@@ -150,6 +157,9 @@ export default function GraphView({
 
     const showAllLabels = layout.nodes.length <= LABEL_ALWAYS_LIMIT;
     const occupiedLabels = [];
+    // measureText 是逐帧重绘里最贵的一步：同一字号同一文本只量一次
+    const labelMetrics = labelMetricsRef.current;
+    let currentFontKey = '';
 
     for (const node of layout.nodes) {
       const point = toScreen(node);
@@ -175,8 +185,18 @@ export default function GraphView({
       if (shouldShowLabel) {
         const label = node.title.length > 14 ? `${node.title.slice(0, 14)}…` : node.title;
         const fontSize = Math.max(10, Math.min(14, 11 + scale));
-        ctx.font = `${isFocus ? 600 : 400} ${fontSize}px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif`;
-        const labelWidth = Math.min(180, Math.max(24, ctx.measureText(label).width));
+        const fontKey = `${isFocus ? 600 : 400}|${fontSize}`;
+        if (fontKey !== currentFontKey) {
+          ctx.font = `${isFocus ? 600 : 400} ${fontSize}px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif`;
+          currentFontKey = fontKey;
+        }
+        const metricKey = `${fontKey}|${label}`;
+        let labelWidth = labelMetrics.get(metricKey);
+        if (labelWidth === undefined) {
+          labelWidth = Math.min(180, Math.max(24, ctx.measureText(label).width));
+          if (labelMetrics.size > 600) labelMetrics.clear();
+          labelMetrics.set(metricKey, labelWidth);
+        }
         const labelTop = point.y + radius + 3;
         const labelBox = { left: point.x - labelWidth / 2, right: point.x + labelWidth / 2, top: labelTop, bottom: labelTop + fontSize + 4 };
         const collides = occupiedLabels.some((box) => (
@@ -265,12 +285,30 @@ export default function GraphView({
       const { width, height } = sizeRef.current;
       if (width === 0 || height === 0) return;
 
-      layoutRef.current = createForceLayout(sourceNodes, sourceEdges, { width, height });
-      needFitRef.current = true;
+      const layout = createForceLayout(sourceNodes, sourceEdges, { width, height });
+      // 离线推进到收敛（或预算用尽）再首绘：图谱打开即是排好的布局。
+      // 步数按节点数给足（收敛约需 366 步、每步 O(n²)），墙钟只是兜底——
+      // 用墙钟当主预算会在页面繁忙时推不满，退化成肉眼可见的慢速蠕动。
+      const maxTicks = Math.min(
+        LAYOUT_PRECOMPUTE_MAX_TICKS,
+        Math.max(60, Math.round(12_000_000 / Math.max(1, sourceNodes.length * sourceNodes.length))),
+      );
+      const deadline = performance.now() + LAYOUT_PRECOMPUTE_BUDGET_MS;
+      let convergedOffline = true;
+      for (let tick = 0; tick < maxTicks; tick += 1) {
+        if (performance.now() >= deadline || !layout.step()) break;
+        convergedOffline = false;
+      }
+      layoutRef.current = layout;
+
+      needFitRef.current = false;
       applyFit();
-      startLoop();
+      setZoomPercent(Math.round(viewRef.current.scale * 100));
+      draw();
+      setSettledOnce(convergedOffline);
+      if (!convergedOffline) startLoop();
     },
-    [applyFit, startLoop],
+    [applyFit, draw, setSettledOnce, startLoop],
   );
 
   useEffect(() => {
@@ -294,10 +332,12 @@ export default function GraphView({
 
   useEffect(() => {
     rebuildLayout(nodes, edges);
-    return () => cancelAnimationFrame(frameRef.current);
+    // frameRef 必须归零：只 cancel 不清零的话，startLoop 会误以为循环还在跑而拒绝重启
+    return () => {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = 0;
+    };
   }, [nodes, edges, rebuildLayout]);
-
-  useEffect(() => () => cancelAnimationFrame(frameRef.current), []);
 
   // ── 交互 ────────────────────────────────────────────────────
   const worldFromEvent = (event) => {

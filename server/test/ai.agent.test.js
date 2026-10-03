@@ -159,3 +159,67 @@ test('agent mode skips the local instant path so organize commands actually exec
     await upstream.close();
   }
 });
+
+test('agent write batch with an invalid path feeds the error back instead of failing the conversation', async () => {
+  const vaultDir = config.vaultDir;
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, '正常.md'), '# 正常\n', 'utf8');
+
+  const upstream = await listenScriptedUpstream([
+    // 第 1 轮：模型给出越界路径，动作整体被路径校验拒绝
+    () => '```lattice-actions\n[{"type":"create","path":"../escape.md","content":"x"}]\n```',
+    // 第 2 轮：拿到失败原因后改用合法路径
+    (body) => {
+      const lastUser = body.messages.at(-1).content;
+      assert.ok(lastUser.includes('全部未执行'), '批量失败原因应回填给模型');
+      assert.ok(lastUser.includes('非法'), '应包含路径校验的错误详情');
+      return '```lattice-actions\n[{"type":"create","path":"retry.md","content":"# Retry\\n"}]\n```';
+    },
+    // 第 3 轮：执行成功后给出最终回答
+    () => '已修正路径并创建文件。',
+  ]);
+  try {
+    const result = await chat({
+      message: '建一个文件',
+      context: { files: [], folders: [] },
+      mode: 'agent',
+      autoApprove: true,
+      role: 'editor',
+      provider: providerFor(upstream),
+    });
+
+    assert.equal(upstream.bodies.length, 3, '失败应回填并继续循环，而不是整个会话报错');
+    assert.equal(result.reply, '已修正路径并创建文件。');
+    assert.ok(result.meta.executedFailed.some((item) => item.includes('批量写操作未执行')));
+    assert.deepEqual(result.meta.executed, ['create retry.md']);
+    assert.ok(fs.existsSync(path.join(vaultDir, 'retry.md')));
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('agent rounds exhausted with pending actions tells the user how to continue', async () => {
+  const vaultDir = config.vaultDir;
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, '笔记A.md'), '# A\n', 'utf8');
+  const readRound = () => '```lattice-actions\n[{"type":"read","path":"笔记A.md"}]\n```';
+  const upstream = await listenScriptedUpstream([readRound, readRound, readRound, readRound, readRound, readRound]);
+  try {
+    const result = await chat({
+      message: '反复读这个文件',
+      context: { files: [], folders: [] },
+      mode: 'agent',
+      autoApprove: true,
+      role: 'editor',
+      provider: providerFor(upstream),
+    });
+
+    assert.equal(upstream.bodies.length, 6, '应达到任务模式最大轮次后停止');
+    assert.equal(result.meta.rounds, 6);
+    assert.ok(result.reply.includes('最大轮次'), '轮次耗尽应在回复中明确提示');
+    assert.ok(result.reply.includes('继续'), '应告知用户如何接续任务');
+    assert.deepEqual(result.meta.executed, [], 'executed 只记录写操作，纯读取循环应为空');
+  } finally {
+    await upstream.close();
+  }
+});

@@ -265,6 +265,7 @@ function EmbeddingSection({ settings }) {
 function IndexStatusSection() {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [reindexError, setReindexError] = useState('');
 
   const refresh = async () => {
     try {
@@ -283,9 +284,13 @@ function IndexStatusSection() {
 
   const runReindex = async () => {
     setBusy(true);
+    setReindexError('');
     try {
       await aiApi.reindex();
+      // 入队成功后延迟刷新状态
       setTimeout(refresh, 1_500);
+    } catch (error) {
+      setReindexError(error?.message ?? '重建索引入队失败，请稍后重试');
     } finally {
       setBusy(false);
     }
@@ -311,6 +316,7 @@ function IndexStatusSection() {
           : '未配置 embedding 模型，语义功能未启用')
         : '索引状态加载中…'}
     </p>
+    {reindexError ? <p className="model-center__index-summary" role="alert">{reindexError}</p> : null}
   </section>;
 }
 

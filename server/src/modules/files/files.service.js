@@ -1,5 +1,5 @@
 import { config } from '../../config/index.js';
-import { AppError, ConflictError, ValidationError } from '../../lib/errors.js';
+import { AppError, ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
 import { createFileStore } from '../../../../scripts/fc-core.mjs';
 
 const store = createFileStore(config.vaultDir);
@@ -20,12 +20,24 @@ export function preview(action) {
   return guarded(() => store.previewMutation(action.type, action));
 }
 
-export function execute(action, { actor = 'local-user', source = 'files-api' } = {}) {
-  return guarded(() => store.mutate(action.type, action, { actor, source }));
+export function execute(action, {
+  actor = 'local-user',
+  role = 'editor',
+  source = 'files-api',
+  planId = null,
+  planHash = null,
+} = {}) {
+  return guarded(() => store.mutate(action.type, action, {
+    actor,
+    role,
+    source,
+    planId,
+    planHash,
+  }));
 }
 
-export function undo(operationId, { force = false, actor = 'local-user', source = 'files-api' } = {}) {
-  return guarded(() => store.undo(operationId, { force, actor, source }));
+export function undo(operationId, { force = false, actor = 'local-user', role = 'editor', source = 'files-api' } = {}) {
+  return guarded(() => store.undo(operationId, { force, actor, role, source }));
 }
 
 export function log(limit) {
@@ -37,9 +49,14 @@ function guarded(task) {
     return task();
   } catch (error) {
     if (error instanceof AppError) throw error;
+    // fc-core 只抛带文本的普通 Error，这里按消息短语映射 HTTP 语义：
+    // 并发/冲突 → 409，路径不存在 → 404，其余输入问题 → 422
     const message = error?.message ?? 'File operation failed';
-    if (/changed after|already exists|already undone|operation not found|no operation to undo/i.test(message)) {
+    if (/changed after|already exists|already undone|operation not found|no operation to undo|plan hash mismatch|cannot undo/i.test(message)) {
       throw new ConflictError(message);
+    }
+    if (/does not exist|^Not a file:|^Not a directory:/i.test(message)) {
+      throw new NotFoundError(message);
     }
     throw new ValidationError(message);
   }

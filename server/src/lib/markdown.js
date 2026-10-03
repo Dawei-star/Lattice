@@ -61,6 +61,24 @@ export function extractWikiLinks(rawContent) {
  * 白名单写法会把中文标点（：、，、。、「）后的标签全部漏掉。
  */
 const TAG = /(?<![\p{L}\p{N}_#/])#([\p{L}\p{N}_\-/]{1,64})/gu;
+// 行首紧跟文字的 #（#需求、##背景）是无空格的 Markdown 标题（中文笔记常见写法），不是标签。
+// 但首个词里带 / 的嵌套标签（#工程/前端）保留为标签——标题不会写成带斜杠的层级。
+const HEADING_WITHOUT_SPACE = /^[ \t]*#{1,6}(?=[^\s#/])(?![^\s/]*[/])/gm;
+// 十六进制色值（#fff / #ffffff / #ffffffff）不是标签
+const HEX_COLOR_NAME = /^[0-9a-f]+$/i;
+/**
+ * 判断「看起来像色值」的名字，用于把 #ffffff / #00ff00 / #fff 这类从标签里排除。
+ *
+ * ⚠️ 不能一律按「全 hex 且长度 3/6/8」排除：`#e2e`、`#a1` 这类带数字的短串更像标签名
+ * （项目自带的 MCP E2E 就用 `#e2e` 当标签），一律排除会把真实标签静默丢掉。
+ * 故：**带数字时只认 6/8 位**（#00ff00 / #deadbeef），**纯字母时 3/6/8 位都算色值**（#fff / #ffffff）。
+ * @param {string} name 已去掉前导 # 的标签名
+ * @returns {boolean}
+ */
+function isHexColorLike(name) {
+  if (!HEX_COLOR_NAME.test(name)) return false;
+  return /\d/.test(name) ? name.length === 6 || name.length === 8 : [3, 6, 8].includes(name.length);
+}
 
 /**
  * 抽取正文中的标签。
@@ -68,16 +86,40 @@ const TAG = /(?<![\p{L}\p{N}_#/])#([\p{L}\p{N}_\-/]{1,64})/gu;
  * @returns {string[]}
  */
 export function extractTags(rawContent) {
-  const text = stripCode(rawContent ?? '');
+  const text = stripCode(rawContent ?? '').replace(HEADING_WITHOUT_SPACE, ' ');
   /** @type {Set<string>} */
   const tags = new Set();
 
   for (const match of text.matchAll(TAG)) {
     const name = match[1].replace(/[/\-_]+$/, '').trim();
     // 至少要含一个字母/汉字，#123456 这类不算标签
-    if (name && /[\p{L}]/u.test(name)) tags.add(name);
+    if (!name || !/[\p{L}]/u.test(name)) continue;
+    if (isHexColorLike(name)) continue;
+    tags.add(name);
   }
 
+  return [...tags];
+}
+
+/**
+ * 笔记的完整标签集合 = 正文内联标签 + frontmatter tags 属性（Obsidian 导入的主流写法）。
+ * frontmatter 里支持 YAML 块列表、JSON 行内数组和逗号分隔三种形态。
+ * @param {string} content
+ * @param {Record<string, unknown> | undefined} properties
+ * @returns {string[]}
+ */
+export function extractNoteTags(content, properties) {
+  const tags = new Set(extractTags(content));
+  const raw = properties?.tags;
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(/[,，、]/)
+      : [];
+  for (const item of list) {
+    const name = String(item).trim().replace(/^#/, '').replace(/[/\-_]+$/, '').trim();
+    if (name) tags.add(name);
+  }
   return [...tags];
 }
 

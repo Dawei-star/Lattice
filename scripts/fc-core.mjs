@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { OPERATION_PLAN_VERSION, auditAction, createOperationPlan } from './operation-plan.mjs';
 
 const INTERNAL_DIR = '.fc';
 const MAX_READ_BYTES = 2 * 1024 * 1024;
@@ -98,6 +99,7 @@ export class FileStore {
       ...(action.targetPath ? { targetPath: action.targetPath } : {}),
       summary: describeAction(action, changes),
       changes,
+      planHash: singlePlanHash(action, changes),
     };
 
     if (['create', 'write', 'append', 'edit'].includes(action.type)) {
@@ -125,40 +127,79 @@ export class FileStore {
     };
   }
 
-  mutate(type, input = {}, { dryRun = false, actor = 'local-user', source = 'fc', batchId = null } = {}) {
+  mutate(type, input = {}, {
+    dryRun = false,
+    actor = 'local-user',
+    role = 'editor',
+    source = 'fc',
+    batchId = null,
+    planId = null,
+    planVersion = OPERATION_PLAN_VERSION,
+    actionId = null,
+    planHash = null,
+  } = {}) {
     const action = normalizeAction(type, input);
     const preview = this.previewMutation(action.type, action);
+    assertPlanHash(planHash, preview.planHash, 'Operation plan hash mismatch');
     if (dryRun) return { dryRun: true, ...preview };
 
     const operationId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const plan = createOperationPlan([{
+      ...action,
+      ...(actionId ? { id: actionId } : {}),
+    }], { id: planId ?? randomUUID(), actor, role, source });
     const operationDir = path.join(this.trashDir, operationId);
     const snapshotDir = path.join(operationDir, 'files');
     fs.mkdirSync(snapshotDir, { recursive: true });
     const entries = [];
+    let applied = false;
     try {
       for (const [index, relativePath] of this.changePaths(action).entries()) {
         entries.push(captureEntry(this.rootDir, relativePath, snapshotDir, index));
       }
       const result = applyAction(this, action);
+      applied = true;
       for (const entry of entries) entry.after = stateFor(this.resolve(entry.path));
       const manifest = {
         id: operationId,
         type: action.type,
         path: action.path,
         ...(action.targetPath ? { targetPath: action.targetPath } : {}),
+        planVersion: plan.version,
+        planId: plan.id,
         createdAt: new Date().toISOString(),
         entries,
       };
       writeJson(path.join(operationDir, 'manifest.json'), manifest);
-      appendJsonl(this.auditFile, { id: operationId, at: manifest.createdAt, type: action.type, path: action.path, targetPath: action.targetPath, ...(batchId ? { batchId } : {}), actor, source, status: 'completed' });
-      return { operationId, undoable: true, ...result, preview };
+      appendJsonl(this.auditFile, auditEntry({
+        id: operationId,
+        at: manifest.createdAt,
+        action: plan.actions[0],
+        plan,
+        operationId,
+        batchId,
+        actor,
+        role,
+        source,
+        status: 'completed',
+      }));
+      return { operationId, planId: plan.id, planVersion: plan.version, undoable: true, ...result, preview };
     } catch (error) {
-      fs.rmSync(operationDir, { recursive: true, force: true });
+      // 动作尚未落盘时才清场；一旦文件已被修改，快照目录必须保留——
+      // 否则这次变更既不能撤销，也不留任何审计痕迹
+      if (!applied) fs.rmSync(operationDir, { recursive: true, force: true });
       throw error;
     }
   }
 
-  mutateBatch(actions = [], { dryRun = false, actor = 'local-user', source = 'fc-batch', planHash = null } = {}) {
+  mutateBatch(actions = [], {
+    dryRun = false,
+    actor = 'local-user',
+    role = 'editor',
+    source = 'fc-batch',
+    planHash = null,
+    planId = null,
+  } = {}) {
     const normalized = normalizeBatchActions(actions);
     const preview = this.previewBatch(normalized);
     if (planHash && planHash !== preview.planHash) {
@@ -167,11 +208,20 @@ export class FileStore {
     if (dryRun) return { dryRun: true, ...preview };
 
     const batchId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const plan = createOperationPlan(normalized, { id: planId ?? randomUUID(), actor, role, source });
     const results = [];
     const completed = [];
     try {
-      for (const action of normalized) {
-        const result = this.mutate(action.type, action, { actor, source, batchId });
+      for (const [index, action] of normalized.entries()) {
+        const result = this.mutate(action.type, action, {
+          actor,
+          role,
+          source,
+          batchId,
+          planId: plan.id,
+          planVersion: plan.version,
+          actionId: plan.actions[index].id,
+        });
         results.push(result);
         completed.push({ operationId: result.operationId, type: action.type, path: action.path, ...(action.targetPath ? { targetPath: action.targetPath } : {}) });
       }
@@ -187,6 +237,8 @@ export class FileStore {
     }
     return {
       batchId,
+      planId: plan.id,
+      planVersion: plan.version,
       planHash: preview.planHash,
       total: results.length,
       operationIds: results.map((result) => result.operationId),
@@ -195,7 +247,7 @@ export class FileStore {
     };
   }
 
-  undo(operationId = null, { force = false, actor = 'local-user', source = 'fc' } = {}) {
+  undo(operationId = null, { force = false, actor = 'local-user', role = 'editor', source = 'fc' } = {}) {
     const manifest = this.findManifest(operationId);
     if (!manifest) throw new Error(operationId ? `Operation not found: ${operationId}` : 'There is no operation to undo');
     if (manifest.undoneAt) throw new Error(`Operation already undone: ${manifest.id}`);
@@ -212,8 +264,18 @@ export class FileStore {
     for (const entry of [...manifest.entries].reverse()) restoreEntry(this.rootDir, entry, path.dirname(path.join(this.trashDir, manifest.id, 'manifest.json')));
     manifest.undoneAt = new Date().toISOString();
     writeJson(path.join(this.trashDir, manifest.id, 'manifest.json'), manifest);
-    appendJsonl(this.auditFile, { id: randomUUID(), at: manifest.undoneAt, type: 'undo', operationId: manifest.id, actor, source, status: 'completed' });
-    return { operationId: manifest.id, undone: true };
+    appendJsonl(this.auditFile, auditEntry({
+      id: randomUUID(),
+      at: manifest.undoneAt,
+      action: { id: null, type: 'undo', path: null, targetPath: null },
+      plan: { version: manifest.planVersion ?? OPERATION_PLAN_VERSION, id: manifest.planId ?? manifest.id, actor, role, source },
+      operationId: manifest.id,
+      actor,
+      role,
+      source,
+      status: 'completed',
+    }));
+    return { operationId: manifest.id, planId: manifest.planId ?? manifest.id, undone: true };
   }
 
   log(limit = 40) {
@@ -382,7 +444,15 @@ function restoreEntry(rootDir, entry, operationDir) {
           throw error;
         }
       } else {
-        fs.rmSync(absolutePath, { recursive: false });
+        // On Windows, rmSync can report success while leaving a watched file behind.
+        // unlinkSync is the reliable first path for regular files; fail loudly if both paths leave it in place.
+        try {
+          fs.unlinkSync(absolutePath);
+        } catch (error) {
+          if (error?.code === 'ENOENT') return;
+          fs.rmSync(absolutePath, { force: true });
+        }
+        if (fs.existsSync(absolutePath)) throw new Error(`Cannot undo: file could not be removed (${entry.path})`);
       }
     }
     return;
@@ -529,8 +599,15 @@ function batchPlanHash(actions, operations) {
   return sha256(JSON.stringify({ actions, before }));
 }
 
-function changePaths(action) {
-  return action.type === 'move' ? [action.path, action.targetPath] : action.type === 'copy' ? [action.targetPath] : [action.path];
+function singlePlanHash(action, changes) {
+  return sha256(JSON.stringify({ version: OPERATION_PLAN_VERSION, action, changes }));
+}
+
+function assertPlanHash(expected, actual, message) {
+  if (!expected || expected === actual) return;
+  const error = new Error(`${message}: expected ${expected}, current ${actual}`);
+  error.code = 'FC_PLAN_MISMATCH';
+  throw error;
 }
 
 function previewPaths(action) {
@@ -604,10 +681,43 @@ function appendJsonl(filePath, value) {
   fs.appendFileSync(filePath, `${JSON.stringify(value)}\n`, 'utf8');
 }
 
+function auditEntry({
+  id,
+  at,
+  action,
+  plan,
+  operationId = null,
+  batchId = null,
+  actor = 'local-user',
+  role = 'editor',
+  source = 'fc',
+  status,
+  error = null,
+}) {
+  return {
+    id,
+    at,
+    planVersion: plan?.version ?? OPERATION_PLAN_VERSION,
+    planId: plan?.id ?? null,
+    actor,
+    role: plan?.role ?? role,
+    source,
+    status,
+    type: action?.type ?? null,
+    path: action?.path ?? null,
+    targetPath: action?.targetPath ?? null,
+    action: auditAction(action),
+    ...(operationId ? { operationId } : {}),
+    ...(batchId ? { batchId } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
 function readManifest(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (error) {
-    return error?.code === 'ENOENT' ? null : null;
+  } catch {
+    // 文件缺失与 JSON 损坏同样按「没有可撤销的操作」处理；区分二者对调用方没有意义
+    return null;
   }
 }

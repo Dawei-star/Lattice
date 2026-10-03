@@ -1,6 +1,6 @@
-import { timingSafeEqual } from 'node:crypto';
 import { config } from '../../config/index.js';
 import { UnauthorizedError } from '../../lib/errors.js';
+import { sameSecret } from '../../lib/secrets.js';
 import { readBearerToken } from '../../middleware/workspaceAuth.js';
 
 /**
@@ -29,11 +29,4 @@ export function applyAiPrincipal(req, body) {
   const principal = req.aiPrincipal ?? req.workspacePrincipal;
   if (!principal) return body;
   return { ...body, ...principal };
-}
-
-function sameSecret(candidate, expected) {
-  const candidateBuffer = Buffer.from(candidate);
-  const expectedBuffer = Buffer.from(expected);
-  return candidateBuffer.length === expectedBuffer.length
-    && timingSafeEqual(candidateBuffer, expectedBuffer);
 }

@@ -23,12 +23,17 @@ import { loadImportedTheme } from './lib/theme.js';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout } from './lib/layout.js';
 import { noteFilePath } from './api/vault-files.js';
 import { applySettings, loadSettings, subscribeSettings } from './settings/settings.js';
+import { registerPwa } from './lib/pwa.js';
 
 const THEME_STORAGE_KEY = 'lattice-theme';
 const FAVORITE_FOLDERS_STORAGE_KEY = 'lattice-favorite-folders';
 
-function findRootFolder(nodes, name) {
-  return (nodes ?? []).find((folder) => folder?.name?.trim().toLowerCase() === name.toLowerCase()) ?? null;
+function folderPathParts(value) {
+  return String(value ?? 'Inbox')
+    .replaceAll('\\', '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function captureTitle() {
@@ -49,6 +54,7 @@ export default function App() {
   // 直接依赖 vault 对象本身会导致下方所有依赖它的 hook 每次渲染都失效
   const {
     folders,
+    profile,
     tags,
     overview,
     notes,
@@ -125,6 +131,29 @@ export default function App() {
     }
   });
   const [shellMode] = useState(() => new URLSearchParams(window.location.search).get('shell') === 'topbar' ? 'topbar' : 'obsidian');
+  const [pwaState, setPwaState] = useState({ installReady: false, updateRegistration: null });
+  const pwaActionsRef = useRef(null);
+
+  useEffect(() => {
+    const actions = registerPwa({
+      onInstallAvailable: (installReady) => setPwaState((current) => ({ ...current, installReady })),
+      onUpdateAvailable: (updateRegistration) => setPwaState((current) => ({ ...current, updateRegistration })),
+    });
+    pwaActionsRef.current = actions;
+    return () => {
+      actions?.();
+      pwaActionsRef.current = null;
+    };
+  }, []);
+
+  const installPwa = useCallback(async () => {
+    const accepted = await pwaActionsRef.current?.promptInstall?.();
+    if (accepted) setPwaState((current) => ({ ...current, installReady: false }));
+  }, []);
+
+  const updatePwa = useCallback(() => {
+    if (pwaActionsRef.current?.applyUpdate?.()) setPwaState((current) => ({ ...current, updateRegistration: null }));
+  }, []);
 
   // 面板分隔条：拖动 / 双击复位，宽度收敛与持久化在 layout.js 里完成
   const resizePane = (key, delta) => setLayout((current) => saveLayout({ ...current, [key]: current[key] + delta }));
@@ -666,12 +695,26 @@ export default function App() {
   const handleCaptureInbox = useCallback(async ({ title, content }) => {
     setInboxBusy(true);
     try {
-      const folder = findRootFolder(folders, 'Inbox') ?? await createFolder('Inbox');
-      if (!folder?.id) return false;
+      const segments = folderPathParts(profile?.paths?.inbox);
+      let parentId = null;
+      let children = folders;
+      for (const segment of segments) {
+        const existing = (children ?? []).find((folder) => folder?.name?.trim().toLowerCase() === segment.toLowerCase());
+        if (existing) {
+          parentId = existing.id;
+          children = existing.children ?? [];
+          continue;
+        }
+        const createdFolder = await createFolder(segment, parentId);
+        if (!createdFolder?.id) return false;
+        parentId = createdFolder.id;
+        children = [];
+      }
+      if (!parentId) return false;
       const created = await createNote({
         title: title || captureTitle(),
         content,
-        folderId: folder.id,
+        folderId: parentId,
         properties: { type: 'inbox', status: 'captured' },
       });
       if (!created) return false;
@@ -686,7 +729,7 @@ export default function App() {
     } finally {
       setInboxBusy(false);
     }
-  }, [createFolder, createNote, folders, openInTab, toast]);
+  }, [createFolder, createNote, folders, openInTab, profile, toast]);
 
   const handleOpenInboxAi = useCallback(() => {
     setAiInitialPrompt('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。');
@@ -732,6 +775,8 @@ export default function App() {
     setRefreshing(false);
     toast.success('数据已重新加载');
   }, [refreshGraph, refreshNotes, refreshSidebar, toast]);
+
+  const handleVaultProfileSaved = useCallback(() => refreshSidebar({ silent: true }), [refreshSidebar]);
 
   // ── 快捷键 ──────────────────────────────────────────────────
   useEffect(() => {
@@ -1103,6 +1148,18 @@ export default function App() {
         </div>
       ) : null}
 
+      {pwaState.updateRegistration ? (
+        <div className="banner banner--info banner--global">
+          <span>Lattice 有可用更新，刷新后即可使用最新版本。</span>
+          <button type="button" className="btn btn--sm" onClick={updatePwa}>立即更新</button>
+        </div>
+      ) : pwaState.installReady ? (
+        <div className="banner banner--info banner--global">
+          <span>将 Lattice 安装到设备，获得独立窗口和更快的再次打开体验。</span>
+          <button type="button" className="btn btn--sm" onClick={installPwa}>安装应用</button>
+        </div>
+      ) : null}
+
       <div
         className={`app__body app__body--${view} ${activeNote ? 'app__body--has-active-note' : ''} ${panelOpen && view === 'notes' ? '' : 'app__body--no-panel'} ${sidebarOpen ? '' : 'app__body--no-sidebar'} ${view === 'canvas' ? 'app__body--canvas' : ''} ${view === 'graph' ? 'app__body--graph' : ''}`}
         style={{
@@ -1323,6 +1380,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         theme={theme}
         onThemeChange={setTheme}
+        onVaultProfileSaved={handleVaultProfileSaved}
       />
       <AIAssistantPanel
         open={aiOpen}

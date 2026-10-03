@@ -119,7 +119,7 @@ function writeMarkdownContentValue(note) {
 export function noteFilePath(note, folders) {
   const folderParts = [];
   const byId = new Map();
-  for (const root of folders ?? []) collectFolders(root, byId, folderParts);
+  for (const root of folders ?? []) collectFolders(root, byId);
   let current = note.folderId ? byId.get(note.folderId) : null;
   const visited = new Set();
   while (current && !visited.has(current.id)) {

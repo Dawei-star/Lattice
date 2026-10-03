@@ -36,6 +36,7 @@ export async function chat(req, res) {
 export async function chatStream(req, res) {
   const upstreamAbort = new AbortController();
   let finished = false;
+  let errorSent = false;
   const finish = () => {
     if (!finished) {
       finished = true;
@@ -56,6 +57,7 @@ export async function chatStream(req, res) {
 
   const send = (event) => {
     if (finished) return;
+    if (event?.type === 'error') errorSent = true;
     try {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     } catch {
@@ -69,8 +71,8 @@ export async function chatStream(req, res) {
       onEvent: send,
     });
   } catch (error) {
-    // chatStream 失败时已发过 error 事件；这里兜底把错误写到事件流
-    send({ type: 'error', message: error?.message ?? 'AI 调用失败' });
+    // service 层失败时已发过 error 事件；这里只兜底补发一次，避免客户端收到重复错误
+    if (!errorSent) send({ type: 'error', message: error?.message ?? 'AI 调用失败' });
   } finally {
     finish();
   }

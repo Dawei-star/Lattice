@@ -59,10 +59,6 @@ export function remove(id) {
   return getDb().prepare('DELETE FROM folders WHERE id = ?').run(id).changes;
 }
 
-export function countNotes(folderId) {
-  return getDb().prepare('SELECT COUNT(*) AS total FROM notes WHERE folder_id = ?').get(folderId).total;
-}
-
 /** 一次取回所有目录的笔记数量，避免 UI 渲染时 N+1 查询 */
 export function countNotesGrouped() {
   const rows = getDb()

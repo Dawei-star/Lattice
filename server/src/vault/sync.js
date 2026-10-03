@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getDb, withTransaction } from '../db/index.js';
-import { computeWordCount, extractTags } from '../lib/markdown.js';
+import { computeWordCount, extractNoteTags } from '../lib/markdown.js';
 import { nowIso } from '../lib/time.js';
 import { claimForTitle, rebuildForNote, releaseStaleLinks } from '../modules/links/links.service.js';
 import { findByFilePath } from '../modules/notes/notes.repository.js';
@@ -77,7 +77,12 @@ export async function applyVaultChange(adapter, relativePath) {
 
   const previous = known ? findByFilePath(safePath) : null;
   if (previous && (previous.title !== note.title || previous.content !== note.content)) {
-    historyStore.createSnapshot(previous, serializeMarkdownDocument(previous));
+    // 快照只是附属数据：写失败（.lattice/history 不可写等）不能阻断文件投影
+    try {
+      historyStore.createSnapshot(previous, serializeMarkdownDocument(previous));
+    } catch {
+      // 下一次成功的保存会补上快照
+    }
   }
 
   withTransaction(() => {
@@ -240,7 +245,7 @@ function upsertProjection(note, contentHash) {
     claimForTitle(note.title, note.id);
   }
 
-  syncForNote(note.id, extractTags(note.content));
+  syncForNote(note.id, extractNoteTags(note.content, note.properties));
   rebuildForNote(note.id, note.content);
 }
 

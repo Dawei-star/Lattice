@@ -71,6 +71,31 @@ function verifyRelativeImports(appRoot) {
   }
 }
 
+/**
+ * PWA 静态资源必须随包发出。
+ *
+ * `web/public/` 下的 manifest.webmanifest 与 sw.js 由 vite **原样拷**进 web/dist 根目录，
+ * index.html 用 <link rel="manifest" href="/manifest.webmanifest"> 引用。它们不像 assets/
+ * 那样有 hash 与体积校验，漏发后页面完全正常，只有「安装为应用」「离线壳缓存」静默失效；
+ * service worker 还必须在站点根才能拿到覆盖全站的 scope。所以在打包期直接拦下，别等冒烟。
+ */
+const PWA_ASSETS = ['sw.js', 'manifest.webmanifest'];
+
+function verifyPwaAssets(appRoot) {
+  const webDir = path.join(appRoot, 'web');
+  const missing = PWA_ASSETS.filter((name) => !fs.existsSync(path.join(webDir, name)));
+  if (missing.length > 0) {
+    throw new Error(
+      `Packaged web/ is missing PWA assets: ${missing.join(', ')}. `
+      + 'web/public must be built into web/dist before packaging.',
+    );
+  }
+  const indexFile = path.join(webDir, 'index.html');
+  if (!fs.existsSync(indexFile) || !readFile(indexFile).includes('manifest.webmanifest')) {
+    throw new Error('Packaged web/index.html does not reference manifest.webmanifest.');
+  }
+}
+
 function verifyPackage(appRoot) {
   const routeFile = path.join(appRoot, 'server', 'src', 'modules', 'canvas', 'canvas.routes.js');
   const controllerFile = path.join(appRoot, 'server', 'src', 'modules', 'canvas', 'canvas.controller.js');
@@ -86,6 +111,7 @@ function verifyPackage(appRoot) {
   }
 
   verifyRelativeImports(appRoot);
+  verifyPwaAssets(appRoot);
 }
 
 module.exports = async function verifyAfterPack(context) {

@@ -370,7 +370,8 @@ export default function EditorPane({
     setAttachmentError('');
     announceAttachment('正在上传附件…');
     try {
-      const uploaded = await vaultAttachmentsApi.upload(file);
+      // 按当前笔记归组存放（Yank Note 式），便于按笔记查找附件
+      const uploaded = await vaultAttachmentsApi.upload(file, { query: { folder: note.title } });
       const reference = encodeMarkdownUrlReference(relativeAttachmentReference(note.filePath, uploaded.path));
       const label = markdownLinkLabel(uploaded.name ?? file.name);
       const syntax = uploaded.mimeType?.startsWith('image/')
@@ -402,9 +403,16 @@ export default function EditorPane({
     const files = getClipboardImageFiles(event.clipboardData);
     if (!files.length || !note || !canEdit || isExternal) return;
 
+    if (attachmentBusy) {
+      // 上传中粘贴的图片不能被 preventDefault 后静默吞掉（内容直接丢失）；
+      // 不拦截默认行为（文本照常粘贴），并明确告知用户原因
+      setAttachmentError('正在上传上一批图片，请等上传完成后再粘贴');
+      announceAttachment('正在上传上一批图片，请等上传完成后再粘贴');
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
-    if (attachmentBusy) return;
 
     const target = event.currentTarget;
     const value = draftRef.current.content;
@@ -419,7 +427,8 @@ export default function EditorPane({
     try {
       const syntaxParts = [];
       for (const file of files) {
-        const uploaded = await vaultAttachmentsApi.upload(file);
+        // 按当前笔记归组存放（Yank Note 式），便于按笔记查找附件
+        const uploaded = await vaultAttachmentsApi.upload(file, { query: { folder: note.title } });
         const reference = encodeMarkdownUrlReference(relativeAttachmentReference(note.filePath, uploaded.path));
         const label = markdownLinkLabel(uploaded.name ?? file.name);
         syntaxParts.push(`![${label}](${reference})`);
@@ -830,7 +839,7 @@ export default function EditorPane({
       {exportError ? (
         <div className="banner banner--error">
           <span>{exportError}</span>
-          <button type="button" className="btn btn--sm" onClick={() => setExportError('')}>Close</button>
+          <button type="button" className="btn btn--sm" onClick={() => setExportError('')}>关闭</button>
         </div>
       ) : null}
 

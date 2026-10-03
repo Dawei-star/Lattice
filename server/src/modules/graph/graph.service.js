@@ -12,7 +12,7 @@ import * as notesRepository from '../notes/notes.repository.js';
  * degree（度数 = 出链 + 入链）交给前端做节点大小映射。
  */
 export function buildGraph() {
-  const notes = notesRepository.listBrief();
+  const notes = notesRepository.listIndex();
   const noteIds = notes.map((note) => note.id);
 
   const { outgoing, incoming } = linksService.countsForNotes(noteIds);

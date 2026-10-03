@@ -1,0 +1,19 @@
+{
+  "name": "格物 Lattice",
+  "short_name": "Lattice",
+  "description": "本地优先的双链笔记知识库工作台",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f9",
+  "theme_color": "#162585",
+  "icons": [
+    {
+      "src": "/lattice-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

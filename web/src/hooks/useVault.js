@@ -9,12 +9,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, BASE_URL } from '../api/client.js';
 import { canvasApi } from '../api/canvas.js';
 import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
+import { vaultApi } from '../api/vault.js';
 import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
 import { createSseTicket, getWorkspaceAccessToken } from '../api/workspace-auth.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
 
 const DEFAULT_FILTER = { kind: 'all', folderId: null, tagId: null, inboxStatus: null };
+const DEFAULT_VAULT_PROFILE = Object.freeze({
+  version: 1,
+  paths: Object.freeze({ inbox: 'Inbox', daily: 'Daily', journal: 'Journal' }),
+});
 const PAGE_SIZE = 60;
 const SEARCH_DEBOUNCE_MS = 280;
 
@@ -60,12 +65,31 @@ function normalizeNoteFilePath(value) {
     .toLowerCase();
 }
 
-/** 附件固定位于 attachments/ 根下；去掉前缀后即可与目录树路径对齐。 */
+function normalizeVaultProfile(value) {
+  const paths = value?.paths ?? {};
+  const normalizePath = (candidate, fallback) => {
+    if (typeof candidate !== 'string') return fallback;
+    const normalized = candidate.trim().replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
+    return normalized && !normalized.split('/').some((part) => !part || part === '.' || part === '..')
+      ? normalized
+      : fallback;
+  };
+  return {
+    version: 1,
+    paths: {
+      inbox: normalizePath(paths.inbox, DEFAULT_VAULT_PROFILE.paths.inbox),
+      daily: normalizePath(paths.daily, DEFAULT_VAULT_PROFILE.paths.daily),
+      journal: normalizePath(paths.journal, DEFAULT_VAULT_PROFILE.paths.journal),
+    },
+  };
+}
+
+/** 附件按其真实所在目录归位（attachments/、attachments/笔记标题/ 或笔记旁的任意目录），与目录树路径对齐。 */
 function normalizeAttachmentFiles(files) {
   return (Array.isArray(files) ? files : []).map((file) => {
     const path = String(file?.path ?? '').replaceAll('\\', '/');
     const separator = path.lastIndexOf('/');
-    const folderPath = separator === -1 ? '' : path.slice(0, separator).replace(/^attachments\/?/, '');
+    const folderPath = separator === -1 ? '' : path.slice(0, separator);
     return { ...file, folderPath };
   });
 }
@@ -74,6 +98,7 @@ export function useVault() {
   const toast = useToast();
 
   const [folders, setFolders] = useState([]);
+  const [profile, setProfile] = useState(DEFAULT_VAULT_PROFILE);
   const [tags, setTags] = useState([]);
   const [overview, setOverview] = useState(null);
   const [noteIndex, setNoteIndex] = useState([]);
@@ -147,12 +172,14 @@ export function useVault() {
     async ({ silent = false } = {}) => {
       if (!silent) setLoading((current) => ({ ...current, sidebar: true }));
       try {
-        const [folderTree, tagList, stats, index] = await Promise.all([
+        const [folderTree, tagList, stats, index, vaultInfo] = await Promise.all([
           foldersApi.list(),
           tagsApi.list(),
           metaApi.overview(),
           notesApi.index(),
+          vaultApi.info().catch(() => null),
         ]);
+        setProfile(normalizeVaultProfile(vaultInfo?.profile));
         setFolders(folderTree ?? []);
         setTags(tagList ?? []);
         setOverview(stats ?? null);
@@ -327,8 +354,13 @@ export function useVault() {
       try {
         const note = await notesApi.get(id);
         if (vaultFiles.isAvailable() && note.filePath) {
-          const content = await vaultFiles.readMarkdown(note.filePath);
-          if (content !== null) note.content = content;
+          try {
+            const content = await vaultFiles.readMarkdown(note.filePath);
+            if (content !== null) note.content = content;
+          } catch {
+            // 盘上文件刚被外部删除而索引未更新时读盘会抛错：
+            // 回退 API 返回的投影内容，笔记本身仍然可读
+          }
         }
         if (requestId !== openRequest.current) return null;
         setActiveNote(note);
@@ -611,16 +643,30 @@ export function useVault() {
     let refreshTimer = null;
     let refreshInFlight = false;
 
+    // 刷新在途时新到达的请求合并为一次「补跑」：既不并发重入（会有状态竞争），
+    // 也不丢弃（否则刷新期间到达的最后一条变更会被吞掉，界面停留旧数据）
+    let refreshPending = false;
+    const runRefresh = async () => {
+      refreshInFlight = true;
+      try {
+        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+      } finally {
+        refreshInFlight = false;
+        if (refreshPending) {
+          refreshPending = false;
+          void runRefresh();
+        }
+      }
+    };
+
     const refreshFromVault = () => {
       clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(async () => {
-        if (refreshInFlight) return;
-        refreshInFlight = true;
-        try {
-          await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
-        } finally {
-          refreshInFlight = false;
+      refreshTimer = setTimeout(() => {
+        if (refreshInFlight) {
+          refreshPending = true;
+          return;
         }
+        void runRefresh();
       }, 80);
     };
 
@@ -941,6 +987,7 @@ export function useVault() {
   return {
     // 数据
     folders,
+    profile,
     tags,
     overview,
     notes,

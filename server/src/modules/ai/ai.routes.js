@@ -153,6 +153,7 @@ aiRouter.post('/operations/preview', validate({ body: z.object({
   actions: z.array(action).min(1).max(30),
   actor: z.string().trim().max(80).default('local-user'),
   role,
+  planId: z.string().uuid().optional(),
 }) }), controller.preview);
 
 aiRouter.post('/operations/execute', validate({ body: z.object({
@@ -161,6 +162,7 @@ aiRouter.post('/operations/execute', validate({ body: z.object({
   role,
   source: z.enum(['ai-chat', 'cli', 'api']).default('ai-chat'),
   confirmed: z.boolean().default(false),
+  planId: z.string().uuid().optional(),
   planHash: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
 }) }), controller.execute);
 

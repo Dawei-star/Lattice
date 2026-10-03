@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { renderMarkdown } from '../lib/markdown.js';
+import Lightbox from './Lightbox.jsx';
 
 const MAX_EMBED_DEPTH = 2;
 
 /**
  * Markdown 预览。
  *
- * 负责三件事：
+ * 负责四件事：
  *  1. 用 renderMarkdown 把正文渲染为已消毒的 HTML
  *  2. 接管双链 / 嵌入的点击：已解析的跳转，悬空的触发创建
  *  3. 异步把 ![[嵌入]] 卡片的内容填进去（带深度上限与循环检测）
+ *  4. 点击图片打开灯箱大图查看
  */
 export default function MarkdownPreview({
   content,
@@ -22,6 +24,7 @@ export default function MarkdownPreview({
   depth = 0,
 }) {
   const containerRef = useRef(null);
+  const [lightbox, setLightbox] = useState(null);
 
   const html = useMemo(
     () => renderMarkdown(content, { resolveTitle, resolveAsset }),
@@ -54,6 +57,14 @@ export default function MarkdownPreview({
   }, [html, resolveEmbed, resolveTitle, depth]);
 
   const handleClick = (event) => {
+    // 点击图片打开灯箱（嵌入卡片里的图片同样生效）
+    const image = event.target.closest('img');
+    if (image?.getAttribute('src')) {
+      event.preventDefault();
+      setLightbox({ src: image.getAttribute('src'), alt: image.getAttribute('alt') ?? '' });
+      return;
+    }
+
     const trigger = event.target.closest('[data-wiki-title]');
     if (!trigger) return;
 
@@ -74,13 +85,19 @@ export default function MarkdownPreview({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className={`preview markdown-body ${className}`}
-      onClick={handleClick}
-      // 内容已由 renderMarkdown 做过白名单消毒
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <>
+      <div
+        ref={containerRef}
+        className={`preview markdown-body ${className}`}
+        onClick={handleClick}
+        // 内容已由 renderMarkdown 做过白名单消毒
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      {/* position:fixed，挂在预览容器外不影响排版 */}
+      {lightbox ? (
+        <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />
+      ) : null}
+    </>
   );
 }
 

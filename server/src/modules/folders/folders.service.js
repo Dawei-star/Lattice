@@ -81,9 +81,14 @@ export function update(id, patch) {
     // 投影尚未改写），挂起 watcher 防止其以磁盘为准的重建与事务交错
     suspendWatcher();
   }
+  // 正向移动是否已落盘：只有真正移过去过，失败时才需要移回来。
+  // moveDirectorySync 对不存在的 source 会凭空建出 target，无条件回滚会
+  // 制造幽灵空目录，还会用回滚自身的报错掩盖原始 DB 错误。
+  let movedOnDisk = false;
   try {
     if (oldPath !== newPath) {
       vault.moveDirectorySync(oldPath, newPath);
+      movedOnDisk = true;
     }
 
     const updated = withTransaction(() => {
@@ -98,7 +103,13 @@ export function update(id, patch) {
     });
     return updated;
   } catch (error) {
-    if (oldPath !== newPath) vault.moveDirectorySync(newPath, oldPath);
+    if (movedOnDisk) {
+      try {
+        vault.moveDirectorySync(newPath, oldPath);
+      } catch {
+        // 回滚失败不掩盖原始错误；下次 reconcile 以磁盘为准收敛投影
+      }
+    }
     throw error;
   } finally {
     if (oldPath !== newPath) resumeWatcher();
@@ -120,11 +131,23 @@ export function remove(id) {
         repository.remove(id);
         for (const note of pathChanges) {
           const nextPath = moveBySource.get(note.filePath);
-          if (nextPath) notesRepository.updateFilePath(note.id, nextPath);
+          if (nextPath) {
+            notesRepository.updateFilePath(note.id, nextPath);
+          } else {
+            // 盘上没有对应文件（搬迁前就缺失）：清掉悬空路径，否则目录删除后
+            // 这行会一直指向已消失的文件，只能等全量 reconcile 兜底
+            notesRepository.updateFilePath(note.id, null);
+          }
         }
       });
     } catch (error) {
-      for (const move of [...moves].reverse()) vault.moveSync(move.toPath, move.fromPath);
+      for (const move of [...moves].reverse()) {
+        try {
+          vault.moveSync(move.toPath, move.fromPath);
+        } catch {
+          // 单个回滚失败不中断其余回滚；最终以 resumeWatcher 的收敛对齐兜底
+        }
+      }
       throw error;
     }
 

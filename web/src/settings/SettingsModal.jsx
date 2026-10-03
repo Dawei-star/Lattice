@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from '../ui/Modal.jsx';
 import { mcpApi } from '../api/mcp.js';
+import { notesApi } from '../api/resources.js';
 import { vaultApi } from '../api/vault.js';
+import { resolveAttachmentPath, vaultFiles } from '../api/vault-files.js';
+import { buildStaticSite } from '../lib/static-export.js';
+import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirectory } from '../lib/static-site.js';
 import { clearImportedTheme, importThemeFile, loadImportedTheme } from '../lib/theme.js';
 import { loadSettings, saveSettings, subscribeSettings } from './settings.js';
 import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
@@ -13,6 +17,20 @@ const APP_VERSION = '0.1.3';
 const LATTICE_ICON_URL = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHg9IjEwNCIgeT0iMTQ3IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzA0MEE0NiIvPjxyZWN0IHg9IjEwNCIgeT0iMTA0IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzE2MjU4NSIvPjxyZWN0IHg9IjEwMCIgeT0iMTQyIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzFGMkVBMiIvPjxyZWN0IHg9IjEwMCIgeT0iMTAwIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzNCNTBERiIvPjxyZWN0IHg9Ijk2IiB5PSIxMzgiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM0QzY4RUIiLz48cmVjdCB4PSI5NiIgeT0iOTYiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM3Qjk2RkYiLz48cmVjdCB4PSI5MiIgeT0iMTM0IiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjOTBBOUZGIi8+PHJlY3QgeD0iOTIiIHk9IjkyIiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjQzZENkZGIi8+PC9zdmc+';
 const MAX_BACKGROUND_IMAGE_SIZE = 2 * 1024 * 1024;
 const ALLOWED_BACKGROUND_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
+const DEFAULT_VAULT_PROFILE = Object.freeze({
+  version: 1,
+  paths: Object.freeze({ inbox: 'Inbox', daily: 'Daily', journal: 'Journal' }),
+});
+const VAULT_PROFILE_FIELDS = [
+  ['inbox', 'Inbox', '新建收集内容的默认目录'],
+  ['daily', 'Daily', '按日期创建日记的目录'],
+  ['journal', 'Journal', '每日摘要和日志的目录'],
+];
+const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  ...Array.from({ length: 10 }, (_, index) => `COM${index}`),
+  ...Array.from({ length: 10 }, (_, index) => `LPT${index}`),
+]);
 const GROUPS = [
   { title: 'AI 助手', items: [['models', '模型', 'layout']] },
   { title: '选项', items: [['about', '关于', 'info'], ['appearance', '外观', 'sun'], ['interface', '界面', 'layout'], ['editor', '编辑器', 'edit'], ['shortcuts', '快捷键', 'command']] },
@@ -20,15 +38,23 @@ const GROUPS = [
   { title: '集成', items: [['mcp', 'MCP Server', 'link']] },
 ];
 
-export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
+export default function SettingsModal({ open, onClose, theme, onThemeChange, onVaultProfileSaved }) {
   const [active, setActive] = useState('about');
   const [search, setSearch] = useState('');
   const [settings, setSettings] = useState(() => loadSettings());
   const [migration, setMigration] = useState('idle');
   const [backup, setBackup] = useState('idle');
   const [backupResult, setBackupResult] = useState(null);
+  const [staticExport, setStaticExport] = useState('idle');
+  const [staticExportResult, setStaticExportResult] = useState(null);
   const [vaultPath, setVaultPath] = useState('');
   const [vaultNotice, setVaultNotice] = useState(null);
+  const [vaultProfile, setVaultProfile] = useState(DEFAULT_VAULT_PROFILE);
+  const [vaultProfileStatus, setVaultProfileStatus] = useState('default');
+  const [vaultProfileWarning, setVaultProfileWarning] = useState(null);
+  const [vaultProfileSaveState, setVaultProfileSaveState] = useState('idle');
+  const [vaultProfileErrors, setVaultProfileErrors] = useState({});
+  const [vaultProfileError, setVaultProfileError] = useState('');
   const [updateState, setUpdateState] = useState('idle');
   const updateRequestRef = useRef(0);
   const [importedTheme, setImportedTheme] = useState(() => loadImportedTheme());
@@ -43,7 +69,15 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
     setMigration('idle');
     setBackup('idle');
     setBackupResult(null);
+    setStaticExport('idle');
+    setStaticExportResult(null);
     setVaultNotice(null);
+    setVaultProfile(DEFAULT_VAULT_PROFILE);
+    setVaultProfileStatus('default');
+    setVaultProfileWarning(null);
+    setVaultProfileSaveState('idle');
+    setVaultProfileErrors({});
+    setVaultProfileError('');
     setUpdateState('idle');
     loadVaultPath();
 
@@ -74,13 +108,61 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
   }, [groups, search]);
 
   async function loadVaultPath() {
+    let desktopInfo;
     try {
-      const info = await (window.latticeDesktop?.getVaultInfo?.() ?? vaultApi.info());
-      setVaultPath(info?.path ?? info?.vaultDir ?? '');
+      desktopInfo = await window.latticeDesktop?.getVaultInfo?.();
     } catch {
-      setVaultPath('');
+      desktopInfo = null;
+    }
+    try {
+      const info = desktopInfo?.profile ? desktopInfo : await vaultApi.info();
+      setVaultPath(info?.path ?? info?.vaultDir ?? desktopInfo?.path ?? '');
+      if (info?.profile) {
+        setVaultProfile(normalizeVaultProfile(info.profile));
+        setVaultProfileStatus(info.profileStatus ?? 'loaded');
+        setVaultProfileWarning(info.profileWarning ?? null);
+      }
+    } catch {
+      setVaultPath(desktopInfo?.path ?? '');
     }
   }
+
+  const updateVaultProfilePath = (key, value) => {
+    setVaultProfile((current) => ({ ...current, paths: { ...current.paths, [key]: value } }));
+    setVaultProfileErrors((current) => ({ ...current, [key]: undefined }));
+    setVaultProfileError('');
+    setVaultProfileSaveState('idle');
+  };
+
+  const saveVaultProfile = async () => {
+    const validation = validateVaultProfilePaths(vaultProfile.paths);
+    if (Object.keys(validation.errors).length) {
+      setVaultProfileErrors(validation.errors);
+      setVaultProfileSaveState('error');
+      setVaultProfileError('请先修正目录路径后再保存。');
+      return;
+    }
+
+    setVaultProfileSaveState('saving');
+    setVaultProfileErrors({});
+    setVaultProfileError('');
+    try {
+      const info = await vaultApi.updateProfile({ version: 1, paths: validation.paths });
+      setVaultProfile(normalizeVaultProfile(info?.profile ?? { version: 1, paths: validation.paths }));
+      setVaultProfileStatus(info?.profileStatus ?? 'loaded');
+      setVaultProfileWarning(info?.profileWarning ?? null);
+      setVaultProfileSaveState('saved');
+      await onVaultProfileSaved?.();
+    } catch (error) {
+      const fieldErrors = error?.fieldErrors ?? {};
+      setVaultProfileErrors(Object.fromEntries(VAULT_PROFILE_FIELDS.map(([key]) => [
+        key,
+        fieldErrors[`paths.${key}`] ?? fieldErrors[key],
+      ]).filter(([, message]) => message)));
+      setVaultProfileError(error?.message ?? '保存 Vault profile 失败，请稍后重试。');
+      setVaultProfileSaveState('error');
+    }
+  };
 
   const copyVaultPath = async () => {
     if (!vaultPath) return;
@@ -131,6 +213,56 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
     }
   };
 
+  const exportStaticSite = async () => {
+    if (staticExport === 'running') return;
+    if (!window.confirm('导出当前知识库为静态站点？导出内容为当前可读取的 Markdown 和引用图片，不会包含 AI API Key。')) return;
+
+    setStaticExport('running');
+    setStaticExportResult(null);
+    try {
+      const index = await notesApi.index();
+      const notes = await mapWithConcurrency(index ?? [], 6, async (entry) => {
+        const detail = await notesApi.get(entry.id);
+        const localContent = vaultFiles.isAvailable() && detail.filePath
+          ? await vaultFiles.readMarkdown(detail.filePath)
+          : null;
+        return { ...detail, ...entry, content: localContent ?? detail.content ?? '' };
+      });
+      const site = await buildStaticSite({
+        notes,
+        resolveAssetUrl: (note, reference) => {
+          const attachmentPath = resolveAttachmentPath(note.filePath, reference);
+          return attachmentPath ? vaultFiles.attachmentUrl(attachmentPath) : null;
+        },
+      });
+
+      let mode = 'directory';
+      if (window.latticeDesktop?.exportStaticSite) {
+        const result = await window.latticeDesktop.exportStaticSite(serializeStaticSiteFiles(site.files));
+        if (result?.canceled) {
+          setStaticExport('idle');
+          return;
+        }
+        setStaticExportResult({ ...site, exportPath: result.exportPath });
+      } else if (typeof window.showDirectoryPicker === 'function') {
+        const directory = await window.showDirectoryPicker({ mode: 'readwrite' });
+        await writeStaticSiteToDirectory(directory, site.files);
+        setStaticExportResult(site);
+      } else {
+        mode = 'downloads';
+        await downloadStaticSite(site.files);
+        setStaticExportResult(site);
+      }
+      setStaticExport(mode === 'downloads' ? 'downloaded' : 'done');
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        setStaticExport('idle');
+        return;
+      }
+      setStaticExport('error');
+    }
+  };
+
   const checkForUpdates = async () => {
     const requestId = updateRequestRef.current + 1;
     updateRequestRef.current = requestId;
@@ -167,8 +299,18 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
         {active === 'editor' && <Section title="编辑器"><Row title="默认编辑模式" description="打开笔记时使用的初始视图。"><select aria-label="默认编辑模式" value={settings.editorMode} onChange={(event) => updateSetting('editorMode', event.target.value)}><option value="split">分栏</option><option value="edit">编辑</option><option value="preview">预览</option></select></Row><Row title="Tab 缩进" description={`按 Tab 插入 ${settings.tabSize} 个空格。`}><select aria-label="Tab 缩进" value={settings.tabSize} onChange={(event) => updateSetting('tabSize', event.target.value)}><option value="2">2 个空格</option><option value="4">4 个空格</option></select></Row><Row title="自动保存" description="停止输入后自动写入 Markdown 文件。"><Toggle checked={settings.autoSave} onChange={(value) => updateSetting('autoSave', value)} /></Row><Row title="自动保存延迟" description="停止输入后等待多久写入磁盘。"><select aria-label="自动保存延迟" value={settings.autoSaveDelay} disabled={!settings.autoSave} onChange={(event) => updateSetting('autoSaveDelay', event.target.value)}><option value="500">500 ms</option><option value="900">900 ms</option><option value="1500">1500 ms</option></select></Row></Section>}
         {active === 'shortcuts' && <Section title="快捷键"><div className="shortcut-list">{[['快速切换', 'Ctrl / Cmd + K'], ['新建笔记', 'Ctrl / Cmd + N'], ['保存笔记', 'Ctrl / Cmd + S'], ['设置', 'Ctrl / Cmd + ,'], ['编辑 / 预览', 'Ctrl / Cmd + E']].map(([name, key]) => <div className="shortcut-row" key={name}><span>{name}</span><kbd>{key}</kbd></div>)}</div></Section>}
         {active === 'vault' && <><Section title="知识库位置"><div className="settings-vault"><div className="settings-vault__info"><strong>当前知识库目录</strong><code className="settings-vault__path" title={vaultPath ? '点击可全选路径' : undefined}>{vaultPath || '正在读取知识库目录...'}</code><p>笔记以 Markdown 文件保存在该目录，可直接被其他工具读取。</p></div><div className="settings-vault__actions"><button type="button" className="btn" onClick={loadVaultPath}>重新读取</button><button type="button" className="btn" disabled={!vaultPath || !window.latticeDesktop?.revealVault} onClick={revealVault}>打开目录</button><button type="button" className="btn btn--primary" disabled={!vaultPath} onClick={copyVaultPath}>复制路径</button></div></div></Section>{vaultNotice ? <Notice tone={vaultNotice.tone}>{vaultNotice.text}</Notice> : null}<Section title="附件显示"><Row title="显示附件" description="在文件列表和快速切换中显示图片、视频、PDF、Word 文档等非笔记文件，包括知识库任意文件夹中的这类文件。关闭时它们不会出现在 Lattice 中。"><Toggle checked={settings.showAttachments} onChange={(value) => updateSetting('showAttachments', value)} /></Row></Section><Section title="索引状态"><div className="settings-health"><span className="settings-health__dot" aria-hidden="true" /><div className="settings-health__copy"><strong>索引正常</strong><p>笔记、标签与双链会随文件变化自动更新。</p></div><span className="settings-health__badge">实时</span></div></Section></>}
+        {active === 'vault' && <VaultProfilePanel profile={vaultProfile} status={vaultProfileStatus} warning={vaultProfileWarning} saveState={vaultProfileSaveState} errors={vaultProfileErrors} error={vaultProfileError} onChange={updateVaultProfilePath} onSave={saveVaultProfile} onReload={loadVaultPath} />}
         {active === 'mcp' && <McpServerSettings />}
         {active === 'migration' && <>
+          <Section title="静态发布">
+            <Row title="导出静态站点" description="生成 index.html、可导航的笔记页面和 assets 资源目录，可直接部署到静态托管服务。">
+              <button type="button" className="btn btn--primary" onClick={exportStaticSite} disabled={staticExport === 'running'}>{staticExport === 'running' ? '导出中...' : '导出静态站点'}</button>
+            </Row>
+          </Section>
+          {staticExport === 'done' && staticExportResult ? <Notice tone="success">静态站点已导出：{staticExportResult.noteCount} 篇笔记，{staticExportResult.assetCount} 个资源，共 {formatBytes(staticExportResult.byteCount)}。{staticExportResult.exportPath ? <><br /><code>{staticExportResult.exportPath}</code></> : null}</Notice> : null}
+          {staticExport === 'downloaded' && staticExportResult ? <Notice tone="neutral">静态站点已开始下载，共 {staticExportResult.files.length} 个文件。当前浏览器不支持保持目录层级，建议使用 Chrome / Edge 的目录写入或 Windows 桌面版。</Notice> : null}
+          {staticExport === 'unavailable' && <Notice tone="neutral">当前浏览器不支持目录写入，请使用 Chrome / Edge 或 Windows 桌面版导出。</Notice>}
+          {staticExport === 'error' && <Notice tone="danger">静态站点导出失败，请确认知识库服务仍在运行、目标目录可写且磁盘空间充足。</Notice>}
           <Section title="数据安全">
             <Row title="备份知识库" description="复制 Markdown、Canvas、附件、模板和历史快照到一个新的备份目录。AI API Key 不会写入备份。">
               <button type="button" className="btn btn--primary" onClick={backupVault} disabled={backup === 'running'}>{backup === 'running' ? '备份中...' : '备份到文件夹'}</button>
@@ -188,86 +330,35 @@ export default function SettingsModal({ open, onClose, theme, onThemeChange }) {
   </div></Modal>;
 }
 
-function ModelSettings() {
-  const [aiSettings, setAiSettings] = useState(() => loadAiSettings());
-  const [editingId, setEditingId] = useState(null);
-  const [notice, setNotice] = useState('');
-
-  useEffect(() => subscribeAiSettings(setAiSettings), []);
-
-  const activeProvider = getActiveAiProvider(aiSettings);
-  const updateProvider = (providerId, patch) => setAiSettings(() => saveAiSettings({
-    ...aiSettings,
-    providers: aiSettings.providers.map((provider) => provider.id === providerId ? { ...provider, ...patch } : provider),
-  }));
-  const addProvider = () => {
-    const provider = createAiProvider();
-    saveAiSettings({ ...aiSettings, providers: [...aiSettings.providers, provider], activeProviderId: provider.id });
-    setEditingId(provider.id);
-    setNotice('已添加模型配置，请填写接口地址、模型名称和 API Key。');
+function normalizeVaultProfile(value) {
+  const paths = value?.paths ?? {};
+  return {
+    version: 1,
+    paths: Object.fromEntries(VAULT_PROFILE_FIELDS.map(([key]) => [
+      key,
+      typeof paths[key] === 'string' && paths[key].trim()
+        ? paths[key].trim().replaceAll('\\', '/')
+        : DEFAULT_VAULT_PROFILE.paths[key],
+    ])),
   };
-  const selectProvider = (providerId) => saveAiSettings({ ...aiSettings, activeProviderId: providerId });
-  const removeProvider = (provider) => {
-    if (aiSettings.providers.length === 1) {
-      setNotice('至少保留一个模型配置。你可以清空它的接口信息，或添加其他模型后再删除。');
-      return;
-    }
-    if (!window.confirm(`删除模型配置“${provider.name || '未命名模型'}”？`)) return;
-    const providers = aiSettings.providers.filter((item) => item.id !== provider.id);
-    saveAiSettings({ ...aiSettings, providers, activeProviderId: aiSettings.activeProviderId === provider.id ? providers[0].id : aiSettings.activeProviderId });
-    if (editingId === provider.id) setEditingId(null);
-  };
-
-  return <div className="model-settings">
-    <section className="model-settings__hero">
-      <div><span className="settings-kicker">AI PROVIDERS</span><h3>模型与接口</h3><p>集中管理 OpenAI 兼容接口和模型。聊天时可从顶部直接切换当前模型。</p></div>
-      <button type="button" className="btn btn--primary" onClick={addProvider}>＋ 添加模型</button>
-    </section>
-    <div className="model-settings__summary">
-      <div><span>当前使用</span><strong>{activeProvider?.name || '未配置'}</strong><small>{activeProvider?.model || '尚未选择模型'}</small></div>
-      <div><span>模型配置</span><strong>{aiSettings.providers.length}</strong><small>保存在本机浏览器</small></div>
-      <div><span>连接状态</span><strong className={activeProvider?.endpoint && activeProvider?.apiKey && activeProvider?.model ? 'is-ready' : 'is-muted'}>{activeProvider?.endpoint && activeProvider?.apiKey && activeProvider?.model ? '已配置' : '待完善'}</strong><small>不会把 API Key 写入审计记录</small></div>
-    </div>
-    <Section title="已添加的模型">
-      <div className="model-settings__list">
-        {aiSettings.providers.map((provider) => <ModelProviderRow
-          key={provider.id}
-          provider={provider}
-          active={provider.id === aiSettings.activeProviderId}
-          editing={provider.id === editingId}
-          onSelect={() => selectProvider(provider.id)}
-          onEdit={() => setEditingId(editingId === provider.id ? null : provider.id)}
-          onChange={(patch) => updateProvider(provider.id, patch)}
-          onRemove={() => removeProvider(provider)}
-        />)}
-      </div>
-    </Section>
-    {notice ? <Notice tone="success">{notice}</Notice> : null}
-    <Section title="配置说明">
-      <div className="model-settings__guide"><span>1</span><p><strong>添加模型</strong>：为每个服务商建立独立配置，Endpoint、模型名和 API Key 不会互相覆盖。</p><span>2</span><p><strong>选择当前模型</strong>：点击列表中的“使用”或在聊天面板顶部切换，下一条消息立即生效。</p><span>3</span><p><strong>智谱示例</strong>：Endpoint 使用 <code>https://open.bigmodel.cn/api/paas/v4/chat/completions</code>，模型名以控制台实际开放的名称为准。</p></div>
-    </Section>
-  </div>;
 }
 
-function ModelProviderRow({ provider, active, editing, onSelect, onEdit, onChange, onRemove }) {
-  const ready = Boolean(provider.endpoint && provider.apiKey && provider.model);
-  return <article className={`model-provider-row ${active ? 'is-active' : ''} ${editing ? 'is-editing' : ''}`}>
-    <div className="model-provider-row__summary">
-      <button type="button" className="model-provider-row__radio" onClick={onSelect} aria-label={`使用 ${provider.name || '模型配置'}`}><span /></button>
-      <div className="model-provider-row__identity"><strong>{provider.name || '未命名模型'}</strong><span>{provider.model || '未填写模型名称'} · {provider.authHeader === 'x-api-key' ? 'x-api-key' : 'Bearer'}</span></div>
-      <span className={`model-provider-row__status ${ready ? 'is-ready' : ''}`}>{ready ? '已配置' : '待完善'}</span>
-      {active ? <span className="model-provider-row__active">当前使用</span> : <button type="button" className="btn btn--sm" onClick={onSelect}>使用</button>}
-      <button type="button" className="btn btn--sm" onClick={onEdit}>{editing ? '收起' : '编辑'}</button>
-      <button type="button" className="model-provider-row__delete" onClick={onRemove} aria-label={`删除 ${provider.name || '模型配置'}`}>×</button>
-    </div>
-    {editing ? <div className="model-provider-row__editor">
-      <label>配置名称<input value={provider.name} onChange={(event) => onChange({ name: event.target.value })} placeholder="例如：智谱 GLM" /></label>
-      <label>Endpoint<input value={provider.endpoint} onChange={(event) => onChange({ endpoint: event.target.value })} placeholder="https://api.openai.com/v1/chat/completions" /></label>
-      <div className="model-settings__form-grid"><label>模型名称<input value={provider.model} onChange={(event) => onChange({ model: event.target.value })} placeholder="例如：glm-5.3-flash" /></label><label>认证方式<select value={provider.authHeader} onChange={(event) => onChange({ authHeader: event.target.value })}><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option></select></label></div>
-      <label>API Key<input type="password" value={provider.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} placeholder="仅保存在本机浏览器" autoComplete="off" /></label>
-      <p>API Key 仅用于当前模型请求，界面和操作历史不会显示完整 Key。</p>
-    </div> : null}
-  </article>;
+function validateVaultProfilePaths(paths) {
+  const errors = {};
+  const normalizedPaths = {};
+  for (const [key, label] of VAULT_PROFILE_FIELDS) {
+    const value = String(paths?.[key] ?? '').trim();
+    const normalized = value.replaceAll('\\', '/');
+    const parts = normalized.split('/');
+    const reserved = parts.some((part) => WINDOWS_RESERVED_DEVICE_NAMES.has(part.split('.')[0].toUpperCase()));
+    if (!value) errors[key] = `${label} 目录不能为空。`;
+    else if (normalized.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) errors[key] = '必须填写 Vault 内的相对路径。';
+    else if (parts.some((part) => !part || part === '.' || part === '..')) errors[key] = '不能包含 .、.. 或空目录段。';
+    else if (parts.some((part) => part.startsWith('.') || part === '_templates')) errors[key] = '不能使用隐藏目录或 _templates。';
+    else if (parts.some((part) => /[<>:"|?*\u0000-\u001f\u007f]/.test(part) || /[. ]$/.test(part)) || reserved) errors[key] = '目录名包含不支持的字符。';
+    else normalizedPaths[key] = normalized;
+  }
+  return { errors, paths: normalizedPaths };
 }
 
 const DEFAULT_MCP_TOOLS = [
@@ -548,10 +639,66 @@ function UpdateResult({ status, release, message }) {
   return <Notice tone="success"><div className="settings-update"><div><strong>当前版本 {APP_VERSION} 已是最新</strong><p>已从 GitHub Releases 检查到 {release.name}。</p></div><div className="settings-update__actions">{releaseLink}</div></div></Notice>;
 }
 
+function VaultProfilePanel({ profile, status, warning, saveState, errors, error, onChange, onSave, onReload }) {
+  const statusLabel = { default: '使用默认值', loaded: '已加载', invalid: '已回退默认值' }[status] ?? '未读取';
+  const statusTone = status === 'invalid' ? 'is-warning' : status === 'loaded' ? 'is-success' : '';
+  return <>
+    <Section title="系统目录">
+      <div className="settings-profile">
+        <div className="settings-profile__intro">
+          <div>
+            <strong>Vault profile</strong>
+            <p>为收集箱、日记和日志指定 Vault 内的相对目录。修改后只影响新建内容，不会移动已有文件。</p>
+          </div>
+          <span className={`settings-profile__status ${statusTone}`}>{statusLabel}</span>
+        </div>
+        <div className="settings-profile__fields">
+          {VAULT_PROFILE_FIELDS.map(([key, label, description]) => <label className="settings-profile__field" key={key}>
+            <span>{label}</span>
+            <input
+              value={profile.paths[key] ?? ''}
+              onChange={(event) => onChange(key, event.target.value)}
+              aria-label={`${label} 目录`}
+              aria-invalid={Boolean(errors[key])}
+              autoComplete="off"
+              spellCheck="false"
+            />
+            <small>{description}，例如 `Work/{label}`</small>
+            {errors[key] ? <em>{errors[key]}</em> : null}
+          </label>)}
+        </div>
+        <div className="settings-profile__footer">
+          <span>仅允许 Vault 内的相对路径，隐藏目录和 `_templates` 不可用。</span>
+          <div className="settings-profile__actions">
+            <button type="button" className="btn" onClick={onReload} disabled={saveState === 'saving'}>重新读取</button>
+            <button type="button" className="btn btn--primary" onClick={onSave} disabled={saveState === 'saving'}>{saveState === 'saving' ? '保存中...' : '保存目录设置'}</button>
+          </div>
+        </div>
+      </div>
+    </Section>
+    {warning ? <Notice tone="danger">profile 文件无效，当前使用默认值：{warning}</Notice> : null}
+    {error ? <Notice tone="danger">{error}</Notice> : null}
+    {saveState === 'saved' ? <Notice tone="success">Vault profile 已保存。新建内容会使用新目录，已有文件保持原位置。</Notice> : null}
+  </>;
+}
+
 function Section({ title, children }) { return <section className="settings-section"><h3>{title}</h3><div className="settings-section__body">{children}</div></section>; }
 function Row({ title, description, children }) { return <div className="settings-row"><div><strong>{title}</strong><p>{description}</p></div><div className="settings-row__control">{children}</div></div>; }
 function Toggle({ checked, onChange }) { return <button type="button" className={`settings-toggle ${checked ? 'is-on' : ''}`} role="switch" aria-checked={checked} aria-label={checked ? '已启用' : '已停用'} onClick={() => onChange(!checked)}><span aria-hidden="true" /></button>; }
 function Notice({ children, tone = 'neutral' }) { return <div className={'settings-notice settings-notice--' + tone}>{children}</div>; }
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const result = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      result[index] = await mapper(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return result;
+}
 function formatBytes(value) {
   const bytes = Number(value) || 0;
   if (bytes < 1024) return `${bytes} B`;

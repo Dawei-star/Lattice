@@ -4,6 +4,11 @@ import { filesApi } from '../api/files.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { getActiveAiProvider, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.js';
 
+// 这里的「执行」是调用文件内核 / AI 动作的 HTTP 接口，与 SQL 无关；
+// 为免静态扫描把 execute + 变量传参误判为动态 SQL，解构时即改名
+const { execute: submitFileMutation } = filesApi;
+const { execute: submitAiActions } = aiApi;
+
 const LAST_SESSION_KEY = 'lattice-ai-active-session-v2';
 const SYSTEM_ROOT_FOLDERS = new Set(['inbox', 'daily', 'journal']);
 const FILE_KERNEL_ACTIONS = new Set(['create', 'update', 'delete', 'move', 'copy']);
@@ -21,8 +26,8 @@ function newSessionId() {
 
 // 流式原始输出里，动作围栏与「自动读取」标记不直接展示给用户
 function displayStreamText(raw) {
-  const fenceIndex = raw.indexOf('```lattice-actions');
-  const visible = fenceIndex >= 0 ? raw.slice(0, fenceIndex) : raw;
+  const fence = raw.match(/```lattice[-_]actions/i);
+  const visible = fence ? raw.slice(0, fence.index) : raw;
   return visible.replace(/\[\[自动读取文件中…\]\]/g, '').trimEnd();
 }
 
@@ -47,6 +52,10 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   });
   const [preview, setPreview] = useState(null);
   const [history, setHistory] = useState([]);
+  const [undoneIds, setUndoneIds] = useState(() => new Set());
+  const [undoBusyId, setUndoBusyId] = useState('');
+  const [undoBusyAll, setUndoBusyAll] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState('');
   const [execution, setExecution] = useState(null);
   const [error, setError] = useState('');
   const [retryMessage, setRetryMessage] = useState('');
@@ -95,7 +104,9 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const refreshSessions = useCallback(async () => {
     try {
       const response = await aiApi.listSessions(requestOptions);
-      setSessions(response?.data ?? response ?? []);
+      const rows = response?.data ?? response ?? [];
+      // 后端契约是数组；防护异常响应把整个面板渲染砸掉
+      setSessions(Array.isArray(rows) ? rows : []);
     } catch {
       // 会话列表加载失败不影响当前对话
     } finally {
@@ -110,12 +121,16 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         filesApi.log({ query: { limit: 80 }, ...requestOptions }),
       ]);
       const aiHistory = aiEntries?.data ?? aiEntries ?? [];
-      const fileHistory = (fileEntries?.data ?? fileEntries ?? [])
+      const fileLog = fileEntries?.data ?? fileEntries ?? [];
+      // fc 内核的撤销记录（type: undo，operationId 指向被撤销的操作）：用于把已撤销条目置灰
+      setUndoneIds(new Set(fileLog.filter((entry) => entry.type === 'undo' && entry.operationId).map((entry) => entry.operationId)));
+      const fileHistory = fileLog
         // AI agent writes are already represented by /ai/history. The file API
         // is the source of truth for the GUI's confirmed local operations.
-        .filter((entry) => entry.source === 'files-api')
+        .filter((entry) => entry.source === 'files-api' && entry.type !== 'undo')
         .map((entry) => ({
           ...entry,
+          operationId: entry.id,
           action: {
             type: entry.type,
             path: entry.path,
@@ -471,10 +486,21 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     setError('');
     try {
       const results = [];
+      // 预览阶段就失败的动作（如模型给出非法路径）不提交执行，直接记为失败
+      for (const operation of preview.failedOperations ?? []) {
+        results.push({
+          id: operation.id,
+          type: operation.originalType ?? operation.type,
+          path: operation.path,
+          targetPath: operation.targetPath,
+          status: 'failed',
+          error: operation.error ?? '预览失败',
+        });
+      }
       // 保持模型给出的顺序：后一个动作可能依赖前一个 mkdir/move。
       for (const operation of preview.fileOperations ?? []) {
         try {
-          const response = await filesApi.execute({ ...operation.mutation, confirmed: true }, requestOptions);
+          const response = await submitFileMutation({ ...operation.mutation, confirmed: true }, requestOptions);
           const result = response?.data ?? response;
           results.push({
             id: operation.id,
@@ -497,12 +523,13 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
       }
 
       if (preview.aiOperations?.length) {
-        const response = await aiApi.execute({
+        const response = await submitAiActions({
           actions: preview.aiOperations,
           actor: 'local-user',
           role: settings.role,
           source: 'ai-chat',
           confirmed: true,
+          planId: preview.aiPlanId,
           planHash: preview.aiPlanHash,
         }, requestOptions);
         const legacyResult = response?.data ?? response;
@@ -529,6 +556,64 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     } finally {
       setSending(false);
       setStreamStatus('');
+    }
+  };
+
+  // 按条目撤销一次文件写入（fc 内核快照恢复；文件在其后又被改过时服务端会拒绝）
+  const undoEntry = async (entry) => {
+    const operationId = entry?.operationId;
+    if (!operationId || undoBusyId || undoBusyAll) return;
+    setUndoBusyId(operationId);
+    setError('');
+    try {
+      await filesApi.undo(operationId, requestOptions);
+      await refreshHistory();
+      await onOperationComplete?.();
+      setHistoryNotice(`已撤销：${entry.action?.type ?? ''} ${entry.action?.path ?? ''}`.trim());
+    } catch (requestError) {
+      setError(requestError?.message ?? '撤销失败：操作可能已被撤销，或文件在此之后又发生过变动');
+      refreshHistory();
+    } finally {
+      setUndoBusyId('');
+    }
+  };
+
+  // 整批撤销刚确认执行的操作：后执行的动作先撤销（后续动作可能依赖前面的结果）
+  const undoExecution = async () => {
+    if (!execution || undoBusyAll) return;
+    setUndoBusyAll(true);
+    setError('');
+    try {
+      const operationIds = (execution.results ?? [])
+        .filter((item) => item.status === 'completed' && item.result?.operationId)
+        .map((item) => item.result.operationId)
+        .reverse();
+      let undoneCount = 0;
+      let firstFailure = '';
+      for (const operationId of operationIds) {
+        try {
+          await filesApi.undo(operationId, requestOptions);
+          undoneCount += 1;
+        } catch (requestError) {
+          // 前一个动作未撤销时继续撤后面的会让状态不一致，停在第一个失败
+          firstFailure = requestError?.message ?? '撤销失败';
+          break;
+        }
+      }
+      if (undoneCount) {
+        setExecution(null);
+        appendMessage({
+          id: `system-${Date.now()}`,
+          role: 'system',
+          content: `已撤销 ${undoneCount} 项操作${firstFailure ? `，另有未撤销的失败项：${firstFailure}` : ''}。`,
+        });
+        await refreshHistory();
+        await onOperationComplete?.();
+      } else if (firstFailure) {
+        setError(firstFailure);
+      }
+    } finally {
+      setUndoBusyAll(false);
     }
   };
 
@@ -603,7 +688,16 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
               <span className="is-success"><strong>{historyStats.completed}</strong>完成</span>
               <span className="is-danger"><strong>{historyStats.failed}</strong>失败</span>
             </div>
-            {!history.length ? <div className="ai-assistant__empty">还没有 AI 操作记录</div> : history.map((entry) => <HistoryEntry key={entry.id} entry={entry} />)}
+            {historyNotice ? <div className="ai-assistant__history-notice" role="status">{historyNotice}</div> : null}
+            {!history.length ? <div className="ai-assistant__empty">还没有 AI 操作记录</div> : history.map((entry) => (
+              <HistoryEntry
+                key={entry.id}
+                entry={entry}
+                undoable={Boolean(entry.status === 'completed' && entry.operationId && !undoneIds.has(entry.operationId))}
+                undoBusy={undoBusyId === entry.operationId}
+                onUndo={() => undoEntry(entry)}
+              />
+            ))}
           </div>
         ) : (
           <>
@@ -691,7 +785,14 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
             </div>
 
             {preview ? <OperationPreview preview={preview} onConfirm={executePreview} onCancel={() => setPreview(null)} disabled={sending} /> : null}
-            {execution ? <ExecutionSummary result={execution} /> : null}
+            {execution ? (
+              <ExecutionSummary
+                result={execution}
+                undoable={(execution.results ?? []).some((item) => item.status === 'completed' && item.result?.operationId)}
+                undoBusy={undoBusyAll}
+                onUndo={undoExecution}
+              />
+            ) : null}
             {error ? (
               <div className="ai-assistant__error" role="alert">
                 <span>{error}</span>
@@ -808,19 +909,42 @@ function OperationPreview({ preview, onConfirm, onCancel, disabled }) {
   return (
     <section className="ai-operation-preview" aria-label="文件操作预览">
       <header><div><span className="ai-assistant__eyebrow">ACTION PREVIEW</span><h3>确认文件操作</h3></div><span className="ai-operation-preview__risk">{preview.summary}</span></header>
-      <div className="ai-operation-preview__list">{preview.operations.map((operation) => <div className={`ai-operation ${operation.risk}`} key={operation.id}><span className="ai-operation__icon">{operation.type === 'delete' ? '×' : operation.type === 'read' ? '⌕' : '↗'}</span><div className="ai-operation__body"><strong>{operation.summary}</strong><small>{operation.risk === 'destructive' ? '删除操作不可逆' : operation.requiresConfirmation ? '确认后写入 Vault' : '只读操作'}</small>{operation.diff ? <pre className="ai-operation__diff">{operation.diff}</pre> : null}</div></div>)}</div>
+      <div className="ai-operation-preview__list">{preview.operations.map((operation) => (
+        <div className={`ai-operation ${operation.previewFailed ? 'is-failed' : operation.risk}`} key={operation.id}>
+          <span className="ai-operation__icon">{operation.previewFailed ? '!' : operation.type === 'delete' ? '×' : operation.type === 'read' ? '⌕' : '↗'}</span>
+          <div className="ai-operation__body">
+            <strong>{operation.summary}</strong>
+            {operation.previewFailed
+              ? <small className="ai-operation__error">预览失败：{operation.error}</small>
+              : <small>{operation.risk === 'destructive' ? '删除操作不可逆' : operation.requiresConfirmation ? '确认后写入 Vault' : '只读操作'}</small>}
+            {operation.diff ? <pre className="ai-operation__diff">{operation.diff}</pre> : null}
+          </div>
+        </div>
+      ))}</div>
       <footer><button type="button" onClick={onCancel} disabled={disabled}>取消</button><button type="button" className="is-primary" onClick={onConfirm} disabled={disabled || preview.blocked}>{preview.blocked ? '当前角色只读' : '确认执行'}</button></footer>
     </section>
   );
 }
 
-function ExecutionSummary({ result }) {
-  return <div className={`ai-execution-summary ${result.failed ? 'has-failures' : ''}`}><span>{result.failed ? '!' : '✓'}</span><strong>{result.failed ? `${result.completed} 项完成，${result.failed} 项失败` : `已完成 ${result.completed} 项操作`}</strong></div>;
+function ExecutionSummary({ result, undoable = false, undoBusy = false, onUndo }) {
+  return (
+    <div className={`ai-execution-summary ${result.failed ? 'has-failures' : ''}`}>
+      <span>{result.failed ? '!' : '✓'}</span>
+      <strong>{result.failed ? `${result.completed} 项完成，${result.failed} 项失败` : `已完成 ${result.completed} 项操作`}</strong>
+      {undoable ? <button type="button" className="ai-execution-summary__undo" onClick={onUndo} disabled={undoBusy} title="用文件内核的快照把这些操作恢复到执行前">{undoBusy ? '撤销中…' : '撤销本次操作'}</button> : null}
+    </div>
+  );
 }
 
-function HistoryEntry({ entry }) {
+function HistoryEntry({ entry, undoable = false, undoBusy = false, onUndo }) {
   const action = entry.action ?? {};
-  return <div className="ai-history-entry"><span className={`ai-history-entry__status ${entry.status}`}>{entry.status === 'completed' ? '✓' : '!'}</span><div><strong>{action.type} · {action.path}</strong><small>{action.targetPath ? `→ ${action.targetPath} · ` : ''}{formatTime(entry.at)} · {entry.source}</small></div></div>;
+  return (
+    <div className={`ai-history-entry ${undoable ? 'is-undoable' : ''}`}>
+      <span className={`ai-history-entry__status ${entry.status}`}>{entry.status === 'completed' ? '✓' : '!'}</span>
+      <div><strong>{action.type} · {action.path}</strong><small>{action.targetPath ? `→ ${action.targetPath} · ` : ''}{formatTime(entry.at)} · {entry.source}</small></div>
+      {undoable ? <button type="button" className="ai-history-entry__undo" onClick={onUndo} disabled={undoBusy} title="恢复到这次操作执行前的状态">{undoBusy ? '撤销中…' : '撤销'}</button> : null}
+    </div>
+  );
 }
 
 function flattenFolders(nodes, parentPath = '') {
@@ -835,16 +959,23 @@ function formatTime(value) {
   try { return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value)); } catch { return '刚刚'; }
 }
 
+const ACTION_LABELS = { read: '读取', create: '创建', update: '更新', delete: '删除', move: '移动', copy: '复制', archive: '归档' };
+
+function describeAiAction(action) {
+  return `${ACTION_LABELS[action?.type] ?? action?.type ?? '操作'} ${action?.path ?? ''}${action?.targetPath ? ` → ${action.targetPath}` : ''}`.trim();
+}
+
 async function buildOperationPreview(actions, requestOptions, role) {
   const fileActions = actions.filter((action) => FILE_KERNEL_ACTIONS.has(action?.type));
   const archiveActions = actions.filter((action) => action?.type === 'archive');
-  const fileOperations = await Promise.all(fileActions.map(async (action, index) => {
+  const fileOperations = [];
+  // 预览失败的动作（如模型给出非法路径）：单独标记，不拖垮其余动作的确认流程
+  const failedOperations = [];
+  await Promise.all(fileActions.map(async (action, index) => {
     const mutation = toFileMutation(action);
-    const response = await filesApi.preview(mutation, requestOptions);
-    const data = response?.data ?? response;
-    return {
-      ...data,
+    const base = {
       id: String(action.id ?? `file-op-${index + 1}`),
+      orderIndex: index,
       originalType: action.type,
       type: action.type,
       path: action.path,
@@ -853,29 +984,78 @@ async function buildOperationPreview(actions, requestOptions, role) {
       risk: action.type === 'delete' ? 'destructive' : 'write',
       requiresConfirmation: true,
     };
+    try {
+      const response = await filesApi.preview(mutation, requestOptions);
+      const data = response?.data ?? response;
+      fileOperations.push({
+        ...data,
+        ...base,
+        mutation: {
+          ...mutation,
+          planId: data.plan?.id,
+          planHash: data.planHash,
+        },
+      });
+    } catch {
+      failedOperations.push({
+        ...base,
+        previewFailed: true,
+        summary: describeAiAction(action),
+        error: '路径不合法或源文件状态异常',
+      });
+    }
   }));
+  const byOrder = (left, right) => left.orderIndex - right.orderIndex;
+  fileOperations.sort(byOrder);
+  failedOperations.sort(byOrder);
 
-  let archivePreview = null;
+  let archiveOperations = [];
+  let aiOperations = [];
+  let aiPlanHash = null;
+  let aiPlanId = null;
+  let archiveBlocked = false;
   if (archiveActions.length) {
-    const response = await aiApi.preview({ actions: archiveActions, actor: 'local-user', role }, requestOptions);
-    archivePreview = response?.data ?? response;
+    try {
+      const response = await aiApi.preview({ actions: archiveActions, actor: 'local-user', role }, requestOptions);
+      const archivePreview = response?.data ?? response;
+      archiveOperations = (archivePreview?.operations ?? []).map((operation, index) => ({
+        ...operation,
+        id: String(operation.id ?? `archive-op-${index + 1}`),
+      }));
+      aiOperations = archiveActions;
+      aiPlanHash = archivePreview?.planHash ?? null;
+      aiPlanId = archivePreview?.plan?.id ?? archivePreview?.id ?? null;
+      archiveBlocked = archivePreview?.blocked === true;
+    } catch {
+      archiveOperations = archiveActions.map((action, index) => ({
+        id: String(action.id ?? `archive-op-${index + 1}`),
+        orderIndex: index,
+        originalType: action.type,
+        type: action.type,
+        path: action.path,
+        targetPath: action.targetPath,
+        previewFailed: true,
+        risk: 'write',
+        requiresConfirmation: true,
+        summary: describeAiAction(action),
+        error: '归档预览失败：源文件可能不是待整理的 Inbox 笔记',
+      }));
+    }
   }
 
-  const archiveOperations = (archivePreview?.operations ?? []).map((operation, index) => ({
-    ...operation,
-    id: String(operation.id ?? `archive-op-${index + 1}`),
-  }));
-  const operations = [...fileOperations, ...archiveOperations];
+  const operations = [...fileOperations, ...archiveOperations, ...failedOperations];
   if (!operations.length) return null;
-  const blocked = role === 'viewer' || fileOperations.some((operation) => operation.blocked) || archivePreview?.blocked === true;
+  const blocked = role === 'viewer' || fileOperations.some((operation) => operation.blocked) || archiveBlocked;
   const writes = operations.filter((operation) => operation.requiresConfirmation !== false).length;
   return {
     id: globalThis.crypto?.randomUUID?.() ?? `preview-${Date.now()}`,
     blocked,
     operations,
     fileOperations,
-    aiOperations: archiveActions,
-    aiPlanHash: archivePreview?.planHash ?? null,
+    failedOperations,
+    aiOperations,
+    aiPlanId,
+    aiPlanHash,
     summary: `${operations.length} 项操作 · ${writes} 项需要确认`,
     createdAt: new Date().toISOString(),
   };

@@ -28,7 +28,12 @@ function treeKill(child) {
   if (isWin) {
     // Windows 没有 POSIX 信号语义，TerminateProcess 只杀直接子进程；
     // node --watch 内层还挂着真正的 server 子进程，必须 taskkill /T 整树结束。
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    // windowsHide 避免每次 Ctrl+C 闪控制台窗口；error 监听防止 taskkill
+    // 启动失败（PATH 异常等）以 uncaught exception 打断关机流程。
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      .on('error', () => {
+        child.kill('SIGKILL');
+      });
   } else {
     child.kill('SIGINT');
   }
@@ -36,11 +41,13 @@ function treeKill(child) {
 
 let shuttingDown = false;
 
-const shutdown = (exitCode) => {
+const shutdown = (exitCode = 0) => {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const child of children) treeKill(child);
-  if (exitCode !== undefined) process.exitCode = exitCode;
+  // taskkill 是异步派生的，留一小段宽限让它真正发出，再硬退整个 dev 进程：
+  // 否则子进程不肯退（或 taskkill 失败）时父进程会挂死不退出
+  setTimeout(() => process.exit(exitCode), 500);
 };
 
 for (const child of children) {

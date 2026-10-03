@@ -10,10 +10,11 @@ import { getClipboardImageFiles } from '../lib/clipboard.js';
 const EMPTY_DOCUMENT = { nodes: [], edges: [] };
 const NODE_WIDTH = 248;
 const NODE_HEIGHT = 140;
-const MIN_NODE_WIDTH = 180;
-const MAX_NODE_WIDTH = 720;
-const MIN_NODE_HEIGHT = 110;
-const MAX_NODE_HEIGHT = 560;
+// 上下限对齐 Obsidian：导入的画布节点尺寸跨度很大（贴图/大分组常远超 720px）
+const MIN_NODE_WIDTH = 40;
+const MAX_NODE_WIDTH = 4000;
+const MIN_NODE_HEIGHT = 40;
+const MAX_NODE_HEIGHT = 4000;
 const SNAP_DISTANCE = 10;
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.5;
@@ -21,12 +22,23 @@ const DRAG_THRESHOLD = 4;
 const HISTORY_LIMIT = 100;
 const PORT_SIDES = ['top', 'right', 'bottom', 'left'];
 const PORT_LABELS = { top: '顶部', right: '右侧', bottom: '底部', left: '左侧' };
+// 与服务端 Obsidian 颜色归一化的六种命名色保持一致（"1"红 "2"橙 "3"黄 "4"绿 "5"蓝 "6"紫）
 const CARD_COLOR_OPTIONS = [
   { value: 'blue', label: '蓝色' },
   { value: 'green', label: '绿色' },
   { value: 'yellow', label: '黄色' },
   { value: 'red', label: '红色' },
+  { value: 'orange', label: '橙色' },
+  { value: 'purple', label: '紫色' },
 ];
+const EDGE_STROKE_COLORS = {
+  blue: '#7d95d6',
+  green: '#65c993',
+  yellow: '#e6c05f',
+  red: '#ef8b91',
+  orange: '#e6a05f',
+  purple: '#b085e0',
+};
 
 gsap.registerPlugin(useGSAP);
 
@@ -36,6 +48,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const [selected, setSelected] = useState([]);
   const [selectedEdge, setSelectedEdge] = useState(null);
   const [spaceDown, setSpaceDown] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [connection, setConnection] = useState(null);
   const [marquee, setMarquee] = useState(null);
   const [alignmentGuides, setAlignmentGuides] = useState([]);
@@ -141,6 +154,31 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   }, []);
 
   const noteById = useMemo(() => new Map(noteIndex.map((note) => [note.id, note])), [noteIndex]);
+  const noteBySourcePath = useMemo(
+    () => new Map(noteIndex.filter((note) => note.filePath).map((note) => [note.filePath.replace(/\.md$/i, ''), note])),
+    [noteIndex],
+  );
+  const noteByTitle = useMemo(() => new Map(noteIndex.map((note) => [note.title, note])), [noteIndex]);
+
+  // Obsidian 导入的 file 节点只带 file 路径没有 noteId：按路径 / 文件名标题反查本地笔记
+  const resolveLinkedNote = (node) => {
+    if (node.type !== 'file') return null;
+    if (node.noteId) {
+      const byId = noteById.get(node.noteId);
+      if (byId) return byId;
+    }
+    const source = typeof node.file === 'string' && node.file ? node.file : (typeof node.path === 'string' ? node.path : '');
+    if (source) {
+      const byPath = noteBySourcePath.get(source.replace(/\.md$/i, ''));
+      if (byPath) return byPath;
+      const stem = source.split('/').pop()?.replace(/\.md$/i, '');
+      if (stem) {
+        const byTitle = noteByTitle.get(stem);
+        if (byTitle) return byTitle;
+      }
+    }
+    return null;
+  };
 
   const filteredNotes = useMemo(() => {
     const query = pickerQuery.trim().toLowerCase();
@@ -181,7 +219,8 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       }
       loadedFromVault.current = true;
     }).catch(() => {
-      loadedFromVault.current = true;
+      // 加载失败必须保持「未从库中加载」状态：若置为已加载，随后的自动保存
+      // 会把空文档整体写回服务器，覆盖掉真正的画布内容（新建画布走 200 空文档，不受影响）
       setSaveState('error');
     });
 
@@ -309,7 +348,14 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
         return;
       }
       const current = syncViewFromDom();
-      updateViewWithoutRender({ ...current, x: current.x - event.deltaX * unit, y: current.y - event.deltaY * unit });
+      // 部分 Windows 鼠标驱动按住 Shift 仍报纵向增量：转成横向平移
+      let deltaX = event.deltaX * unit;
+      let deltaY = event.deltaY * unit;
+      if (!deltaX && event.shiftKey && deltaY) {
+        deltaX = deltaY;
+        deltaY = 0;
+      }
+      updateViewWithoutRender({ ...current, x: current.x - deltaX, y: current.y - deltaY });
     };
     stage.addEventListener('wheel', handleWheel, { passive: false });
     return () => stage.removeEventListener('wheel', handleWheel);
@@ -527,6 +573,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     gsap.killTweensOf([worldRef.current, stageRef.current]);
     applyViewTransform(current);
     isViewGestureRef.current = true;
+    setIsPanning(true);
     panRef.current = { x: event.clientX, y: event.clientY, view: current };
   };
 
@@ -552,7 +599,9 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     }
     if (event.target.closest('.canvas-card, .canvas-empty')) return;
     clearSelection();
-    startMarquee(event);
+    // 左键空白拖拽默认平移画布（与抓手光标一致）；Shift+拖拽才是框选
+    if (event.shiftKey) startMarquee(event);
+    else startPan(event);
   };
 
   const startMarquee = (event) => {
@@ -609,6 +658,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     const finalView = syncViewFromDom();
     panRef.current = null;
     isViewGestureRef.current = false;
+    setIsPanning(false);
     viewRef.current = finalView;
     setView(finalView);
   };
@@ -1114,7 +1164,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
         <div
           ref={stageRef}
           tabIndex={0}
-          className={`canvas-stage ${spaceDown ? 'is-panning' : ''} ${connection ? 'is-connecting' : ''} ${alignmentGuides.length ? 'is-aligning' : ''} ${marquee ? 'is-marquee' : ''} ${clipboardState === 'uploading' ? 'is-pasting' : ''}`}
+          className={`canvas-stage ${spaceDown || isPanning ? 'is-panning' : ''} ${connection ? 'is-connecting' : ''} ${alignmentGuides.length ? 'is-aligning' : ''} ${marquee ? 'is-marquee' : ''} ${clipboardState === 'uploading' ? 'is-pasting' : ''}`}
           onPointerDown={handlePointerDown}
           onPaste={handleClipboardPaste}
           onDoubleClick={(event) => {
@@ -1158,12 +1208,14 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
                 if (!from || !to) return null;
                 const sides = resolveConnectionSides(edge, from, to);
                 const path = connectionPath(getPortPosition(from, sides.fromSide), getPortPosition(to, sides.toSide), sides.fromSide, sides.toSide);
+                const strokeColor = EDGE_STROKE_COLORS[edge.color];
                 return (
                   <g key={edge.id} className={`canvas-edge ${selectedEdge === edge.id ? 'is-selected' : ''}`} data-canvas-edge={edge.id}>
                     <path className="canvas-edge__hit" d={path} />
                     <path
                       className="canvas-edge__line"
                       d={path}
+                      style={strokeColor ? { stroke: strokeColor } : undefined}
                       markerEnd={selectedEdge === edge.id ? 'url(#canvas-arrow-selected)' : 'url(#canvas-arrow)'}
                     />
                   </g>
@@ -1178,36 +1230,38 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
               })() : null}
             </svg>
             {canvasDocument.nodes.map((node) => {
-              const isActive = node.type === 'file' && node.noteId === activeNoteId;
+              const linkedNote = resolveLinkedNote(node);
+              const isActive = node.type === 'file' && linkedNote?.id === activeNoteId;
               const color = normalizeCardColor(node.color);
-              const linkedNote = node.type === 'file' ? noteById.get(node.noteId) : null;
               const displayTitle = linkedNote?.title ?? node.text;
+              const isGroup = node.type === 'group';
+              const typeLabel = node.type === 'file' ? '笔记卡片' : node.type === 'image' ? '图片卡片' : isGroup ? '分组' : '文本卡片';
               return (
                 <article
                   key={node.id}
-                  className={`canvas-card canvas-card--${color} ${selected.includes(node.id) ? 'is-selected' : ''} ${isActive ? 'is-active' : ''} ${connection?.nodeId === node.id ? 'is-connection-source' : ''} ${connection?.targetId === node.id ? 'is-connection-target' : ''}`}
+                  className={`canvas-card canvas-card--${color} ${isGroup ? 'canvas-card--group' : ''} ${selected.includes(node.id) ? 'is-selected' : ''} ${isActive ? 'is-active' : ''} ${connection?.nodeId === node.id ? 'is-connection-source' : ''} ${connection?.targetId === node.id ? 'is-connection-target' : ''}`}
                   style={{ left: node.x, top: node.y, width: getNodeWidth(node), height: getNodeHeight(node) }}
                   data-canvas-node={node.id}
                   tabIndex={0}
-                  aria-label={`${node.type === 'file' ? '笔记卡片' : node.type === 'image' ? '图片卡片' : '文本卡片'}：${displayTitle}`}
+                  aria-label={`${typeLabel}：${displayTitle}`}
                   aria-current={isActive ? 'page' : undefined}
                   onPointerDown={(event) => moveNode(event, node)}
                   onClick={(event) => {
                     if (event.shiftKey || dragMovedRef.current) return;
                     selectOnly(node.id);
-                    if (node.type === 'file') onOpenNote?.(node.noteId);
+                    if (node.type === 'file') onOpenNote?.(linkedNote?.id ?? node.noteId);
                   }}
                   onDoubleClick={(event) => {
                     if (event.target.closest('textarea')) return;
-                    if (node.type === 'file') onOpenNote?.(node.noteId);
+                    if (node.type === 'file') onOpenNote?.(linkedNote?.id ?? node.noteId);
                   }}
                   onKeyDown={(event) => {
                     if (event.target !== event.currentTarget) return;
-                    if (event.key === 'Enter' && node.type === 'file') onOpenNote?.(node.noteId);
+                    if (event.key === 'Enter' && node.type === 'file') onOpenNote?.(linkedNote?.id ?? node.noteId);
                   }}
                 >
                   <div className="canvas-card__handle" aria-hidden="true"><span /><span /><span /></div>
-                  <span className="canvas-card__type">{node.type === 'file' ? '笔记卡片' : node.type === 'image' ? '图片卡片' : '文本卡片'}{isActive ? ' · 当前打开' : ''}</span>
+                  <span className="canvas-card__type">{typeLabel}{isActive ? ' · 当前打开' : ''}</span>
                   {node.type === 'text'
                     ? (
                       <textarea
@@ -1221,9 +1275,11 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
                     )
                     : node.type === 'image'
                       ? <><div className="canvas-card__image" title={node.path}><img src={vaultFiles.assetUrl(node.path)} alt={node.text} draggable="false" onError={(event) => { event.currentTarget.hidden = true; event.currentTarget.nextElementSibling.hidden = false; }} /><span hidden>图片暂不可用</span></div><h3 title={node.path}>{node.text}</h3></>
-                      : <><h3 title={displayTitle}>{displayTitle}</h3><p title={linkedNote?.filePath}>{linkedNote?.filePath ?? '来自知识库 · 双击打开原文'}</p></>}
+                      : isGroup
+                        ? <h3 className="canvas-card__group-label" title={displayTitle}>{displayTitle}</h3>
+                        : <><h3 title={displayTitle}>{displayTitle}</h3><p title={linkedNote?.filePath}>{linkedNote?.filePath ?? '来自知识库 · 双击打开原文'}</p></>}
                   <footer>
-                    <span>{node.type === 'file' ? (linkedNote?.wordCount ? `${linkedNote.wordCount} 字` : '笔记引用') : node.type === 'image' ? '图片引用' : '自由内容'}</span>
+                    <span>{node.type === 'file' ? (linkedNote?.wordCount ? `${linkedNote.wordCount} 字` : '笔记引用') : node.type === 'image' ? '图片引用' : isGroup ? '分组区域' : '自由内容'}</span>
                     <div className="canvas-card__footer-actions">
                       <div className="canvas-card__colors" role="group" aria-label="卡片颜色">
                         {CARD_COLOR_OPTIONS.map((option) => (
@@ -1350,7 +1406,12 @@ function CanvasResourcePicker({ kind, notes, images, query, loading, error, onQu
 }
 
 function normalizeDocument(value) {
-  return value?.nodes && value?.edges ? { ...value, nodes: value.nodes, edges: value.edges } : EMPTY_DOCUMENT;
+  if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) return EMPTY_DOCUMENT;
+  // Obsidian 导入等外部来源的 JSON 可能含 null / 非对象元素，
+  // 不过滤的话渲染和笔记反查（node.type）会直接 TypeError
+  const nodes = value.nodes.filter((node) => node && typeof node === 'object');
+  const edges = value.edges.filter((edge) => edge && typeof edge === 'object');
+  return { ...value, nodes, edges };
 }
 
 function normalizeCardColor(value) {

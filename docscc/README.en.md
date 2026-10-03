@@ -86,13 +86,16 @@ Release packages are provided by the corresponding release; packaging steps are 
 | Tags | Write `#tag` in the body for automatic categorization; nested tags such as `#engineering/frontend` are supported |
 | Folder tree | Arbitrary nesting, in-place renaming, and automatic return to “Uncategorized” after deleting a folder |
 | Multiple tabs | Open multiple notes in parallel with pinning, favorites, renaming, moving, and close-left / close-right / close-other actions |
-| Local canvas | Store text cards, note cards, Vault images, and card connections in `.canvas` files; supports four-sided connection points, dragging, zooming, and alignment |
+| Local canvas | Store text cards, note cards, Vault images, and card connections in `.canvas` files; supports four-sided connection points, dragging, zooming, and alignment; Obsidian `.canvas` files open directly (edge endpoints, `"1"`–`"6"`/hex colors, and group/file/image nodes are normalized on read) |
+| Attachment grouping and lightbox | Images pasted or dropped into a note are stored under `attachments/<note title>/`; click an image in preview to view it full screen (wheel zoom, drag to pan, double-click toggles fit) |
 | Vault browser | Browse Markdown and Canvas files in the sidebar; open, move, copy paths, and use the context menu; with the “show attachments” toggle, browse non-note files in any folder |
-| Deterministic file assistant fc | The local `npm run fc` command (read/stat/find/grep/create/write/append/edit/copy/move/delete/mkdir/batch/undo/log) and the `GET/POST /api/files/*` share one core: traversal/symlink protection, atomic writes, `.fc/trash` snapshots and audit, and undo — routine file work does not depend on a model round trip |
-| AI knowledge assistant | Streaming chat, source-cited knowledge-base Q&A (hybrid FTS + semantic retrieval), persistent sessions, related-note recommendations, Inbox triage suggestions with safe archiving, natural-language file operations (task mode can execute multiple rounds and audit them automatically), editor writing assistant (polish / summarize / translate / continue / create a full document from a title / custom instructions, with streaming preview), retrieval debugging, and CLI task mode |
+| Deterministic file assistant fc | The local `npm run fc` command (read/stat/find/grep/create/write/append/edit/copy/move/delete/mkdir/batch/undo/log, plus `serve` as a JSON-lines daemon, `shell` as an interactive session, `doctor` health checks, and a `--mode readonly` preset) and the `GET/POST /api/files/*` share one core: traversal/symlink protection, atomic writes, `.fc/trash` snapshots and audit, and undo — routine file work does not depend on a model round trip |
+| AI knowledge assistant | Streaming chat, source-cited knowledge-base Q&A (hybrid FTS + semantic retrieval), persistent sessions, related-note recommendations, Inbox triage suggestions with safe archiving, natural-language file operations (task mode can execute multiple rounds and audit them automatically, failed actions are fed back to the model for self-correction, and operations can be undone with one click), editor writing assistant (polish / summarize / translate / continue / create a full document from a title / custom instructions, with streaming preview), retrieval debugging, and CLI task mode |
 | Daily digest | Manually generate a Journal digest for notes modified today; set `AI_DIGEST_HOUR` to generate it on a local-time schedule (missed runs are caught up later) with idempotent updates for the same day |
 | MCP Server | Expose `list_notes`, `search_notes`, `read_note`, `get_note_links`, `list_tags`, `get_vault_statistics`, and `list_note_history` to external agents such as Claude over stdio; read-only by default — `create_note`, `update_note`, and `restore_note_version` are provided only after `LATTICE_MCP_ALLOW_WRITES` is enabled, and writes are recorded in the MCP audit |
 | Single-document HTML export | Export a standalone HTML file with Lattice branding, inlined images, clickable backlinks, and expanded embeds from the editor |
+| Static site export | Generate a deployable `index.html`, Vault-relative note pages, wiki-link navigation, and an `assets/` directory from Settings |
+| PWA | The Web build provides a manifest, app-shell caching, install and update prompts; offline writes are not supported |
 | Vault backup and restore | In the desktop build, “Settings → Backup & Migration” copies Markdown, Canvas, attachments, templates, and history snapshots into a new timestamped directory with one click; restore by selecting the backup folder. AI API keys are never written into backups |
 | Quick switcher | Fuzzy-jump by title with `Ctrl / Cmd + K`, and create a missing title with one action; with attachments shown, results also include attachment files |
 | Unresolved links | Mark references to missing notes as unresolved and complete them with one action |
@@ -164,6 +167,8 @@ Copy `server/.env.example` to `server/.env` and edit it as needed. All configura
 
 Configure external models (chat and embedding) in the model management center. Saving automatically syncs the settings to the local server (the SQLite `ai_settings` table, encrypted at rest in the desktop build). Chat, the semantic-index pipeline, and the CLI share the same configuration; the browser stores only UI cache. The CLI uses the same API and can pass a workspace token through `LATTICE_AI_ACCESS_TOKEN`; once the server token is enabled, the server-side role takes precedence. The browser sends `X-Workspace-Token` automatically from the access token stored in AI settings.
 The semantic index is incrementally updated after an embedding model is configured under “Settings → Model Management”. When cloud embedding is enabled, note chunks are sent to that provider.
+
+Vault system folders can be edited under “Settings → Knowledge Base”. Inbox, Daily, and Journal accept only Vault-relative paths, including nested paths such as `Work/Daily`. Saving the profile does not move existing files; it only affects newly created content. Invalid profiles fall back to the defaults. The related endpoints are `GET /api/vault/info` and `PUT /api/vault/profile`.
 
 ```bash
 npm run ai -- chat "Search project notes"
@@ -324,6 +329,8 @@ All failure responses use this shape:
 | `GET` `DELETE` | `/api/tags` | Tag list with reference counts and deletion |
 | `GET` `PUT` `PATCH` | `/api/canvas` | Read, save, and move `.canvas` files in the Vault |
 | `GET` | `/api/canvas/files` | List canvas files in the Vault |
+| `GET` | `/api/vault/info` | Return the Vault path, mode, and active profile |
+| `PUT` | `/api/vault/profile` | Save Vault-relative Inbox / Daily / Journal folders (viewer role cannot write) |
 | `GET` | `/api/vault/files` | List all non-note files in the Vault except notes / canvas (data source for the show-attachments toggle) |
 | `GET` | `/api/vault/assets` | List image assets available for canvas references |
 | `GET` | `/api/vault/asset?path=` | Read an image asset from the Vault |
@@ -392,12 +399,12 @@ Frontend tests temporarily create a sample note to verify embedded rendering. **
 
 The current implementation deliberately sets clear boundaries. The following areas are not implemented or still need improvement:
 
-- **The static site is still a single-document export**: one HTML document supports inlined images, backlinks, and embedded expansion; full Vault batch export, navigation pages, and an asset directory are not implemented
+- **Static site export**: Settings → Backup & Migration → Export static site produces `index.html`, note HTML files under their Vault-relative paths, navigable wiki links, expanded embeds, and an `assets/` directory. Windows Desktop and browsers with the File System Access API can write to a selected directory; other browsers fall back to flat downloads.
 - **Daily snapshot consolidation is not implemented**: snapshots are already pruned to a 200-per-note cap and identical content is skipped, but consolidation by day for high-frequency editing is not yet available
-- **fc has no GUI diff component**: the CLI and API already return `preview.diff`, but in-app diff rendering is not yet provided
+- **No standalone GUI diff component**: AI file operations already render `preview.diff` as a text block before confirmation, and single actions and batch plans share the same preview/execute contract; a structured diff view inside the workbench is not yet available
 - **No real-time collaboration**: single-machine, single-user; WebSocket / CRDT has not been introduced
 - **Graph scale**: force-directed layout is O(n²) and smooth for hundreds to thousands of nodes; tens of thousands require a Barnes-Hut approximation
 - **`node:sqlite` stability**: Node still marks it as experimental, although it is directly usable. For absolute stability, switch to `better-sqlite3`; the APIs are nearly one-to-one and migration cost is low
-- **Mobile**: narrow screens have responsive degradation, but this is not yet a PWA
+- **Mobile / PWA**: narrow layouts are responsive, and the Web build now provides a manifest, app-shell caching, install prompting, and update prompting. Offline mode only makes cached pages readable; API, SSE, and write requests bypass the cache, so offline writes are not supported.
 
-Recommended order for the next steps: GUI diff and batch plans → complete static-site export → PWA.
+Recommended next step: automatic history retention and cleanup, followed by richer static-export asset and theme options.

@@ -108,7 +108,7 @@ function getVaultFileInfo(rootDir, relativePath) {
   };
 }
 
-export function uploadAttachment({ name, mimeType, body }) {
+export function uploadAttachment({ name, mimeType, body, folder = '' }) {
   if (!Buffer.isBuffer(body) || body.length === 0) {
     throw new ValidationError('附件内容不能为空');
   }
@@ -130,7 +130,7 @@ export function uploadAttachment({ name, mimeType, body }) {
   }
 
   const rootDir = config.vaultDir;
-  const relativePath = allocateAttachmentPath(rootDir, safeName);
+  const relativePath = allocateAttachmentPath(rootDir, safeName, folder);
   const target = resolveVaultPath(rootDir, relativePath, '');
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const temporary = `${target}.${randomUUID()}.tmp`;
@@ -297,13 +297,25 @@ function getAttachmentInfo(rootDir, relativePath, mimeType = null) {
   };
 }
 
-function allocateAttachmentPath(rootDir, name) {
+/** 附件子目录：逐段清洗（每段仍走文件名清洗规则），限制深度与长度，空结果是合法值（直接放 attachments 根）。 */
+function sanitizeAttachmentFolder(folder) {
+  const segments = String(folder ?? '')
+    .replaceAll('\\', '/')
+    .split('/')
+    .map((segment) => sanitizeFilePart(segment, '').trim())
+    .filter((segment) => segment && segment !== '.' && segment !== '..' && !segment.startsWith('.'));
+  return segments.slice(0, 4).join('/').slice(0, 200);
+}
+
+function allocateAttachmentPath(rootDir, name, folder = '') {
   const extension = path.posix.extname(name);
   const stem = extension ? name.slice(0, -extension.length) : name;
-  let candidate = `${ATTACHMENT_ROOT}/${name}`;
+  const directory = sanitizeAttachmentFolder(folder);
+  const base = directory ? `${ATTACHMENT_ROOT}/${directory}` : ATTACHMENT_ROOT;
+  let candidate = `${base}/${name}`;
   let suffix = 2;
   while (fs.existsSync(resolveVaultPath(rootDir, candidate, ''))) {
-    candidate = `${ATTACHMENT_ROOT}/${stem} (${suffix})${extension}`;
+    candidate = `${base}/${stem} (${suffix})${extension}`;
     suffix += 1;
   }
   return candidate;

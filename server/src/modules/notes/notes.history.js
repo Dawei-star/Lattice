@@ -76,11 +76,14 @@ export function listSnapshots(noteId) {
     .map((version) => {
       const match = VERSION_PATTERN.exec(version);
       const file = versionPath(noteId, version);
+      // statSync 之间文件可能刚被 pruneSnapshots 删除，缺文件按 0 字节处理而非让
+      // 整个历史列表 500
+      const stat = fs.statSync(file, { throwIfNoEntry: false });
       return {
         version,
         hash: match[2],
         createdAt: versionCreatedAt(version),
-        size: fs.statSync(file).size,
+        size: stat?.size ?? 0,
       };
     })
     .sort((left, right) => right.version.localeCompare(left.version));
@@ -100,10 +103,6 @@ export function readSnapshot(noteId, version) {
     createdAt: versionCreatedAt(version),
     expectedHash: match[2],
   };
-}
-
-export function currentRaw(note) {
-  return readCurrentRaw(note);
 }
 
 export function currentHash(note) {

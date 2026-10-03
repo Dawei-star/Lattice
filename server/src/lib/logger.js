@@ -8,7 +8,7 @@ import { config } from '../config/index.js';
 const LEVEL_WEIGHT = { debug: 10, info: 20, warn: 30, error: 40 };
 
 /** 敏感字段一律脱敏，避免密码/令牌/隐私写入日志 */
-const REDACT_KEYS = /^(password|passwd|token|access_token|refresh_token|authorization|secret|cookie)$/i;
+const REDACT_KEYS = /^(password|passwd|token|access_token|refresh_token|authorization|secret|cookie|api_?key)$/i;
 
 function sanitize(value, depth = 0) {
   if (value === null || value === undefined) return value;

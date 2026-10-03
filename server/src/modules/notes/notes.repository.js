@@ -83,9 +83,7 @@ export function listByFilePathPrefix(prefix) {
     .map((row) => ({ id: row.id, filePath: row.file_path }));
 }
 
-function escapeLikePattern(value) {
-  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-}
+import { escapeLikePattern } from '../../lib/sql.js';
 
 export function insert({ id, title, content, folderId, filePath, wordCount, contentHash, createdAt, updatedAt }) {
   getDb()
@@ -153,26 +151,11 @@ export function list({ folderId, tagId, sort = 'updated', limit, offset, paginat
   return { items: rows, total };
 }
 
-/** 图谱与统计用的轻量全量投影 */
-export function listBrief() {
+/** 全量轻量索引：图谱、快速切换器、双链解析与嵌入预览共用，不含正文 */
+export function listIndex({ order = false } = {}) {
+  const sql = `SELECT id, title, folder_id, file_path, is_pinned, word_count, updated_at FROM notes${order ? ' ORDER BY updated_at DESC' : ''}`;
   return getDb()
-    .prepare('SELECT id, title, folder_id, file_path, is_pinned, word_count, updated_at FROM notes')
-    .all()
-    .map((row) => ({
-      id: row.id,
-      title: row.title,
-      folderId: row.folder_id,
-      isPinned: row.is_pinned === 1,
-      filePath: row.file_path || `${sanitizeFilePart(row.title)}.md`,
-      wordCount: row.word_count,
-      updatedAt: row.updated_at,
-    }));
-}
-
-/** 全量轻量索引：供快速切换器、双链解析与嵌入预览使用，不含正文 */
-export function listIndex() {
-  return getDb()
-    .prepare('SELECT id, title, folder_id, file_path, is_pinned, word_count, updated_at FROM notes ORDER BY updated_at DESC')
+    .prepare(sql)
     .all()
     .map((row) => ({
       id: row.id,

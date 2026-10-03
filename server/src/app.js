@@ -42,8 +42,14 @@ export function createApp() {
   app.use(cors);
 
   // 请求体上限 8MB：单篇笔记正文上限 200 万字符，中文 UTF-8 约 6MB，
-  // 加上 JSON 转义与属性余量取 8MB，让 zod 校验（而非 413）成为真正的边界
-  app.use(express.json({ limit: '8mb' }));
+  // 加上 JSON 转义与属性余量取 8MB，让 zod 校验（而非 413）成为真正的边界。
+  // 附件上传（POST /api/vault/attachments）是原始字节流，由路由上的 raw 解析器
+  // 接管；JSON 解析器若先消费，JSON 类型的附件文件就再也还原不回字节流了。
+  app.use(express.json({
+    limit: '8mb',
+    type: (req) => Boolean(req.is('application/json'))
+      && !(req.method === 'POST' && req.path === '/api/vault/attachments'),
+  }));
 
   // 探针放在鉴权与业务路由之前，保证永远可达
   app.use(healthRouter);
@@ -77,8 +83,8 @@ function mountWebApp(app) {
     }),
   );
 
-  // SPA 回退：非 /api、非探针的 GET 一律交给前端路由
-  app.get(/^\/(?!api\/|health$|ready$).*/, (_req, res) => {
+  // SPA 回退：非 /api（含精确 /api）、非探针的 GET 一律交给前端路由
+  app.get(/^\/(?!api(\/|$)|health$|ready$).*/, (_req, res) => {
     res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
     res.sendFile(indexHtml);
   });

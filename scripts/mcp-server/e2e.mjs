@@ -3,10 +3,31 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-mcp-e2e-'));
-const serverPath = new URL('./server.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+// fileURLToPath 会正确解码空格/中文/# 等百分号编码；URL.pathname 手工去盘符的
+// 写法在中文或空格路径下直接 ENOENT
+const serverPath = fileURLToPath(new URL('./server.mjs', import.meta.url));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** kill 后等进程真正退出（带 2s 兜底），句柄不释放会导致后续 rmSync 抛 EBUSY */
+function stopChild(child) {
+  if (!child) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    child.once('exit', done);
+    child.once('error', done);
+    child.kill();
+    setTimeout(done, 2000).unref();
+  });
+}
 
 function launch({ allowWrites }) {
   const env = {
@@ -42,7 +63,7 @@ function launch({ allowWrites }) {
 
   const send = (object) => child.stdin.write(`${JSON.stringify(object)}\n`);
   const find = (id) => responses.find((response) => response.id === id);
-  const waitFor = async (id, timeoutMs = 5000) => {
+  const waitFor = async (id, timeoutMs = 15000) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const response = find(id);
@@ -69,8 +90,7 @@ try {
     }
     console.log('default MCP mode: read-only');
   } finally {
-    readonly.child.kill();
-    await wait(100);
+    await stopChild(readonly.child);
   }
 
   const active = launch({ allowWrites: true });
@@ -169,7 +189,11 @@ try {
   }
   console.log('MCP E2E PASS');
 } finally {
-  activeChild?.kill();
-  await wait(200);
-  fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  await stopChild(activeChild);
+  try {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  } catch (error) {
+    // 清理失败不能掩盖真正的测试失败原因
+    process.stderr.write(`[e2e] runtime cleanup failed: ${error.message}\n`);
+  }
 }

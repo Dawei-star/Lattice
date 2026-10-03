@@ -28,7 +28,7 @@ export async function read(filePath = FILE_PATH) {
     if (error?.code !== 'ENOENT') throw error;
   }
   if (raw === null) return { nodes: [], edges: [], revision: null };
-  const value = parseCanvasDocument(raw, filePath);
+  const value = normalizeCanvasDocument(parseCanvasDocument(raw, filePath));
   return { nodes: value.nodes, edges: value.edges, revision: hashRaw(raw) };
 }
 
@@ -91,6 +91,103 @@ function parseCanvasDocument(raw, filePath) {
     throw new ValidationError('Canvas file has an invalid structure');
   }
   return value;
+}
+
+// ── Obsidian 画布兼容 ────────────────────────────────────────
+// Obsidian 的 .canvas 与本项目格式有三处不兼容，读取时统一归一化：
+//   1. edge 用 fromNode/toNode（本项目用 from/to），fromSide/toSide 恰好同名；
+//   2. 节点颜色是 "1"~"6" 或 #hex（本项目用命名色），且 edge 也带颜色；
+//   3. 存在 group/link 节点类型，group 无 text 只有 label。
+// 归一化发生在读取时：首次保存后文件即落为本项目格式。
+const OBSIDIAN_NAMED_COLORS = { 1: 'red', 2: 'orange', 3: 'yellow', 4: 'green', 5: 'blue', 6: 'purple' };
+const CARD_COLOR_HUES = { red: 0, orange: 30, yellow: 55, green: 130, blue: 220, purple: 285 };
+
+function normalizeCanvasDocument(value) {
+  const nodes = value.nodes.map(normalizeCanvasNode).filter(Boolean);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  // group 节点在 Obsidian 里垫底，渲染顺序按 DOM 先后，因此排到最前
+  const orderedNodes = [
+    ...nodes.filter((node) => node.type === 'group'),
+    ...nodes.filter((node) => node.type !== 'group'),
+  ];
+  const edges = value.edges
+    .map(normalizeCanvasEdge)
+    .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
+  return { ...value, nodes: orderedNodes, edges };
+}
+
+function normalizeCanvasNode(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) return null;
+  const node = { ...raw };
+  if (node.type === 'group') {
+    node.text = typeof node.text === 'string' ? node.text : (typeof node.label === 'string' ? node.label : '');
+    delete node.label;
+  } else if (node.type === 'link') {
+    // 链接节点没有本地对应物，降级为记录 URL 的文本卡片
+    node.type = 'text';
+    node.text = typeof node.url === 'string' ? node.url : '';
+  } else if (!node.type) {
+    node.type = 'text';
+  }
+  // Obsidian 的 file/image 节点用 file 字段存 Vault 相对路径；本项目图片节点用 path
+  if ((node.type === 'image' || node.type === 'file') && typeof node.file === 'string' && !node.path) {
+    node.path = node.file;
+  }
+  if (typeof node.text !== 'string') {
+    const source = typeof node.file === 'string' ? node.file : '';
+    node.text = source ? source.split('/').pop().replace(/\.md$/i, '') : '';
+  }
+  const color = normalizeCanvasColor(node.color);
+  if (color === null) delete node.color;
+  else node.color = color;
+  return node;
+}
+
+function normalizeCanvasEdge(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) return null;
+  const from = typeof raw.from === 'string' ? raw.from : raw.fromNode;
+  const to = typeof raw.to === 'string' ? raw.to : raw.toNode;
+  if (typeof from !== 'string' || typeof to !== 'string') return null;
+  const { fromNode: _fromNode, toNode: _toNode, ...rest } = raw;
+  const edge = { ...rest, from, to };
+  const color = normalizeCanvasColor(edge.color);
+  if (color === null) delete edge.color;
+  else edge.color = color;
+  return edge;
+}
+
+/** Obsidian 颜色（"1"~"6" / #hex / {rgb} 对象）→ 本项目命名色；无法识别时移除该字段。 */
+function normalizeCanvasColor(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'object') return normalizeCanvasColor(value.rgb);
+  if (typeof value !== 'string') return null;
+  if (OBSIDIAN_NAMED_COLORS[value]) return OBSIDIAN_NAMED_COLORS[value];
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) return nearestCardColor(value);
+  return CARD_COLOR_HUES[value] !== undefined ? value : null;
+}
+
+function nearestCardColor(hex) {
+  const expanded = hex.length === 4 ? `#${[...hex.slice(1)].map((ch) => ch + ch).join('')}` : hex;
+  const channel = (offset) => parseInt(expanded.slice(1 + offset, 3 + offset), 16) / 255;
+  const [r, g, b] = [channel(0), channel(2), channel(4)];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max - min < 0.12) return max > 0.6 ? 'yellow' : 'blue';
+  let hue;
+  if (max === r) hue = ((g - b) / (max - min)) * 60;
+  else if (max === g) hue = 120 + ((b - r) / (max - min)) * 60;
+  else hue = 240 + ((r - g) / (max - min)) * 60;
+  if (hue < 0) hue += 360;
+  let best = 'blue';
+  let bestDistance = Infinity;
+  for (const [name, candidateHue] of Object.entries(CARD_COLOR_HUES)) {
+    const distance = Math.min(Math.abs(hue - candidateHue), 360 - Math.abs(hue - candidateHue));
+    if (distance < bestDistance) {
+      best = name;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 function walkCanvasFiles(root, relativeDir, result) {

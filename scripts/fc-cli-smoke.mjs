@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -79,6 +79,46 @@ function writeFixture(relativePath, content) {
 
 function readFixture(relativePath) {
   return fs.readFileSync(path.join(root, ...relativePath.split('/')), 'utf8');
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function waitFor(predicate, label, timeout = 10000) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - started > timeout) return reject(new Error(`timeout waiting for ${label}`));
+      setTimeout(tick, 25);
+    };
+    tick();
+  });
+}
+
+function startServe(extraArgs = []) {
+  const child = spawn(process.execPath, [cliPath, '--root', root, ...extraArgs, 'serve'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  const lines = [];
+  let stderr = '';
+  let buffer = '';
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    let index;
+    while ((index = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (line) lines.push(parseJson(line));
+    }
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+  const send = (request) => child.stdin.write(`${JSON.stringify(request)}\n`);
+  const sendRaw = (text) => child.stdin.write(`${text.trim()}\n`);
+  return { child, lines, get stderr() { return stderr; }, exited, send, sendRaw };
 }
 
 async function main() {
@@ -214,6 +254,162 @@ async function main() {
 
       const internal = expectFailure(await runCli(withRoot('stat', '.fc/audit.jsonl')), 'internal state path');
       assert.match(internal.message, /reserved/i);
+    });
+
+    await check('-V prints the application version', async () => {
+      const result = await runCli(['-V']);
+      assert.equal(result.status, 0);
+      assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+    });
+
+    await check('help <command> prints per-command details', async () => {
+      const result = await runCli(['help', 'edit']);
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, /--replace/);
+      assert.match(result.stdout, /--all/);
+
+      const unknown = expectFailure(await runCli(['help', 'nope']), 'help unknown');
+      assert.match(unknown.message, /No help available/);
+    });
+
+    await check('doctor reports a healthy root with pending undo operations', async () => {
+      expectSuccess(await runCli(withRoot('create', 'notes/doctor.md', '--content', 'doctor\n', '--yes')), 'create for doctor');
+      const result = expectSuccess(await runCli(withRoot('doctor')), 'doctor healthy');
+      assert.equal(result.ok, true);
+      assert.equal(result.checks.every((check) => typeof check.name === 'string' && typeof check.ok === 'boolean'), true);
+      const trash = result.checks.find((check) => check.name === 'trash');
+      assert.match(trash.detail, /pending undo/);
+      assert.ok(Number(trash.detail.match(/(\d+) pending undo/)[1]) >= 1);
+    });
+
+    await check('doctor fails on an unreadable undo manifest', async () => {
+      expectSuccess(await runCli(withRoot('create', 'notes/broken.md', '--content', 'broken\n', '--yes')), 'create for broken manifest');
+      const trashDir = path.join(root, '.fc', 'trash');
+      const newest = fs.readdirSync(trashDir).sort().at(-1);
+      fs.writeFileSync(path.join(trashDir, newest, 'manifest.json'), 'not-json', 'utf8');
+
+      const result = await runCli(withRoot('doctor'));
+      assert.notEqual(result.status, 0, 'doctor should exit non-zero on a broken manifest');
+      assert.equal(result.json.ok, false);
+      const trash = result.json.checks.find((check) => check.name === 'trash');
+      assert.equal(trash.ok, false);
+      assert.match(trash.detail, /manifest unreadable/);
+    });
+
+    await check('readonly mode blocks mutations and undo but keeps reads and previews', async () => {
+      const deniedCreate = expectFailure(await runCli(withRoot('--mode', 'readonly', 'create', 'blocked.md', '--content', 'no', '--yes')), 'readonly create');
+      assert.equal(deniedCreate.code, 'FC_READ_ONLY');
+      assert.equal(fs.existsSync(path.join(root, 'blocked.md')), false);
+
+      const deniedUndo = expectFailure(await runCli(withRoot('--mode', 'readonly', 'undo')), 'readonly undo');
+      assert.equal(deniedUndo.code, 'FC_READ_ONLY');
+
+      const deniedBatch = expectFailure(await runCli(withRoot('--mode', 'readonly', 'batch', 'plans/archive.json')), 'readonly batch');
+      assert.equal(deniedBatch.code, 'FC_READ_ONLY');
+
+      const preview = expectSuccess(await runCli(withRoot('--mode', 'readonly', 'write', 'notes/doctor.md', '--content', 'preview only', '--dry-run')), 'readonly dry-run');
+      assert.equal(preview.dryRun, true);
+
+      const read = expectSuccess(await runCli(withRoot('--mode', 'readonly', 'grep', 'doctor')), 'readonly grep');
+      assert.ok(read.total >= 1);
+    });
+
+    await check('shell executes piped commands until /exit', async () => {
+      const script = [
+        '# a comment line is ignored',
+        'create notes/shell.md --content "from shell" --yes',
+        'read notes/shell.md',
+        'totally-unknown',
+        'grep "from shell" notes',
+        '/exit',
+        'create notes/after-exit.md --content "never" --yes',
+      ].join('\n');
+      const result = spawnSync(process.execPath, [cliPath, '--root', root, 'shell'], { input: script, encoding: 'utf8', windowsHide: true });
+      assert.equal(result.status, 0, result.stderr);
+
+      const events = result.stdout.trim().split(/\r?\n/).map(parseJson).filter(Boolean);
+      assert.equal(events.at(-1).event, 'exit');
+      assert.equal(events.at(-1).commands, 3);
+      assert.equal(events.at(-1).errors, 1);
+
+      const read = events.find((event) => event.content !== undefined);
+      assert.equal(read.content, 'from shell');
+      assert.ok(events.some((event) => event.query === 'from shell'), 'grep ran inside the session');
+      assert.equal(fs.existsSync(path.join(root, 'notes', 'after-exit.md')), false, 'lines after /exit must not run');
+
+      const errorLine = result.stderr.trim().split(/\r?\n/).map(parseJson).filter(Boolean).at(-1);
+      assert.match(errorLine.error.message, /Unknown command/);
+    });
+
+    await check('shell honours readonly mode', async () => {
+      const result = spawnSync(process.execPath, [cliPath, '--root', root, '--mode', 'readonly', 'shell'], {
+        input: 'create notes/blocked-in-shell.md --content no --yes\n/exit\n',
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const errorLine = result.stderr.trim().split(/\r?\n/).map(parseJson).filter(Boolean).at(-1);
+      assert.equal(errorLine.error.code, 'FC_READ_ONLY');
+      assert.equal(fs.existsSync(path.join(root, 'notes', 'blocked-in-shell.md')), false);
+    });
+
+    await check('serve answers JSON-lines requests and survives unknown commands', async () => {
+      const session = startServe();
+      try {
+        await waitFor(() => session.lines.length >= 1, 'ready');
+        assert.equal(session.lines[0].event, 'ready');
+        assert.equal(session.lines[0].mode, 'default');
+
+        session.send({ id: 1, command: 'ping' });
+        await waitFor(() => session.lines.length >= 2, 'ping');
+        assert.equal(session.lines[1].result.pong, true);
+
+        session.send({ id: 2, command: 'create', args: ['notes/served.md'], options: { content: 'served\n', yes: true } });
+        await waitFor(() => session.lines.length >= 3, 'create');
+        assert.equal(session.lines[2].result.path, 'notes/served.md');
+
+        session.send({ id: 3, command: 'bogus' });
+        await waitFor(() => session.lines.length >= 4, 'unknown command');
+        assert.match(session.lines[3].error.message, /Unknown command/);
+
+        session.send({ id: 4, command: 'read', args: ['notes/served.md'] });
+        await waitFor(() => session.lines.length >= 5, 'read after unknown');
+        assert.equal(session.lines[4].result.content, 'served\n');
+
+        session.sendRaw('this is not json');
+        await waitFor(() => session.lines.length >= 6, 'bad request');
+        assert.equal(session.lines[5].error.code, 'FC_BAD_REQUEST');
+
+        session.child.stdin.end();
+        assert.equal(await session.exited, 0);
+        assert.equal(session.stderr, '');
+      } catch (error) {
+        session.child.kill();
+        throw error;
+      }
+    });
+
+    await check('serve readonly rejects writes', async () => {
+      const session = startServe(['--mode', 'readonly']);
+      try {
+        await waitFor(() => session.lines.length >= 1, 'ready');
+        assert.equal(session.lines[0].mode, 'readonly');
+
+        session.send({ id: 1, command: 'create', args: ['blocked-served.md'], options: { content: 'x', yes: true } });
+        await waitFor(() => session.lines.length >= 2, 'readonly rejection');
+        assert.equal(session.lines[1].error.code, 'FC_READ_ONLY');
+
+        session.send({ id: 2, command: 'stat', args: ['notes/served.md'] });
+        await waitFor(() => session.lines.length >= 3, 'readonly stat');
+        assert.equal(session.lines[2].result.exists, true);
+
+        session.child.stdin.end();
+        assert.equal(await session.exited, 0);
+        assert.equal(fs.existsSync(path.join(root, 'blocked-served.md')), false);
+      } catch (error) {
+        session.child.kill();
+        throw error;
+      }
     });
 
     console.log(`\nFC CLI smoke test passed: ${passed} checks`);

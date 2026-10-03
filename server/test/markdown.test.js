@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeWordCount,
+  extractNoteTags,
   extractTags,
   extractWikiLinks,
   inferTitle,
@@ -96,6 +97,42 @@ describe('extractTags', () => {
 
   it('去重', () => {
     assert.deepEqual(extractTags('#A #A #a'), ['A', 'a']);
+  });
+
+  it('行首无空格的中文标题不算标签（中文笔记常见 #需求 写法）', () => {
+    // 回归用例：导入 Obsidian 的 md 后每个无空格标题都被当成了标签
+    assert.deepEqual(extractTags('#需求\n正文提到 #灵感 标签\n##背景'), ['灵感']);
+  });
+
+  it('十六进制色值不算标签', () => {
+    assert.deepEqual(extractTags('色值 #ffffff 与 #00ff00 和 #fff'), []);
+  });
+
+  it('带数字的短标签不被误判为色值（#e2e 是标签，不是 #e2e 色值）', () => {
+    // 回归用例：MCP E2E 用 #e2e 当标签，一度被 3 位十六进制色值规则误排除
+    assert.deepEqual(extractTags('端到端测试 #e2e'), ['e2e']);
+    assert.deepEqual(extractTags('区间 #a1'), ['a1']);
+  });
+
+  it('行首的嵌套标签仍然保留', () => {
+    assert.deepEqual(extractTags('#工程/前端 属于嵌套标签'), ['工程/前端']);
+  });
+});
+
+describe('extractNoteTags', () => {
+  it('合并正文标签与 frontmatter tags（YAML 数组）', () => {
+    assert.deepEqual(
+      extractNoteTags('正文 #内联', { tags: ['阅读', '随笔'] }),
+      ['内联', '阅读', '随笔'],
+    );
+  });
+
+  it('frontmatter tags 为逗号分隔字符串时也能解析', () => {
+    assert.deepEqual(extractNoteTags('', { tags: '阅读, 随笔' }), ['阅读', '随笔']);
+  });
+
+  it('去掉标签里的前导 # 并去重', () => {
+    assert.deepEqual(extractNoteTags('#阅读', { tags: ['#阅读', '随笔'] }), ['阅读', '随笔']);
   });
 });
 

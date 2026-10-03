@@ -86,13 +86,16 @@
 | 标签 | 正文写 `#标签` 自动归类，支持 `#工程/前端` 嵌套写法 |
 | 目录树 | 任意层级嵌套、就地重命名、删除后笔记自动回到「未分类」 |
 | 多标签页 | 并行打开多篇笔记，支持锁定、收藏、重命名、移动，以及关闭左侧 / 右侧 / 其他标签 |
-| 本地白板 | 使用 `.canvas` 文件保存文本卡片、笔记卡片、Vault 图片和卡片连接，支持四边连接点、拖拽、缩放与对齐 |
+| 本地白板 | 使用 `.canvas` 文件保存文本卡片、笔记卡片、Vault 图片和卡片连接，支持四边连接点、拖拽、缩放与对齐；Obsidian `.canvas` 可直接打开（边端点、`"1"`~`"6"`/hex 颜色、group/file/image 节点读取时自动归一化） |
+| 附件归组与灯箱 | 笔记中粘贴 / 拖入的图片按笔记标题存到 `attachments/<笔记标题>/` 子目录；预览中点击图片全屏查看（滚轮缩放、拖动平移、双击切换适配） |
 | Vault 文件浏览 | 侧栏显示 Markdown 与 Canvas 文件，可打开、移动、复制路径并通过右键菜单操作；「显示附件」开关打开后还可浏览任意文件夹中的非笔记文件 |
-| 确定性文件助手 fc | `npm run fc` 本地命令（read/stat/find/grep/create/write/append/edit/copy/move/delete/mkdir/batch/undo/log）与 `GET/POST /api/files/*` 同一套核心：路径穿越 / 符号链接防护、原子写、`.fc/trash` 快照与审计、可撤销，例行文件操作不依赖模型往返 |
-| AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、Inbox 整理建议与安全归档、自然语言文件操作（任务模式可自主多轮执行并自动审计）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
+| 确定性文件助手 fc | `npm run fc` 本地命令（read/stat/find/grep/create/write/append/edit/copy/move/delete/mkdir/batch/undo/log，以及 `serve` JSON-lines 长驻服务、`shell` 交互会话、`doctor` 体检、`--mode readonly` 只读预设）与 `GET/POST /api/files/*` 同一套核心：路径穿越 / 符号链接防护、原子写、`.fc/trash` 快照与审计、可撤销，例行文件操作不依赖模型往返 |
+| AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、Inbox 整理建议与安全归档、自然语言文件操作（任务模式可自主多轮执行并自动审计，失败动作回填模型自纠，操作可一键撤销）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
 | 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成（错过自动补跑），并对同一天幂等更新 |
 | MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露 `list_notes`、`search_notes`、`read_note`、`get_note_links`、`list_tags`、`get_vault_statistics`、`list_note_history`；默认只读，显式开启 `LATTICE_MCP_ALLOW_WRITES` 后才提供 `create_note`、`update_note`、`restore_note_version`，写入统一记录 MCP 审计 |
 | 单篇 HTML 导出 | 从编辑区导出带 Lattice 品牌页眉、页脚、图片内联、双链可点击和嵌入展开的独立 HTML 文件 |
+| 静态站点导出 | 从设置中批量生成可部署的 `index.html`、按 Vault 路径组织的笔记页面、双链导航和 `assets/` 资源目录 |
+| PWA | Web 版提供 manifest、应用壳缓存、安装提示和更新提示；离线不写入知识库 |
 | Vault 备份与恢复 | 桌面版从「设置 → 备份与迁移」一键复制 Markdown、Canvas、附件、模板和历史快照到带时间戳的新目录；恢复时重新选择备份目录即可，AI API Key 不会写入备份 |
 | 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建；开启附件显示后结果同时包含附件 |
 | 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
@@ -168,6 +171,8 @@ npm start         # 后端同时托管 API 与前端静态资源
 聊天、语义索引管道与 CLI 共用同一份配置；浏览器本地只保留界面缓存。CLI 使用同一套 API，
 可通过 `LATTICE_AI_ACCESS_TOKEN` 传递工作区令牌；服务端令牌启用后，角色以服务端配置为准。浏览器端会从 AI 设置中的访问令牌自动发送 `X-Workspace-Token`。
 语义索引在「设置 → 模型管理」配置 embedding 模型后自动增量进行；启用云端 embedding 时笔记分块内容会发往该服务商。
+
+Vault 的系统目录可在「设置 → 知识库位置」中编辑：Inbox、Daily、Journal 只接受 Vault 内的相对路径，也支持 `Work/Daily` 这类多级目录。保存 profile 不会移动已有文件，只影响之后新建的内容；格式错误时服务端会回退到默认目录。对应接口为 `GET /api/vault/info` 和 `PUT /api/vault/profile`。
 
 ```bash
 npm run ai -- chat "搜索项目笔记"
@@ -352,6 +357,8 @@ Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未�
 | `GET` `DELETE` | `/api/tags` | 标签列表（带引用数）与删除 |
 | `GET` `PUT` `PATCH` | `/api/canvas` | 读取、保存和移动 Vault 中的 `.canvas` 白板文件 |
 | `GET` | `/api/canvas/files` | 列出 Vault 中的白板文件 |
+| `GET` | `/api/vault/info` | 返回 Vault 路径、模式和当前生效的 profile |
+| `PUT` | `/api/vault/profile` | 保存 Inbox / Daily / Journal 的 Vault 相对目录（viewer 角色不可写） |
 | `GET` | `/api/vault/files` | 列举 Vault 中除笔记 / 画布外的所有非笔记文件（附件显示开关数据源） |
 | `GET` | `/api/vault/assets` | 列出可在白板中引用的图片资源 |
 | `GET` | `/api/vault/asset?path=` | 读取 Vault 中的图片资源 |
@@ -422,13 +429,13 @@ npm run verify      # 依次执行 fc → server → web → mcp-server → desk
 
 当前实现刻意划定了边界，以下是明确未做或仍需增强的部分：
 
-- **静态站点仍是单篇导出**：单篇 HTML 已支持图片内联、双链和嵌入展开；完整 Vault 批量导出、导航页和资源目录尚未实现
+- **静态站点导出**：设置 → 备份与迁移 → 导出静态站点会生成 `index.html`、按 Vault 相对目录组织的笔记 HTML、双链导航、嵌入展开和 `assets/` 资源目录。Windows 桌面版与支持 File System Access API 的浏览器可直接选择目标目录；其他浏览器会平铺下载文件。
 - **历史保留按天归并未实现**：版本快照已按每篇 200 个上限自动清理、内容相同不重复写，但高频编辑下的按天归并尚未落地
-- **fc 尚无 GUI diff 组件**：命令行与 API 已可返回 `preview.diff`，界面内的差异渲染尚未提供
+- **无独立 GUI diff 组件**：AI 文件操作确认前已以文本块渲染 `preview.diff`，单操作与批量计划共用同一份预览 / 执行契约；工作台内嵌的结构化 diff 视图尚未提供
 - **无实时协作**：单机单用户，未引入 WebSocket / CRDT
 - **图谱规模**：力导向是 O(n²)，数百到数千节点流畅；上万节点需要换 Barnes-Hut 近似
 - **`node:sqlite` 的稳定性**：它仍被 Node 标记为实验特性（虽已可直接使用）。若追求绝对稳定，
   可换 `better-sqlite3`，接口几乎一一对应，迁移成本很低
-- **移动端**：窄屏已做响应式降级，但还不是 PWA
+- **移动端 / PWA**：窄屏支持响应式布局；Web 版提供 manifest、应用壳缓存、安装提示和更新提示。离线只保证已缓存页面可读，API、SSE 和写入操作不会被缓存，也不支持离线写入。
 
-下一步建议按此顺序推进：GUI diff 与批量计划 → 完整静态站点导出 → PWA。
+下一步建议：历史保留与清理 → 静态导出中的更多附件类型与主题自定义。

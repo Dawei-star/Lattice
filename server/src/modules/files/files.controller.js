@@ -1,4 +1,5 @@
 import { ValidationError } from '../../lib/errors.js';
+import { createOperationPlan } from '../../../../scripts/operation-plan.mjs';
 import * as service from './files.service.js';
 
 const WRITE_TYPES = new Set(['create', 'write', 'append', 'edit', 'copy', 'move', 'delete', 'mkdir']);
@@ -22,6 +23,7 @@ export function preview(req, res) {
   res.json({
     data: {
       ...data,
+      plan: createOperationPlan([action], { actor: principal.actor, role: principal.role, source: 'files-api' }),
       actor: principal.actor,
       role: principal.role,
       blocked: principal.role === 'viewer' && WRITE_TYPES.has(action.type),
@@ -32,14 +34,21 @@ export function preview(req, res) {
 export function execute(req, res) {
   const principal = assertCanWrite(req);
   if (req.valid.body.confirmed !== true) throw new ValidationError('File changes require explicit confirmation');
-  const result = service.execute(actionFromBody(req.valid.body), { actor: principal.actor, source: 'files-api' });
+  if (!req.valid.body.planHash) throw new ValidationError('File changes require a preview plan');
+  const result = service.execute(actionFromBody(req.valid.body), {
+    actor: principal.actor,
+    role: principal.role,
+    source: 'files-api',
+    planId: req.valid.body.planId,
+    planHash: req.valid.body.planHash,
+  });
   res.json({ data: result });
 }
 
 export function undo(req, res) {
   const principal = assertCanWrite(req);
   const { operationId, force } = req.valid.body;
-  const result = service.undo(operationId ?? null, { force, actor: principal.actor, source: 'files-api' });
+  const result = service.undo(operationId ?? null, { force, actor: principal.actor, role: principal.role, source: 'files-api' });
   res.json({ data: result });
 }
 

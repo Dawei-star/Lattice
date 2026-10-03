@@ -56,6 +56,7 @@ files:
     to: scripts
     filter:
       - 'fc-core.mjs'
+      - 'operation-plan.mjs'
       - '!**/.mimosa/**'
 
 # exe 文件名保持 ASCII，避开各类工具链的路径编码问题；

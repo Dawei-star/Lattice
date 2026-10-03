@@ -9,10 +9,10 @@ import * as notesService from './notes.service.js';
 import { applyVaultChange } from '../../vault/sync.js';
 import { parseMarkdownDocument } from '../../vault/markdown.js';
 import { resolveVaultPath } from '../../vault/path.js';
+import { getVaultProfile } from '../../vault/profile.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
 
 const TEMPLATE_DIR = '_templates';
-const DAILY_FOLDER = 'Daily';
 const TEMPLATE_FILE_PATTERN = /^[^/\\<>:"|?*\u0000-\u001f]+\.md$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -183,8 +183,9 @@ export function createFromTemplate({ template, title, date, folderId = null }) {
 
 export async function createDaily({ date } = {}) {
   const resolvedDate = normalizeDate(date);
-  const folder = ensureDailyFolder();
-  const filePath = `${DAILY_FOLDER}/${resolvedDate}.md`;
+  const dailyPath = getVaultProfile(config.vaultDir).paths.daily;
+  const folder = ensureConfiguredFolder(dailyPath);
+  const filePath = `${dailyPath}/${resolvedDate}.md`;
   const existing = notesRepository.findByFilePath(filePath);
   if (existing) return notesService.getDetail(existing.id);
 
@@ -255,8 +256,17 @@ function normalizeDate(value) {
   return date;
 }
 
-function ensureDailyFolder() {
-  return foldersRepository.findByNameAndParent(DAILY_FOLDER, null) ?? foldersService.create({ name: DAILY_FOLDER });
+function ensureConfiguredFolder(folderPath) {
+  let parentId = null;
+  for (const name of folderPath.split('/')) {
+    const existing = foldersRepository.findByNameAndParent(name, parentId);
+    if (existing) {
+      parentId = existing.id;
+      continue;
+    }
+    parentId = foldersService.create({ name, parentId }).id;
+  }
+  return { id: parentId };
 }
 
 function localDate(date) {

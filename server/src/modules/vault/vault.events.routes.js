@@ -8,7 +8,8 @@
  */
 import { Router } from 'express';
 import { config } from '../../config/index.js';
-import { readBearerToken, sameSecret } from '../../middleware/workspaceAuth.js';
+import { sameSecret } from '../../lib/secrets.js';
+import { readBearerToken } from '../../middleware/workspaceAuth.js';
 import { sseTicketStore } from '../workspace/sse-tickets.js';
 import { streamEvents } from './vault.controller.js';
 

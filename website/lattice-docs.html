@@ -1648,7 +1648,7 @@
             </div>
           </section>
 
-          <section class="section" id="updates" data-searchable="更新记录 v0.1.3 显示附件 v0.1.2 更新检查修复 v0.1.1 AI 知识库助手">
+          <section class="section" id="updates" data-searchable="更新记录 v0.1.3 显示附件 静态站点 PWA Vault profile 灯箱 一键撤销 Obsidian 画布 fc v0.1.2 更新检查修复 v0.1.1 AI 知识库助手">
             <div class="section-heading">
               <div>
                 <h2>更新记录</h2>
@@ -1657,8 +1657,18 @@
             </div>
             <div class="version-list">
               <div class="version-item">
-                <div class="version-date">2026.10.02</div>
-                <div class="version-content"><strong>v0.1.3 · 显示附件开关</strong><p>新增「显示附件」开关：默认关闭保持原行为，打开后图片、视频、PDF 等附件文件会显示在文件列表与快速切换中，支持用系统默认应用打开。</p></div>
+                <div class="version-date">2026.10.03</div>
+                <div class="version-content"><strong>v0.1.3 · 静态站点、PWA 与确定性文件操作</strong>
+                  <ul>
+                    <li><strong>整库静态站点导出</strong>：可搜索的 index.html 目录页、按 Vault 路径组织的笔记 HTML、双链与嵌入展开、assets/ 资源目录，File System Access API / 桌面选择器 / 平铺下载三级降级。</li>
+                    <li><strong>PWA</strong>：manifest 与应用壳缓存，可安装到桌面；API / SSE / 写入绕过缓存，离线只读。</li>
+                    <li><strong>Vault profile</strong>：设置界面可改 Inbox / Daily / Journal 目录（.lattice/profile.json，GET /api/vault/info、PUT /api/vault/profile）。</li>
+                    <li><strong>AI 文件操作一键撤销</strong>：operationId 与 fc 快照贯通，后执行先撤销；任务模式失败回填模型自纠、6 轮耗尽可「继续」。</li>
+                    <li><strong>附件归组与灯箱</strong>：粘贴图片自动存入 attachments/&lt;笔记标题&gt;/；预览图片可全屏缩放、拖动。</li>
+                    <li><strong>fc 升级</strong>：serve（JSON-lines 长驻）、shell（交互）、doctor 体检、--mode readonly 只读预设。</li>
+                    <li><strong>Obsidian 画布兼容</strong>：.canvas 的端点 / 颜色 / group / file / image 节点读取时归一化，两边可互开；另含「显示附件」开关。</li>
+                  </ul>
+                </div>
               </div>
               <div class="version-item">
                 <div class="version-date">2026.09.30</div>
@@ -1670,7 +1680,7 @@
               </div>
               <div class="version-item">
                 <div class="version-date">持续迭代</div>
-                <div class="version-content"><strong>下一步方向</strong><p>继续完善历史快照自动清理、完整 Vault 静态站点导出与 PWA 支持。</p></div>
+                <div class="version-content"><strong>下一步方向</strong><p>历史快照按天归并、静态站点导出的主题自定义与更多附件类型支持。</p></div>
               </div>
             </div>
           </section>

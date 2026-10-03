@@ -4,5 +4,6 @@ import { http } from './client.js';
 export const filesApi = {
   preview: (input, options = {}) => http.post('/files/preview', input, { timeout: 30_000, retries: 0, ...options }),
   execute: (input, options = {}) => http.post('/files/execute', input, { timeout: 30_000, retries: 0, ...options }),
+  undo: (operationId, options = {}) => http.post('/files/undo', { operationId }, { retries: 0, ...options }),
   log: (options = {}) => http.get('/files/log', options),
 };

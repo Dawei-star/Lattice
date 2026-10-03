@@ -96,6 +96,5 @@ now use the same `FileStore`; the Inbox-specific `archive` action remains a
 specialized frontmatter transformation.
 
 Batch plans are now implemented in both the CLI and the core (`previewBatch` /
-`mutateBatch` with `planHash`). The next layer should add a GUI diff component
-that renders `preview.diff` and drives single operations and batch plans from
-the workbench.
+`mutateBatch` with `planHash`). The workbench renders `preview.diff` and drives
+single operations and batch plans through the same preview/execute contract.

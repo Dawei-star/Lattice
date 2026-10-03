@@ -12,6 +12,17 @@ import fs from 'node:fs';
 import { VaultAdapter } from './vault.adapter.js';
 import { applyVaultChange, reconcileVault } from './sync.js';
 
+/** vault 内部目录：与 VaultAdapter 的 SPECIAL_DIRS 保持一致。 */
+const INTERNAL_DIRS = new Set(['.lattice', '.fc', '_templates']);
+
+function isInternalPath(name) {
+  if (INTERNAL_DIRS.has(name)) return true;
+  for (const dir of INTERNAL_DIRS) {
+    if (name.startsWith(`${dir}/`)) return true;
+  }
+  return false;
+}
+
 export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, delay = 180 } = {}) {
   const adapter = new VaultAdapter(vaultDir);
   let timer = null;
@@ -80,8 +91,10 @@ export function watchVault(vaultDir, { log = () => {}, onChange = () => {}, dela
       return;
     }
     const name = String(filename).replaceAll('\\', '/');
-    // 只按路径段前缀排除内部目录，避免误伤 my.lattice.md 这类合法文件名
-    if (name === '.lattice' || name.startsWith('.lattice/') || name === '_templates' || name.startsWith('_templates/') || name.endsWith('.tmp')) return;
+    // 只按路径段前缀排除内部目录，避免误伤 my.lattice.md 这类合法文件名。
+    // 清单必须与 VaultAdapter.SPECIAL_DIRS 一致（.lattice/.fc/_templates），
+    // 否则 reconcile 不扫的文件会被事件路径写进投影，产生幽灵笔记。
+    if (isInternalPath(name) || name.endsWith('.tmp')) return;
     if (name.toLowerCase().endsWith('.md')) changedFiles.add(name);
     else structuralChange = true; // 目录增删改名、资产文件等
     schedule();

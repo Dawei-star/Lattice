@@ -30,7 +30,11 @@ try {
   await waitUntilReady(baseUrl);
   await run(process.execPath, [path.join(testDir, 'canvas-navigation.test.mjs')]);
   await run(process.execPath, [path.join(testDir, 'canvas-delete.test.mjs')]);
+  await run(process.execPath, [path.join(testDir, 'canvas-pan.test.mjs')]);
   await run(process.execPath, [path.join(testDir, 'run-smoke.mjs')]);
+  // 附件开关验收同样需要一个真实后端；这里一并托管，避免它退回硬编码的 127.0.0.1:5177
+  // 而在「没另外起 dev server」的干净机器上必然 ECONNREFUSED。
+  await run(process.execPath, [path.join(testDir, 'attachments-toggle.test.mjs')]);
 } finally {
   backend.kill();
   await once(backend, 'exit').catch(() => {});

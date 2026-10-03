@@ -1,12 +1,22 @@
 import { config } from '../../config/index.js';
+import { ValidationError } from '../../lib/errors.js';
 import { resolveVaultDir } from '../../vault/config.js';
 import { subscribeVaultEvents } from '../../vault/events.js';
 import { migrateSqliteToVault } from '../../vault/migrate-sqlite.js';
+import { loadVaultProfile, saveVaultProfile } from '../../vault/profile.js';
 import * as service from './vault.service.js';
 import * as attachments from './vault.attachments.js';
 
 export function getInfo(_req, res) {
-  res.json({ data: { vaultDir: resolveVaultDir(config.vaultDir), mode: 'markdown' } });
+  const loaded = loadVaultProfile(config.vaultDir);
+  res.json({ data: profileInfo(loaded) });
+}
+
+export function updateProfile(req, res) {
+  const principal = req.workspacePrincipal ?? { role: 'editor' };
+  if (principal.role === 'viewer') throw new ValidationError('当前角色只有读取权限，不能修改 Vault profile');
+  const loaded = saveVaultProfile(config.vaultDir, req.valid.body);
+  res.json({ data: profileInfo(loaded) });
 }
 
 export function streamEvents(_req, res) {
@@ -47,6 +57,7 @@ export function uploadAttachment(req, res) {
     name: req.valid.query.name,
     mimeType: req.get('content-type'),
     body: req.body,
+    folder: req.valid.query.folder ?? '',
   });
   res.status(201).json({ data: result });
 }
@@ -89,4 +100,15 @@ export function deleteAttachment(req, res) {
 
 export function cleanupAttachments(req, res) {
   res.json({ data: attachments.cleanupOrphans(req.valid.body) });
+}
+
+function profileInfo(loaded) {
+  return {
+    vaultDir: resolveVaultDir(config.vaultDir),
+    mode: 'markdown',
+    profile: loaded.profile,
+    profilePath: loaded.filePath,
+    profileStatus: loaded.status,
+    profileWarning: loaded.warning,
+  };
 }

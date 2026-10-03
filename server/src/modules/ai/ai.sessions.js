@@ -40,10 +40,12 @@ export function deleteSession(id) {
 }
 
 export function deleteEmptySessions() {
-  // 清理没有任何消息、且创建超过一天的空会话（用户点了「新对话」但没说话）
+  // 清理没有任何消息、且创建超过一天的空会话（用户点了「新对话」但没说话）。
+  // updated_at 是 ISO 字符串（含 T/Z），与 datetime() 的空格格式逐字符比较会错，
+  // 必须经 julianday 归一后再比较
   getDb().prepare(
     `DELETE FROM ai_sessions
-       WHERE updated_at < datetime('now', '-1 day')
+       WHERE julianday(updated_at) < julianday('now', '-1 day')
          AND NOT EXISTS (SELECT 1 FROM ai_messages WHERE ai_messages.session_id = ai_sessions.id)`,
   ).run();
 }

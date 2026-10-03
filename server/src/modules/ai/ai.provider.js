@@ -61,9 +61,18 @@ export async function assertPublicEndpoint(endpoint) {
   }
 }
 
+/** URL 解析失败（空串、残缺地址等）抛 502 的可预期错误，而非裸 TypeError 变成 500 */
+function parseEndpoint(value) {
+  try {
+    return new URL(String(value).trim());
+  } catch {
+    throw new AiProviderError('AI endpoint 格式不正确，请填写完整的 HTTP(S) 接口地址');
+  }
+}
+
 export function normalizeChatEndpoint(value) {
-  const endpoint = new URL(String(value).trim());
-  if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('AI endpoint must use HTTP or HTTPS');
+  const endpoint = parseEndpoint(value);
+  if (!['http:', 'https:'].includes(endpoint.protocol)) throw new AiProviderError('AI endpoint 必须使用 HTTP 或 HTTPS 协议');
   const pathname = endpoint.pathname.replace(/\/+$/, '');
   if (/\/chat\/completions$/i.test(pathname)) return endpoint;
   if (/\/v1$/i.test(pathname)) endpoint.pathname = `${pathname}/chat/completions`;
@@ -72,8 +81,8 @@ export function normalizeChatEndpoint(value) {
 
 /** embedding 端点：/v1 → /v1/embeddings；已写全的直接使用 */
 export function normalizeEmbeddingEndpoint(value) {
-  const endpoint = new URL(String(value).trim());
-  if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('AI endpoint must use HTTP or HTTPS');
+  const endpoint = parseEndpoint(value);
+  if (!['http:', 'https:'].includes(endpoint.protocol)) throw new AiProviderError('AI endpoint 必须使用 HTTP 或 HTTPS 协议');
   const pathname = endpoint.pathname.replace(/\/+$/, '');
   if (/\/embeddings$/i.test(pathname)) return endpoint;
   if (/\/chat\/completions$/i.test(pathname)) {
@@ -101,6 +110,10 @@ export function formatProviderError(status, payload, rawText, endpoint) {
     ?? (rawText || '').replace(/\s+/g, ' ').trim();
   const safeDetail = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 500);
   const host = endpoint?.host ?? '未知服务';
+  if (status === 401) {
+    // 401 最常见的根因是 Key 与服务不匹配（同一厂商不同产品线的密钥通常不通用）
+    return `外部模型服务返回 401（${host}）：API Key 无效或与该服务不匹配（同一厂商不同产品线的密钥通常不通用）— ${safeDetail}`;
+  }
   if (status === 403 && /model/i.test(safeDetail)) {
     return `外部模型服务返回 403（${host}）：当前 API Key 没有模型权限 — ${safeDetail}`;
   }
@@ -133,6 +146,15 @@ async function readErrorPayload(response) {
 }
 
 /**
+ * AbortError 的统一出口：客户端取消与上游超时都应归为可预期错误（502 + warn 日志），
+ * 否则非流式路径会把「请求已取消」当成未处理异常记 error 级 unhandled_error。
+ */
+function abortOutcomeError(signal, timeoutMessage) {
+  if (signal?.aborted) return new AiProviderError('请求已取消', { code: 'AI_REQUEST_CANCELLED' });
+  return new AiProviderError(timeoutMessage, { code: 'AI_UPSTREAM_TIMEOUT' });
+}
+
+/**
  * 非流式对话补全。返回 { raw, meta }；解析成结构化回复是调用方（ai.service）的职责。
  */
 export async function callChatProvider({ messages, provider, signal = null, temperature = 0.2, maxTokens = null }) {
@@ -162,8 +184,7 @@ export async function callChatProvider({ messages, provider, signal = null, temp
     return { raw: String(raw), meta: { provider: 'external', model: provider.model || 'default' } };
   } catch (error) {
     if (error?.name === 'AbortError') {
-      if (signal?.aborted) throw new Error('请求已取消');
-      throw new Error(`外部 AI 响应超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
+      throw abortOutcomeError(signal, `外部 AI 响应超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
     }
     throw error;
   } finally {
@@ -204,6 +225,17 @@ export async function streamChatProvider({ messages, provider, signal = null, on
     }
     if (!response.body) throw new AiProviderError('上游服务不支持流式响应');
 
+    // 部分兼容网关会忽略 stream:true 直接回整体 JSON：按非流式解析，
+    // 否则流式解析读不到任何 data: 行，误报「外部 AI 没有返回内容」。
+    const contentType = String(response.headers?.get('content-type') ?? '');
+    if (/application\/json/i.test(contentType)) {
+      const payload = await response.json();
+      const raw = String(payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? '');
+      if (!raw) throw new AiProviderError('外部 AI 没有返回内容');
+      onDelta?.(raw);
+      return { raw, meta: { provider: 'external', model: provider.model || 'default' } };
+    }
+
     let full = '';
     const decoder = new TextDecoder();
     let buffer = '';
@@ -236,8 +268,7 @@ export async function streamChatProvider({ messages, provider, signal = null, on
     return { raw: full, meta: { provider: 'external', model: provider.model || 'default' } };
   } catch (error) {
     if (error?.name === 'AbortError') {
-      if (signal?.aborted) throw new Error('请求已取消');
-      throw new Error(`外部 AI 连接空闲超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒未收到新内容），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
+      throw abortOutcomeError(signal, `外部 AI 连接空闲超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒未收到新内容），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
     }
     throw error;
   } finally {
@@ -284,8 +315,7 @@ export async function callEmbeddingProvider({ inputs, provider, signal = null })
     });
   } catch (error) {
     if (error?.name === 'AbortError') {
-      if (signal?.aborted) throw new Error('请求已取消');
-      throw new Error('embedding 请求超时，请检查端点是否可达');
+      throw abortOutcomeError(signal, 'embedding 请求超时，请检查端点是否可达');
     }
     throw error;
   } finally {
@@ -302,7 +332,6 @@ export async function testChatProvider({ provider }) {
   const latency = () => Date.now() - startedAt;
   try {
     const endpoint = normalizeChatEndpoint(provider?.endpoint ?? '');
-    if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('AI endpoint 必须使用 HTTP 或 HTTPS');
     if (!provider?.apiKey?.trim()) throw new Error('API Key 不能为空');
     await assertPublicEndpoint(endpoint);
     const controller = new AbortController();
@@ -338,7 +367,6 @@ export async function testEmbeddingProvider({ provider }) {
   const latency = () => Date.now() - startedAt;
   try {
     const endpoint = normalizeEmbeddingEndpoint(provider?.endpoint ?? '');
-    if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('AI endpoint 必须使用 HTTP 或 HTTPS');
     if (!provider?.apiKey?.trim()) throw new Error('API Key 不能为空');
     if (!provider?.model?.trim()) throw new Error('embedding 模型 ID 不能为空');
     const controller = new AbortController();

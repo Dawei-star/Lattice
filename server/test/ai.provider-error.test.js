@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import * as aiService from '../src/modules/ai/ai.service.js';
+import { streamChatProvider } from '../src/modules/ai/ai.provider.js';
 
 /** 启动一个模拟 OpenAI 兼容上游，按 path 前缀返回不同状态码。 */
 async function listenMockUpstream(handlers) {
@@ -127,6 +128,29 @@ test('chat surfaces upstream failure transparently instead of silently falling b
     }
     assert.equal(error.status, 502);
     assert.equal(error.code, 'AI_PROVIDER_ERROR');
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('streamChatProvider falls back to JSON parsing when a gateway ignores stream:true', async () => {
+  const upstream = await listenMockUpstream({
+    '/v1/chat/completions': (body, _req, res) => {
+      assert.equal(body.stream, true, '请求应携带流式标记');
+      // 网关忽略 stream:true，直接回整体 JSON
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: '网关忽略流式的完整回答' } }] }));
+    },
+  });
+  try {
+    let deltas = '';
+    const { raw } = await streamChatProvider({
+      messages: [{ role: 'user', content: 'ping' }],
+      provider: { endpoint: upstream.endpoint, apiKey: placeholderKey('stream-json'), model: 'mock-model', authHeader: 'bearer' },
+      onDelta: (text) => { deltas += text; },
+    });
+    assert.equal(raw, '网关忽略流式的完整回答');
+    assert.equal(deltas, raw, '非 SSE 响应应把完整文本通过 onDelta 兜底回调一次');
   } finally {
     await upstream.close();
   }

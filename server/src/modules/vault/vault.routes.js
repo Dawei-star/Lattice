@@ -30,6 +30,8 @@ const attachmentPathQuery = z.object({
 
 const uploadQuery = z.object({
   name: z.string().trim().min(1).max(255),
+  // 可选：attachments/ 下的子目录（按当前笔记归组），逐段在服务端清洗
+  folder: z.string().trim().max(400).optional(),
 });
 
 const validateReferencesBody = z.object({
@@ -41,9 +43,19 @@ const cleanupBody = z.object({
   dryRun: z.boolean().default(true),
 }).default({});
 
+const profileBody = z.object({
+  version: z.literal(1).optional(),
+  paths: z.object({
+    inbox: z.string().trim().min(1).max(240),
+    daily: z.string().trim().min(1).max(240),
+    journal: z.string().trim().min(1).max(240),
+  }).strict(),
+}).strict();
+
 const rawAttachmentBody = express.raw({ type: '*/*', limit: '25mb' });
 
 vaultRouter.get('/info', controller.getInfo);
+vaultRouter.put('/profile', validate({ body: profileBody }), controller.updateProfile);
 // GET /events 已迁至 vault.events.routes.js：EventSource 无法带请求头，
 // 事件流的「令牌或一次性票据」校验需要注册在全局鉴权链之前
 vaultRouter.get('/attachments', controller.listAttachments);

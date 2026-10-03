@@ -57,7 +57,8 @@ if (failed) {
 
 async function check(label, url, options = {}) {
   try {
-    const response = await fetch(url, options);
+    // 30 秒兜底超时：服务端 accept 后不响应时脚本不能永久挂死
+    const response = await fetch(url, { ...options, signal: options.signal ?? AbortSignal.timeout(30_000) });
     const expectedStatus = options.expectedStatus ?? 200;
     const body = await response.json().catch(() => null);
     if (response.status !== expectedStatus) {

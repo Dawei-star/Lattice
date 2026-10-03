@@ -22,26 +22,6 @@ export class VaultAdapter {
     fsSync.mkdirSync(this.resolveDirectory(relativePath), { recursive: true });
   }
 
-  async scan() {
-    await this.ensure();
-    const files = [];
-    await walk(this.rootDir, '', files);
-    const notes = [];
-    const ids = new Set();
-    for (const relativePath of files) {
-      const raw = await fs.readFile(resolveVaultPath(this.rootDir, relativePath), 'utf8');
-      const note = parseMarkdownDocument(raw, relativePath);
-      if (!note.hasFrontmatter || ids.has(note.id)) {
-        // Copied Markdown files can carry the same legacy id; make each file addressable.
-        if (ids.has(note.id)) note.id = randomUUID();
-        await this.write(note);
-      }
-      ids.add(note.id);
-      notes.push(note);
-    }
-    return notes;
-  }
-
   async scanFolders() {
     await this.ensure();
     const folders = [];
@@ -106,13 +86,6 @@ export class VaultAdapter {
     return { ...note, filePath: relativePath, hasFrontmatter: true };
   }
 
-  async remove(relativePath) {
-    const target = resolveVaultPath(this.rootDir, relativePath);
-    await fs.rm(target, { force: true });
-    if (!(await existsAsync(target))) return;
-    await fs.unlink(target); // rm 静默失败时的兜底，见 removeSync 的注释
-  }
-
   writeSync(note) {
     const relativePath = normalizeVaultRelativePath(note.filePath || `${note.title}.md`);
     const target = resolveVaultPath(this.rootDir, relativePath);
@@ -166,17 +139,6 @@ export class VaultAdapter {
     } catch (error) {
       if (error?.code === 'ENOENT') return;
       fsSync.rmSync(target, { force: true });
-    }
-  }
-
-  movePrefixSync(oldPrefix, newPrefix) {
-    const prefix = oldPrefix ? `${oldPrefix}/` : '';
-    const files = listMarkdownSync(this.rootDir);
-    for (const relativePath of files) {
-      if (!relativePath.startsWith(prefix)) continue;
-      const suffix = relativePath.slice(prefix.length);
-      const nextPath = newPrefix ? `${newPrefix}/${suffix}` : suffix;
-      this.moveSync(relativePath, nextPath);
     }
   }
 
@@ -303,15 +265,6 @@ function listFilesSync(root, relativeDir = '', result = []) {
     else if (entry.isFile()) result.push(relativePath);
   }
   return result;
-}
-
-async function existsAsync(target) {
-  try {
-    await fs.access(target);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function removeTreeFallback(target) {

@@ -90,8 +90,3 @@ export function withTransaction(fn) {
     throw error;
   }
 }
-
-/** 便于仓储层读写的通用行映射（SQLite 返回的 0/1 → boolean） */
-export function toBoolean(value) {
-  return value === 1 || value === true;
-}

@@ -16,6 +16,8 @@ const mutationBody = z.object({
   with: z.string().max(200_000).optional(),
   all: z.boolean().default(false),
   confirmed: z.boolean().default(false),
+  planId: z.string().uuid().optional(),
+  planHash: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
 }).passthrough();
 
 export const filesRouter = Router();

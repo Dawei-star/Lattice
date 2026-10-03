@@ -140,10 +140,13 @@ async function drain() {
       }
 
       const startedAt = nowIso();
-      getDb().prepare(
+      // 带状态条件的「认领」更新：与 cancelJob 并发时抢不到就跳过，
+      // 否则已取消的任务仍会被全量执行（长任务会白烧上游配额）
+      const claim = getDb().prepare(
         `UPDATE jobs SET status = 'running', attempts = attempts + 1, started_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'`,
       ).run(startedAt, startedAt, row.id);
       scheduled.delete(row.id);
+      if (!claim.changes) continue;
 
       const context = {
         jobId: row.id,

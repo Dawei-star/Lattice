@@ -5,6 +5,12 @@ import { isComposingEvent } from '../lib/events.js';
 export default function Modal({ open, title, ariaLabel, onClose, children, className = '', initialFocusRef }) {
   const dialogRef = useRef(null);
   const previousFocusRef = useRef(null);
+  // 调用方传的内联 onClose 每次渲染都是新引用：直接进依赖数组会让打开中的弹窗
+  // 随父组件重渲染反复重跑 effect（重抢焦点、反复置 overflow），这里经 ref 取最新值
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -19,7 +25,7 @@ export default function Modal({ open, title, ariaLabel, onClose, children, class
       // 输入法组词期间的 Esc 是取消候选词，不能顺带把弹窗关掉
       if (event.key === 'Escape' && !isComposingEvent(event)) {
         event.preventDefault();
-        onClose?.();
+        onCloseRef.current?.();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -42,7 +48,7 @@ export default function Modal({ open, title, ariaLabel, onClose, children, class
       document.body.style.overflow = previousOverflow;
       previousFocusRef.current?.focus?.();
     };
-  }, [initialFocusRef, onClose, open]);
+  }, [initialFocusRef, open]);
 
   if (!open) return null;
 

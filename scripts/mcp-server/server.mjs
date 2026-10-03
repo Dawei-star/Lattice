@@ -288,25 +288,6 @@ server.tool(
 );
 
 server.tool(
-  'list_note_history',
-  '列出一篇笔记的历史版本（每次修改自动留档，可用于回滚前查看）',
-  { noteId: z.string().min(1).max(120) },
-  safeTool(async ({ noteId }) => {
-    const match = resolveNote(noteId);
-    const history = notesService.listHistory(match.id);
-    return asText({
-      id: match.id,
-      title: match.title,
-      currentHash: history.currentHash,
-      versions: history.items.map((item) => ({
-        version: item.version,
-        createdAt: item.createdAt,
-      })),
-    });
-  }),
-);
-
-server.tool(
   'restore_note_version',
   '把一篇笔记恢复到指定历史版本（当前内容会先自动存为新版本；传入 expectedCurrentHash 可防止覆盖他人改动）',
   {
@@ -330,11 +311,37 @@ server.tool(
 );
 }
 
+// 纯读工具，不受写开关约束：只读模式下也能查看可回滚的历史版本
+server.tool(
+  'list_note_history',
+  '列出一篇笔记的历史版本（每次修改自动留档，可用于回滚前查看）',
+  { noteId: z.string().min(1).max(120) },
+  safeTool(async ({ noteId }) => {
+    const match = resolveNote(noteId);
+    const history = notesService.listHistory(match.id);
+    return asText({
+      id: match.id,
+      title: match.title,
+      currentHash: history.currentHash,
+      versions: history.items.map((item) => ({
+        version: item.version,
+        createdAt: item.createdAt,
+      })),
+    });
+  }),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
 
 function shutdown() {
-  closeDatabase();
+  // SIGINT/SIGTERM 的默认行为已被替换：closeDatabase 抛错也必须退出，
+  // 否则进程挂死只能靠外部强杀
+  try {
+    closeDatabase();
+  } catch (error) {
+    process.stderr.write(`[mcp] closeDatabase failed: ${error?.message ?? error}\n`);
+  }
   process.exit(0);
 }
 

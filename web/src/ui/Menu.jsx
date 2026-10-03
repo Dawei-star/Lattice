@@ -43,7 +43,8 @@ export function Menu({ items, label = '菜单', className = '' }) {
         const hasSubmenu = Array.isArray(item.submenuItems) && item.submenuItems.length > 0;
         return (
           <div
-            key={itemId}
+            // 无 id 的同名菜单项会共用 label 作 key：拼上序号保证唯一
+            key={`${itemId}-${index}`}
             className="menu__item-wrap"
             onMouseEnter={() => hasSubmenu && setOpenSubmenu(itemId)}
             onMouseLeave={() => setOpenSubmenu(null)}

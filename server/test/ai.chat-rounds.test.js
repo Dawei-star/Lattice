@@ -125,6 +125,40 @@ test('chat keeps mixed actions for preview instead of auto-reading', async () =>
   }
 });
 
+test('assist mode executes the first batch when the model requests more reads than the per-round cap', async () => {
+  const vaultDir = config.vaultDir;
+  fs.mkdirSync(path.join(vaultDir, 'notes'), { recursive: true });
+  for (let index = 0; index < 7; index += 1) {
+    fs.writeFileSync(path.join(vaultDir, 'notes', `r${index}.md`), `# R${index}\n`, 'utf8');
+  }
+  const readActions = Array.from({ length: 7 }, (_, index) => ({ type: 'read', path: `notes/r${index}.md` }));
+
+  const upstream = await listenScriptedUpstream([
+    () => JSON.stringify({ reply: '先读一批。', suggestions: [], references: [], actions: readActions }),
+    (body) => {
+      const lastUser = body.messages.at(-1).content;
+      assert.ok(lastUser.includes('单轮上限'), '截断原因应回填给模型');
+      assert.ok(lastUser.includes('【文件 notes/r4.md】'), '前 5 个读取应已执行');
+      assert.ok(!lastUser.includes('【文件 notes/r5.md】'), '超出上限的读取不应执行');
+      return JSON.stringify({ reply: '读完前 5 个了。', suggestions: [], references: [], actions: [] });
+    },
+  ]);
+  try {
+    const result = await chat({
+      message: '把 notes 目录里的文件逐个读一遍',
+      context: { files: [], folders: [] },
+      provider: providerFor(upstream),
+    });
+
+    assert.equal(upstream.bodies.length, 2, '超出上限的纯读取应降级执行而不是整体放弃');
+    assert.equal(result.meta.rounds, 2);
+    assert.equal(result.reply, '读完前 5 个了。');
+    assert.deepEqual(result.actions, []);
+  } finally {
+    await upstream.close();
+  }
+});
+
 test('chat tolerates fenced JSON with surrounding prose from the model', async () => {
   const upstream = await listenScriptedUpstream([
     () => '好的，这是我的计划：\n\n```json\n{"reply":"计划就绪","suggestions":["确认执行"],"references":[],"actions":[]}\n```\n\n以上。请确认。',

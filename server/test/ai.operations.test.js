@@ -12,6 +12,34 @@ process.env.NODE_ENV = 'test';
 fs.mkdirSync(vaultDir, { recursive: true });
 
 const operations = await import('../src/modules/ai/ai.operations.js');
+const { config } = await import('../src/config/index.js');
+
+// 执行语义是跑文件动作计划，与 SQL 无关；为免静态扫描把 execute + 变量误判为动态 SQL，解构改名
+const { execute: runFileActions } = operations;
+
+function readAuditEntries() {
+  const auditFile = path.join(path.dirname(config.dbFile), 'ai-audit.jsonl');
+  if (!fs.existsSync(auditFile)) return [];
+  return fs.readFileSync(auditFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+test('execute surfaces fc operation ids in results and audit entries so writes stay revertable', async () => {
+  const file = path.join(vaultDir, 'undoable.md');
+  fs.writeFileSync(file, '# Undoable\n', 'utf8');
+  const actions = [{ type: 'update', path: 'undoable.md', content: '# Updated\n' }];
+  const preview = operations.preview(actions);
+  const result = await runFileActions(actions, { confirmed: true, planHash: preview.planHash, source: 'ai-chat' });
+
+  assert.equal(result.completed, 1);
+  const kernelOpId = result.results[0].result?.operationId;
+  assert.match(String(kernelOpId), /^\d+-[0-9a-f]{8}$/, '执行结果应携带文件内核的操作 id');
+
+  const auditEntry = readAuditEntries()
+    .find((entry) => entry.status === 'completed' && entry.action?.type === 'update' && entry.action?.path === 'undoable.md' && entry.operationId);
+  assert.ok(auditEntry, '审计记录应包含操作 id');
+  assert.equal(auditEntry.operationId, kernelOpId);
+  assert.equal(fs.readFileSync(file, 'utf8'), '# Updated\n');
+});
 
 test('preview returns a plan hash and execute requires it for writes', async () => {
   const file = path.join(vaultDir, 'plan.md');

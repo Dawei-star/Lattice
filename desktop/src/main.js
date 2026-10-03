@@ -105,6 +105,15 @@ function redirectStdioToLogFile() {
   let stream;
   try {
     stream = fs.createWriteStream(logFile, { flags: 'a' });
+    // 磁盘写满、日志文件被占用等异步错误以 error 事件抛出；
+    // 不挂监听器 Node 会直接 throw，主进程当场崩溃
+    stream.on('error', (error) => {
+      try {
+        process.stderr.write(`[log] 日志写入失败: ${error?.message ?? error}\n`);
+      } catch {
+        // 兜底通道本身失败就只能放弃
+      }
+    });
   } catch {
     return;
   }
@@ -126,6 +135,15 @@ function redirectStdioToLogFile() {
 }
 
 redirectStdioToLogFile();
+
+// 主进程全局兜底：打包后没有控制台，console.error 会落入日志文件（lattice.log）。
+// 不兜底的话，启动完成之后注册的任意回调（托盘、IPC、定时器）抛错都会直接崩溃整个应用。
+process.on('uncaughtException', (error) => {
+  console.error('[main] uncaughtException', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection', reason);
+});
 
 /**
  * GPU 兼容性自愈。
@@ -303,6 +321,12 @@ function createExternalSession(filePath) {
     filePath: resolvedPath,
     writeGranted: false,
   });
+  // 会话只在打开新文件时增加、从不清理，长期使用会缓慢泄漏；
+  // Map 保持插入序，超限时淘汰最早建立的会话
+  if (externalSessions.size > 50) {
+    const oldest = externalSessions.keys().next().value;
+    externalSessions.delete(oldest);
+  }
   return token;
 }
 
@@ -313,7 +337,13 @@ function getExternalSession(token) {
 
 function externalFileInfo(session) {
   const resolvedPath = resolveExternalMarkdown(session.filePath);
-  const stats = fs.statSync(resolvedPath);
+  let stats;
+  try {
+    stats = fs.statSync(resolvedPath);
+  } catch {
+    // 文件在会话建立后被移动/删除：裸 ENOENT 对渲染层毫无意义
+    throw new Error('文件已被移动或删除，无法读取');
+  }
   return {
     fileName: path.basename(resolvedPath),
     modifiedAt: stats.mtimeMs,
@@ -349,6 +379,7 @@ function registerVaultIpc() {
   ipcMain.removeHandler('vault:select');
   ipcMain.removeHandler('vault:select-path');
   ipcMain.removeHandler('vault:backup');
+  ipcMain.removeHandler('vault:export-static-site');
   ipcMain.removeHandler('vault:reveal');
   ipcMain.removeHandler('vault:reveal-path');
   ipcMain.removeHandler('vault:open-file');
@@ -375,6 +406,33 @@ function registerVaultIpc() {
     const backup = await copyVaultToBackup(vaultDir, result.filePaths[0]);
     return { canceled: false, ...backup };
   });
+  ipcMain.handle('vault:export-static-site', async (_event, files) => {
+    if (!Array.isArray(files) || files.length === 0 || files.length > 20_000) throw new Error('静态站点文件清单无效');
+    const result = await dialog.showOpenDialog({
+      title: '选择静态站点导出目录',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: '导出到此处',
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+
+    const exportRoot = path.resolve(result.filePaths[0]);
+    let byteCount = 0;
+    for (const file of files) {
+      const target = resolveStaticExportTarget(exportRoot, file?.path);
+      if (!target) throw new Error('静态站点包含无效文件路径');
+      const content = typeof file.content === 'string'
+        ? Buffer.from(file.content, 'utf8')
+        : typeof file.base64 === 'string'
+          ? Buffer.from(file.base64, 'base64')
+          : null;
+      if (!content) throw new Error('静态站点包含无效文件内容');
+      byteCount += content.byteLength;
+      if (byteCount > 1024 * 1024 * 1024) throw new Error('静态站点超过 1 GB，已停止导出');
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content);
+    }
+    return { canceled: false, exportPath: exportRoot, fileCount: files.length, byteCount };
+  });
   ipcMain.handle('vault:select-path', async (_event, nextPath) => {
     if (typeof nextPath !== 'string' || !nextPath.trim()) return { canceled: true, path: vaultDir };
     const selected = path.resolve(nextPath.trim());
@@ -387,6 +445,10 @@ function registerVaultIpc() {
     vaultDir = selected;
     writeVaultDir(userDataDir, vaultDir);
     setTimeout(() => {
+      // app.exit() 不触发 before-quit，必须显式停后端：否则 HTTP 服务与 SQLite
+      // 都带着脏状态被硬杀，WAL 不落盘，重启后可能读到回退的数据
+      isQuitting = true;
+      stopBackendSync();
       app.relaunch();
       app.exit(0);
     }, 250);
@@ -402,6 +464,8 @@ function registerVaultIpc() {
     vaultDir = path.resolve(result.filePaths[0]);
     writeVaultDir(userDataDir, vaultDir);
     setTimeout(() => {
+      isQuitting = true;
+      stopBackendSync();
       app.relaunch();
       app.exit(0);
     }, 250);
@@ -533,6 +597,17 @@ function resolveVaultFile(relativePath, extension) {
   return relative.startsWith('..') || path.isAbsolute(relative) ? null : target;
 }
 
+function resolveStaticExportTarget(root, relativePath) {
+  if (typeof relativePath !== 'string') return null;
+  const normalized = relativePath.trim().replaceAll('\\', '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null;
+  const segments = normalized.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..' || /[<>:"|?*\u0000]/.test(segment))) return null;
+  const target = path.resolve(root, ...segments);
+  const relative = path.relative(root, target);
+  return relative.startsWith('..') || path.isAbsolute(relative) ? null : target;
+}
+
 function createWindow(url, initialExternalToken = null) {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -554,11 +629,16 @@ function createWindow(url, initialExternalToken = null) {
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  let everShown = false;
+  mainWindow.once('ready-to-show', () => {
+    everShown = true;
+    mainWindow.show();
+  });
 
-  // 兜底：万一 ready-to-show 没触发，也要让用户看到窗口而不是干等
+  // 兜底：万一 ready-to-show 没触发，也要让用户看到窗口而不是干等。
+  // 一旦正常显示过就不再干预——否则用户刚把窗口藏进托盘，8 秒后被弹回来
   setTimeout(() => {
-    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
+    if (!everShown && mainWindow && !mainWindow.isVisible()) mainWindow.show();
   }, 8000);
 
   // 窗口底色跟随应用内主题，避免深色主题下拖动窗口时闪白边
@@ -579,7 +659,8 @@ function createWindow(url, initialExternalToken = null) {
     handleRendererCrash(details);
   });
 
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+    if (!isMainFrame) return; // 子框架（iframe 等）加载失败不该弹全局错误框
     if (errorCode === -3) return; // ERR_ABORTED，通常是正常的导航取消
     dialog.showErrorBox('页面加载失败', `无法加载 ${url}\n\n${errorDescription}（${errorCode}）`);
   });
@@ -603,6 +684,8 @@ function createWindow(url, initialExternalToken = null) {
 
   mainWindow.on('close', (event) => {
     if (isQuitting) return;
+    // 托盘不可用时不能「关窗即隐藏」：无 UI 也无图标的进程只能在任务管理器里杀
+    if (!tray) return;
     event.preventDefault();
     mainWindow.hide();
   });
@@ -610,7 +693,8 @@ function createWindow(url, initialExternalToken = null) {
   const targetUrl = initialExternalToken
     ? `${url}/?external=${encodeURIComponent(initialExternalToken)}`
     : url;
-  mainWindow.loadURL(targetUrl);
+  // 首屏加载失败会走 did-fail-load 的错误框，这里的 rejection 只需落日志避免未处理
+  mainWindow.loadURL(targetUrl).catch((error) => console.error('[main] loadURL 失败', error));
 
   if (pendingExternalFile) {
     const queuedFile = pendingExternalFile;

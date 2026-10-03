@@ -50,7 +50,14 @@ try {
     }));
   } else if (command === 'history') {
     const limitIndex = args.indexOf('--limit');
-    const limit = limitIndex >= 0 ? args[limitIndex + 1] : '80';
+    let limit = '80';
+    if (limitIndex >= 0) {
+      const raw = args[limitIndex + 1];
+      if (raw === undefined || !/^\d+$/.test(raw) || Number(raw) < 1) {
+        throw new Error('--limit 需要一个正整数，例如 --limit 40');
+      }
+      limit = raw;
+    }
     await printJson(await request(`/ai/history?limit=${encodeURIComponent(limit)}`));
   } else {
     throw new Error(`未知命令：${command}`);
@@ -61,6 +68,7 @@ try {
 }
 
 async function request(path, method = 'GET', body) {
+  // 120 秒兜底：agent 模式的多轮任务可能较慢，但服务端不可达时脚本不能挂死
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
     headers: {
@@ -70,6 +78,7 @@ async function request(path, method = 'GET', body) {
       ...(ACCESS_TOKEN ? { Authorization: `Bearer ${ACCESS_TOKEN}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.error?.message ?? `HTTP ${response.status}`);
@@ -77,23 +86,32 @@ async function request(path, method = 'GET', body) {
 }
 
 function parseJsonArgument(values, commandName) {
-  let raw = values.join(' ').trim();
-  if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) raw = raw.slice(1, -1);
+  const raw = values.join(' ').trim();
   if (!raw) throw new Error(`${commandName} 需要 JSON，例如 {"actions":[...]}`);
   try {
     return JSON.parse(raw);
-  } catch (error) {
-    const fileIndex = values.indexOf('--file');
-    const fileName = fileIndex >= 0 ? values[fileIndex + 1] : '';
-    if (fileName) {
+  } catch {
+    // PowerShell 会把整个参数包进一层引号：剥掉首尾成对引号后重试。
+    // 先按原文解析，避免误伤首尾恰好都是引号的真实 JSON（如 "a" and "b" 类内容）
+    if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
+      const stripped = raw.slice(1, -1).trim();
       try {
-        return JSON.parse(fs.readFileSync(path.resolve(fileName), 'utf8'));
-      } catch (fileError) {
-        throw new Error(`${commandName} 无法读取 JSON 文件：${fileError.message}`);
+        return JSON.parse(stripped);
+      } catch {
+        // 落到 --file 分支给出更可操作的提示
       }
     }
-    throw new Error(`${commandName} 的参数不是有效 JSON；PowerShell 可改用 --file plan.json`);
   }
+  const fileIndex = values.indexOf('--file');
+  const fileName = fileIndex >= 0 ? values[fileIndex + 1] : '';
+  if (fileName) {
+    try {
+      return JSON.parse(fs.readFileSync(path.resolve(fileName), 'utf8'));
+    } catch (fileError) {
+      throw new Error(`${commandName} 无法读取 JSON 文件：${fileError.message}`);
+    }
+  }
+  throw new Error(`${commandName} 的参数不是有效 JSON；PowerShell 可改用 --file plan.json`);
 }
 
 function providerFromEnv() {

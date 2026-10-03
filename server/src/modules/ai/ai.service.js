@@ -12,7 +12,7 @@
  * 文件操作（preview/execute/审计）拆至 ai.operations.js；
  * 上游协议细节在 ai.provider.js；检索在 ai.retrieval.js。
  */
-import { ValidationError } from '../../lib/errors.js';
+import { AppError, ValidationError } from '../../lib/errors.js';
 import * as searchService from '../search/search.service.js';
 // 文件操作实现。execute 语义与 SQL 无关（执行的是文件动作计划），
 // 为免静态扫描把「execute + 变量」误判为动态 SQL，导入时改用动作化命名。
@@ -143,6 +143,8 @@ export async function chatStream(input, { signal = null, onEvent = () => {} } = 
   } catch (error) {
     const message = error?.message ?? '外部模型调用失败';
     emit({ type: 'error', message });
+    // 保留类型化错误（AiProviderError 等）的 status/code，避免 502/取消被降级成 500
+    if (error instanceof AppError) throw error;
     throw Object.assign(new Error(message), { providerError: true });
   }
 }
@@ -181,6 +183,8 @@ async function runConversation({ cleanMessage, context, history, provider, signa
   let executedFailed = [];
   // true = 因「写操作待确认」退出循环，动作计划需原样返回给 preview 流程
   let pendingPreview = false;
+  // search 动作结果按查询词缓存：与初始注入同一问题时避免重复 embedding + 检索
+  const searchCache = new Map();
 
   while (rounds < maxRounds) {
     rounds += 1;
@@ -199,41 +203,70 @@ async function runConversation({ cleanMessage, context, history, provider, signa
     const searches = actions.filter((action) => action?.type === 'search');
     const writes = actions.filter((action) => action?.type && WRITE_ACTION_TYPES.has(action.type));
     const autoTools = [...reads, ...searches];
-    const canAutoTools = autoTools.length > 0 && autoTools.length <= MAX_AUTO_READS && writes.length === 0;
 
-    // 只读/检索：无论模式都自动执行并回填
-    if (canAutoTools) {
-      const feedback = await executeAutoTools(autoTools, emit);
-      if (!feedback) break;
-      working = [...working, { role: 'assistant', content: lastRaw }, { role: 'user', content: feedback }];
+    // 只读/检索：无论模式都自动执行并回填。超过单轮上限时执行前 N 个并告知余量，
+    // 而不是整体放弃（否则模型的回答建立在没看到的数据上）。
+    if (autoTools.length > 0 && writes.length === 0) {
+      const batch = autoTools.slice(0, MAX_AUTO_READS);
+      const skipped = autoTools.length - batch.length;
+      const feedback = await executeAutoTools(batch, emit, searchCache);
+      const feedbackText = skipped > 0
+        ? `${feedback}\n\n[系统：本轮另有 ${skipped} 个读取/检索动作未执行（单轮上限 ${MAX_AUTO_READS} 个），仍有需要请在下一轮继续发起]`
+        : feedback;
+      if (!feedbackText) break;
+      working = [...working, { role: 'assistant', content: lastRaw }, { role: 'user', content: feedbackText }];
       continue;
     }
 
     // 任务模式 + 允许自动执行：写操作走正式执行通道（路径校验 + 审计），结果回填继续循环
     if (writes.length && agent && autoApprove) {
-      let feedback = await executeAutoTools(autoTools, emit);
+      let feedback = await executeAutoTools(autoTools, emit, searchCache);
       emit({ type: 'status', text: `执行 ${writes.length} 项文件写操作…` });
-      const writeResult = await applyFileActions(writes, {
-        actor,
-        role,
-        source: 'ai-chat',
-        confirmed: true,
-        internalAutoApprove: true,
-      });
-      for (const item of writeResult.results) {
-        const label = `${item.type} ${item.path}${item.targetPath ? ` → ${item.targetPath}` : ''}`;
-        if (item.status === 'completed') executed.push(label);
-        else executedFailed.push(`${label}：${item.error ?? '失败'}`);
+      let writeResult = null;
+      let writeError = null;
+      try {
+        writeResult = await applyFileActions(writes, {
+          actor,
+          role,
+          source: 'ai-chat',
+          confirmed: true,
+          internalAutoApprove: true,
+        });
+      } catch (error) {
+        // 模型给出的动作整体不合法（如绝对路径/越界路径）时把原因回填，
+        // 让模型在下一轮自纠，而不是让整个会话直接失败、丢弃已有进度。
+        writeError = error?.message ?? '写操作执行失败';
       }
-      feedback += formatWriteResults(writeResult);
+      if (writeResult) {
+        for (const item of writeResult.results) {
+          const label = `${item.type} ${item.path}${item.targetPath ? ` → ${item.targetPath}` : ''}`;
+          if (item.status === 'completed') executed.push(label);
+          else executedFailed.push(`${label}：${item.error ?? '失败'}`);
+        }
+        feedback += formatWriteResults(writeResult);
+      } else {
+        executedFailed.push(`批量写操作未执行：${writeError}`);
+        feedback += [
+          `[系统反馈：本轮 ${writes.length} 项写操作全部未执行]`,
+          `原因：${writeError}`,
+          '请修正动作参数（path/targetPath 必须是 Vault 内相对路径，不能带 .. 或盘符）后重新给出 actions；若无法修正，直接向用户说明情况。',
+        ].join('\n');
+      }
       working = [...working, { role: 'assistant', content: lastRaw }, { role: 'user', content: feedback }];
       continue;
     }
 
-    // 需要用户确认（写操作未授权 / 动作超限）：带完整动作计划返回，交给 preview 流程
+    // 需要用户确认（写操作未授权）：带完整动作计划返回，交给 preview 流程
     pendingPreview = true;
     break;
   }
+
+  // 轮次耗尽而非正常收尾（最后一轮仍带动作）：动作已执行/被清理，但模型没机会复核结果，
+  // 明确告知用户边界，避免「模型说完成了、其实差一步」的错位。
+  const roundsExhausted = !pendingPreview
+    && rounds >= maxRounds
+    && Array.isArray(lastParsed?.actions)
+    && lastParsed.actions.length > 0;
 
   // 循环因轮次耗尽而结束时，最后一步若是已自动执行过的 read/search，不能再当待办返回；
   // 因「待确认」退出时则保留完整计划（含 read，用户能在预览里看到全貌）。
@@ -252,19 +285,22 @@ async function runConversation({ cleanMessage, context, history, provider, signa
   if (agent) {
     result.meta.executed = executed;
     if (executedFailed.length) result.meta.executedFailed = executedFailed;
+    if (roundsExhausted && autoApprove) {
+      result.reply = `${result.reply}\n\n> ⏱ 已达到单次任务的最大轮次（${MAX_AGENT_ROUNDS} 轮），最后一批动作的结果还没有经过模型复核。发送「继续」可以让 AI 核对结果并接着执行。`;
+    }
   }
   return result;
 }
 
 /** 执行 read/search 工具并回填文本；无可执行内容返回空串 */
-async function executeAutoTools(tools, emit = null) {
+async function executeAutoTools(tools, emit = null, searchCache = null) {
   const parts = [];
   for (const action of tools) {
     if (action?.type === 'search') {
       const term = String(action.query ?? '').trim();
       emit?.({ type: 'status', text: `检索「${term.slice(0, 24) || '…'}」…` });
       try {
-        parts.push(formatSearchResults(await executeSearchAction(term)));
+        parts.push(formatSearchResults(await executeSearchAction(term, searchCache)));
       } catch (error) {
         parts.push(`【搜索 ${term}】失败：${error?.message ?? '未知错误'}`);
       }
@@ -291,10 +327,11 @@ function formatWriteResults(result) {
   return [`[系统已自动执行 ${result.completed} 项写操作${result.failed ? `，${result.failed} 项失败` : ''}]`, ...lines].join('\n');
 }
 
-/** search 工具：混合检索（关键词 + 语义），返回可直接引用的笔记块 */
-async function executeSearchAction(term) {
+/** search 工具：混合检索（关键词 + 语义），返回可直接引用的笔记块；同一对话内相同查询词直接复用 */
+async function executeSearchAction(term, cache = null) {
   const trimmed = String(term ?? '').trim().slice(0, 200);
   if (!trimmed) throw new ValidationError('搜索词不能为空');
+  if (cache?.has(trimmed)) return cache.get(trimmed);
   let blocks = [];
   try {
     blocks = (await retrieveContext(trimmed)).blocks ?? [];
@@ -314,7 +351,7 @@ async function executeSearchAction(term) {
       blocks = [];
     }
   }
-  return {
+  const result = {
     query: trimmed,
     items: blocks.slice(0, 8).map((block) => ({
       id: block.noteId,
@@ -324,6 +361,8 @@ async function executeSearchAction(term) {
       excerpt: String(block.excerpt ?? '').slice(0, 160),
     })),
   };
+  cache?.set(trimmed, result);
+  return result;
 }
 
 function formatSearchResults(result) {

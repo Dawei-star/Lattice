@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('latticeDesktop', {
   selectVaultPath: (vaultPath) => ipcRenderer.invoke('vault:select-path', vaultPath),
   getVaultInfo: () => ipcRenderer.invoke('vault:info'),
   backupVault: () => ipcRenderer.invoke('vault:backup'),
+  exportStaticSite: (files) => ipcRenderer.invoke('vault:export-static-site', files),
   revealVault: () => ipcRenderer.invoke('vault:reveal'),
   revealVaultPath: (relativePath) => ipcRenderer.invoke('vault:reveal-path', relativePath),
   openVaultFile: (relativePath) => ipcRenderer.invoke('vault:open-file', relativePath),

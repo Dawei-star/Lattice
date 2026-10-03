@@ -38,3 +38,16 @@ test('frontmatter properties survive parse and serialization without replacing r
   assert.match(serialized, /^status: done$/m);
   assert.equal((serialized.match(/^id:/gm) ?? []).length, 1);
 });
+
+test('frontmatter YAML 块列表（Obsidian 写法）解析为数组并可无损往返', () => {
+  const raw = '---\ntitle: 导入笔记\ntags:\n  - 阅读\n  - 随笔\naliases:\n  - "别名一"\n---\n正文';
+  const parsed = parseMarkdownDocument(raw, 'note.md');
+  assert.deepEqual(parsed.properties.tags, ['阅读', '随笔']);
+  assert.deepEqual(parsed.properties.aliases, ['别名一']);
+
+  // 序列化回写后再次解析，值保持一致（形态从块列表变为行内数组，语义不变）
+  const reserialized = serializeMarkdownDocument({ ...parsed, isPinned: false });
+  const reparsed = parseMarkdownDocument(reserialized, 'note.md');
+  assert.deepEqual(reparsed.properties.tags, ['阅读', '随笔']);
+  assert.deepEqual(reparsed.properties.aliases, ['别名一']);
+});

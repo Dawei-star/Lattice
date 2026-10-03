@@ -84,6 +84,11 @@ function resolveMessage(status, code, serverMessage) {
 
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {
+    // 调用时 signal 已 aborted 的窄窗口：监听器不会再触发，promise 永不 settle
+    if (signal?.aborted) {
+      reject(new DOMException('aborted', 'AbortError'));
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener('abort', () => {
       clearTimeout(timer);

@@ -1,6 +1,6 @@
-import { timingSafeEqual } from 'node:crypto';
 import { config } from '../config/index.js';
 import { UnauthorizedError } from '../lib/errors.js';
+import { sameSecret } from '../lib/secrets.js';
 
 /**
  * Protect every workspace API with one shared token when configured.
@@ -28,11 +28,4 @@ export function authenticateWorkspace(req, _res, next) {
 
 export function readBearerToken(value = '') {
   return value.startsWith('Bearer ') ? value.slice(7).trim() : '';
-}
-
-export function sameSecret(candidate, expected) {
-  const candidateBuffer = Buffer.from(candidate);
-  const expectedBuffer = Buffer.from(expected);
-  return candidateBuffer.length === expectedBuffer.length
-    && timingSafeEqual(candidateBuffer, expectedBuffer);
 }

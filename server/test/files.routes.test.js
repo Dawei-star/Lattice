@@ -46,6 +46,8 @@ test('file API previews, executes, searches and undoes a local mutation', async 
   const previewPayload = await previewResponse.json();
   assert.equal(previewResponse.status, 200);
   assert.match(previewPayload.data.diff, /-before/);
+  assert.match(previewPayload.data.planHash, /^[a-f0-9]{64}$/);
+  assert.match(previewPayload.data.plan?.id, /^[0-9a-f-]{36}$/);
   assert.match(await fs.readFile(path.join(vaultDir, 'docs', 'note.md'), 'utf8'), /^before/);
 
   const unconfirmed = await json('/api/files/execute', {
@@ -56,7 +58,15 @@ test('file API previews, executes, searches and undoes a local mutation', async 
 
   const executeResponse = await json('/api/files/execute', {
     method: 'POST',
-    body: JSON.stringify({ type: 'edit', path: 'docs/note.md', replace: 'before', with: 'after', confirmed: true }),
+    body: JSON.stringify({
+      type: 'edit',
+      path: 'docs/note.md',
+      replace: 'before',
+      with: 'after',
+      confirmed: true,
+      planId: previewPayload.data.plan.id,
+      planHash: previewPayload.data.planHash,
+    }),
   });
   const executePayload = await executeResponse.json();
   assert.equal(executeResponse.status, 200);
@@ -79,6 +89,34 @@ test('file API previews, executes, searches and undoes a local mutation', async 
   const logPayload = await logResponse.json();
   assert.equal(logResponse.status, 200);
   assert.ok(logPayload.data.some((entry) => entry.type === 'undo'));
+  assert.ok(logPayload.data.some((entry) => entry.planId && entry.action?.type === 'edit'));
+});
+
+test('file API rejects execution when the previewed file changed', async () => {
+  const file = path.join(vaultDir, 'docs', 'stale.md');
+  await fs.writeFile(file, 'before\n', 'utf8');
+
+  const previewResponse = await json('/api/files/preview', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'write', path: 'docs/stale.md', content: 'planned\n' }),
+  });
+  const previewPayload = await previewResponse.json();
+  await fs.writeFile(file, 'changed externally\n', 'utf8');
+
+  const executeResponse = await json('/api/files/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      type: 'write',
+      path: 'docs/stale.md',
+      content: 'planned\n',
+      confirmed: true,
+      planId: previewPayload.data.plan.id,
+      planHash: previewPayload.data.planHash,
+    }),
+  });
+
+  assert.equal(executeResponse.status, 409);
+  assert.match(await fs.readFile(file, 'utf8'), /^changed externally/);
 });
 
 test('file API rejects paths outside the Vault', async () => {
