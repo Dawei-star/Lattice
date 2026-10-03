@@ -379,19 +379,33 @@ async function main() {
   check('MCP 页面显示 stdio 传输', container.querySelector('.mcp-settings')?.textContent.includes('stdio'));
   // 断言工具清单本身，而不是一个魔法数字：MCP 工具集扩充时这里会明确列出期望值，
   // 既不会漏掉新工具，也不会因为「数量对了但换了一个工具」而假通过。
-  const mcpToolNames = [...container.querySelectorAll('.mcp-settings__tool code')].map((node) => node.textContent.trim());
+  const toolGroups = [...container.querySelectorAll('.mcp-tools__group')];
+  const readToolNames = [...(toolGroups[0]?.querySelectorAll('.mcp-tools__row code') ?? [])].map((node) => node.textContent.trim());
+  const writeToolRows = [...(toolGroups[1]?.querySelectorAll('.mcp-tools__row') ?? [])];
+  const writeToolNames = writeToolRows.map((row) => row.querySelector('code')?.textContent.trim());
   const expectedMcpTools = [
     'list_notes',
     'search_notes',
     'read_note',
     'get_note_links',
     'list_tags',
+    'search_by_tag',
     'get_vault_statistics',
     'list_note_history',
   ];
-  check('MCP 页面列出笔记工具',
-    mcpToolNames.length === expectedMcpTools.length && expectedMcpTools.every((name) => mcpToolNames.includes(name)),
-    `实际=${mcpToolNames.join(', ') || '(无)'}`);
+  const expectedWriteTools = ['create_note', 'update_note', 'restore_note_version'];
+  check('MCP 工具按读取/写入分组', toolGroups.length === 2, `实际=${toolGroups.length} 组`);
+  check('MCP 页面列出读取工具',
+    readToolNames.length === expectedMcpTools.length && expectedMcpTools.every((name) => readToolNames.includes(name)),
+    `实际=${readToolNames.join(', ') || '(无)'}`);
+  check('MCP 页面列出写入工具并标记未启用',
+    writeToolNames.length === expectedWriteTools.length
+      && expectedWriteTools.every((name) => writeToolNames.includes(name))
+      && writeToolRows.every((row) => row.classList.contains('is-off') && row.querySelector('.mcp-tools__state')?.textContent.trim() === '未启用'),
+    `实际=${writeToolNames.join(', ') || '(无)'}`);
+  check('默认只读提示给出环境变量名与复制入口',
+    (container.querySelector('[data-testid="mcp-tools"]')?.textContent ?? '').includes('LATTICE_MCP_ALLOW_WRITES')
+    && [...container.querySelectorAll('[data-testid="mcp-tools"] .btn')].some((button) => button.textContent.includes('复制片段')));
   const mcpConfig = container.querySelector('.mcp-settings__config pre')?.textContent ?? '';
   check('MCP 页面生成 Claude Desktop 配置', mcpConfig.includes('mcpServers') && mcpConfig.includes('DB_FILE') && mcpConfig.includes('VAULT_DIR'));
   await waitFor(() => container.querySelector('.mcp-server-row'), { label: 'MCP Server 列表加载' });
@@ -404,7 +418,144 @@ async function main() {
   container.querySelector('.mcp-manager__actions .btn--primary')?.click();
   await waitFor(() => container.querySelector('.mcp-editor'), { label: 'MCP Server 编辑器打开' });
   check('MCP Server 支持新建配置', Boolean(container.querySelector('.mcp-editor__form input')));
+  // 编辑器必须在插件市场之前：放在市场之后时，点「配置」的人会以为没反应
+  const editorNode = container.querySelector('.mcp-editor');
+  const marketNode = container.querySelector('[data-testid="mcp-market"]');
+  check('编辑器紧跟已配置列表而不是压在插件市场下面',
+    Boolean(editorNode) && Boolean(marketNode) && (editorNode.compareDocumentPosition(marketNode) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
   container.querySelector('.mcp-editor__actions .btn')?.click();
+
+  section('设置中的 MCP 插件市场');
+  const marketCards = () => [...container.querySelectorAll('.mcp-market__card')];
+  const marketCardByTitle = (title) => marketCards()
+    .find((card) => card.querySelector('.mcp-market__card-title strong')?.textContent.trim() === title);
+  const cardInstallButton = (card) => card?.querySelector('.mcp-market__card-actions .btn:not(.btn--ghost)');
+  const cardDetailButton = (card) => card?.querySelector('.mcp-market__card-actions .btn--ghost');
+  const allMarketCards = marketCards().length;
+  check('MCP 页面提供插件市场', Boolean(container.querySelector('[data-testid="mcp-market"]')));
+  check('市场列出精选 Server', allMarketCards >= 8, `实际=${allMarketCards}`);
+  check('市场卡片展示工具清单',
+    (marketCards()[0]?.querySelectorAll('.mcp-market__card-tools code').length ?? 0) >= 1);
+  const firstCardName = marketCards()[0]?.querySelector('.mcp-market__card-title strong')?.textContent.trim();
+  const firstInstallLabel = cardInstallButton(marketCards()[0])?.getAttribute('aria-label') ?? '';
+  check('市场卡片按钮带 Server 名称（可访问性）', Boolean(firstCardName) && firstInstallLabel.includes(firstCardName));
+
+  const logoSrcOf = (node) => node?.querySelector('.mcp-market__icon img.mcp-logo')?.getAttribute('src') ?? '';
+  const cardsWithoutLogo = marketCards().filter((card) => !logoSrcOf(card));
+  check('每张市场卡片都渲染品牌 logo', cardsWithoutLogo.length === 0,
+    `缺 logo=${cardsWithoutLogo.map((card) => card.querySelector('.mcp-market__card-title strong')?.textContent).join(', ') || '(无)'}`);
+  const gitLogo = logoSrcOf(marketCardByTitle('Git'));
+  const githubLogo = logoSrcOf(marketCardByTitle('GitHub'));
+  check('品牌 logo 互不重复（Git 与 GitHub 不再同图）',
+    Boolean(gitLogo) && Boolean(githubLogo) && gitLogo !== githubLogo,
+    `git=${gitLogo} github=${githubLogo}`);
+  check('MCP 官方参考实现统一使用官方标识',
+    logoSrcOf(marketCardByTitle('Filesystem')) === logoSrcOf(marketCardByTitle('Everything'))
+    && logoSrcOf(marketCardByTitle('Filesystem')).includes('mcp.svg'));
+
+  const knowledgeChip = [...container.querySelectorAll('.mcp-market__chip')]
+    .find((chip) => chip.textContent.trim() === '知识库');
+  check('市场提供分类筛选', Boolean(knowledgeChip));
+  knowledgeChip?.click();
+  await waitFor(() => marketCards().length > 0 && marketCards().length < allMarketCards, { label: '市场分类筛选生效' });
+  check('分类筛选只保留该分类条目',
+    marketCards().every((card) => card.querySelector('.mcp-market__category')?.textContent.trim().startsWith('知识库')),
+    `实际=${marketCards().map((card) => card.querySelector('.mcp-market__category')?.textContent.trim()).join(' / ')}`);
+  [...container.querySelectorAll('.mcp-market__chip')].find((chip) => chip.textContent.trim() === '全部')?.click();
+  await waitFor(() => marketCards().length === allMarketCards, { label: '市场分类重置' });
+
+  const marketSearchInput = container.querySelector('.mcp-market__search input');
+  check('市场提供搜索框', Boolean(marketSearchInput));
+  setFieldValue(marketSearchInput, 'github');
+  await waitFor(() => marketCards().length > 0 && marketCards().length < allMarketCards, { label: '市场搜索生效' });
+  check('市场搜索只保留命中条目',
+    marketCards().every((card) => card.textContent.toLowerCase().includes('github')),
+    `实际=${marketCards().map((card) => card.querySelector('.mcp-market__card-title strong')?.textContent).join(', ')}`);
+  setFieldValue(marketSearchInput, '');
+  await waitFor(() => marketCards().length === allMarketCards, { label: '市场搜索清空' });
+
+  const rowsBeforeInstall = container.querySelectorAll('.mcp-server-row').length;
+  cardInstallButton(marketCardByTitle('Time'))?.click();
+  await waitFor(() => marketCardByTitle('Time')?.classList.contains('is-installed'), { label: '市场条目安装状态更新' });
+  check('市场安装后卡片标记为已添加', marketCardByTitle('Time')?.classList.contains('is-installed') === true);
+  await waitFor(() => container.querySelectorAll('.mcp-server-row').length === rowsBeforeInstall + 1, { label: '市场安装写入 Server 列表' });
+  check('市场安装保留内置 Lattice Server', container.querySelector('.mcp-server-row')?.textContent.includes('Lattice'));
+  const timeRow = [...container.querySelectorAll('.mcp-server-row')].find((row) => row.textContent.includes('Time'));
+  const timeRowLogo = timeRow?.querySelector('.mcp-manager__server-icon img.mcp-logo')?.getAttribute('src') ?? '';
+  check('已配置列表沿用市场 logo', Boolean(logoSrcOf(marketCardByTitle('Time'))) && timeRowLogo === logoSrcOf(marketCardByTitle('Time')),
+    `列表=${timeRowLogo} 市场=${logoSrcOf(marketCardByTitle('Time'))}`);
+  // 行的操作区：状态胶囊 + 矢量图标按钮 + 开关。此前图标按钮只有工具栏那批带描边规则，
+  // 列表里的编辑/移除拿的是 SVG 默认黑色填充（深色主题下几乎看不见）。
+  check('列表行状态以胶囊呈现',
+    timeRow?.querySelector('.mcp-server-row__actions .mcp-server-row__state')?.textContent.trim() === '已启用');
+  check('列表行操作按钮是矢量图标而非文字',
+    Boolean(timeRow?.querySelector('.mcp-server-row__actions .mcp-server-row__buttons .icon-btn svg'))
+    && Boolean(timeRow?.querySelector('.mcp-server-row__actions .mcp-server-row__buttons .icon-btn--danger svg')));
+  check('列表行开关与操作按钮同组',
+    Boolean(timeRow?.querySelector('.mcp-server-row__actions > .mcp-toggle')));
+  const persistedMcp = JSON.parse(localStorage.getItem('lattice-mcp-settings-v1') ?? '{}');
+  check('市场安装持久化到本机设置',
+    (persistedMcp.servers ?? []).some((server) => server.key === 'time' && server.enabled === true));
+  check('市场安装后导出配置包含该 Server',
+    (container.querySelector('.mcp-settings__config pre')?.textContent ?? '').includes('mcp-server-time'));
+
+  section('MCP 插件市场：详情与密钥');
+  const braveCard = () => marketCardByTitle('Brave Search');
+  check('市场卡片提供详情入口', Boolean(cardDetailButton(braveCard())));
+  cardDetailButton(braveCard())?.click();
+  await waitFor(() => braveCard()?.classList.contains('is-expanded'), { label: '市场详情展开' });
+  check('详情展示完整说明与全部工具',
+    (braveCard()?.querySelectorAll('.mcp-market__detail-list li').length ?? 0) >= 3,
+    `实际=${braveCard()?.querySelectorAll('.mcp-market__detail-list li').length ?? 0} 项`);
+  check('详情标出需要的密钥变量',
+    (braveCard()?.querySelector('.mcp-market__detail-list--env')?.textContent ?? '').includes('BRAVE_API_KEY'));
+  check('详情提供官方文档链接',
+    (braveCard()?.querySelector('.mcp-market__docs')?.getAttribute('href') ?? '').startsWith('https://'));
+  cardDetailButton(braveCard())?.click();
+  await waitFor(() => braveCard()?.classList.contains('is-expanded') === false, { label: '市场详情收起' });
+
+  cardInstallButton(braveCard())?.click();
+  await waitFor(() => container.querySelector('.mcp-editor'), { label: '需要密钥的市场条目打开配置' });
+  check('需要密钥的条目安装后提示补齐密钥', container.textContent.includes('BRAVE_API_KEY'));
+  const braveRow = () => [...container.querySelectorAll('.mcp-server-row')]
+    .find((row) => row.textContent.includes('Brave Search'));
+  check('需要密钥的条目默认保持停用', braveRow()?.classList.contains('is-disabled') === true);
+  check('已配置列表标出缺失的密钥', Boolean(braveRow()?.querySelector('.mcp-server-row__needs-key')));
+  const keyInput = container.querySelector('.mcp-editor__env-field input[aria-label="BRAVE_API_KEY"]');
+  check('编辑器为每个密钥提供独立输入框', Boolean(keyInput));
+  setFieldValue(keyInput, '  test-brave-key  ');
+  await waitFor(() => container.querySelector('.mcp-editor__enable input')?.checked === true, { label: '补齐密钥后自动勾选启用' });
+  check('密钥补齐后自动勾选启用', container.querySelector('.mcp-editor__enable input')?.checked === true);
+  container.querySelector('.mcp-editor__actions .btn--primary')?.click();
+  await waitFor(() => !container.querySelector('.mcp-editor'), { label: '保存后编辑器关闭' });
+  await waitFor(() => braveRow()?.classList.contains('is-enabled'), { label: '补齐密钥后 Server 转为启用' });
+  check('补齐密钥后 Server 转为启用', braveRow()?.classList.contains('is-enabled') === true);
+  check('补齐密钥后不再提示缺密钥', !braveRow()?.querySelector('.mcp-server-row__needs-key'));
+  const savedBrave = JSON.parse(localStorage.getItem('lattice-mcp-settings-v1') ?? '{}')
+    .servers?.find((server) => server.key === 'brave-search');
+  check('密钥写入环境变量并去掉首尾空白', savedBrave?.env?.BRAVE_API_KEY === 'test-brave-key');
+  await waitFor(() => (container.querySelector('.mcp-settings__config pre')?.textContent ?? '').includes('test-brave-key'),
+    { label: '导出配置带上密钥' });
+  check('导出配置包含补齐后的密钥',
+    (container.querySelector('.mcp-settings__config pre')?.textContent ?? '').includes('test-brave-key'));
+
+  section('MCP Server 移除');
+  const latticeRow = [...container.querySelectorAll('.mcp-server-row')]
+    .find((row) => row.textContent.includes('Lattice'));
+  check('内置 Lattice Server 不提供移除按钮', !latticeRow?.querySelector('.icon-btn--danger'));
+  check('非内置 Server 提供移除按钮', Boolean(braveRow()?.querySelector('.icon-btn--danger')));
+  // 内置行用等宽占位补齐按钮列，否则两行的状态胶囊与图标会错开一列
+  check('内置行用占位保持操作列对齐', Boolean(latticeRow?.querySelector('.mcp-server-row__slot')));
+  check('非内置行占位换成移除按钮', !braveRow()?.querySelector('.mcp-server-row__slot'));
+  const originalConfirm = window.confirm;
+  window.confirm = () => true;
+  braveRow()?.querySelector('.icon-btn--danger')?.click();
+  window.confirm = originalConfirm;
+  await waitFor(() => !braveRow(), { label: '移除后列表不再包含该 Server' });
+  check('移除后列表不再包含该 Server', !braveRow());
+  check('移除后市场卡片回到未添加', marketCardByTitle('Brave Search')?.classList.contains('is-installed') === false);
+  await waitFor(() => container.querySelector('[data-testid="mcp-market"] .settings-value')?.textContent.includes('已添加 1'),
+    { label: '移除后市场计数更新' });
 
   container.querySelector('.settings-content__head button[aria-label="关闭设置"]')?.click();
   await waitFor(() => !container.querySelector('.settings-workspace'), { label: '设置面板关闭' });

@@ -104,7 +104,7 @@ try {
 
   const tools = toolList.result?.tools?.map((tool) => tool.name) ?? [];
   console.log('tools:', tools.join(', '));
-  for (const name of ['list_notes', 'search_notes', 'read_note', 'create_note', 'update_note', 'get_note_links', 'list_tags', 'get_vault_statistics', 'list_note_history', 'restore_note_version']) {
+  for (const name of ['list_notes', 'search_notes', 'read_note', 'create_note', 'update_note', 'get_note_links', 'list_tags', 'search_by_tag', 'get_vault_statistics', 'list_note_history', 'restore_note_version']) {
     if (!tools.includes(name)) throw new Error(`${name} tool is not registered`);
   }
 
@@ -149,6 +149,10 @@ try {
   send({ jsonrpc: '2.0', id: 14, method: 'tools/call', params: { name: 'restore_note_version', arguments: { noteId: createdPayload.id, version: historyPayload.versions[0].version } } });
   const restored = await waitFor(14);
   const restoredPayload = JSON.parse(restored.result?.content?.[0]?.text ?? '{}');
+
+  send({ jsonrpc: '2.0', id: 15, method: 'tools/call', params: { name: 'search_by_tag', arguments: { tag: 'e2e' } } });
+  const byTag = await waitFor(15);
+  const byTagPayload = JSON.parse(byTag.result?.content?.[0]?.text ?? '{}');
   const auditEntries = fs.readFileSync(path.join(runtimeRoot, 'ai-audit.jsonl'), 'utf8')
     .trim()
     .split('\n')
@@ -168,6 +172,7 @@ try {
   console.log('read:', readPayload.title, '|', readPayload.content?.includes('external Agent') ? 'content-ok' : 'content-missing');
   console.log('links:', JSON.stringify(linksPayload.outgoing?.length), 'outgoing /', JSON.stringify(linksPayload.backlinks?.length), 'backlinks');
   console.log('tags:', tagsPayload.map?.((tag) => tag.name).join(', ') ?? JSON.stringify(tagsPayload));
+  console.log('byTag:', byTagPayload.tags?.map?.((tag) => tag.name).join(', '), '->', byTagPayload.notes?.map?.((note) => note.title).join(', ') ?? JSON.stringify(byTagPayload));
   console.log('stats:', statsPayload.noteCount, 'notes,', statsPayload.danglingCount, 'dangling');
   console.log('history:', historyPayload.versions?.length, 'versions');
   console.log('restore:', restoredPayload.restored ? 'ok' : JSON.stringify(restored.error));
@@ -180,6 +185,7 @@ try {
   if (!appendedPayload.updated || appendedPayload.mode !== 'append') throw new Error('append mode did not confirm');
   if (!linksPayload.backlinks?.some((link) => link.noteId === linkedPayload.id)) throw new Error('get_note_links missed the backlink');
   if (!tagsPayload.some?.((tag) => tag.name === 'e2e')) throw new Error('list_tags missed the #e2e tag');
+  if (!byTagPayload.notes?.some?.((note) => note.id === linkedPayload.id)) throw new Error('search_by_tag missed the tagged note');
   if (statsPayload.noteCount !== 2) throw new Error('get_vault_statistics note count mismatch: ' + statsPayload.noteCount);
   if (!restoredPayload.restored) throw new Error('restore_note_version did not confirm');
   for (const type of ['create', 'update', 'restore']) {

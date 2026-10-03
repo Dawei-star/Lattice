@@ -12,6 +12,12 @@ export function list() {
   return repository.findAllWithCounts();
 }
 
+/** 按标签名取关联笔记（MCP search_by_tag 使用）；空名返回空数组。 */
+export function notesByTag(name) {
+  const trimmed = String(name ?? '').trim();
+  return trimmed ? repository.findNotesByTag(trimmed) : [];
+}
+
 export function getById(id) {
   const tag = repository.findById(id);
   if (!tag) throw new NotFoundError('标签不存在');

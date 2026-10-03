@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 5173",
-    "test": "node test/theme.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/static-site.test.mjs && node test/pwa.test.mjs && node test/ai-settings.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/update.test.mjs && node test/run-integration.mjs",
+    "test": "node test/theme.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/static-site.test.mjs && node test/pwa.test.mjs && node test/ai-settings.test.mjs && node test/mcp-settings.test.mjs && node test/mcp-marketplace.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/update.test.mjs && node test/run-integration.mjs",
     "test:e2e": "node test/canvas-navigation.test.mjs && node test/run-smoke.mjs"
   },
   "dependencies": {

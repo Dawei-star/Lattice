@@ -83,3 +83,22 @@ export function findIdsByNames(names) {
     .all(...names);
   return new Map(rows.map((row) => [row.name.toLowerCase(), row.id]));
 }
+
+export function findNotesByTag(name) {
+  return getDb()
+    .prepare(
+      `SELECT n.id, n.title, n.file_path, n.updated_at
+         FROM tags t
+         JOIN note_tags nt ON nt.tag_id = t.id
+         JOIN notes n ON n.id = nt.note_id
+        WHERE t.name COLLATE NOCASE = ?
+        ORDER BY n.updated_at DESC`,
+    )
+    .all(name)
+    .map((row) => ({
+      id: row.id,
+      title: row.title,
+      filePath: row.file_path || `${row.title}.md`,
+      updatedAt: row.updated_at,
+    }));
+}

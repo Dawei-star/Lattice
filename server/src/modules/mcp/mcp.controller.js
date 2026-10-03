@@ -2,25 +2,38 @@ import path from 'node:path';
 import { serverRoot, config } from '../../config/index.js';
 import { resolveVaultDir } from '../../vault/config.js';
 
-const allTools = [
-  { name: 'list_notes', description: '列出知识库中的笔记' },
-  { name: 'search_notes', description: '全文搜索笔记' },
-  { name: 'read_note', description: '按 ID、标题或路径读取笔记内容' },
-  { name: 'get_note_links', description: '查看笔记的出链与反向链接' },
-  { name: 'list_tags', description: '列出全部标签及使用次数' },
-  { name: 'get_vault_statistics', description: '获取知识库概况与最近更新' },
-  { name: 'create_note', description: '创建一篇新笔记' },
-  { name: 'update_note', description: '更新笔记正文（支持追加 / 前插 / 替换）' },
-  { name: 'list_note_history', description: '列出笔记的历史版本' },
-  { name: 'restore_note_version', description: '把笔记恢复到指定历史版本' },
-];
+/**
+ * 内置 Lattice MCP Server 的完整工具清单。
+ *
+ * `write: true` 的工具只有在服务端进程带 `LATTICE_MCP_ALLOW_WRITES` 启动时才会真正注册；
+ * 设置页需要把「现在可用」与「开启后可用」都讲清楚，因此这里返回全量清单并逐条带上
+ * `enabled`，而不是像早期那样直接把未启用的写入工具从响应里删掉——否则界面无从得知
+ * 还有哪些能力、又需要什么条件才能打开。
+ */
+const ALL_TOOLS = Object.freeze([
+  { name: 'list_notes', description: '列出知识库中的笔记', write: false },
+  { name: 'search_notes', description: '全文搜索笔记', write: false },
+  { name: 'read_note', description: '按 ID、标题或路径读取笔记内容', write: false },
+  { name: 'get_note_links', description: '查看笔记的出链与反向链接', write: false },
+  { name: 'list_tags', description: '列出全部标签及使用次数', write: false },
+  { name: 'search_by_tag', description: '按标签筛选笔记', write: false },
+  { name: 'get_vault_statistics', description: '获取知识库概况与最近更新', write: false },
+  { name: 'list_note_history', description: '列出笔记的历史版本', write: false },
+  { name: 'create_note', description: '创建一篇新笔记', write: true },
+  { name: 'update_note', description: '更新笔记正文（支持追加 / 前插 / 替换）', write: true },
+  { name: 'restore_note_version', description: '把笔记恢复到指定历史版本', write: true },
+]);
+
+export const WRITES_ENV_VAR = 'LATTICE_MCP_ALLOW_WRITES';
 
 const writesEnabled = ['true', '1', 'yes'].includes(
-  String(process.env.LATTICE_MCP_ALLOW_WRITES ?? '').trim().toLowerCase(),
+  String(process.env[WRITES_ENV_VAR] ?? '').trim().toLowerCase(),
 );
-const tools = writesEnabled
-  ? allTools
-  : allTools.filter((tool) => !['create_note', 'update_note', 'restore_note_version'].includes(tool.name));
+
+const tools = ALL_TOOLS.map((tool) => ({
+  ...tool,
+  enabled: tool.write ? writesEnabled : true,
+}));
 
 export function getInfo(_req, res) {
   res.json({
@@ -32,7 +45,10 @@ export function getInfo(_req, res) {
       dbFile: config.dbFile,
       vaultDir: resolveVaultDir(config.vaultDir),
       writesEnabled,
+      writesEnvVar: WRITES_ENV_VAR,
       tools,
+      enabledToolCount: tools.filter((tool) => tool.enabled).length,
+      writeToolCount: tools.filter((tool) => tool.write).length,
     },
   });
 }

@@ -9,7 +9,15 @@ import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirector
 import { clearImportedTheme, importThemeFile, loadImportedTheme } from '../lib/theme.js';
 import { loadSettings, saveSettings, subscribeSettings } from './settings.js';
 import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
-import { createMcpServer, loadMcpSettings, saveMcpSettings } from './mcpSettings.js';
+import { MCP_WRITE_TOOL_NAMES, createMcpServer, loadMcpSettings, readEnvValue, saveMcpSettings, withVisibleServers, writeEnvValue } from './mcpSettings.js';
+import {
+  MCP_MARKET_CATALOG,
+  MCP_MARKET_CATEGORIES,
+  MCP_MARKET_RUNTIME_HINT,
+  appendMarketServer,
+  createServerFromMarketEntry,
+  isMarketEntryInstalled,
+} from './mcpMarketplace.js';
 import ModelCenter from './ModelCenter.jsx';
 import { checkGithubReleases } from '../lib/update.js';
 
@@ -367,6 +375,7 @@ const DEFAULT_MCP_TOOLS = [
   { name: 'read_note', description: '按 ID、标题或路径读取笔记内容' },
   { name: 'get_note_links', description: '查看笔记的出链与反向链接' },
   { name: 'list_tags', description: '列出全部标签及使用次数' },
+  { name: 'search_by_tag', description: '按标签筛选笔记' },
   { name: 'get_vault_statistics', description: '获取知识库概况与最近更新' },
   { name: 'create_note', description: '创建一篇新笔记' },
   { name: 'update_note', description: '更新笔记正文（支持追加 / 前插 / 替换）' },
@@ -385,6 +394,11 @@ function McpServerSettings() {
   const [editorError, setEditorError] = useState('');
   const [notice, setNotice] = useState(null);
   const [fileInputKey, setFileInputKey] = useState(0);
+  const [marketSearch, setMarketSearch] = useState('');
+  const [marketCategory, setMarketCategory] = useState('全部');
+  const [expandedMarketKey, setExpandedMarketKey] = useState('');
+  const [loadError, setLoadError] = useState(false);
+  const editorRef = useRef(null);
 
   const updateSettings = (updater) => {
     setSettings((current) => {
@@ -416,6 +430,7 @@ function McpServerSettings() {
     try {
       const nextInfo = await mcpApi.info();
       setInfo(nextInfo);
+      setLoadError(false);
       updateSettings((current) => {
         const lattice = createLatticeServer(nextInfo);
         const existing = current.servers.find((server) => server.id === lattice.id);
@@ -426,7 +441,9 @@ function McpServerSettings() {
       });
       if (!silent) setNotice({ tone: 'success', text: 'MCP Server 配置已刷新。' });
     } catch {
-      setNotice({ tone: 'danger', text: '无法读取 MCP 配置，请确认后端服务已启动。' });
+      setInfo(null);
+      setLoadError(true);
+      if (!silent) setNotice({ tone: 'danger', text: '无法读取 MCP 配置，请确认后端服务已启动。' });
     } finally {
       setLoading(false);
     }
@@ -436,11 +453,38 @@ function McpServerSettings() {
     loadInfo({ silent: true });
   }, []);
 
+  // 打开 / 切换编辑器时把它带进视野（页面很长，否则点了「配置」像没反应）
+  useEffect(() => {
+    if (editingId && editorRef.current) editorRef.current.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [editingId]);
+
+  // 反馈提示自动收起：它是吸附在面板底部的一条信息，长时间压着内容没有意义
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = setTimeout(() => setNotice(null), 6500);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
   const toggleServer = (serverId) => {
+    // 走 withVisibleServers：info 还没返回时列表展示的是回退出来的内置 Server，
+    // 直接 map 空数组会让「开关点了没反应」
     updateSettings((current) => ({
       ...current,
-      servers: current.servers.map((server) => server.id === serverId ? { ...server, enabled: !server.enabled } : server),
+      servers: withVisibleServers(current.servers, managedServers, (servers) => servers
+        .map((server) => server.id === serverId ? { ...server, enabled: !server.enabled } : server)),
     }));
+  };
+
+  const removeServer = (server) => {
+    if (server.builtin) return;
+    if (!window.confirm(`从本机配置中移除 MCP Server「${server.name}」？`)) return;
+    updateSettings((current) => ({
+      ...current,
+      servers: withVisibleServers(current.servers, managedServers, (servers) => servers
+        .filter((item) => item.id !== server.id)),
+    }));
+    if (editingId === server.id) closeEditor();
+    setNotice({ tone: 'success', text: `已移除 ${server.name}。` });
   };
 
   const openEditor = (server) => {
@@ -490,13 +534,18 @@ function McpServerSettings() {
       argsText: undefined,
     };
     delete server.argsText;
+    // 需要密钥但还没补齐时强制停用：避免把一份连不上的配置导出给客户端。
+    const missingEnv = (draft.requiresEnv ?? []).filter((item) => !String(env[item.name] ?? '').trim());
+    if (missingEnv.length) server.enabled = false;
     updateSettings((current) => ({
       ...current,
-      servers: editingId === 'new'
-        ? [...current.servers, server]
-        : current.servers.map((item) => item.id === editingId ? server : item),
+      servers: withVisibleServers(current.servers, managedServers, (servers) => editingId === 'new'
+        ? [...servers, server]
+        : servers.map((item) => item.id === editingId ? server : item)),
     }));
-    setNotice({ tone: 'success', text: 'MCP Server 配置已保存。' });
+    setNotice(missingEnv.length
+      ? { tone: 'warning', text: `已保存 ${name}，但还缺 ${missingEnv.map((item) => item.name).join('、')}，因此保持停用。` }
+      : { tone: 'success', text: 'MCP Server 配置已保存。' });
     closeEditor();
   };
 
@@ -540,14 +589,66 @@ function McpServerSettings() {
     mcpServers: Object.fromEntries(managedServers.filter((server) => server.enabled).map((server) => [server.key, toMcpConfig(server)])),
   }, null, 2), [managedServers]);
 
-  const copyConfig = async () => {
+  const copyToClipboard = async (text, successText) => {
     try {
-      await navigator.clipboard.writeText(configText);
-      setNotice({ tone: 'success', text: '已复制当前启用的 MCP 配置。' });
+      await navigator.clipboard.writeText(text);
+      setNotice({ tone: 'success', text: successText });
     } catch {
-      setNotice({ tone: 'danger', text: '复制失败，请手动选择配置内容。' });
+      setNotice({ tone: 'danger', text: '复制失败，请手动选择内容。' });
     }
   };
+
+  const copyConfig = () => copyToClipboard(configText, '已复制当前启用的 MCP 配置。');
+
+  const copyWritesEnv = () => copyToClipboard(
+    `"${info?.writesEnvVar ?? 'LATTICE_MCP_ALLOW_WRITES'}": "true"`,
+    '已复制写入开关片段：粘贴到导出配置里 Lattice Server 的 env 中即可。',
+  );
+
+  const installFromMarket = (entry) => {
+    const existing = managedServers.find((server) => isMarketEntryInstalled([server], entry));
+    if (existing) {
+      openEditor(existing);
+      setNotice({ tone: 'warning', text: `${entry.name} 已在列表中，已为你打开配置。` });
+      return;
+    }
+    const server = createServerFromMarketEntry(entry, { vaultDir: info?.vaultDir, dbFile: info?.dbFile });
+    // settings.servers 为空时列表展示的是回退出来的内置 Lattice Server（尚未落盘），
+    // 以“当前可见列表”为基线追加，避免内置条目在下一次保存后消失。
+    updateSettings((current) => ({
+      ...current,
+      servers: appendMarketServer(current.servers, managedServers, server),
+    }));
+    if ((entry.requiresEnv ?? []).length) {
+      openEditor(server);
+      setNotice({ tone: 'warning', text: `${entry.name} 需要密钥：请在下方编辑器补齐 ${entry.requiresEnv.map((item) => item.name).join('、')} 后保存，再启用。` });
+    } else {
+      setNotice({ tone: 'success', text: `已添加 ${entry.name}，导出配置即可在 MCP 客户端中使用。` });
+    }
+  };
+
+  const marketQuery = marketSearch.trim().toLowerCase();
+  const marketEntries = MCP_MARKET_CATALOG.filter((entry) => marketCategory === '全部' || entry.category === marketCategory)
+    .filter((entry) => !marketQuery || [entry.name, entry.tagline, entry.description, entry.category, entry.key].some((value) => String(value ?? '').toLowerCase().includes(marketQuery)))
+    .sort((a, b) => Number(b.featured === true) - Number(a.featured === true));
+  const marketInstalledCount = MCP_MARKET_CATALOG.filter((entry) => isMarketEntryInstalled(managedServers, entry)).length;
+
+  const writesEnabled = info?.writesEnabled === true;
+  const writesEnvVar = info?.writesEnvVar ?? 'LATTICE_MCP_ALLOW_WRITES';
+  // 工具清单以服务端返回为准（逐条带 write / enabled）；还没读到配置时退回内置清单，
+  // 并把写入工具标成「未启用」——宁可少说，也不能把不可用的能力说成可用。
+  const toolRows = (toolList.length ? toolList : DEFAULT_MCP_TOOLS).map((tool) => {
+    const write = tool.write ?? MCP_WRITE_TOOL_NAMES.includes(tool.name);
+    return {
+      name: tool.name,
+      description: tool.description,
+      write,
+      enabled: tool.enabled ?? (write ? writesEnabled : true),
+    };
+  });
+  const readTools = toolRows.filter((tool) => !tool.write);
+  const writeTools = toolRows.filter((tool) => tool.write);
+  const enabledToolCount = toolRows.filter((tool) => tool.enabled).length;
 
   return <div className="mcp-settings mcp-manager">
     <section className="mcp-manager__hero">
@@ -555,7 +656,7 @@ function McpServerSettings() {
       <div className="mcp-manager__stats"><strong>{managedServers.length}</strong><span>已配置</span><strong>{enabledCount}</strong><span>已启用</span></div>
     </section>
     <div className="mcp-manager__toolbar">
-      <div className="mcp-manager__scope"><button type="button" className="is-active">用户</button><span>MCP {managedServers.length}</span></div>
+      <div className="mcp-manager__scope"><span className="mcp-manager__scope-tag">用户级配置</span><span>保存在本机浏览器</span></div>
       <label className="mcp-manager__search"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 MCP Server..." aria-label="搜索 MCP Server" /></label>
       <div className="mcp-manager__actions"><button type="button" className="icon-btn" onClick={loadInfo} aria-label="刷新 MCP Server" title="刷新"><NavIcon name="refresh" /></button><label className="btn"><span>导入</span><input key={fileInputKey} type="file" accept=".json,application/json" onChange={importConfig} /></label><button type="button" className="btn btn--primary" onClick={openCreator}>+ 新建</button></div>
     </div>
@@ -565,40 +666,159 @@ function McpServerSettings() {
       </div>
     </section>
     <section className="mcp-manager__block">
-      <div className="mcp-manager__section-head"><div><h4>已配置的 MCP Servers</h4><p>管理已添加的 MCP Server，可启用、编辑或导出配置。</p></div><button type="button" className="btn btn--sm" onClick={copyConfig}>复制启用配置</button></div>
+      <div className="mcp-manager__section-head"><div><h4>已配置的 MCP Servers</h4><p>可启用、编辑或移除；导出的配置在页面底部。</p></div><span className="settings-value">{enabledCount} / {managedServers.length} 已启用</span></div>
       <div className="mcp-manager__panel mcp-manager__list">
-        {serverList.length ? serverList.map((server) => <article className={'mcp-server-row ' + (server.enabled ? 'is-enabled' : 'is-disabled')} key={server.id}>
-          <div className="mcp-manager__server-icon">{server.builtin ? 'L' : 'MCP'}</div><div className="mcp-server-row__identity"><div><strong>{server.name}</strong>{server.builtin ? <span className="mcp-server-row__verified">✓</span> : null}</div><p>{server.description || server.transport.toUpperCase() + ' MCP Server'}</p><code>{server.transport === 'sse' ? server.url : server.command + (server.args[0] ? ' · ' + server.args[0] : '')}</code></div><span className="mcp-server-row__state">{server.enabled ? '已启用' : '已停用'}</span><button type="button" className="icon-btn" onClick={() => openEditor(server)} aria-label={'配置 ' + server.name} title="配置"><NavIcon name="edit" /></button><McpToggle checked={server.enabled} onChange={() => toggleServer(server.id)} label={(server.enabled ? '停用 ' : '启用 ') + server.name} />
-        </article>) : <div className="mcp-manager__empty"><strong>没有匹配的 MCP Server</strong><span>尝试修改搜索关键词，或新建一个 Server。</span></div>}
+        {serverList.length ? serverList.map((server) => {
+          // 只在真的还缺密钥时标记，配齐后不该继续挂着提示
+          const missingKeys = (server.requiresEnv ?? [])
+            .filter((item) => !String(server.env?.[item.name] ?? '').trim());
+          // 来自市场的 Server 直接沿用它在市场里的品牌 logo，列表与市场对得上号
+          const marketEntry = MCP_MARKET_CATALOG.find((entry) => isMarketEntryInstalled([server], entry));
+          const iconPath = marketEntry?.logo ?? '';
+          return <article className={'mcp-server-row ' + (server.enabled ? 'is-enabled' : 'is-disabled')} key={server.id}>
+            <McpIconBox logo={iconPath} fallback={server.builtin ? 'L' : 'MCP'} /><div className="mcp-server-row__identity"><div><strong>{server.name}</strong>{server.builtin ? <span className="mcp-server-row__verified">✓</span> : null}{missingKeys.length ? <span className="mcp-server-row__needs-key">缺 {missingKeys.length} 个密钥</span> : null}</div><p>{server.description || server.transport.toUpperCase() + ' MCP Server'}</p><code>{server.transport === 'sse' ? server.url : server.command + (server.args[0] ? ' · ' + server.args[0] : '')}</code></div><div className="mcp-server-row__actions"><span className="mcp-server-row__state">{server.enabled ? '已启用' : '已停用'}</span><div className="mcp-server-row__buttons"><button type="button" className="icon-btn" onClick={() => openEditor(server)} aria-label={'配置 ' + server.name} title="配置"><NavIcon name="edit" /></button>{server.builtin ? <span className="mcp-server-row__slot" aria-hidden="true" /> : <button type="button" className="icon-btn icon-btn--danger mcp-server-row__remove" onClick={() => removeServer(server)} aria-label={'移除 ' + server.name} title="移除"><NavIcon name="trash" /></button>}</div><McpToggle checked={server.enabled} onChange={() => toggleServer(server.id)} label={(server.enabled ? '停用 ' : '启用 ') + server.name} /></div>
+          </article>;
+        }) : <div className="mcp-manager__empty"><strong>没有匹配的 MCP Server</strong><span>尝试修改搜索关键词，或新建一个 Server。</span></div>}
       </div>
     </section>
-    {editingId ? <McpServerEditor draft={draft} envText={envText} error={editorError} onChange={setDraft} onEnvChange={setEnvText} onSave={saveDraft} onClose={closeEditor} /> : null}
-    {notice ? <Notice tone={notice.tone}>{notice.text}</Notice> : null}
-    <section className="mcp-manager__block">
-      <div className="mcp-manager__section-head"><div><h4>当前 Server 工具</h4><p>Lattice MCP Server 暴露以下知识库操作。</p></div><span className="settings-value">{loading ? '读取中...' : info ? 'stdio · 配置可用' : '未读取'}</span></div>
-      <div className="mcp-manager__panel mcp-settings__tools">{toolList.map((tool) => <div className="mcp-settings__tool" key={tool.name}><code>{tool.name}</code><span>{tool.description}</span></div>)}</div>
-      <Notice tone={info?.writesEnabled ? 'warning' : 'success'}>{info?.writesEnabled ? '写入工具已开启：外部 Agent 可以修改 Vault，请确认每次写入。' : '默认只读：写入工具未暴露。导出配置后如需写入，请将 LATTICE_MCP_ALLOW_WRITES 改为 true。'}</Notice>
+    {/* 编辑器紧跟「已配置的 MCP Servers」——放在插件市场之后会让点「配置」的人
+        以为没反应（编辑器其实在下面一千多像素处） */}
+    <div className="mcp-editor-slot" ref={editorRef}>
+      {editingId ? <McpServerEditor draft={draft} envText={envText} error={editorError} onChange={setDraft} onEnvChange={setEnvText} onSave={saveDraft} onClose={closeEditor} /> : null}
+    </div>
+    <section className="mcp-manager__block" data-testid="mcp-market">
+      <div className="mcp-manager__section-head"><div><h4>MCP 插件市场</h4><p>精选适配知识库场景的 MCP Server：文件、联网、记忆与开发辅助，一键写入本机配置。</p></div><span className="settings-value">{MCP_MARKET_CATALOG.length} 款 · 已添加 {marketInstalledCount}</span></div>
+      <div className="mcp-manager__panel mcp-market">
+        <div className="mcp-market__filters">
+          <div className="mcp-market__chips" role="group" aria-label="MCP 市场分类">
+            {['全部', ...MCP_MARKET_CATEGORIES].map((category) => <button key={category} type="button" className={'mcp-market__chip' + (marketCategory === category ? ' is-active' : '')} onClick={() => setMarketCategory(category)}>{category}</button>)}
+          </div>
+          <label className="mcp-manager__search mcp-market__search"><span aria-hidden="true">⌕</span><input value={marketSearch} onChange={(event) => setMarketSearch(event.target.value)} placeholder="搜索市场..." aria-label="搜索 MCP 市场" /></label>
+        </div>
+        <div className="mcp-market__grid">
+          {marketEntries.map((entry) => {
+            const installed = isMarketEntryInstalled(managedServers, entry);
+            const expanded = expandedMarketKey === entry.key;
+            return <article key={entry.key} className={'mcp-market__card' + (installed ? ' is-installed' : '') + (expanded ? ' is-expanded' : '')}>
+              <header className="mcp-market__card-head">
+                <McpIconBox logo={entry.logo} className="mcp-market__icon" fallback={entry.name.slice(0, 2)} />
+                <div className="mcp-market__card-title"><strong>{entry.name}</strong>{entry.featured ? <span className="mcp-market__featured">推荐</span> : null}<span className="mcp-market__runtime">{entry.runtime === 'python' ? 'Python' : 'Node'}</span></div>
+              </header>
+              <p className="mcp-market__card-desc">{entry.tagline}</p>
+              <div className="mcp-market__card-tools">{(entry.tools ?? []).slice(0, 4).map((tool) => <code key={tool.name} title={tool.description}>{tool.name}</code>)}{(entry.tools?.length ?? 0) > 4 ? <span className="mcp-market__more">+{entry.tools.length - 4}</span> : null}</div>
+              {expanded ? <div className="mcp-market__detail">
+                <p className="mcp-market__detail-text">{entry.description}</p>
+                <ul className="mcp-market__detail-list">
+                  {(entry.tools ?? []).map((tool) => <li key={tool.name}><code>{tool.name}</code><span>{tool.description}</span></li>)}
+                </ul>
+                {(entry.requiresEnv ?? []).length ? <ul className="mcp-market__detail-list mcp-market__detail-list--env">
+                  {entry.requiresEnv.map((item) => <li key={item.name}><code>{item.name}</code><span>{item.hint}</span></li>)}
+                </ul> : null}
+                <a className="mcp-market__docs" href={entry.docs} target="_blank" rel="noreferrer">查看官方文档 ↗</a>
+              </div> : null}
+              <footer className="mcp-market__card-foot">
+                <span className="mcp-market__category">{entry.category}{(entry.requiresEnv ?? []).length ? ' · 需密钥' : ''}</span>
+                <div className="mcp-market__card-actions">
+                  <button type="button" className="btn btn--sm btn--ghost" aria-expanded={expanded} aria-label={(expanded ? '收起 ' : '查看 ') + entry.name + ' 详情'} onClick={() => setExpandedMarketKey(expanded ? '' : entry.key)}>{expanded ? '收起' : '详情'}</button>
+                  <button type="button" className={'btn btn--sm' + (installed ? '' : ' btn--primary')} aria-label={(installed ? '配置 ' : '添加 ') + entry.name} onClick={() => installFromMarket(entry)}>{installed ? '配置' : '添加'}</button>
+                </div>
+              </footer>
+            </article>;
+          })}
+          {!marketEntries.length ? <div className="mcp-manager__empty mcp-market__empty"><strong>没有匹配的 MCP Server</strong><span>换个关键词或分类试试。</span></div> : null}
+        </div>
+        <p className="mcp-market__hint">{MCP_MARKET_RUNTIME_HINT.node}；{MCP_MARKET_RUNTIME_HINT.python}。带「需密钥」标记的条目添加后会打开配置，请先补齐环境变量再启用。市场条目会随版本更新，也可以直接「导入」任意 MCP 配置 JSON。</p>
+      </div>
+    </section>
+    <section className="mcp-manager__block" data-testid="mcp-tools">
+      <div className="mcp-manager__section-head"><div><h4>当前 Server 工具</h4><p>Lattice MCP Server 暴露以下知识库操作；写入工具默认不注册。</p></div><span className="settings-value">{loading ? '读取中...' : info ? `stdio · ${enabledToolCount} / ${toolRows.length} 可用` : '未读取'}</span></div>
+      {loadError ? <Notice tone="danger"><span className="settings-notice__row"><span>读取不到 MCP 配置，工具清单可能不是最新的。</span><button type="button" className="btn btn--sm" onClick={() => loadInfo()}>重试</button></span></Notice> : null}
+      <div className="mcp-manager__panel mcp-tools">
+        <div className="mcp-tools__group">
+          <div className="mcp-tools__group-head"><strong>读取工具</strong><span>{readTools.length} 个 · 默认可用</span></div>
+          {readTools.map((tool) => <div className={'mcp-tools__row' + (tool.enabled ? '' : ' is-off')} key={tool.name}><code>{tool.name}</code><span className="mcp-tools__desc">{tool.description}</span><span className="mcp-tools__state">{tool.enabled ? '可用' : '未启用'}</span></div>)}
+        </div>
+        <div className="mcp-tools__group">
+          <div className="mcp-tools__group-head"><strong>写入工具</strong><span>{writeTools.length} 个 · {writesEnabled ? '已开启' : `需 ${writesEnvVar}=true`}</span></div>
+          {writeTools.map((tool) => <div className={'mcp-tools__row' + (tool.enabled ? '' : ' is-off')} key={tool.name}><code>{tool.name}</code><span className="mcp-tools__desc">{tool.description}</span><span className="mcp-tools__state">{tool.enabled ? '可用' : '未启用'}</span></div>)}
+        </div>
+      </div>
+      <Notice tone={writesEnabled ? 'warning' : 'success'}>
+        {writesEnabled
+          ? '写入工具已开启：外部 Agent 可以修改 Vault，请确认每次写入。'
+          : <span className="settings-notice__row"><span>默认只读：写入工具未注册。导出配置后如需写入，在 Lattice Server 的 env 中加入 <code>{writesEnvVar}: "true"</code>。</span><button type="button" className="btn btn--sm" onClick={copyWritesEnv}>复制片段</button></span>}
+      </Notice>
     </section>
     <section className="mcp-manager__block">
       <div className="mcp-manager__section-head"><div><h4>导出配置</h4><p>复制当前启用的 Server，粘贴到 Claude Desktop 或其他 MCP 客户端。</p></div><button type="button" className="btn btn--primary" onClick={copyConfig}>复制 JSON</button></div>
       <div className="mcp-manager__panel mcp-settings__config"><pre aria-label="MCP 配置"><code>{configText}</code></pre></div>
     </section>
     <Notice>浏览器不能直接拉起任意 stdio 进程；列表中的开关管理本机配置，真正连接由 Claude Desktop 等 MCP 客户端完成。</Notice>
+    {/* 操作反馈吸附在面板底部：页面很长，无论在哪一段操作都能看到结果 */}
+    {notice ? <div className="mcp-notice-dock"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
   </div>;
 }
 
 function McpServerEditor({ draft, envText, error, onChange, onEnvChange, onSave, onClose }) {
   if (!draft) return null;
-  return <section className="mcp-manager__block mcp-editor">
+  const requiredEnv = Array.isArray(draft.requiresEnv) ? draft.requiresEnv : [];
+  const envIsObject = (() => {
+    try {
+      const parsed = JSON.parse(envText || '{}');
+      return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed);
+    } catch {
+      return false;
+    }
+  })();
+  return <section className="mcp-manager__block mcp-editor" data-testid="mcp-editor">
     <div className="mcp-manager__section-head"><div><h4>{draft.builtin ? '配置 Lattice MCP Server' : '配置 MCP Server'}</h4><p>保存后会写入当前浏览器的本地设置。</p></div><button type="button" className="icon-btn" onClick={onClose} aria-label="关闭 MCP 配置">×</button></div>
     <div className="mcp-manager__panel mcp-editor__form">
       <div className="mcp-editor__grid"><label>显示名称<input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label><label>传输方式<select value={draft.transport} onChange={(event) => onChange({ ...draft, transport: event.target.value })}><option value="stdio">stdio</option><option value="sse">SSE</option></select></label></div>
       {draft.transport === 'sse' ? <label>Server URL<input value={draft.url || ''} onChange={(event) => onChange({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></label> : <><label>启动命令<input value={draft.command} onChange={(event) => onChange({ ...draft, command: event.target.value })} placeholder="node" /></label><label>启动参数<span className="mcp-editor__hint">每行一个参数</span><textarea value={draft.argsText} onChange={(event) => onChange({ ...draft, argsText: event.target.value })} rows="3" placeholder="D:\\path\\to\\server.mjs" /></label></>}
-      <label>环境变量 JSON<textarea value={envText} onChange={(event) => onEnvChange(event.target.value)} rows="4" spellCheck="false" placeholder={'{\n  "API_KEY": "..."\n}'} /></label>
+      {requiredEnv.length ? <div className="mcp-editor__env">
+        <div className="mcp-editor__env-head"><strong>需要的密钥</strong><span>留空的条目保存后会保持停用，不会被导出。</span></div>
+        {requiredEnv.map((item) => <label className="mcp-editor__env-field" key={item.name}>
+          <code>{item.name}</code>
+          <input
+            value={readEnvValue(envText, item.name)}
+            onChange={(event) => {
+              const nextText = writeEnvValue(envText, item.name, event.target.value);
+              onEnvChange(nextText);
+              // 市场条目默认停用只是因为缺密钥：补齐后自动勾上启用，少一步操作
+              if (draft.enabled === false && requiredEnv.every((entry) => readEnvValue(nextText, entry.name))) {
+                onChange({ ...draft, enabled: true });
+              }
+            }}
+            placeholder={item.hint || '粘贴密钥'}
+            aria-label={item.name}
+            autoComplete="off"
+            spellCheck="false"
+          />
+          {item.hint ? <small>{item.hint}</small> : null}
+        </label>)}
+        {envIsObject ? null : <p className="mcp-editor__error" role="alert">下方的环境变量 JSON 目前不是合法对象，请先修复它。</p>}
+      </div> : null}
+      <label className="mcp-editor__enable"><input type="checkbox" checked={draft.enabled !== false} onChange={(event) => onChange({ ...draft, enabled: event.target.checked })} /><span>启用这个 Server</span>{requiredEnv.length ? <small>密钥未补齐时会自动保持停用</small> : null}</label>
+      <label>环境变量 JSON<span className="mcp-editor__hint">{requiredEnv.length ? '与上方密钥同步；其余变量在此添加' : '可留空'}</span><textarea value={envText} onChange={(event) => onEnvChange(event.target.value)} rows="4" spellCheck="false" placeholder={'{\n  "API_KEY": "..."\n}'} /></label>
       {error ? <p className="mcp-editor__error" role="alert">{error}</p> : null}
       <div className="mcp-editor__actions"><button type="button" className="btn" onClick={onClose}>取消</button><button type="button" className="btn btn--primary" onClick={onSave}>保存配置</button></div>
     </div>
   </section>;
+}
+
+/**
+ * 市场条目 / 已配置 Server 的品牌 logo 位。
+ * 有 logo 时用浅色底托住彩色品牌标识（与模型中心的 provider-logo 同一套做法），
+ * 图片缺失或加载失败则回退到文字缩写。
+ */
+function McpIconBox({ logo, className = '', fallback }) {
+  const [broken, setBroken] = useState(false);
+  const showLogo = Boolean(logo) && !broken;
+  return <span className={`mcp-manager__server-icon mcp-logo-tile ${className}`.trim()} aria-hidden="true">
+    {showLogo
+      ? <img className="mcp-logo" src={logo} alt="" loading="lazy" onError={() => setBroken(true)} />
+      : fallback}
+  </span>;
 }
 
 function McpToggle({ checked, onChange, label }) {
@@ -705,7 +925,7 @@ function formatBytes(value) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-function NavIcon({ name }) { const paths = { info: 'M12 17v-5m0-4h.01M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0', sun: 'M12 3v2m0 14v2M3 12h2m14 0h2m-3.4-6.6-1.4 1.4M7.8 16.2l-1.4 1.4m0-11.4 1.4 1.4m8.4 8.4 1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0', layout: 'M4 5h16v14H4zM4 10h16M10 10v9', edit: 'M4 20h4L19 9l-4-4L4 16v4z', link: 'M10 13a5 5 0 0 0 7.1.1l1.4-1.4a5 5 0 0 0-7.1-7.1L10.6 5.4M14 11a5 5 0 0 0-7.1-.1l-1.4 1.4a5 5 0 0 0 7.1 7.1l.8-.8', command: 'M6 4v16M18 4v16M4 6h16M4 18h16', home: 'M3 11l9-7 9 7v9H3z', refresh: 'M20 11a8 8 0 1 0 2 5m0-5v-5m0 5h-5' }; return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name] ?? paths.info} /></svg>; }
+function NavIcon({ name }) { const paths = { info: 'M12 17v-5m0-4h.01M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0', sun: 'M12 3v2m0 14v2M3 12h2m14 0h2m-3.4-6.6-1.4 1.4M7.8 16.2l-1.4 1.4m0-11.4 1.4 1.4m8.4 8.4 1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0', layout: 'M4 5h16v14H4zM4 10h16M10 10v9', edit: 'M4 20h4L19 9l-4-4L4 16v4z', link: 'M10 13a5 5 0 0 0 7.1.1l1.4-1.4a5 5 0 0 0-7.1-7.1L10.6 5.4M14 11a5 5 0 0 0-7.1-.1l-1.4 1.4a5 5 0 0 0 7.1 7.1l.8-.8', command: 'M6 4v16M18 4v16M4 6h16M4 18h16', home: 'M3 11l9-7 9 7v9H3z', trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6', refresh: 'M20 11a8 8 0 1 0 2 5m0-5v-5m0 5h-5' }; return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name] ?? paths.info} /></svg>; }
 function ThemeImportPanel({ theme, onChange }) {
   const [error, setError] = useState(''); const [inputKey, setInputKey] = useState(0);
   const handleImport = async (event) => { const file = event.target.files?.[0]; if (!file) return; setError(''); try { onChange(await importThemeFile(file)); } catch (importError) { setError(importError?.message ?? '主题导入失败'); } finally { setInputKey((value) => value + 1); } };

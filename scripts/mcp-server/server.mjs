@@ -3,7 +3,7 @@
  * 格物 Lattice 知识库 MCP Server（stdio 传输）。
  *
  * 让 Claude Desktop / 其他支持 MCP 的 Agent 直接读写你的笔记库：
- *   检索读取：search_notes / read_note / list_notes
+ *   检索读取：search_notes / read_note / search_by_tag / list_notes
  *   关系探索：get_note_links / list_tags / get_vault_statistics
  *   写入维护：create_note / update_note（支持 append / prepend）/ restore_note_version
  *   安全回溯：list_note_history
@@ -120,7 +120,7 @@ function resolveNote(query) {
 
 const server = new McpServer({
   name: 'lattice',
-  version: '0.2.0',
+  version: '0.2.1',
 }, {
   instructions: [
     '格物 Lattice 本地知识库：Markdown 双链笔记库。',
@@ -215,6 +215,28 @@ server.tool(
     name: tag.name,
     noteCount: tag.noteCount,
   })))),
+);
+
+server.tool(
+  'search_by_tag',
+  '按标签筛选笔记：先精确匹配标签名（不区分大小写），无精确命中时回退子串模糊匹配',
+  {
+    tag: z.string().trim().min(1).max(100),
+    limit: z.number().int().min(1).max(100).default(20),
+  },
+  safeTool(async ({ tag, limit }) => {
+    const all = tagsService.list();
+    const lowered = String(tag).trim().toLowerCase();
+    const exact = all.filter((item) => item.name.toLowerCase() === lowered);
+    const scope = exact.length ? exact : all.filter((item) => item.name.toLowerCase().includes(lowered));
+    return asText({
+      tag,
+      matched: exact.length > 0,
+      tags: scope.map((item) => ({ name: item.name, noteCount: item.noteCount })),
+      notes: scope.flatMap((item) => tagsService.notesByTag(item.name)).slice(0, limit),
+      suggestions: scope.length ? [] : all.slice(0, 10).map((item) => item.name),
+    });
+  }),
 );
 
 server.tool(

@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="格物 Lattice MCP 集成指南：连接 Claude Desktop 等 Agent，安全读取或写入本地 Markdown 知识库。" />
+    <title>MCP 集成指南 · 格物 Lattice</title>
+    <link rel="icon" href="../web/public/lattice-icon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #f2f5f3;
+        --surface: #ffffff;
+        --surface-soft: #f7faf8;
+        --surface-ink: #12202b;
+        --ink: #14232d;
+        --muted: #61717a;
+        --subtle: #8d9ca1;
+        --line: #dce5e1;
+        --line-strong: #c5d2cc;
+        --brand: #3d5dca;
+        --brand-soft: #e8edff;
+        --teal: #147d70;
+        --teal-soft: #dff5ef;
+        --orange: #c56f25;
+        --orange-soft: #fff0df;
+        --danger: #a94d4d;
+        --danger-soft: #fff0ed;
+        --shadow: 0 22px 60px rgba(18, 32, 43, 0.1);
+        --shadow-soft: 0 10px 28px rgba(18, 32, 43, 0.06);
+        --sidebar-width: 250px;
+        --rail-width: 190px;
+        --header-height: 68px;
+        --radius-sm: 8px;
+        --radius-md: 14px;
+        --radius-lg: 20px;
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --canvas: #10181d;
+        --surface: #172229;
+        --surface-soft: #1d2a31;
+        --surface-ink: #0d151a;
+        --ink: #eef5f1;
+        --muted: #a9b8b9;
+        --subtle: #819293;
+        --line: #2e4146;
+        --line-strong: #43575a;
+        --brand: #a5b4ff;
+        --brand-soft: #29365d;
+        --teal: #6cdbc8;
+        --teal-soft: #193d3a;
+        --orange: #f4b675;
+        --orange-soft: #49321e;
+        --danger: #f1a5a5;
+        --danger-soft: #482a2b;
+        --shadow: 0 22px 60px rgba(0, 0, 0, 0.3);
+        --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.18);
+      }
+
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 15px;
+        line-height: 1.75;
+        letter-spacing: 0;
+        transition: background 180ms ease, color 180ms ease;
+      }
+      body.nav-open { overflow: hidden; }
+      a { color: inherit; text-decoration: none; }
+      button, input { font: inherit; }
+      button { border: 0; cursor: pointer; }
+      code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      code { padding: 2px 5px; border-radius: 5px; background: var(--surface-soft); color: var(--brand); font-size: 0.88em; }
+      :focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 42%, transparent); outline-offset: 3px; }
+
+      .topbar {
+        position: fixed;
+        z-index: 30;
+        top: 0;
+        right: 0;
+        left: 0;
+        display: flex;
+        align-items: center;
+        min-height: var(--header-height);
+        padding: 0 28px;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(16px);
+      }
+      .brand { display: inline-flex; align-items: center; gap: 10px; width: var(--sidebar-width); color: var(--ink); font-size: 15px; font-weight: 760; white-space: nowrap; }
+      .brand img { width: 28px; height: 28px; border-radius: 8px; box-shadow: 0 5px 14px rgba(61, 93, 202, 0.2); }
+      .brand small { margin-left: 1px; color: var(--subtle); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; }
+      .topbar-tools { display: flex; align-items: center; justify-content: space-between; min-width: 0; flex: 1; gap: 18px; }
+      .search-wrap { position: relative; width: min(330px, 35vw); }
+      .search-box { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 10px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); color: var(--muted); }
+      .search-box:focus-within { border-color: var(--brand); background: var(--surface); box-shadow: 0 0 0 4px var(--brand-soft); }
+      .search-box svg { flex: 0 0 auto; }
+      .search-box input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; }
+      .search-box input::placeholder { color: var(--subtle); }
+      .key-hint { flex: 0 0 auto; padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--subtle); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; }
+      .search-results { position: absolute; top: calc(100% + 8px); right: 0; left: 0; display: none; overflow: hidden; max-height: 360px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+      .search-results.is-visible { display: block; }
+      .search-result { display: block; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+      .search-result:last-child { border-bottom: 0; }
+      .search-result:hover { background: var(--brand-soft); }
+      .search-result strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.4; }
+      .search-result span { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .search-empty { padding: 12px; color: var(--muted); font-size: 12px; }
+      .topnav { display: flex; align-items: center; gap: 18px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+      .topnav a:hover, .topnav a[aria-current="page"] { color: var(--brand); }
+      .top-actions { display: flex; align-items: center; gap: 9px; }
+      .icon-button, .mobile-menu { display: inline-grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--muted); }
+      .icon-button:hover, .mobile-menu:hover { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+      .theme-icon-sun, :root[data-theme="dark"] .theme-icon-moon { display: none; }
+      :root[data-theme="dark"] .theme-icon-sun { display: block; }
+      .mobile-menu { display: none; }
+      .backdrop { display: none; }
+
+      .shell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--rail-width); min-height: 100vh; padding-top: var(--header-height); }
+      .sidebar { position: sticky; top: var(--header-height); align-self: start; height: calc(100vh - var(--header-height)); overflow-y: auto; padding: 38px 22px 42px 28px; border-right: 1px solid var(--line); }
+      .sidebar-intro { margin: 0 0 30px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+      .sidebar-intro strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 14px; }
+      .nav-group { margin-top: 22px; }
+      .nav-label { display: block; margin-bottom: 7px; color: var(--subtle); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+      .nav-link { display: block; padding: 6px 9px; border-left: 2px solid transparent; border-radius: 0 6px 6px 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .nav-link:hover, .nav-link.active { border-left-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+      .main { min-width: 0; padding: 54px clamp(26px, 5vw, 80px) 88px; }
+      .article { max-width: 930px; margin: 0 auto; }
+      .rail { position: sticky; top: var(--header-height); align-self: start; height: calc(100vh - var(--header-height)); overflow-y: auto; padding: 56px 24px 32px 18px; }
+      .rail-label { display: block; margin-bottom: 10px; color: var(--subtle); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+      .rail a { display: block; padding: 4px 0 4px 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.55; }
+      .rail a:hover, .rail a.active { border-left-color: var(--teal); color: var(--teal); }
+      .breadcrumb { display: flex; align-items: center; gap: 9px; margin-bottom: 26px; color: var(--subtle); font-size: 12px; }
+      .breadcrumb strong { color: var(--muted); font-weight: 650; }
+
+      .hero { position: relative; overflow: hidden; padding: clamp(27px, 4vw, 46px); border-radius: var(--radius-lg); background: var(--surface-ink); color: #f3f7f4; box-shadow: var(--shadow); }
+      .hero::before { position: absolute; inset: 0; background-image: linear-gradient(rgba(151, 181, 174, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(151, 181, 174, 0.08) 1px, transparent 1px); background-size: 26px 26px; content: ""; mask-image: linear-gradient(125deg, black, transparent 72%); }
+      .hero::after { position: absolute; right: -70px; bottom: -105px; width: 260px; height: 260px; border: 1px solid rgba(113, 215, 197, 0.28); border-radius: 50%; box-shadow: 0 0 0 22px rgba(113, 215, 197, 0.06), 0 0 0 45px rgba(113, 215, 197, 0.04); content: ""; }
+      .hero > * { position: relative; z-index: 1; }
+      .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 15px; color: #77d7c4; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; }
+      .eyebrow::before { width: 22px; height: 2px; background: var(--orange); content: ""; }
+      h1, h2, h3, p { margin-top: 0; }
+      .hero h1 { max-width: 720px; margin-bottom: 14px; font-size: clamp(36px, 5vw, 64px); font-weight: 820; letter-spacing: -0.03em; line-height: 1.05; }
+      .hero h1 em { color: #ffbe7d; font-style: normal; }
+      .hero-copy { max-width: 670px; margin-bottom: 25px; color: #c1d0cc; font-size: 16px; line-height: 1.85; }
+      .signal-row { display: flex; flex-wrap: wrap; gap: 8px; }
+      .signal { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid rgba(174, 212, 203, 0.24); border-radius: 6px; background: rgba(19, 38, 42, 0.7); color: #d8e9e4; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+      .signal::before { width: 6px; height: 6px; border-radius: 50%; background: #71d7c5; content: ""; box-shadow: 0 0 0 3px rgba(113, 215, 197, 0.12); }
+
+      .section { margin-top: 58px; scroll-margin-top: 92px; }
+      .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin-bottom: 17px; border-bottom: 1px solid var(--line); }
+      .section-heading h2 { margin-bottom: 9px; font-size: 25px; font-weight: 800; line-height: 1.3; }
+      .section-index { color: var(--orange); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; font-weight: 800; }
+      .section-lead { max-width: 720px; margin-bottom: 22px; color: var(--muted); line-height: 1.85; }
+      .flow { display: grid; grid-template-columns: 1fr 0.7fr 1fr 0.7fr 1fr; align-items: stretch; gap: 8px; margin: 25px 0 0; }
+      .flow-node { min-height: 116px; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-soft); }
+      .flow-node strong { display: block; margin-bottom: 5px; font-size: 13px; }
+      .flow-node span { display: block; color: var(--muted); font-size: 11px; line-height: 1.6; }
+      .flow-node.accent { border-color: color-mix(in srgb, var(--teal) 42%, var(--line)); background: var(--teal-soft); }
+      .flow-mark { display: grid; min-height: 116px; place-items: center; color: var(--orange); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 800; }
+      .intro-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; margin-top: 20px; }
+      .intro-card { min-height: 128px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+      .intro-card .card-kicker { display: block; margin-bottom: 9px; color: var(--teal); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; }
+      .intro-card strong { display: block; margin-bottom: 5px; font-size: 14px; }
+      .intro-card p { margin-bottom: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+      .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 0.72fr); gap: 18px; align-items: start; }
+      .steps { display: grid; gap: 10px; }
+      .step { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+      .step-number { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; background: var(--brand-soft); color: var(--brand); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; font-weight: 800; }
+      .step h3 { margin-bottom: 3px; font-size: 14px; }
+      .step p { margin-bottom: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+      .callout { padding: 16px 17px; border: 1px solid color-mix(in srgb, var(--teal) 28%, var(--line)); border-radius: var(--radius-md); background: var(--teal-soft); }
+      .callout strong { display: block; margin-bottom: 5px; color: var(--teal); font-size: 13px; }
+      .callout p { margin-bottom: 0; color: var(--muted); font-size: 12px; line-height: 1.75; }
+      .callout.warning { border-color: color-mix(in srgb, var(--orange) 35%, var(--line)); background: var(--orange-soft); }
+      .callout.warning strong { color: var(--orange); }
+      .code-card { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: #101920; box-shadow: var(--shadow-soft); }
+      .code-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-bottom: 1px solid #2a3a40; color: #9fb3b1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+      .copy-button { padding: 5px 8px; border: 1px solid #40545a; border-radius: 6px; background: transparent; color: #c8d8d3; font-size: 11px; }
+      .copy-button:hover { border-color: #73d7c5; color: #73d7c5; }
+      pre { overflow-x: auto; margin: 0; padding: 17px; color: #d8ebe5; font-size: 12px; line-height: 1.75; tab-size: 2; white-space: pre-wrap; word-break: break-word; }
+      .code-comment { color: #7fa29d; }
+      .code-key { color: #f3b77d; }
+      .code-string { color: #9fe0c7; }
+      .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+      table { width: 100%; min-width: 640px; border-collapse: collapse; }
+      th, td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      tr:last-child td { border-bottom: 0; }
+      th { background: var(--surface-soft); color: var(--subtle); font-size: 10px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; }
+      td { color: var(--muted); font-size: 12px; line-height: 1.65; }
+      td strong { color: var(--ink); font-size: 13px; }
+      td code { display: inline-block; margin-bottom: 3px; }
+      .tool-group { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 5px; background: var(--teal-soft); color: var(--teal); font-size: 10px; font-weight: 800; }
+      .tool-group.write { background: var(--orange-soft); color: var(--orange); }
+      .figure { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-soft); }
+      .figure img { display: block; width: 100%; height: auto; border-radius: var(--radius-md) var(--radius-md) 0 0; }
+      .figure figcaption { padding: 10px 13px 12px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+      .market-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 16px; align-items: start; }
+      .market-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 18px; }
+      .market-item { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+      .market-item strong { display: block; margin-bottom: 3px; font-size: 13px; }
+      .market-item span { color: var(--muted); font-size: 11px; }
+      .security-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+      .security-card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+      .security-card h3 { margin-bottom: 6px; font-size: 14px; }
+      .security-card p { margin-bottom: 0; color: var(--muted); font-size: 12px; line-height: 1.75; }
+      .security-card.danger { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); background: var(--danger-soft); }
+      details { border-bottom: 1px solid var(--line); }
+      details:first-child { border-top: 1px solid var(--line); }
+      summary { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 2px; cursor: pointer; color: var(--ink); font-size: 13px; font-weight: 700; list-style: none; }
+      summary::-webkit-details-marker { display: none; }
+      summary::after { color: var(--subtle); content: "+"; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 17px; font-weight: 400; }
+      details[open] summary::after { content: "−"; }
+      details p { max-width: 780px; margin: -2px 30px 15px 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+      .footer { display: flex; justify-content: space-between; gap: 18px; margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--subtle); font-size: 12px; }
+      .footer a { color: var(--brand); }
+      .fade-in { animation: rise-in 550ms ease both; }
+      .fade-in.delay-1 { animation-delay: 80ms; }
+      .fade-in.delay-2 { animation-delay: 160ms; }
+      @keyframes rise-in { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: translateY(0); } }
+
+      @media (max-width: 1180px) {
+        :root { --sidebar-width: 226px; --rail-width: 170px; }
+        .topnav { gap: 12px; }
+        .rail { padding-right: 16px; }
+      }
+      @media (max-width: 980px) {
+        .shell { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
+        .rail { display: none; }
+        .topnav { display: none; }
+        .mobile-menu { display: inline-grid; }
+        .sidebar { position: fixed; z-index: 25; top: var(--header-height); bottom: 0; left: 0; width: min(310px, 86vw); height: auto; transform: translateX(-105%); transition: transform 180ms ease; background: var(--surface); box-shadow: var(--shadow); }
+        .nav-open .sidebar { transform: translateX(0); }
+        .nav-open .backdrop { position: fixed; z-index: 20; inset: var(--header-height) 0 0; display: block; background: rgba(10, 18, 22, 0.35); }
+        .shell { display: block; }
+        .main { padding-right: clamp(20px, 6vw, 60px); padding-left: clamp(20px, 6vw, 60px); }
+      }
+      @media (max-width: 680px) {
+        .topbar { padding: 0 16px; }
+        .brand { width: auto; margin-right: auto; }
+        .brand small { display: none; }
+        .topbar-tools { flex: 0 0 auto; gap: 8px; }
+        .search-wrap { width: 40px; }
+        .search-box { width: 40px; padding: 0 11px; }
+        .search-box input { display: block; width: 1px; min-width: 1px; padding: 0; opacity: 0; }
+        .key-hint { display: none; }
+        .search-box:focus-within { position: absolute; right: 0; width: min(280px, 76vw); padding-left: 11px; }
+        .search-box:focus-within input { width: 100%; min-width: 0; opacity: 1; }
+        .main { padding-top: 32px; padding-bottom: 58px; }
+        .breadcrumb { margin-bottom: 18px; }
+        .hero { padding: 25px 21px; border-radius: 16px; }
+        .hero h1 { font-size: 39px; }
+        .hero-copy { font-size: 14px; }
+        .section { margin-top: 45px; }
+        .section-heading h2 { font-size: 22px; }
+        .flow, .intro-grid, .split, .market-grid, .security-grid { grid-template-columns: 1fr; }
+        .flow-mark { min-height: 28px; transform: rotate(90deg); }
+        .market-list { grid-template-columns: 1fr 1fr; }
+        .footer { display: block; }
+        .footer span { display: block; margin: 6px 0; }
+      }
+      @media print {
+        .topbar, .sidebar, .rail, .backdrop, .footer, .copy-button { display: none !important; }
+        .shell { display: block; padding-top: 0; }
+        .main { padding: 0; }
+        .hero { color: #111; background: #eef2ef; box-shadow: none; }
+        .hero::before, .hero::after { display: none; }
+        .hero-copy, .signal { color: #345; }
+        .section { break-inside: avoid; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="lattice-docs.html" aria-label="返回 Lattice 文档站">
+        <img src="../web/public/lattice-icon.svg" alt="Lattice" />
+        <span>格物 Lattice</span>
+        <small>MCP GUIDE</small>
+      </a>
+      <div class="topbar-tools">
+        <div class="search-wrap">
+          <label class="search-box" for="guide-search">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" /><path d="m16 16 4.2 4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+            <input id="guide-search" type="search" placeholder="搜索 MCP 指南" autocomplete="off" />
+            <span class="key-hint">Ctrl K</span>
+          </label>
+          <div class="search-results" id="search-results" aria-live="polite"></div>
+        </div>
+        <nav class="topnav" aria-label="顶部导航">
+          <a href="lattice-docs.html">产品文档</a>
+          <a href="lattice-user-guide.html">使用说明</a>
+          <a href="lattice-mcp-guide.html" aria-current="page">MCP 集成</a>
+          <a href="lattice-download.html">下载</a>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题" aria-pressed="false" title="切换主题">
+            <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.3 15.4A8.5 8.5 0 0 1 8.6 3.7 8.5 8.5 0 1 0 20.3 15.4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
+            <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
+          </button>
+          <a class="icon-button" href="https://github.com/Dawei-star/Lattice" target="_blank" rel="noreferrer" aria-label="在 GitHub 查看 Lattice 项目" title="在 GitHub 查看 Lattice 项目">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.75a9.25 9.25 0 0 0-2.93 18.02c.46.08.63-.2.63-.44v-1.56c-2.56.56-3.1-1.1-3.1-1.1-.42-1.08-1.03-1.37-1.03-1.37-.84-.58.06-.57.06-.57.93.07 1.42.96 1.42.96.83 1.42 2.18 1.01 2.71.77.08-.6.33-1.01.59-1.24-2.04-.23-4.19-1.02-4.19-4.55 0-1.01.36-1.83.95-2.48-.1-.23-.41-1.17.09-2.44 0 0 .77-.25 2.53.95A8.8 8.8 0 0 1 12 8.5c.78 0 1.56.1 2.29.33 1.76-1.2 2.53-.95 2.53-.95.5 1.27.19 2.21.09 2.44.33.29.62.84.62 1.7v2.53c0 .24.17.52.64.43A9.25 9.25 0 0 0 12 2.75Z" fill="currentColor" /></svg>
+          </a>
+          <button class="mobile-menu" id="menu-toggle" type="button" aria-label="打开文档导航" aria-expanded="false" title="打开文档导航">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="backdrop" id="backdrop"></div>
+    <div class="shell" id="top">
+      <aside class="sidebar" id="sidebar" aria-label="MCP 指南导航">
+        <p class="sidebar-intro"><strong>MCP 集成指南</strong>让外部 Agent 在明确边界内读取或维护你的 Lattice 知识库。</p>
+        <div class="nav-group">
+          <span class="nav-label">开始</span>
+          <a class="nav-link active" href="#overview">MCP 是什么</a>
+          <a class="nav-link" href="#in-app">应用内设置</a>
+          <a class="nav-link" href="#quick-start">5 分钟接入</a>
+        </div>
+        <div class="nav-group">
+          <span class="nav-label">能力</span>
+          <a class="nav-link" href="#tools">工具清单</a>
+          <a class="nav-link" href="#writes">开启写入</a>
+          <a class="nav-link" href="#market">插件市场</a>
+        </div>
+        <div class="nav-group">
+          <span class="nav-label">边界</span>
+          <a class="nav-link" href="#security">安全边界</a>
+          <a class="nav-link" href="#troubleshooting">排障</a>
+        </div>
+        <div class="nav-group">
+          <span class="nav-label">相关页面</span>
+          <a class="nav-link" href="lattice-docs.html">产品文档</a>
+          <a class="nav-link" href="lattice-user-guide.html">完整使用说明</a>
+          <a class="nav-link" href="lattice-download.html">下载 Lattice</a>
+        </div>
+      </aside>
+
+      <main class="main">
+        <article class="article">
+          <div class="breadcrumb"><a href="lattice-docs.html">文档</a><span>/</span><strong>MCP 集成指南</strong></div>
+
+          <section class="hero fade-in" id="overview" data-searchable="MCP Model Context Protocol 集成 stdio 外部 Agent 本地知识库">
+            <p class="eyebrow">INTEGRATION / MCP</p>
+            <h1>把你的知识库交给 <em>MCP</em>。</h1>
+            <p class="hero-copy">通过标准的 Model Context Protocol，让 Claude Desktop 等 Agent 在不搬走 Markdown 的前提下搜索、阅读和维护 Lattice。默认只读，写入能力需要你显式打开。</p>
+            <div class="signal-row" aria-label="MCP 特性">
+              <span class="signal">transport: stdio</span>
+              <span class="signal">default: read-only</span>
+              <span class="signal">source: Markdown + SQLite</span>
+            </div>
+          </section>
+
+          <section class="section" id="architecture" data-searchable="工作方式 连接关系 Agent stdio Server Vault SQLite">
+            <div class="section-heading"><h2>先理解这条连接</h2><span class="section-index">01 / MAP</span></div>
+            <p class="section-lead">MCP Server 是一个由客户端拉起的本地 Node 进程。它和 Lattice 使用同一份 SQLite 投影与 Markdown 真源，外部 Agent 不需要再导入一份副本。</p>
+            <div class="flow" aria-label="MCP 数据流">
+              <div class="flow-node"><strong>Agent 客户端</strong><span>Claude Desktop 或其他支持 MCP 的客户端</span></div>
+              <div class="flow-mark" aria-hidden="true">→</div>
+              <div class="flow-node accent"><strong>Lattice MCP Server</strong><span class="mono">server.mjs · stdio</span></div>
+              <div class="flow-mark" aria-hidden="true">→</div>
+              <div class="flow-node"><strong>你的数据</strong><span>DB_FILE + VAULT_DIR，和应用保持一致</span></div>
+            </div>
+            <div class="intro-grid">
+              <article class="intro-card"><span class="card-kicker">01 / LOCAL</span><strong>数据留在本机</strong><p>Server 只读写你配置的工作区，stdio 不需要开放网络端口。</p></article>
+              <article class="intro-card"><span class="card-kicker">02 / SAFE DEFAULT</span><strong>默认只有读取工具</strong><p>搜索、阅读、关系和统计开箱可用；写入工具默认不会注册。</p></article>
+              <article class="intro-card"><span class="card-kicker">03 / AUDITED</span><strong>写入可回溯</strong><p>开启写入后，修改会进入 MCP 审计并保留历史版本，必要时可以恢复。</p></article>
+            </div>
+          </section>
+
+          <section class="section" id="in-app" data-searchable="设置页 MCP Server 应用内设置 复制 JSON 插件市场">
+            <div class="section-heading"><h2>优先从应用内设置开始</h2><span class="section-index">02 / UI</span></div>
+            <p class="section-lead">打开 Lattice 的「设置 → 集成 → MCP Server」。内置 Server 会自动带出当前应用的路径，点「复制 JSON」即可交给 MCP 客户端。</p>
+            <div class="split">
+              <div class="steps">
+                <article class="step"><span class="step-number">01</span><div><h3>确认工具状态</h3><p>读取与写入分组会把“当前可用”和“开启后可用”分开显示，先确认你要给 Agent 的权限。</p></div></article>
+                <article class="step"><span class="step-number">02</span><div><h3>复制配置片段</h3><p>应用生成的 JSON 已包含 <code>server.mjs</code>、<code>DB_FILE</code> 和 <code>VAULT_DIR</code>，不用手抄路径。</p></div></article>
+                <article class="step"><span class="step-number">03</span><div><h3>在客户端重载</h3><p>把片段粘贴到客户端配置后，重启或重载 MCP 连接；返回工具列表就说明握手成功。</p></div></article>
+              </div>
+              <figure class="figure">
+                <img src="../FILES/README.md/lattice-mcp-server.png" alt="Lattice 设置中的 MCP Server 页面" loading="lazy" />
+                <figcaption>设置页会把 Server 路径、数据目录、工具状态和可复制配置放在同一处。</figcaption>
+              </figure>
+            </div>
+          </section>
+
+          <section class="section" id="quick-start" data-searchable="快速开始 Claude Desktop claude_desktop_config.json npm run setup 配置">
+            <div class="section-heading"><h2>5 分钟接入 Claude Desktop</h2><span class="section-index">03 / BOOT</span></div>
+            <p class="section-lead">下面的配置使用 stdio 拉起本地 Server。将路径替换成你机器上的实际位置；如果你从设置页复制 JSON，可以直接跳过手工配置。</p>
+            <div class="split">
+              <div>
+                <div class="callout"><strong>准备条件</strong><p>开发版需要 Node.js ≥ 22.5。首次使用先在仓库根目录运行 <code>npm run setup</code>，它会安装 MCP Server 的依赖。</p></div>
+                <div style="height: 12px"></div>
+                <div class="callout warning"><strong>路径要指向同一份数据</strong><p><code>DB_FILE</code> 和 <code>VAULT_DIR</code> 必须与 Lattice 当前工作区一致。桌面发行版建议直接使用应用设置页生成的值。</p></div>
+              </div>
+              <div class="code-card">
+                <div class="code-card-head"><span>claude_desktop_config.json</span><button class="copy-button" type="button" data-copy="config-readonly">复制 JSON</button></div>
+                <pre id="config-readonly">{
+  <span class="code-key">"mcpServers"</span>: {
+    <span class="code-key">"lattice"</span>: {
+      <span class="code-key">"command"</span>: <span class="code-string">"node"</span>,
+      <span class="code-key">"args"</span>: [<span class="code-string">"D:/path/to/lattice/scripts/mcp-server/server.mjs"</span>],
+      <span class="code-key">"env"</span>: {
+        <span class="code-key">"DB_FILE"</span>: <span class="code-string">"D:/path/to/data/lattice.db"</span>,
+        <span class="code-key">"VAULT_DIR"</span>: <span class="code-string">"D:/path/to/data/vault"</span>
+      }
+    }
+  }
+}</pre>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="tools" data-searchable="工具清单 list_notes search_notes read_note get_note_links list_tags search_by_tag get_vault_statistics list_note_history create_note update_note restore_note_version">
+            <div class="section-heading"><h2>工具清单：先读，再决定要不要写</h2><span class="section-index">04 / TOOLS</span></div>
+            <p class="section-lead">Lattice MCP Server 总共定义 11 个工具。默认注册 8 个读取工具；另外 3 个写入工具只有在显式设置 <code>LATTICE_MCP_ALLOW_WRITES</code> 后才会出现。</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>分组</th><th>工具</th><th>用途</th></tr></thead>
+                <tbody>
+                  <tr><td><span class="tool-group">READ</span></td><td><code>list_notes</code><br /><code>search_notes</code><br /><code>read_note</code></td><td><strong>定位并读取笔记</strong><br />列出最近笔记、全文搜索、按 ID / 标题 / 路径读取 Markdown 全文。</td></tr>
+                  <tr><td><span class="tool-group">READ</span></td><td><code>get_note_links</code><br /><code>list_tags</code><br /><code>search_by_tag</code></td><td><strong>沿知识关系展开</strong><br />查看出链与反向链接、浏览标签、按标签筛选相关笔记。</td></tr>
+                  <tr><td><span class="tool-group">READ</span></td><td><code>get_vault_statistics</code><br /><code>list_note_history</code></td><td><strong>理解规模与历史</strong><br />获取知识库统计与最近更新，查看某篇笔记的历史版本。</td></tr>
+                  <tr><td><span class="tool-group write">WRITE</span></td><td><code>create_note</code><br /><code>update_note</code><br /><code>restore_note_version</code></td><td><strong>维护 Markdown 真源</strong><br />新建、替换 / 追加 / 前插、恢复历史版本。默认关闭，开启前请阅读下一节。</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="section" id="writes" data-searchable="写入 LATTICE_MCP_ALLOW_WRITES true create_note update_note restore_note_version 审计 回滚">
+            <div class="section-heading"><h2>需要时再开启写入</h2><span class="section-index">05 / WRITE</span></div>
+            <p class="section-lead">写入开关是进程级环境变量。它不是“允许某一次操作”的确认框，而是让这三个工具注册到 MCP Server；开启后仍应要求 Agent 在修改前先读取并向你确认。</p>
+            <div class="split">
+              <div class="code-card">
+                <div class="code-card-head"><span>env / opt-in</span><button class="copy-button" type="button" data-copy="config-writes">复制片段</button></div>
+                <pre id="config-writes"><span class="code-key">"env"</span>: {
+  <span class="code-key">"DB_FILE"</span>: <span class="code-string">"D:/path/to/data/lattice.db"</span>,
+  <span class="code-key">"VAULT_DIR"</span>: <span class="code-string">"D:/path/to/data/vault"</span>,
+  <span class="code-key">"LATTICE_MCP_ALLOW_WRITES"</span>: <span class="code-string">"true"</span>
+}</pre>
+              </div>
+              <div class="callout warning"><strong>开启后的四个检查点</strong><p>1. 修改前先 <code>read_note</code>；2. 让 Agent 明确说明要改什么；3. 修改动作会写入 MCP 审计；4. 每次修改保留历史，可用 <code>restore_note_version</code> 回滚。</p></div>
+            </div>
+          </section>
+
+          <section class="section" id="market" data-searchable="插件市场 MCP Server 12 款 Filesystem SQLite Obsidian Fetch Memory Git GitHub Time API Key">
+            <div class="section-heading"><h2>从插件市场扩展外部工具</h2><span class="section-index">06 / MARKET</span></div>
+            <p class="section-lead">设置页的 MCP 插件市场内置 12 款精选 Server。添加动作只会把配置写入本机设置，不会替你偷偷拉起外部进程；需要密钥的条目会保持停用，补齐后再启用。</p>
+            <div class="market-grid">
+              <div>
+                <div class="market-list">
+                  <div class="market-item"><strong>知识库</strong><span>Filesystem · SQLite · Obsidian</span></div>
+                  <div class="market-item"><strong>联网</strong><span>Fetch · Brave Search</span></div>
+                  <div class="market-item"><strong>开发协作</strong><span>Git · GitHub · Puppeteer</span></div>
+                  <div class="market-item"><strong>辅助工具</strong><span>Memory · Time · Everything</span></div>
+                </div>
+                <div style="height: 14px"></div>
+                <div class="callout"><strong>密钥怎么处理</strong><p>详情面板会按环境变量名称拆分输入，例如 <code>BRAVE_API_KEY</code>。密钥只写入本机 MCP 设置，不会出现在这份静态文档里。</p></div>
+              </div>
+              <figure class="figure">
+                <img src="../FILES/README.md/lattice-mcp-market.png" alt="Lattice MCP 插件市场" loading="lazy" />
+                <figcaption>市场卡片支持筛选、搜索、详情、官方文档链接和一键写入配置。</figcaption>
+              </figure>
+            </div>
+          </section>
+
+          <section class="section" id="security" data-searchable="安全边界 本地 stdio 网络端口 Vault 数据 API Key 权限">
+            <div class="section-heading"><h2>安全边界</h2><span class="section-index">07 / GUARDRAILS</span></div>
+            <p class="section-lead">把 MCP 当作一个会接触你知识库的本地进程来管理。权限越大，越应该限定在一个明确的 Vault 和一个明确的 Agent 会话里。</p>
+            <div class="security-grid">
+              <article class="security-card"><h3>只给需要的目录</h3><p><code>VAULT_DIR</code> 指向专用知识库目录，不要为了省事把整个用户目录交给外部工具。</p></article>
+              <article class="security-card"><h3>默认保持只读</h3><p>阅读、整理和检索已经覆盖大多数工作流。只有确实需要自动维护笔记时才打开写入。</p></article>
+              <article class="security-card"><h3>保护外部密钥</h3><p>市场条目的 API Key 只放在客户端环境配置或本机设置，不要把真实密钥提交到仓库或截图。</p></article>
+              <article class="security-card danger"><h3>不要暴露 stdio Server</h3><p>该 Server 设计为本地 stdio 进程，不要把它改造成无认证的公网 HTTP 服务。</p></article>
+            </div>
+          </section>
+
+          <section class="section" id="troubleshooting" data-searchable="排障 无法连接 工具列表 空结果 路径 Node 重启 reload">
+            <div class="section-heading"><h2>排障：从握手到数据逐层确认</h2><span class="section-index">08 / DEBUG</span></div>
+            <details open><summary>客户端看不到 Lattice 工具</summary><p>先确认配置 JSON 的路径没有被转义破坏，<code>command</code> 是可用的 Node，且已运行 <code>npm run setup</code>。修改客户端配置后需要重启或重载 MCP 连接。</p></details>
+            <details><summary>工具能连接，但返回空结果</summary><p>检查 <code>DB_FILE</code> 与 <code>VAULT_DIR</code> 是否指向和 Lattice 相同的数据目录。相对路径会根据启动进程的工作目录解析，优先使用绝对路径。</p></details>
+            <details><summary>写入工具没有出现</summary><p>仅把环境变量写成 <code>"false"</code> 不会开启写入。需要在 MCP Server 的 <code>env</code> 中设置 <code>"LATTICE_MCP_ALLOW_WRITES": "true"</code>，然后重启客户端。</p></details>
+            <details><summary>如何确认连接真的生效</summary><p>让 Agent 先调用 <code>get_vault_statistics</code>，再用 <code>search_notes</code> 查询一条确定存在的标题。这样可以同时验证握手、路径和索引。</p></details>
+          </section>
+
+          <footer class="footer"><span>格物 Lattice · 本地优先的双链笔记知识库</span><span><a href="lattice-docs.html">产品文档</a> · <a href="lattice-user-guide.html">使用说明</a> · <a href="lattice-download.html">下载</a></span></footer>
+        </article>
+      </main>
+
+      <nav class="rail" aria-label="本页目录">
+        <span class="rail-label">本页目录</span>
+        <a href="#overview" class="active">MCP 是什么</a>
+        <a href="#architecture">连接关系</a>
+        <a href="#in-app">应用内设置</a>
+        <a href="#quick-start">5 分钟接入</a>
+        <a href="#tools">工具清单</a>
+        <a href="#writes">开启写入</a>
+        <a href="#market">插件市场</a>
+        <a href="#security">安全边界</a>
+        <a href="#troubleshooting">排障</a>
+      </nav>
+    </div>
+
+    <script>
+      (() => {
+        const root = document.documentElement;
+        const themeToggle = document.querySelector("#theme-toggle");
+        const menuToggle = document.querySelector("#menu-toggle");
+        const sidebar = document.querySelector("#sidebar");
+        const backdrop = document.querySelector("#backdrop");
+        const searchInput = document.querySelector("#guide-search");
+        const searchResults = document.querySelector("#search-results");
+        const navLinks = [...document.querySelectorAll(".nav-link")];
+        const railLinks = [...document.querySelectorAll(".rail a")];
+        const searchable = [...document.querySelectorAll("[data-searchable]")];
+        const sections = [...document.querySelectorAll(".section, .hero")];
+
+        const savedTheme = localStorage.getItem("lattice-doc-theme");
+        if (savedTheme === "dark" || (!savedTheme && matchMedia("(prefers-color-scheme: dark)").matches)) root.dataset.theme = "dark";
+        themeToggle?.setAttribute("aria-pressed", String(root.dataset.theme === "dark"));
+        themeToggle?.addEventListener("click", () => {
+          const dark = root.dataset.theme !== "dark";
+          root.dataset.theme = dark ? "dark" : "light";
+          localStorage.setItem("lattice-doc-theme", dark ? "dark" : "light");
+          themeToggle.setAttribute("aria-pressed", String(dark));
+        });
+
+        const closeMenu = () => { document.body.classList.remove("nav-open"); menuToggle?.setAttribute("aria-expanded", "false"); };
+        menuToggle?.addEventListener("click", () => { const open = document.body.classList.toggle("nav-open"); menuToggle.setAttribute("aria-expanded", String(open)); });
+        backdrop?.addEventListener("click", closeMenu);
+        sidebar?.addEventListener("click", (event) => { if (event.target.closest("a")) closeMenu(); });
+
+        const renderSearch = (query) => {
+          const value = query.trim().toLowerCase();
+          if (!value) { searchResults.classList.remove("is-visible"); searchResults.innerHTML = ""; return; }
+          const matches = searchable.filter((section) => section.dataset.searchable.toLowerCase().includes(value)).slice(0, 8);
+          searchResults.innerHTML = matches.length
+            ? matches.map((section) => `<a class="search-result" href="#${section.id}"><strong>${section.querySelector("h1, h2")?.textContent ?? section.id}</strong><span>${section.dataset.searchable.slice(0, 62)}${section.dataset.searchable.length > 62 ? "…" : ""}</span></a>`).join("")
+            : '<div class="search-empty">没有找到匹配的章节</div>';
+          searchResults.classList.add("is-visible");
+        };
+        searchInput?.addEventListener("input", (event) => renderSearch(event.target.value));
+        searchInput?.addEventListener("keydown", (event) => { if (event.key === "Escape") { searchInput.value = ""; renderSearch(""); searchInput.blur(); } });
+        searchResults?.addEventListener("click", () => { searchInput.value = ""; renderSearch(""); });
+        document.addEventListener("click", (event) => { if (!event.target.closest(".search-wrap")) renderSearch(""); });
+        document.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); searchInput?.focus(); searchInput?.select(); } });
+
+        const copyText = async (button, target) => {
+          const text = target.innerText;
+          try { await navigator.clipboard.writeText(text); } catch { const area = document.createElement("textarea"); area.value = text; document.body.append(area); area.select(); document.execCommand("copy"); area.remove(); }
+          const original = button.textContent;
+          button.textContent = "已复制";
+          setTimeout(() => { button.textContent = original; }, 1400);
+        };
+        document.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", () => copyText(button, document.querySelector(`#${button.dataset.copy}`))));
+
+        const activate = (id) => {
+          navLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
+          railLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
+        };
+        const observer = new IntersectionObserver((entries) => {
+          const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+          if (visible) activate(visible.target.id);
+        }, { rootMargin: "-18% 0px -65% 0px", threshold: [0.1, 0.4, 0.8] });
+        sections.forEach((section) => observer.observe(section));
+      })();
+    </script>
+  </body>
+</html>
