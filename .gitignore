@@ -25,14 +25,10 @@ desktop/build/*
 !desktop/build/icon.ico
 !desktop/build/verify-package.cjs
 !desktop/build/make-icon.py
-# Keep the runnable CLI, smoke tests and MCP server source in version control.
-# Ignore only local script artifacts and dependencies.
-scripts/*
-!scripts/*.mjs
-!scripts/mcp-server/
-!scripts/mcp-server/*.mjs
-!scripts/mcp-server/package.json
-!scripts/mcp-server/package-lock.json
+# 本地脚本与资产目录（远程已移除，仅本机开发保留，不入库）
+scripts/
+.agents/
+promo-video/
 packaging/
 downloads/
 
