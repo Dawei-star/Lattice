@@ -5,6 +5,8 @@ import { OPERATION_PLAN_VERSION, auditAction, createOperationPlan } from './oper
 
 const INTERNAL_DIR = '.fc';
 const MAX_READ_BYTES = 2 * 1024 * 1024;
+// read 整量读入以做字符级切片，输入体积也要有上限，防止大文件把进程吃爆
+const MAX_READ_INPUT_BYTES = 64 * 1024 * 1024;
 const MAX_GREP_BYTES = 4 * 1024 * 1024;
 const MUTATIONS = new Set(['create', 'write', 'append', 'edit', 'copy', 'move', 'delete', 'mkdir']);
 
@@ -21,6 +23,12 @@ export class FileStore {
     const safePath = normalizeRelativePath(relativePath);
     const filePath = this.resolve(safePath);
     assertRegularFile(filePath, safePath);
+    // offset/limit 按「字符」切片（对中文/emoji 安全），必须整量解码才能定位；
+    // 为避免误读大文件（视频/压缩包）直接 OOM，超过上限的文件明确拒绝
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_READ_INPUT_BYTES) {
+      throw new Error(`File too large for read (${stat.size} bytes, limit ${MAX_READ_INPUT_BYTES}): ${safePath}`);
+    }
     const raw = fs.readFileSync(filePath);
     const start = Math.max(Number(offset) || 0, 0);
     const max = Math.min(Math.max(Number(limit) || MAX_READ_BYTES, 1), MAX_READ_BYTES);
@@ -578,7 +586,18 @@ function fileStat(relativePath, filePath) {
   const stat = fs.lstatSync(filePath);
   if (stat.isSymbolicLink()) throw new Error(`Symbolic links are not supported: ${relativePath}`);
   if (stat.isDirectory()) return { path: relativePath, exists: true, type: 'directory', modifiedAt: stat.mtime.toISOString() };
-  if (stat.isFile()) return { path: relativePath, exists: true, type: 'file', size: stat.size, modifiedAt: stat.mtime.toISOString(), sha256: sha256(fs.readFileSync(filePath)) };
+  if (stat.isFile()) {
+    // sha256 需要全量读入；超大文件（视频/压缩包）跳过哈希而不是 OOM
+    const oversized = stat.size > MAX_READ_INPUT_BYTES;
+    return {
+      path: relativePath,
+      exists: true,
+      type: 'file',
+      size: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      ...(oversized ? { sha256: null, sha256Skipped: 'file too large to hash' } : { sha256: sha256(fs.readFileSync(filePath)) }),
+    };
+  }
   return { path: relativePath, exists: true, type: 'other', modifiedAt: stat.mtime.toISOString() };
 }
 
@@ -667,6 +686,10 @@ function replaceFile(sourcePath, targetPath) {
     fs.renameSync(sourcePath, targetPath);
   } catch (error) {
     if (!['EEXIST', 'EPERM', 'ENOTEMPTY'].includes(error?.code) || !fs.existsSync(targetPath)) throw error;
+    // Windows 对「目标已存在」的 rename 会抛 EPERM/EEXIST：回退为 rm+rename。
+    // 已知代价：两步之间存在目标短暂缺失的窗口，进程恰在此刻崩溃会丢目标内容；
+    // 可接受——mutate 路径先有 trash 快照可 undo，直接调 FileStore 的写路径
+    // 也遵循同一取舍（项目不用 copyFile+rename 组合是因为它不保留原子覆盖语义）。
     fs.rmSync(targetPath, { force: true });
     fs.renameSync(sourcePath, targetPath);
   }

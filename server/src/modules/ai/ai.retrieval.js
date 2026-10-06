@@ -22,20 +22,47 @@ const CHUNK_EXCERPT_CHARS = 700;
 const WHOLE_NOTE_MAX_WORDS = 2000;
 const MAX_KEYWORD_NOTES = 8;
 
+// ── 查询向量 LRU 缓存 ────────────────────────────────────────────────
+// 同模型同文本的 embedding 是确定性的，与索引状态无关，缓存天然安全。
+// 重复提问 / 重新生成时省掉一次 200-800ms 的上游 RTT（检索段最大可变成本）。
+const QUERY_VECTOR_CACHE_MAX = 200;
+const queryVectorCache = new Map(); // `${model}:${规范化问题}` → Float32Array
+
+async function embedQuery(query) {
+  const model = currentEmbeddingModel() ?? '';
+  const key = `${model}:${String(query).trim().toLowerCase()}`;
+  const cached = queryVectorCache.get(key);
+  if (cached) {
+    queryVectorCache.delete(key); // 触碰，保持 LRU 语义
+    queryVectorCache.set(key, cached);
+    return cached;
+  }
+  const [queryVector] = await embedTexts([query], { priority: 'chat' });
+  if (queryVector) {
+    if (queryVectorCache.size >= QUERY_VECTOR_CACHE_MAX) {
+      queryVectorCache.delete(queryVectorCache.keys().next().value);
+    }
+    queryVectorCache.set(key, queryVector);
+  }
+  return queryVector;
+}
+
 /**
  * 混合检索。返回 { blocks, debug }；语义路不可用（未配置/未索引）时自动退化为纯关键词。
  * @returns {Promise<{ blocks: Array<{key,noteId,title,filePath,anchor,excerpt}>, debug: object }>}
  */
-export async function retrieveContext(query, { excludeNoteId = null } = {}) {
-  const keywordBlocks = keywordChannel(query, { excludeNoteId });
+export async function retrieveContext(query, { excludeNoteId = null, noteIds = null } = {}) {
+  const allowedNoteIds = Array.isArray(noteIds) ? new Set(noteIds.map(String)) : null;
+  const keywordBlocks = keywordChannel(query, { excludeNoteId, noteIds: allowedNoteIds });
   let semanticBlocks = [];
   let semanticError = null;
 
   try {
-    const [queryVector] = await embedTexts([query]);
+    const queryVector = await embedQuery(query);
     if (queryVector) {
       const state = currentEmbeddingModel();
       semanticBlocks = searchVectors(queryVector, { limit: MAX_CONTEXT_BLOCKS * 2, model: state, excludeNoteId })
+        .filter((hit) => !allowedNoteIds || allowedNoteIds.has(String(hit.noteId)))
         .map((hit) => ({
           key: `vec:${hit.chunkId}`,
           noteId: hit.noteId,
@@ -50,7 +77,7 @@ export async function retrieveContext(query, { excludeNoteId = null } = {}) {
   }
 
   const merged = fuse(keywordBlocks, semanticBlocks);
-  const blocks = finalizeBlocks(merged, { excludeNoteId });
+  const blocks = finalizeBlocks(merged, { excludeNoteId, noteIds: allowedNoteIds });
   return {
     blocks,
     debug: {
@@ -69,7 +96,7 @@ function currentEmbeddingModel() {
 }
 
 /** 关键词路：FTS 命中笔记 → 取这些笔记的分块（无分块时退回笔记正文摘要） */
-function keywordChannel(query, { excludeNoteId }) {
+function keywordChannel(query, { excludeNoteId, noteIds = null }) {
   let hits = [];
   try {
     hits = searchService.search(query, MAX_KEYWORD_NOTES).items ?? [];
@@ -81,6 +108,7 @@ function keywordChannel(query, { excludeNoteId }) {
   const db = getDb();
   for (const hit of hits) {
     if (excludeNoteId && hit.id === excludeNoteId) continue;
+    if (noteIds && !noteIds.has(String(hit.id))) continue;
     const note = db.prepare('SELECT id, title, file_path, content, word_count FROM notes WHERE id = ?').get(hit.id);
     if (!note) continue;
     const chunks = db.prepare(
@@ -151,16 +179,18 @@ function fuse(keywordBlocks, semanticBlocks) {
 }
 
 /** 截取前 N 块；小笔记直接升级为整文注入（全文逃生门） */
-function finalizeBlocks(merged, { excludeNoteId }) {
+function finalizeBlocks(merged, { excludeNoteId, noteIds = null }) {
   const blocks = [];
   const seenNotes = new Set();
   const db = getDb();
   for (const block of merged) {
     if (blocks.length >= MAX_CONTEXT_BLOCKS) break;
-    if (seenNotes.has(block.noteId) && seenNotes.size >= 3 && blocks.length >= 3) {
-      // 同一篇笔记的多块命中：保留第一块即可，把名额让给别的笔记
+    if (seenNotes.has(block.noteId)) {
+      // 同一篇笔记的多块命中：第一块之后的直接跳过，把名额让给别的笔记。
+      // 旧条件（size>=3 且 blocks>=3）会让前 3 个名额被同一篇笔记挤占
       continue;
     }
+    if (noteIds && !noteIds.has(String(block.noteId))) continue;
     const note = db.prepare('SELECT id, title, file_path, content, word_count FROM notes WHERE id = ?').get(block.noteId);
     if (!note) continue;
     const wholeNote = note.word_count > 0 && note.word_count <= WHOLE_NOTE_MAX_WORDS;

@@ -1,0 +1,11 @@
+{
+  "id": "inbox-triage",
+  "version": "1.0.0",
+  "name": "Inbox 内容分流",
+  "description": "读取待整理 Inbox，判断其最可能的项目归属并说明依据。",
+  "triggers": ["整理 Inbox", "归档收集内容", "判断项目归属"],
+  "tools": ["read", "search"],
+  "permissions": ["read"],
+  "inputSchema": { "type": "object", "required": ["inboxFiles", "folders"] },
+  "outputSchema": { "type": "object", "required": ["decisions", "uncertain"] }
+}

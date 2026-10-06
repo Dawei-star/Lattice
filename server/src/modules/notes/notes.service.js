@@ -94,10 +94,54 @@ function writeMarkdown(note) {
   });
 }
 
+// properties 的三层读取：① contentHash 版本化的进程内缓存（零成本）；
+// ② 投影列 properties_json（随投影落库，进程重启后仍然可用）；③ 回读磁盘
+// 解析并惰性回填到投影列。磁盘始终是真源：frontmatter 变化必然改变
+// content_hash，投影更新会连带动 properties_json。
+const propertiesCache = new Map();
+const PROPERTIES_CACHE_LIMIT = 10_000;
+
 function readProperties(note) {
-  const raw = note?.filePath ? vault.readRawSync(note.filePath) : null;
-  if (raw === null) return {};
-  return parseMarkdownDocument(raw, note.filePath).properties ?? {};
+  const key = note?.id && note?.contentHash ? `${note.id}:${note.contentHash}` : null;
+  if (key) {
+    const cached = propertiesCache.get(key);
+    if (cached) return cached;
+  }
+
+  let properties = null;
+  if (note?.propertiesJson != null) {
+    try {
+      const parsed = JSON.parse(note.propertiesJson);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) properties = parsed;
+    } catch {
+      // 投影列损坏时回退磁盘解析
+    }
+  }
+
+  if (properties === null) {
+    const raw = note?.filePath ? vault.readRawSync(note.filePath) : null;
+    properties = raw === null ? {} : parseMarkdownDocument(raw, note.filePath).properties ?? {};
+    // 存量行的惰性回填：只回填带版本键（id + contentHash）的行，回填后
+    // 该行不再触发读盘
+    if (note?.id && note?.contentHash) {
+      try {
+        repository.backfillPropertiesJson(note.id, JSON.stringify(properties));
+      } catch {
+        // 回填失败只损失性能：下次读取会再试
+      }
+    }
+  }
+
+  if (key) {
+    if (propertiesCache.size >= PROPERTIES_CACHE_LIMIT) propertiesCache.clear();
+    propertiesCache.set(key, properties);
+  }
+  return properties;
+}
+
+/** 供 search 等模块复用同一份读取链路，避免各处重复读盘解析 frontmatter。 */
+export function readNoteProperties(note) {
+  return readProperties(note);
 }
 
 function normalizeProperties(properties) {
@@ -144,6 +188,7 @@ export function create({ id, title, content = '', folderId = null, properties = 
         filePath,
         wordCount: computeWordCount(content),
         contentHash: hashDocument(draft),
+        propertiesJson: JSON.stringify(normalizeProperties(properties)),
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -275,6 +320,7 @@ export function update(id, patch) {
         isPinned: nextPinned,
         wordCount: nextNote.wordCount,
         contentHash: hashDocument({ ...nextNote, filePath: nextFilePath }),
+        propertiesJson: JSON.stringify(normalizeProperties(nextProperties)),
         updatedAt,
       });
       if (contentChanged || propertiesChanged) {
@@ -282,6 +328,11 @@ export function update(id, patch) {
       }
       if (contentChanged) {
         linksService.rebuildForNote(id, nextContent);
+      }
+      // 删光正文标签后 0 引用的标签要同步清理：只靠 titleChanged 清会与
+      // vault 事件路径（sync.js）的行为不一致，标签列表出现幽灵标签
+      if (contentChanged || propertiesChanged) {
+        tagsService.pruneOrphans();
       }
       if (titleChanged) {
         // 旧标题的链接先按文本重新解析归属（与外部编辑改名路径一致），再认领新标题

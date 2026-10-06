@@ -35,14 +35,17 @@ export function getById(id) {
 
 export function create({ name, parentId = null, sortOrder = 0 }) {
   if (parentId) getById(parentId);
-  if (repository.findByNameAndParent(name, parentId)) {
-    throw new ConflictError(`同级下已存在名为「${name}」的目录`);
+  // 与 getPath 的 sanitizeFilePart 保持一致：磁盘目录名会经过清洗，若入库用
+  // 原始名，`a?b` 与 `a_b` 两个目录会映射到同一个磁盘目录，查重也随之失真
+  const safeName = sanitizeFilePart(name, '未命名目录');
+  if (repository.findByNameAndParent(safeName, parentId)) {
+    throw new ConflictError(`同级下已存在名为「${safeName}」的目录`);
   }
 
   const timestamp = nowIso();
   const folder = repository.insert({
     id: randomUUID(),
-    name,
+    name: safeName,
     parentId,
     sortOrder,
     createdAt: timestamp,
@@ -55,7 +58,7 @@ export function create({ name, parentId = null, sortOrder = 0 }) {
 export function update(id, patch) {
   const current = getById(id);
   const oldPath = getPath(current);
-  const name = patch.name ?? current.name;
+  const name = patch.name === undefined ? current.name : sanitizeFilePart(patch.name, '未命名目录');
   const parentId = patch.parentId === undefined ? current.parentId : patch.parentId;
   const sortOrder = patch.sortOrder ?? current.sortOrder;
 
@@ -151,7 +154,14 @@ export function remove(id) {
       throw error;
     }
 
-    vault.removeDirectorySync(oldPath);
+    // 此时文件已全部搬出、事务也已提交：目录里最多剩空子目录。删除失败
+    // （空目录被杀软/网盘占用）若继续抛错，客户端会收到 500 但重试却报
+    // 「目录不存在」——降级为非致命，残留空目录交给 resumeWatcher 的收敛兜底
+    try {
+      vault.removeDirectorySync(oldPath);
+    } catch {
+      // 以磁盘为准的下一次 reconcile 会清掉这行投影
+    }
     return { deletedFolderCount: 1, affectedNoteCount: pathChanges.length };
   } finally {
     resumeWatcher();

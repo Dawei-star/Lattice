@@ -7,6 +7,7 @@ import { closeDatabase, openDatabase } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
 import { maybeRunScheduledDigest } from './modules/ai/ai.digest.js';
 import { warnIfPlaintextKeys } from './modules/ai/ai.settings.js';
+import { closeAllMcpConnections } from './modules/ai/ai.mcp.js';
 import { logger } from './lib/logger.js';
 import { recoverJobs } from './lib/jobs.js';
 import { resolveVaultDir } from './vault/config.js';
@@ -101,6 +102,12 @@ function installShutdownHandlers(server) {
 
     // 先关掉 SSE 长连接，否则 server.close 会一直等在途请求、吃满 10 秒兜底
     closeVaultEventClients();
+
+    // 用户配置的 MCP Server 是这里拉起的子进程：不显式关闭的话，它们只能靠
+    // 「管道断开后对方自觉退出」，感知不到 stdin 结束的就成了孤儿进程
+    void closeAllMcpConnections().catch((error) => {
+      logger.warn('shutdown_mcp_close_error', { err: error });
+    });
 
     // 停止接收新连接，等在途请求处理完
     server.close((error) => {

@@ -40,6 +40,10 @@ const schema = z
     // 默认拒绝指向内网/回环地址的 AI endpoint（SSRF 防护）。
     // 自建本地模型（Ollama 等）的用户可显式开启；test 环境始终放行（mock 上游在 127.0.0.1）。
     AI_ALLOW_PRIVATE_ENDPOINTS: booleanish.default('false'),
+    // 向量常驻内存缓存：检索免去每次全表 BLOB 读取与重复反序列化；索引写入会自动失效。off 回退旧行为
+    AI_VECTOR_CACHE: booleanish.default('true'),
+    // 上游 429/5xx/建连失败自动重试次数（流式首包之后不重试）；0 = 关闭
+    AI_RETRY_MAX: z.coerce.number().int().min(0).max(3).default(1),
   })
   .superRefine((value, ctx) => {
     if (value.NODE_ENV === 'production' && value.CORS_ORIGINS.split(',').some((o) => o.trim() === '*')) {
@@ -96,6 +100,10 @@ export const config = Object.freeze({
   aiAccessRole: env.AI_ACCESS_ROLE,
   aiSettingsEncryptionKey: env.AI_SETTINGS_ENCRYPTION_KEY ?? '',
   aiChatTimeoutMs: env.AI_CHAT_TIMEOUT_MS,
+  /** 向量常驻内存缓存开关（索引写入自动失效；off 回退全表扫描） */
+  aiVectorCache: env.AI_VECTOR_CACHE,
+  /** 上游瞬时失败自动重试次数（流式首包后失效） */
+  aiRetryMax: env.AI_RETRY_MAX,
   /** 前端构建产物目录，存在时由后端一并托管（单进程生产模式） */
   webDistDir: env.WEB_DIST_DIR
     ? path.resolve(env.WEB_DIST_DIR)

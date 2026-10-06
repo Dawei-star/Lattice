@@ -2,9 +2,9 @@
 
 > Language: [中文](./README.zh-CN.md) | [English](./README.en.md)
 
-A **local-first** backlinking knowledge base inspired by the core experience of Obsidian. Choose a local Vault folder, save notes as Markdown files, and use SQLite only as a rebuildable index. No network connection is required by default; after external models are configured, only AI conversations are sent to the corresponding service according to the configuration.
+A **local-first Windows desktop knowledge base** for Markdown notes, inspired by the core experience of Obsidian. Lattice provides bidirectional links, full-text search, graph view, Canvas boards, an optional AI assistant, and an MCP Server. Choose a local Vault folder, save notes as Markdown files, and use SQLite only as a rebuildable index. No network connection is required by default; after external models are configured, only AI conversations are sent to the corresponding service according to the configuration.
 
-All data stays on your own machine. No registration or network connection is required.
+All data stays on your own machine. No registration is required, and the app works offline when external models are not configured.
 
 ---
 

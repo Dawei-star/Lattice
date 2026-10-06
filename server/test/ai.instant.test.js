@@ -48,6 +48,9 @@ test('recent-notes question answers instantly without calling the model', async 
 
     assert.equal(upstream.calls, 0, '快路径不应调用模型');
     assert.equal(result.meta.provider, 'local-instant');
+    assert.ok(Array.isArray(result.meta.progress));
+    assert.ok(result.meta.progress.length >= 3);
+    assert.ok(result.meta.progress.every((step) => step.status === 'completed'));
     assert.equal(result.references.length, 2);
     assert.equal(result.references[0].id, 'b', '应按更新时间倒序');
     assert.match(result.references[0].excerpt, /更新于/);

@@ -97,7 +97,8 @@ export async function applyVaultChange(adapter, relativePath) {
   // 语义索引跟进（内部自带保护，失败不影响投影）
   scheduleNoteIndex(note.id, { contentHash });
 
-  return { file: safePath, action: known ? 'updated' : 'added' };
+  // id 必须随事件返回：前端靠它把变更匹配到当前打开的笔记（外部修改提醒）
+  return { file: safePath, id: note.id, action: known ? 'updated' : 'added' };
 }
 
 /**
@@ -147,7 +148,12 @@ export async function reconcileVault(adapter, { mode = 'full' } = {}) {
     const ownsId = row?.id === note.id;
     const clash = ownsId ? null : db.prepare('SELECT file_path FROM notes WHERE id = ?').get(note.id);
     const clashOnDisk = clash && clash.file_path && clash.file_path !== relativePath && adapter.existsSync(clash.file_path);
-    if (clashOnDisk || (!ownsId && seenIds.has(note.id))) {
+    // id 已登记但其旧文件在盘上消失 → 是「停机期间文件被移动/改名」而非复制：
+    // 保留原 id 就地更新 file_path，否则会换新 id 并级联删掉指向它的全部反链
+    // （watcher 运行期由事件成对到达遮蔽此问题，停机窗口/漏报时靠这里兜底）。
+    const isMove = Boolean(clash) && !clashOnDisk;
+    const idTaken = !ownsId && !isMove && seenIds.has(note.id);
+    if (clashOnDisk || idTaken) {
       note = { ...note, id: randomUUID() };
       nextRaw = serializeMarkdownDocument({ ...note, filePath: relativePath });
       nextHash = hashRaw(nextRaw);
@@ -209,7 +215,7 @@ function upsertProjection(note, contentHash) {
     db.prepare(
       `UPDATE notes
           SET title = ?, content = ?, folder_id = ?, file_path = ?, is_pinned = ?,
-              word_count = ?, content_hash = ?, updated_at = ?
+              word_count = ?, content_hash = ?, properties_json = ?, updated_at = ?
         WHERE id = ?`,
     ).run(
       note.title,
@@ -219,6 +225,7 @@ function upsertProjection(note, contentHash) {
       note.isPinned ? 1 : 0,
       wordCount,
       contentHash,
+      JSON.stringify(note.properties ?? {}),
       note.updatedAt ?? timestamp,
       note.id,
     );
@@ -228,8 +235,8 @@ function upsertProjection(note, contentHash) {
     }
   } else {
     db.prepare(
-      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, content_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, content_hash, properties_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       note.id,
       note.title,
@@ -239,6 +246,7 @@ function upsertProjection(note, contentHash) {
       note.isPinned ? 1 : 0,
       wordCount,
       contentHash,
+      JSON.stringify(note.properties ?? {}),
       note.createdAt ?? timestamp,
       note.updatedAt ?? timestamp,
     );
@@ -335,7 +343,9 @@ function pruneEmptyFolderChain(adapter, folderPath) {
   for (let end = segments.length; end >= 1; end -= 1) {
     const candidate = segments.slice(0, end).join('/');
     const id = lookupFolderPath(candidate);
-    if (!id) return;
+    // 某一级在投影里查不到时继续向上判断：父级是否为空与这一级无关，
+    // 直接放弃会留下幽灵父目录（全量 reconcile 虽可兜底，单文件路径别指望它）
+    if (!id) continue;
     const noteCount = db.prepare('SELECT COUNT(*) AS c FROM notes WHERE folder_id = ?').get(id).c;
     const childCount = db.prepare('SELECT COUNT(*) AS c FROM folders WHERE parent_id = ?').get(id).c;
     if (noteCount > 0 || childCount > 0) return;

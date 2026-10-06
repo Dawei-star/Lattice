@@ -114,6 +114,9 @@ function pushToServer(settings) {
             apiKey: provider.apiKey,
             authHeader: provider.authHeader,
             enabled: provider.enabled !== false,
+            ...(provider.temperature !== undefined ? { temperature: provider.temperature } : {}),
+            ...(provider.maxTokens !== undefined ? { maxTokens: provider.maxTokens } : {}),
+            ...(provider.contextWindowTokens !== undefined ? { contextWindowTokens: provider.contextWindowTokens } : {}),
           })),
         activeProviderId: settings.activeProviderId,
         embedding: settings.embedding?.endpoint && settings.embedding?.apiKey && settings.embedding?.model
@@ -208,6 +211,12 @@ function normalizeProvider(value) {
     enabled: value.enabled !== false,
     // 只有通过「连通性测试」的配置才允许标记为 verified；界面据此区分「已配置」和「已连接」
     verified: value.verified === true,
+    // 高级参数（缺省 undefined = 沿用服务端默认）；随配置一并同步到服务端
+    ...(Number.isFinite(Number(value.temperature)) ? { temperature: Math.min(Math.max(Number(value.temperature), 0), 2) } : {}),
+    ...(Number.isFinite(Number(value.maxTokens)) && Number(value.maxTokens) >= 1 ? { maxTokens: Math.floor(Number(value.maxTokens)) } : {}),
+    ...(Number.isFinite(Number(value.contextWindowTokens)) && Number(value.contextWindowTokens) >= 8_000
+      ? { contextWindowTokens: Math.min(Math.floor(Number(value.contextWindowTokens)), 1_000_000) }
+      : {}),
   };
 }
 

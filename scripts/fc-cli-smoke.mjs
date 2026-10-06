@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { execFile, spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,6 +56,31 @@ async function runCli(args) {
 
 function withRoot(...args) {
   return ['--root', root, ...args];
+}
+
+/**
+ * 异步跑 CLI 并把 `input` 写进 stdin（`shell` 用例需要喂多行脚本）。
+ *
+ * ⚠️ **不能用 `spawnSync`**：本机（WorkBuddy 宿主）对**任何**二进制调同步子进程 API 都会
+ * 返回 `error.code === 'EBUSY'` / `status === null`，于是 `assert.equal(result.status, 0)`
+ * 报 `null !== 0`，看起来像产品回归、实际是环境不支持（`fc unit` 全绿而只有这两条红）。
+ * promisify 后的 `execFile` 又没有 `input` 选项，所以这里用 `spawn` 手写收流。
+ */
+function runCliWithInput(args, input) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd: projectRoot,
+      env: process.env,
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => resolve({ status: 1, stdout, stderr: `${stderr}${error.message}` }));
+    child.on('close', (code) => resolve({ status: Number.isInteger(code) ? code : 1, stdout, stderr }));
+    child.stdin.end(input);
+  });
 }
 
 function expectSuccess(result, label) {
@@ -324,7 +349,7 @@ async function main() {
         '/exit',
         'create notes/after-exit.md --content "never" --yes',
       ].join('\n');
-      const result = spawnSync(process.execPath, [cliPath, '--root', root, 'shell'], { input: script, encoding: 'utf8', windowsHide: true });
+      const result = await runCliWithInput(['--root', root, 'shell'], script);
       assert.equal(result.status, 0, result.stderr);
 
       const events = result.stdout.trim().split(/\r?\n/).map(parseJson).filter(Boolean);
@@ -342,11 +367,10 @@ async function main() {
     });
 
     await check('shell honours readonly mode', async () => {
-      const result = spawnSync(process.execPath, [cliPath, '--root', root, '--mode', 'readonly', 'shell'], {
-        input: 'create notes/blocked-in-shell.md --content no --yes\n/exit\n',
-        encoding: 'utf8',
-        windowsHide: true,
-      });
+      const result = await runCliWithInput(
+        ['--root', root, '--mode', 'readonly', 'shell'],
+        'create notes/blocked-in-shell.md --content no --yes\n/exit\n',
+      );
       assert.equal(result.status, 0, result.stderr);
       const errorLine = result.stderr.trim().split(/\r?\n/).map(parseJson).filter(Boolean).at(-1);
       assert.equal(errorLine.error.code, 'FC_READ_ONLY');

@@ -33,6 +33,7 @@ jobs:
           cp -R web/public/. _site/web/public/
           cp -R FILES/. _site/FILES/
           cp index.html _site/index.html
+          cp robots.txt sitemap.xml _site/
           touch _site/.nojekyll
 
       - name: Configure Pages

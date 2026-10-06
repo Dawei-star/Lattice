@@ -68,3 +68,13 @@ for (const child of children) {
 
 process.on('SIGINT', () => shutdown());
 process.on('SIGTERM', () => shutdown());
+// 编排器自身崩溃时也要走 treeKill：否则 server(5177)/vite(5173) 两个子进程
+// 失去父进程后继续监听端口，下次启动直接端口冲突
+process.on('uncaughtException', (error) => {
+  console.error(`[dev] uncaught exception: ${error?.stack ?? error}`);
+  shutdown(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error(`[dev] unhandled rejection: ${reason?.stack ?? reason}`);
+  shutdown(1);
+});

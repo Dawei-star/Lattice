@@ -38,6 +38,30 @@ async function listenScriptedUpstream(script) {
   };
 }
 
+async function listenContextLengthUpstream() {
+  const bodies = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      res.setHeader('Content-Type', 'application/json');
+      if (bodies.length === 1) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: { message: 'maximum context length exceeded' } }));
+        return;
+      }
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: '收到', suggestions: [], references: [], actions: [] }) } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    bodies,
+    endpoint: 'http://127.0.0.1:' + server.address().port + '/v1/chat/completions',
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
 const providerFor = (upstream) => ({
   endpoint: upstream.endpoint,
   apiKey: placeholderKey('rounds'),
@@ -69,6 +93,59 @@ test('chat sends conversation history and active note content to the provider', 
     assert.equal(upstream.bodies[0].messages.at(-1).content, '继续');
     assert.ok(result.meta.latencyMs >= 0);
     assert.equal(result.meta.rounds, 1);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('chat fills the configured context budget instead of stopping at twelve messages', async () => {
+  const upstream = await listenScriptedUpstream([
+    () => JSON.stringify({ reply: '收到', suggestions: [], references: [], actions: [] }),
+  ]);
+  const history = Array.from({ length: 80 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `turn-${index + 1} ` + 'x'.repeat(500),
+  }));
+  try {
+    const result = await chat({
+      message: '继续',
+      context: { files: [], folders: [] },
+      history,
+      provider: { ...providerFor(upstream), contextWindowTokens: 10_000, maxTokens: 100 },
+    });
+
+    const messages = upstream.bodies[0].messages;
+    const includedHistory = messages.slice(1, -1);
+    assert.ok(includedHistory.length > 12, 'configured context should include more than twelve messages');
+    assert.ok(includedHistory.at(-1).content.includes('turn-80'));
+    assert.ok(!includedHistory.some((entry) => entry.content.includes('turn-1')));
+    assert.equal(result.meta.context.contextWindowTokens, 10_000);
+    assert.equal(result.meta.context.historyAvailableMessages, 80);
+    assert.equal(result.meta.context.historyMessages, includedHistory.length);
+    assert.equal(result.meta.context.historyTruncated, true);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('chat retries with recent context when the upstream rejects the estimated window', async () => {
+  const upstream = await listenContextLengthUpstream();
+  const history = Array.from({ length: 40 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `long-turn-${index + 1} ` + 'x'.repeat(4_000),
+  }));
+  try {
+    const result = await chat({
+      message: '继续',
+      context: { files: [], folders: [] },
+      history,
+      provider: { ...providerFor(upstream), contextWindowTokens: 1_000_000, maxTokens: 100 },
+    });
+
+    assert.equal(upstream.bodies.length, 2);
+    assert.ok(upstream.bodies[1].messages.length < upstream.bodies[0].messages.length);
+    assert.equal(upstream.bodies[1].messages.at(-1).content, '继续');
+    assert.equal(result.meta.context.contextRetry, true);
   } finally {
     await upstream.close();
   }

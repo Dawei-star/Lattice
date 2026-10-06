@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import ContextMenu from '../ui/ContextMenu.jsx';
 import { nextFolderName } from '../lib/folder-naming.js';
 import { canvasDisplayName, toCanvasFileName } from '../lib/canvas-naming.js';
+
+const TreeDragContext = createContext(null);
 
 /**
  * 目录树。递归渲染任意层级，支持就地重命名与删除。
@@ -56,8 +58,89 @@ export default function FolderTree({
   const folderPaths = new Set(folderOptions.map((folder) => folder.path));
   const rootAttachments = attachmentFiles.filter((file) => !file.folderPath || !folderPaths.has(file.folderPath));
 
+  const folderById = new Map(folderOptions.map((folder) => [folder.id, folder]));
+  const [draggingItem, setDraggingItem] = useState(null);
+  const [dropTargetId, setDropTargetId] = useState(undefined);
+  const draggingItemRef = useRef(null);
+
+  const canDropOn = useCallback((item, targetFolderId) => {
+    if (!item) return false;
+    if (item.type === 'note') return item.folderId !== targetFolderId;
+    if (item.type === 'canvas') {
+      const targetPath = folderOptions.find((folder) => folder.id === targetFolderId)?.path ?? '';
+      return item.folderPath !== targetPath;
+    }
+    if (item.type !== 'folder') return false;
+    if (item.id === targetFolderId || item.parentId === targetFolderId) return false;
+
+    let current = folderById.get(targetFolderId);
+    while (current) {
+      if (current.id === item.id) return false;
+      current = current.parentId ? folderById.get(current.parentId) : null;
+    }
+    return true;
+  }, [folderById, folderOptions]);
+
+  const clearDragState = useCallback(() => {
+    draggingItemRef.current = null;
+    setDraggingItem(null);
+    setDropTargetId(undefined);
+  }, []);
+
+  const handleDragStart = useCallback((event, item) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-lattice-tree-item', JSON.stringify(item));
+    event.dataTransfer.setData('text/plain', item.type === 'folder' ? item.id : item.path ?? item.id);
+    draggingItemRef.current = item;
+    setDraggingItem(item);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    clearDragState();
+  }, [clearDragState]);
+
+  const handleDragOver = useCallback((event, targetFolderId) => {
+    const item = draggingItemRef.current;
+    if (!canDropOn(item, targetFolderId)) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetId(targetFolderId);
+  }, [canDropOn]);
+
+  const handleDrop = useCallback(async (event, targetFolderId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const item = draggingItemRef.current;
+    if (!canDropOn(item, targetFolderId)) {
+      clearDragState();
+      return;
+    }
+    clearDragState();
+
+    if (item.type === 'folder') await onMoveFolder?.(item.id, targetFolderId);
+    if (item.type === 'note') await onMoveNote?.(item.id, targetFolderId);
+    if (item.type === 'canvas') {
+      const targetPath = folderOptions.find((folder) => folder.id === targetFolderId)?.path ?? '';
+      await onMoveCanvas?.(item.path, targetPath);
+    }
+  }, [canDropOn, clearDragState, folderOptions, onMoveCanvas, onMoveFolder, onMoveNote]);
+
+  const treeDrag = {
+    draggingItem,
+    dropTargetId,
+    handleDragStart,
+    handleDragEnd,
+    handleDragOver,
+    handleDrop,
+  };
+
   return (
-    <ul className="tree" role="tree">
+    <TreeDragContext.Provider value={treeDrag}>
+      <ul className="tree" role="tree">
       {(nodes ?? []).map((node) => (
         <FolderNode
           key={node.id}
@@ -163,7 +246,17 @@ export default function FolderTree({
         </button>
       </li>
       {!nodes?.length ? <li className="empty-hint">还没有文件夹，点击上方 + 新建一个。</li> : null}
+      {draggingItem ? (
+        <li
+          className={`tree__root-drop ${dropTargetId === null ? 'is-drop-target' : ''}`}
+          onDragOver={(event) => handleDragOver(event, null)}
+          onDrop={(event) => handleDrop(event, null)}
+        >
+          <span>移到根目录</span>
+        </li>
+      ) : null}
     </ul>
+    </TreeDragContext.Provider>
   );
 }
 
@@ -213,6 +306,7 @@ function FolderNode({
   onRenameNote,
   onDeleteNote,
 }) {
+  const treeDrag = useContext(TreeDragContext) ?? {};
   const [expanded, setExpanded] = useState(depth < 2);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -380,7 +474,16 @@ function FolderNode({
         </form>
       ) : (
         <ContextMenu getItems={getMenuItems} label={`目录「${node.name}」操作`}>
-          <div className={`nav-item ${isActive ? 'is-active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }}>
+          <div
+            className={`nav-item ${isActive ? 'is-active' : ''} ${treeDrag.draggingItem?.id === node.id ? 'is-dragging' : ''} ${treeDrag.dropTargetId === node.id ? 'is-drop-target' : ''}`}
+            style={{ paddingLeft: 8 + depth * 14 }}
+            draggable
+            aria-grabbed={treeDrag.draggingItem?.id === node.id}
+            onDragStart={(event) => treeDrag.handleDragStart?.(event, { type: 'folder', id: node.id, parentId: node.parentId })}
+            onDragEnd={treeDrag.handleDragEnd}
+            onDragOver={(event) => treeDrag.handleDragOver?.(event, node.id)}
+            onDrop={(event) => treeDrag.handleDrop?.(event, node.id)}
+          >
           <button
             type="button"
             className={`tree__caret ${hasItems ? '' : 'is-hidden'}`}
@@ -535,6 +638,7 @@ function NoteFile({
   onRenameNote,
   onDeleteNote,
 }) {
+  const treeDrag = useContext(TreeDragContext) ?? {};
   return (
     <li role="treeitem">
       <ContextMenu
@@ -555,8 +659,12 @@ function NoteFile({
       >
         <button
           type="button"
-          className={`tree__note ${note.id === activeNoteId ? 'is-active' : ''}`}
+          className={`tree__note ${note.id === activeNoteId ? 'is-active' : ''} ${treeDrag.draggingItem?.id === note.id ? 'is-dragging' : ''}`}
           style={{ paddingLeft: 8 + depth * 14 }}
+          draggable
+          aria-grabbed={treeDrag.draggingItem?.id === note.id}
+          onDragStart={(event) => treeDrag.handleDragStart?.(event, { type: 'note', id: note.id, folderId: note.folderId ?? null })}
+          onDragEnd={treeDrag.handleDragEnd}
           onClick={() => onOpenNote?.(note.id)}
           title={note.title}
         >
@@ -572,6 +680,7 @@ function NoteFile({
 }
 
 function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onCreateNote, onMoveCanvas, onRenameCanvas, onDeleteCanvas, onCopyCanvasPath, onOpenCanvasDefault, onRevealCanvas }) {
+  const treeDrag = useContext(TreeDragContext) ?? {};
   const name = file.name ?? file.path.split('/').pop() ?? file.path;
   const displayName = canvasDisplayName(name);
   const [renaming, setRenaming] = useState(false);
@@ -707,8 +816,12 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onCreate
       >
         <button
           type="button"
-          className={`tree__note tree__canvas-file ${active ? 'is-active' : ''}`}
+          className={`tree__note tree__canvas-file ${active ? 'is-active' : ''} ${treeDrag.draggingItem?.path === file.path ? 'is-dragging' : ''}`}
           style={{ paddingLeft: 8 + depth * 14 }}
+          draggable={file.exists !== false}
+          aria-grabbed={treeDrag.draggingItem?.path === file.path}
+          onDragStart={(event) => treeDrag.handleDragStart?.(event, { type: 'canvas', path: file.path, folderPath: file.folderPath ?? '' })}
+          onDragEnd={treeDrag.handleDragEnd}
           onClick={() => onOpenCanvas?.(file.path)}
           title={file.path}
         >

@@ -9,13 +9,10 @@
  * 返回的 excerpt 是纯文本，高亮交给前端完成，服务端不生成任何 HTML。
  */
 import { toPlainText } from '../../lib/markdown.js';
-import { config } from '../../config/index.js';
-import { VaultAdapter } from '../../vault/vault.adapter.js';
-import { parseMarkdownDocument } from '../../vault/markdown.js';
+import { readNoteProperties } from '../notes/notes.service.js';
 import * as repository from './search.repository.js';
 
 const MIN_TRIGRAM_LENGTH = 3;
-const vault = new VaultAdapter(config.vaultDir);
 
 /** 转义 LIKE 通配符，避免用户输入的 % 变成「匹配一切」 */
 function toLikePattern(query) {
@@ -66,9 +63,7 @@ export function search(query, limit, folderId, inboxStatus) {
     .map((row) => {
       const item = repository.mapRow(row, buildExcerpt(row.content, query));
       if (inboxStatus === undefined) return item;
-      const raw = item.filePath ? vault.readRawSync(item.filePath) : null;
-      const properties = raw === null ? {} : parseMarkdownDocument(raw, item.filePath).properties ?? {};
-      return { ...item, properties };
+      return { ...item, properties: readNoteProperties(item) };
     })
     .filter((item) => inboxStatus === undefined
       || (item.properties?.type === 'inbox'

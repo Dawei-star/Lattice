@@ -4,6 +4,8 @@ import EditorPane from './components/EditorPane.jsx';
 import GraphView from './components/GraphView.jsx';
 import CanvasView from './components/CanvasView.jsx';
 import AIAssistantPanel from './components/AIAssistantPanel.jsx';
+import ExpertsCenter from './components/ExpertsCenter.jsx';
+import KnowledgeHealthCenter from './components/KnowledgeHealthCenter.jsx';
 import InboxCaptureModal from './components/InboxCaptureModal.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
 import NoteListPane from './components/NoteListPane.jsx';
@@ -22,11 +24,13 @@ import Resizer from './ui/Resizer.jsx';
 import { loadImportedTheme } from './lib/theme.js';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout } from './lib/layout.js';
 import { noteFilePath } from './api/vault-files.js';
+import { expertsApi } from './api/experts.js';
 import { applySettings, loadSettings, subscribeSettings } from './settings/settings.js';
 import { registerPwa } from './lib/pwa.js';
 
 const THEME_STORAGE_KEY = 'lattice-theme';
 const FAVORITE_FOLDERS_STORAGE_KEY = 'lattice-favorite-folders';
+const ACTIVE_EXPERT_STORAGE_KEY = 'lattice-active-expert';
 
 function folderPathParts(value) {
   return String(value ?? 'Inbox')
@@ -110,12 +114,25 @@ export default function App() {
   } = vault;
 
   const [view, setView] = useState('notes');
+  const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [inboxBusy, setInboxBusy] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInitialPrompt, setAiInitialPrompt] = useState('');
+  const [experts, setExperts] = useState([]);
+  const [expertSkills, setExpertSkills] = useState([]);
+  const [activeExpertId, setActiveExpertId] = useState(() => {
+    try {
+      return localStorage.getItem(ACTIVE_EXPERT_STORAGE_KEY) || 'general';
+    } catch {
+      return 'general';
+    }
+  });
+  const [expertsCenterOpen, setExpertsCenterOpen] = useState(false);
+  const [expertsCenterInitialTab, setExpertsCenterInitialTab] = useState('experts');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState('about');
   const [panelOpen, setPanelOpen] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [layout, setLayout] = useState(() => loadLayout());
@@ -133,6 +150,35 @@ export default function App() {
   const [shellMode] = useState(() => new URLSearchParams(window.location.search).get('shell') === 'topbar' ? 'topbar' : 'obsidian');
   const [pwaState, setPwaState] = useState({ installReady: false, updateRegistration: null });
   const pwaActionsRef = useRef(null);
+
+  const activeExpert = useMemo(
+    () => experts.find((expert) => expert.id === activeExpertId) ?? experts.find((expert) => expert.id === 'general') ?? null,
+    [activeExpertId, experts],
+  );
+
+  const refreshExperts = useCallback(async ({ silent = false } = {}) => {
+    try {
+      const [expertList, skillList] = await Promise.all([expertsApi.list(), expertsApi.listSkills()]);
+      const nextExperts = Array.isArray(expertList) ? expertList : [];
+      setExperts(nextExperts);
+      setExpertSkills(Array.isArray(skillList) ? skillList : []);
+      setActiveExpertId((current) => nextExperts.some((expert) => expert.id === current) ? current : 'general');
+    } catch (error) {
+      if (!silent) toast.error(error?.message ?? '专家目录加载失败');
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    void refreshExperts({ silent: true });
+  }, [refreshExperts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_EXPERT_STORAGE_KEY, activeExpertId);
+    } catch {
+      // localStorage may be unavailable in restricted browser contexts.
+    }
+  }, [activeExpertId]);
 
   useEffect(() => {
     const actions = registerPwa({
@@ -363,7 +409,7 @@ export default function App() {
 
   // ── 嵌入内容缓存 ────────────────────────────────────────────
   // 键为「笔记 id + updatedAt」：笔记改动后索引里的 updatedAt 会变，
-  // 旧缓存自然失效，不需要手工清理。
+  // 旧缓存自然失效，不需要按版本清理；但旧键会永久残留，超上限时整体清空
   const embedCache = useRef(new Map());
 
   const resolveEmbed = useCallback(
@@ -376,6 +422,7 @@ export default function App() {
 
       const note = await notesApi.get(hit.id);
       const content = note?.content ?? '';
+      if (embedCache.current.size >= 50) embedCache.current.clear();
       embedCache.current.set(cacheKey, content);
       return content;
     },
@@ -471,15 +518,21 @@ export default function App() {
   );
 
   const startupOpenHandled = useRef(false);
+  // handleOpenExternalFile 的身份随 tabs 变化：直接放 deps 会让 IPC 监听
+  // 每开/关一个标签页就解绑重绑一次，改用 ref 持有最新 handler
+  const openExternalFileRef = useRef(handleOpenExternalFile);
   useEffect(() => {
-    const unsubscribe = window.latticeDesktop?.onOpenExternalFile?.(handleOpenExternalFile);
+    openExternalFileRef.current = handleOpenExternalFile;
+  }, [handleOpenExternalFile]);
+  useEffect(() => {
+    const unsubscribe = window.latticeDesktop?.onOpenExternalFile?.((token) => openExternalFileRef.current(token));
     const startupToken = new URLSearchParams(window.location.search).get('external');
     if (startupToken && !startupOpenHandled.current) {
       startupOpenHandled.current = true;
-      void handleOpenExternalFile(startupToken);
+      void openExternalFileRef.current(startupToken);
     }
     return typeof unsubscribe === 'function' ? unsubscribe : undefined;
-  }, [handleOpenExternalFile]);
+  }, []);
 
   const handleTabSelect = useCallback(
     (tabId) => {
@@ -684,7 +737,9 @@ export default function App() {
   );
 
   const handleCreateNote = useCallback(async (folderId = targetFolderId) => {
-    const created = await createNote({ folderId });
+    // 同上：onClick 直传时首参是事件对象，不能当作目录 id 使用
+    const normalizedFolderId = typeof folderId === 'string' ? folderId : targetFolderId;
+    const created = await createNote({ folderId: normalizedFolderId });
     if (created) {
       openInTab(created.id);
       setView('notes');
@@ -731,10 +786,43 @@ export default function App() {
     }
   }, [createFolder, createNote, folders, openInTab, profile, toast]);
 
+  const handleSelectExpert = useCallback((id) => {
+    if (experts.length && !experts.some((expert) => expert.id === id)) return;
+    setActiveExpertId(id);
+    setExpertsCenterOpen(false);
+    setAiOpen(true);
+  }, [experts]);
+
+  const handleOpenExpertsCenter = useCallback((tab = 'experts') => {
+    setAiOpen(false);
+    setExpertsCenterInitialTab(tab === 'skills' || tab === 'connectors' ? tab : 'experts');
+    setExpertsCenterOpen(true);
+  }, []);
+
+  const handleOpenSettings = useCallback((section = 'about') => {
+    // 调用方可能直接把 handler 挂到 onClick 上，首参是事件对象而不是 section id
+    setSettingsInitialSection(typeof section === 'string' ? section : 'about');
+    setSettingsOpen(true);
+  }, []);
+
   const handleOpenInboxAi = useCallback(() => {
+    handleSelectExpert('inbox-organizer');
     setAiInitialPrompt('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。');
     setAiOpen(true);
-  }, []);
+  }, [handleSelectExpert]);
+
+  const handleOpenReviewAi = useCallback(({ expertId = 'knowledge-curator', prompt = '' } = {}) => {
+    const resolvedExpertId = experts.some((expert) => expert.id === expertId) ? expertId : 'general';
+    setActiveExpertId(resolvedExpertId);
+    setExpertsCenterOpen(false);
+    setAiInitialPrompt(prompt);
+    setAiOpen(true);
+  }, [experts]);
+
+  const handleOpenReviewInbox = useCallback(() => {
+    selectInbox('all');
+    setView('notes');
+  }, [selectInbox]);
 
   const handleCreateFromTemplate = useCallback(async (template) => {
     try {
@@ -775,6 +863,11 @@ export default function App() {
     setRefreshing(false);
     toast.success('数据已重新加载');
   }, [refreshGraph, refreshNotes, refreshSidebar, toast]);
+
+  const handleAiOperationComplete = useCallback(async () => {
+    await handleRefreshAll();
+    setReviewRefreshKey((value) => value + 1);
+  }, [handleRefreshAll]);
 
   const handleVaultProfileSaved = useCallback(() => refreshSidebar({ silent: true }), [refreshSidebar]);
 
@@ -1082,6 +1175,7 @@ export default function App() {
           view={view}
           onViewChange={handleViewChange}
           onOpenSwitcher={handleOpenSwitcher}
+          onOpenExpertsCenter={handleOpenExpertsCenter}
           onToggleAi={handleToggleAi}
           onCreateNote={handleCreateNote}
           onCaptureInbox={() => setInboxOpen(true)}
@@ -1090,7 +1184,7 @@ export default function App() {
           refreshing={refreshing}
           onTogglePanel={handleTogglePanel}
           onToggleTheme={handleToggleTheme}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={handleOpenSettings}
           theme={theme}
         />
       ) : null}
@@ -1108,7 +1202,7 @@ export default function App() {
         onToggleTheme={handleToggleTheme}
         panelOpen={panelOpen}
         onTogglePanel={handleTogglePanel}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={handleOpenSettings}
       /> : null}
 
       <TabBar
@@ -1268,7 +1362,15 @@ export default function App() {
          /> : null}
 
         <main className="workspace">
-          {view === 'graph' ? (
+          {view === 'review' ? (
+            <KnowledgeHealthCenter
+              onOpenNote={handleOpenNote}
+              onOpenInbox={handleOpenReviewInbox}
+              onAskAi={handleOpenReviewAi}
+              onBack={() => handleViewChange('notes')}
+              refreshKey={reviewRefreshKey}
+            />
+          ) : view === 'graph' ? (
             <GraphView
               graph={graph}
               loading={loading.graph}
@@ -1377,10 +1479,22 @@ export default function App() {
       />
       <SettingsModal
         open={settingsOpen}
+        initialSection={settingsInitialSection}
         onClose={() => setSettingsOpen(false)}
         theme={theme}
         onThemeChange={setTheme}
         onVaultProfileSaved={handleVaultProfileSaved}
+      />
+      <ExpertsCenter
+        open={expertsCenterOpen}
+        initialTab={expertsCenterInitialTab}
+        onClose={() => setExpertsCenterOpen(false)}
+        onOpenConnections={() => handleOpenSettings('mcp')}
+        experts={experts}
+        skills={expertSkills}
+        activeExpertId={activeExpertId}
+        onSelectExpert={handleSelectExpert}
+        onChanged={() => refreshExperts()}
       />
       <AIAssistantPanel
         open={aiOpen}
@@ -1389,10 +1503,15 @@ export default function App() {
         folders={folders}
         activeNote={activeNote}
         onOpenNote={handleOpenNote}
-        onOperationComplete={handleRefreshAll}
+        onOperationComplete={handleAiOperationComplete}
         initialPrompt={aiInitialPrompt}
         initialPromptPreferModel
         onInitialPromptConsumed={() => setAiInitialPrompt('')}
+        expertId={activeExpertId}
+        expert={activeExpert}
+        experts={experts}
+        onSelectExpert={handleSelectExpert}
+        onOpenExpertsCenter={handleOpenExpertsCenter}
       />
       <RenameDialog
         open={Boolean(renameDialog)}

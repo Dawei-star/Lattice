@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
 import { installDom, waitFor } from './dom-setup.mjs';
+import { testDefine } from './build-define.mjs';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDir, '..');
@@ -53,7 +54,7 @@ async function buildEntry() {
     target: 'es2022',
     jsx: 'automatic',
     outfile: path.join(testDir, '.build', 'app-entry.mjs'),
-    define: { 'process.env.NODE_ENV': '"development"' },
+    define: testDefine('development'),
     logLevel: 'warning',
   });
 }

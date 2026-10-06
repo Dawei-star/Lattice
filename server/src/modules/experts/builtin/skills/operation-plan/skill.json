@@ -1,0 +1,11 @@
+{
+  "id": "operation-plan",
+  "version": "1.0.0",
+  "name": "文件操作计划",
+  "description": "把已经确认的整理决定转换为可预览的文件操作计划。",
+  "triggers": ["生成归档计划", "整理文件", "移动文件"],
+  "tools": ["archive", "move"],
+  "permissions": ["write:confirm"],
+  "inputSchema": { "type": "object", "required": ["decisions"] },
+  "outputSchema": { "type": "object", "required": ["actions", "uncertain"] }
+}

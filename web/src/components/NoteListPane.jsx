@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { CheckCircle2, Sparkles } from 'lucide-react';
+import { CheckCircle2, Pin, Sparkles } from 'lucide-react';
 import { formatNumber, formatRelativeTime } from '../lib/format.js';
 import { highlightText } from '../lib/markdown.js';
 import ContextMenu from '../ui/ContextMenu.jsx';
@@ -150,7 +150,7 @@ export default function NoteListPane({
               {isSearching ? '换个关键词试试，或清空检索框浏览全部笔记。' : filter.kind === 'inbox' ? '新的收集会显示在这里。' : '新建一篇，开始记录你的想法。'}
             </p>
             {isSearching ? null : (
-              <button type="button" className="btn btn--primary" onClick={onCreateNote}>
+              <button type="button" className="btn btn--primary" onClick={() => onCreateNote?.()}>
                 新建笔记
               </button>
             )}
@@ -231,7 +231,7 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplic
       <article className={`notecard ${active ? 'is-active' : ''}`}>
         <button type="button" className="notecard__main" onClick={onOpen}>
           <div className="notecard__row">
-            {note.isPinned ? <span className="notecard__pin" title="已置顶">★</span> : null}
+            {note.isPinned ? <span className="notecard__pin" title="已置顶"><Pin size={11} strokeWidth={2} aria-hidden="true" /></span> : null}
             <h3 className="notecard__title">{note.title}</h3>
             {isInboxNote ? <span className={`inbox-status inbox-status--${inboxStatus}`}>{INBOX_STATUS_LABELS[inboxStatus] ?? '待整理'}</span> : null}
           </div>
@@ -285,7 +285,7 @@ function NoteCard({ note, query, active, onOpen, onTogglePin, onDelete, onDuplic
           aria-label={note.isPinned ? '取消置顶' : '置顶'}
           onClick={onTogglePin}
         >
-          ★
+          <Pin size={14} strokeWidth={1.9} aria-hidden="true" />
         </button>
       </article>
       </ContextMenu>

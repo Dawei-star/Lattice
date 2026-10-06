@@ -171,13 +171,24 @@ export class VaultAdapter {
 
   removeDirectorySync(relativePath) {
     const target = this.resolveDirectory(relativePath);
-    fsSync.rmSync(target, { recursive: true, force: true });
-    if (!fsSync.existsSync(target)) return;
-    removeTreeFallback(target);
-    if (fsSync.existsSync(target)) {
-      // 删不掉要喊出来（目录被占用 / 权限被夺），静默残留会让上层误以为已删除
-      throw new Error(`目录删除失败：${relativePath}`);
+    // 与 removeSync 同一套 Windows 结论：rmSync 对被占用/超长路径会静默失败，
+    // 个别多字节长路径还会触发 libuv fast-fail（0xC0000409）使进程崩溃；
+    // 因此首选逐文件 unlink + rmdir 的回退路径，rmSync 只作残局兜底。
+    try {
+      removeTreeFallback(target);
+    } catch {
+      // 个别文件被占用（杀软/网盘）中断了后序遍历：交给下面的 rmSync 清残局
     }
+    if (fsSync.existsSync(target)) {
+      try {
+        fsSync.rmSync(target, { recursive: true, force: true });
+      } catch {
+        // 占用导致的 EPERM/EBUSY 由最终的存在性检查如实上报
+      }
+    }
+    if (!fsSync.existsSync(target)) return;
+    // 删不掉要喊出来（目录被占用 / 权限被夺），静默残留会让上层误以为已删除
+    throw new Error(`目录删除失败：${relativePath}`);
   }
 
   moveSync(sourcePath, targetPath) {

@@ -67,3 +67,10 @@ output/
 design-qa.md
 *-qa.md
 examples/
+
+# 界面走查截图（仅本地保留）
+web/screens-audit/
+web/screens-experts/
+
+# Golden set 跑分产物（脚本与数据集入库，报告仅本地保留）
+server/eval/reports/

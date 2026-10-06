@@ -128,6 +128,14 @@ export function useVault() {
   const listRequestIdRef = useRef(0);
   const sseConnectedRef = useRef(false);
   const activeNoteRef = useRef(activeNote);
+  const noteMutationQueuesRef = useRef(new Map());
+
+  // refreshNotes 的身份随 filter/page/sort 变化，openNote 又依赖它：
+  // SSE 订阅 effect 若直接依赖两者，每次筛选/翻页都会断流重连（token 模式
+  // 重连窗口内还会丢事件）。这里用 ref 持有最新版本，订阅本身保持稳定。
+  // （二者此时尚未定义，只能先置空，渲染完成后由下方 effect 回填）
+  const refreshNotesRef = useRef(null);
+  const openNoteRef = useRef(null);
 
   useEffect(() => {
     activeNoteRef.current = activeNote;
@@ -168,22 +176,29 @@ export function useVault() {
   );
 
   // ── 数据加载 ────────────────────────────────────────────────────
+  // scope: 'all' = 完整侧栏（含画布/附件全库扫描/vault 信息）；
+  // 'notes' = 只刷 folders/tags/overview/index。SSE 笔记级事件走 'notes'：
+  // 附件与画布文件不会被 .md watcher 事件改变，全库附件扫描没必要每次跑。
   const refreshSidebar = useCallback(
-    async ({ silent = false } = {}) => {
+    async ({ silent = false, scope = 'all' } = {}) => {
       if (!silent) setLoading((current) => ({ ...current, sidebar: true }));
       try {
-        const [folderTree, tagList, stats, index, vaultInfo] = await Promise.all([
+        const [folderTree, tagList, stats, index] = await Promise.all([
           foldersApi.list(),
           tagsApi.list(),
           metaApi.overview(),
           notesApi.index(),
-          vaultApi.info().catch(() => null),
         ]);
-        setProfile(normalizeVaultProfile(vaultInfo?.profile));
         setFolders(folderTree ?? []);
         setTags(tagList ?? []);
         setOverview(stats ?? null);
         setNoteIndex(index ?? []);
+        if (scope === 'notes') {
+          setConnectionDown(false);
+          return;
+        }
+        const vaultInfo = await vaultApi.info().catch(() => null);
+        setProfile(normalizeVaultProfile(vaultInfo?.profile));
         try {
           setCanvasFiles(ensureDefaultCanvas(await canvasApi.list()));
         } catch (error) {
@@ -384,6 +399,11 @@ export function useVault() {
     [handleError, refreshNotes, refreshSidebar, toast],
   );
 
+  useEffect(() => {
+    refreshNotesRef.current = refreshNotes;
+    openNoteRef.current = openNote;
+  });
+
   /** 按标题打开；标题不存在时返回 null，由调用方决定是否创建 */
   const findNoteByFilePath = useCallback(
     async (filePath) => {
@@ -447,7 +467,8 @@ export function useVault() {
               if (vaultFiles.isAvailable() && indexed.filePath) {
                 indexed.content = await vaultFiles.readMarkdown(indexed.filePath) ?? indexed.content;
               }
-              setActiveNote(indexed);
+              // 不在这里 setActiveNote：调用方会经 openInTab（先过未保存守卫）打开，
+              // 提前激活会把旧笔记的草稿顶掉，守卫即使弹出「取消」也无法恢复
               await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
               setGraphStale(true);
               return indexed;
@@ -457,7 +478,7 @@ export function useVault() {
           }
         }
         const note = await notesApi.create(input);
-        setActiveNote(note);
+        // 同桌面分支：激活交给调用方的 openInTab，避免顶掉未保存的草稿
         await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
         setGraphStale(true);
         return note;
@@ -479,6 +500,23 @@ export function useVault() {
     )));
   }, []);
 
+  // Keep mutations for one note ordered so a rename cannot be followed by an
+  // older autosave that still targets the previous file path.
+  const enqueueNoteMutation = useCallback((id, operation) => {
+    const previous = noteMutationQueuesRef.current.get(id) ?? Promise.resolve();
+    const next = previous.then(operation, operation);
+    noteMutationQueuesRef.current.set(id, next);
+    next.then(
+      () => {
+        if (noteMutationQueuesRef.current.get(id) === next) noteMutationQueuesRef.current.delete(id);
+      },
+      () => {
+        if (noteMutationQueuesRef.current.get(id) === next) noteMutationQueuesRef.current.delete(id);
+      },
+    );
+    return next;
+  }, []);
+
   /**
    * 保存笔记。成功后直接用返回体更新编辑区，省掉一次回读请求。
    * 错误会继续向上抛，让编辑区保留未保存状态并给出内联提示。
@@ -488,12 +526,39 @@ export function useVault() {
    * 不再人为等待 + 全量刷新——否则连续自动保存就是每秒十几个请求的风暴。
    */
   const saveNote = useCallback(
-    async (id, patch) => {
-      const current = activeNote?.id === id ? activeNote : null;
+    (id, patch) => enqueueNoteMutation(id, async () => {
+      const current = activeNoteRef.current?.id === id ? activeNoteRef.current : null;
+      const nextPatch = { ...patch };
+
+      // A queued autosave may have been prepared before a rename completed.
+      // Keep its content/properties, but do not let its stale title or version
+      // move the note back to the old path.
+      if (
+        current
+        && nextPatch.title !== undefined
+        && nextPatch.expectedHash
+        && current.contentHash
+        && nextPatch.expectedHash !== current.contentHash
+      ) {
+        delete nextPatch.title;
+        nextPatch.expectedHash = current.contentHash;
+      }
       if (current && vaultFiles.isAvailable() && current.filePath) {
+        // 桌面模式与 API 的 expectedHash 对齐：落盘前回读磁盘内容比对，
+        // 防止外部编辑器的修改被旧草稿静默覆盖（与 API 分支的 409 同形，
+        // EditorPane 据此展示冲突横幅；patch 不带 expectedHash 即「仍要保存」的显式覆盖）
+        if (nextPatch.expectedHash) {
+          const diskContent = await vaultFiles.readMarkdown(current.filePath);
+          if (diskContent !== null && diskContent !== current.content) {
+            const conflict = new Error('笔记已被外部程序修改，已拦截本次保存以避免覆盖外部改动');
+            conflict.status = 409;
+            conflict.code = 'CONFLICT';
+            throw conflict;
+          }
+        }
         const saved = {
           ...current,
-          ...patch,
+          ...nextPatch,
           updatedAt: new Date().toISOString(),
         };
         const pathChanged = saved.title !== current.title || saved.folderId !== current.folderId;
@@ -505,13 +570,17 @@ export function useVault() {
           : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved);
         if (!written) throw new Error('无法写入 Markdown 文件');
         saved.filePath = nextPath;
+        activeNoteRef.current = saved;
         setActiveNote(saved);
         setGraphStale(true);
         patchNoteListItem(saved);
         return saved;
       }
       try {
-        const saved = await notesApi.update(id, patch);
+        const saved = await notesApi.update(id, nextPatch);
+        activeNoteRef.current = activeNoteRef.current?.id === saved.id
+          ? { ...activeNoteRef.current, ...saved }
+          : activeNoteRef.current;
         setActiveNote((current) => (current && current.id === saved.id ? saved : current));
         setGraphStale(true);
         patchNoteListItem(saved);
@@ -522,24 +591,31 @@ export function useVault() {
         handleError(error, '保存失败');
         throw error;
       }
-    },
-    [activeNote, folders, handleError, noteIndex, patchNoteListItem, refreshNotes],
+    }),
+    [enqueueNoteMutation, folders, handleError, noteIndex, patchNoteListItem, refreshNotes],
   );
 
   const deleteNote = useCallback(
     async (id) => {
       try {
         const current = activeNote?.id === id ? activeNote : null;
+        let deletedOnDisk = false;
         if (vaultFiles.isAvailable() && current?.filePath) {
           const removed = await vaultFiles.removeMarkdown(current.filePath);
           if (!removed) throw new Error('无法删除 Markdown 文件');
-          await new Promise((resolve) => setTimeout(resolve, 260));
+          deletedOnDisk = true;
         } else {
           await notesApi.remove(id);
         }
         setActiveNote((current) => (current && current.id === id ? null : current));
         setGraphStale(true);
-        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        if (deletedOnDisk && sseConnectedRef.current) {
+          // 桌面模式：watcher 完成投影后 SSE 会驱动一次 notes 范围的刷新。
+          // 此时立即刷新大概率拉到删除前的索引，已删笔记会在列表里短暂
+          // 「复活」到下一轮 SSE 才被纠正——信任 SSE 即可（断线时走下面的兜底）
+        } else {
+          await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        }
         toast.success('笔记已删除');
         return true;
       } catch (error) {
@@ -587,8 +663,7 @@ export function useVault() {
   const renameNote = useCallback(
     async (id, title) => {
       try {
-        const saved = await notesApi.update(id, { title });
-        setActiveNote((current) => (current && current.id === id ? { ...current, ...saved } : current));
+        const saved = await saveNote(id, { title });
         await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
         setGraphStale(true);
         return saved;
@@ -597,7 +672,7 @@ export function useVault() {
         return null;
       }
     },
-    [handleError, refreshNotes, refreshSidebar],
+    [handleError, refreshNotes, refreshSidebar, saveNote],
   );
 
   const createFolder = useCallback(
@@ -644,29 +719,31 @@ export function useVault() {
     let refreshInFlight = false;
 
     // 刷新在途时新到达的请求合并为一次「补跑」：既不并发重入（会有状态竞争），
-    // 也不丢弃（否则刷新期间到达的最后一条变更会被吞掉，界面停留旧数据）
-    let refreshPending = false;
-    const runRefresh = async () => {
+    // 也不丢弃（否则刷新期间到达的最后一条变更会被吞掉，界面停留旧数据）。
+    // 范围合并取更宽的一侧：notes 事件合并到 all 时按 all 补跑。
+    let refreshPendingScope = null;
+    const runRefresh = async (scope = 'all') => {
       refreshInFlight = true;
       try {
-        await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
+        await Promise.all([refreshNotesRef.current(), refreshSidebar({ silent: true, scope })]);
       } finally {
         refreshInFlight = false;
-        if (refreshPending) {
-          refreshPending = false;
-          void runRefresh();
+        if (refreshPendingScope) {
+          const nextScope = refreshPendingScope;
+          refreshPendingScope = null;
+          void runRefresh(nextScope);
         }
       }
     };
 
-    const refreshFromVault = () => {
+    const refreshFromVault = (scope = 'all') => {
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
         if (refreshInFlight) {
-          refreshPending = true;
+          refreshPendingScope = refreshPendingScope === 'all' || scope === 'all' ? 'all' : 'notes';
           return;
         }
-        void runRefresh();
+        void runRefresh(scope);
       }, 80);
     };
 
@@ -678,22 +755,40 @@ export function useVault() {
         return;
       }
       if (!change || change.action === 'ready') return;
+      // 服务端已过滤 skipped/absent，这里防御性兜底：投影未变化的事件不值得
+      // 触发一轮全量刷新
+      if (change.action === 'skipped' || change.action === 'absent') return;
+
+      if (change.action === 'reconciled') {
+        // 目录级差量对齐：无实际变化（纯启动对齐）时不刷；有变化时可能涉及
+        // 目录增删，按完整范围刷
+        const changed = (change.added ?? 0) + (change.updated ?? 0) + (change.removed ?? 0);
+        if (!changed) return;
+        setGraphStale(true);
+        refreshFromVault('all');
+        return;
+      }
 
       const current = activeNoteRef.current;
-      if (change.action === 'removed' && current?.id === change.id) {
+      const currentFile = current?.filePath ? String(current.filePath).replaceAll('\\', '/') : null;
+      const changeFile = change.file ? String(change.file).replaceAll('\\', '/') : null;
+      const touchesCurrentNote = Boolean(current) && (current.id === change.id || (currentFile && changeFile && currentFile === changeFile));
+      if (change.action === 'removed' && touchesCurrentNote) {
         openRequest.current += 1;
         activeNoteRef.current = null;
         setActiveNote(null);
         toast.info('当前笔记已从本地文件夹删除，界面已同步');
-      } else if (change.action === 'updated' && current?.id === change.id) {
+      } else if (change.action === 'updated' && touchesCurrentNote) {
         if (hasUnsavedChanges()) {
           toast.info('笔记已被外部程序修改；当前有未保存的草稿，已保留你的编辑，可手动保存覆盖');
         } else {
-          openNote(current.id);
+          openNoteRef.current?.(current.id);
         }
       }
+      // 笔记级事件只刷核心数据（folders/tags/overview/index），跳过画布与
+      // 附件的全库扫描——自动保存风暴从每秒十几个请求降到四个
       setGraphStale(true);
-      refreshFromVault();
+      refreshFromVault('notes');
     };
 
     // 无令牌（默认本机模式）：直连，EventSource 自带断线重连
@@ -755,7 +850,7 @@ export function useVault() {
       clearTimeout(reconnectTimer);
       source?.close();
     };
-  }, [hasUnsavedChanges, openNote, refreshNotes, refreshSidebar, toast, workspaceToken]);
+  }, [hasUnsavedChanges, refreshSidebar, toast, workspaceToken]);
 
   const moveCanvas = useCallback(
     async (fromPath, toPath) => {

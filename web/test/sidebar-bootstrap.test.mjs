@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
 import { installDom, waitFor } from './dom-setup.mjs';
+import { testDefine } from './build-define.mjs';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const note = {
@@ -26,7 +27,7 @@ await esbuild.build({
   target: 'es2022',
   jsx: 'automatic',
   outfile: path.join(testDir, '.build', 'sidebar-bootstrap-app.mjs'),
-  define: { 'process.env.NODE_ENV': '"test"' },
+  define: testDefine('test'),
   logLevel: 'warning',
 });
 

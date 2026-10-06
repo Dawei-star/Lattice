@@ -155,3 +155,34 @@ test('streamChatProvider falls back to JSON parsing when a gateway ignores strea
     await upstream.close();
   }
 });
+
+test('streamChatProvider forwards reasoning_content deltas from reasoning models separately', async () => {
+  const upstream = await listenMockUpstream({
+    '/v1/chat/completions': (_body, _req, res) => {
+      res.setHeader('Content-Type', 'text/event-stream');
+      const events = [
+        'data: {"choices":[{"delta":{"reasoning_content":"先分析问题…"}}]}',
+        'data: {"choices":[{"delta":{"reasoning_content":"再给出结论"}}]}',
+        'data: {"choices":[{"delta":{"content":"最终回答"}}]}',
+        'data: [DONE]',
+      ];
+      res.end(events.join('\n\n') + '\n\n');
+    },
+  });
+  try {
+    let reasoning = '';
+    let deltas = '';
+    const { raw, reasoning: fullReasoning } = await streamChatProvider({
+      messages: [{ role: 'user', content: 'ping' }],
+      provider: { endpoint: upstream.endpoint, apiKey: placeholderKey('reasoning'), model: 'reasoning-model', authHeader: 'bearer' },
+      onDelta: (text) => { deltas += text; },
+      onReasoning: (text) => { reasoning += text; },
+    });
+    assert.equal(raw, '最终回答');
+    assert.equal(deltas, '最终回答', '正文增量不应混入思维链');
+    assert.equal(reasoning, '先分析问题…再给出结论');
+    assert.equal(fullReasoning, '先分析问题…再给出结论');
+  } finally {
+    await upstream.close();
+  }
+});

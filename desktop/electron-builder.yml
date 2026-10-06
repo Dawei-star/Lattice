@@ -58,6 +58,24 @@ files:
       - 'fc-core.mjs'
       - 'operation-plan.mjs'
       - '!**/.mimosa/**'
+  # ⚠️ 内置 MCP Server（scripts/mcp-server/server.mjs）是设置页「导出配置」指向的入口：
+  #    /api/mcp/info 返回的 serverPath 按包内层级解析为 resources/app/scripts/mcp-server/server.mjs。
+  #    漏掉它 = 桌面版导出的 Lattice 配置指向不存在的文件，外部客户端拉不起进程（2026-10-04 实测）。
+  #    server.mjs 以相对路径导入 ../../server/src（包内已带上），裸导入 @modelcontextprotocol/sdk
+  #    与 zod 由本目录自带的 node_modules 解析。
+  #    注意：from/to 复制里 electron-builder 默认忽略 node_modules，必须单独一段拷依赖
+  #    （verify-package.cjs 的 verifyMcpServerPackaged 会核验这两样都在）。
+  - from: ../scripts/mcp-server
+    to: scripts/mcp-server
+    filter:
+      - 'server.mjs'
+      - 'package.json'
+      - '!**/.mimosa/**'
+  - from: ../scripts/mcp-server/node_modules
+    to: scripts/mcp-server/node_modules
+    filter:
+      - '**/*'
+      - '!**/.mimosa/**'
 
 # exe 文件名保持 ASCII，避开各类工具链的路径编码问题；
 # 用户看到的快捷方式、窗口标题、安装向导仍然是中文 productName。

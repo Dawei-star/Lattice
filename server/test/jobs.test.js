@@ -61,6 +61,29 @@ test('jobs record failures and enforce active idempotency', async () => {
   assert.equal(failed.attempts, 1);
 });
 
+test('re-enqueueing a terminal job with the same key resets and reruns it', async () => {
+  const type = 'test-reuse';
+  let runs = 0;
+  registerJobHandler(type, async (payload) => ({ runs: runs += 1, payload }));
+
+  const first = enqueueJob({ type, total: 1, payload: { round: 'first' }, idempotencyKey: 'reused-key' });
+  const completedFirst = await waitFor(first.id, (job) => job?.status === 'completed');
+  assert.equal(completedFirst.result.runs, 1);
+
+  // 终态任务占用唯一索引键后，同键入队必须复用该行而不是失败
+  const second = enqueueJob({ type, total: 2, payload: { round: 'second' }, idempotencyKey: 'reused-key' });
+  assert.equal(second.id, first.id);
+  assert.equal(second.status, 'queued');
+  assert.equal(second.total, 2);
+  assert.deepEqual(second.payload, { round: 'second' });
+
+  const completedSecond = await waitFor(second.id, (job) => job?.status === 'completed');
+  assert.equal(completedSecond.result.runs, 2);
+  assert.deepEqual(completedSecond.result.payload, { round: 'second' });
+  assert.equal(completedSecond.error, null);
+  assert.equal(getJob(first.id).id, first.id);
+});
+
 test('running jobs can be cancelled and finish as cancelled', async () => {
   const type = 'test-cancel';
   let started;

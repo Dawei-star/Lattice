@@ -1,0 +1,11 @@
+{
+  "id": "link-graph-analysis",
+  "version": "1.0.0",
+  "name": "关联脉络梳理",
+  "description": "围绕一个主题梳理双链与图谱关系，输出知识脉络和扩展阅读建议。",
+  "triggers": ["梳理脉络", "关联分析", "知识地图", "这个主题 related", "扩展阅读"],
+  "tools": ["read", "search"],
+  "permissions": ["read"],
+  "inputSchema": { "type": "object", "required": ["topic"] },
+  "outputSchema": { "type": "object", "required": ["coreNodes", "clusters", "gaps"] }
+}

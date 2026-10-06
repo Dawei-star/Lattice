@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
 import { installDom, waitFor } from './dom-setup.mjs';
+import { testDefine } from './build-define.mjs';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDir, '..');
@@ -52,7 +53,7 @@ async function buildEntry() {
     target: 'es2022',
     jsx: 'automatic',
     outfile: path.join(testDir, '.build', 'app-entry.mjs'),
-    define: { 'process.env.NODE_ENV': '"development"' },
+    define: testDefine('development'),
     logLevel: 'warning',
   });
 }
@@ -257,6 +258,25 @@ async function main() {
   );
   check('至少渲染一篇笔记卡片', container.querySelectorAll('.notecard').length > 0);
 
+  section('知识健康 Review 中心');
+  const reviewButton = container.querySelector('.ribbon__button[aria-label="知识健康"]');
+  check('知识健康入口存在', Boolean(reviewButton));
+  reviewButton?.click();
+  await waitFor(() => container.querySelector('.health-center'), { label: '知识健康中心加载' });
+  check('知识健康中心渲染摘要', Boolean(container.querySelector('.health-center__summary')));
+  check('知识健康中心展示问题分类', container.querySelectorAll('.health-center__category').length === 6);
+  check('知识健康中心提供 AI 建议入口', Boolean([...container.querySelectorAll('.health-center__actions button')].find((button) => button.textContent.includes('AI 给出建议'))));
+  const reviewFindingCheckbox = container.querySelector('.health-finding__select input');
+  check('知识健康问题支持勾选', Boolean(reviewFindingCheckbox));
+  reviewFindingCheckbox?.click();
+  await waitFor(() => container.querySelector('.health-center__batch-bar'), { label: '批量 Review 选择栏' });
+  check('勾选后出现批量方案入口', Boolean(container.querySelector('.health-center__batch-bar .btn--primary')));
+  check('批量方案入口显示已选数量', container.querySelector('.health-center__batch-bar')?.textContent.includes('已选择 1 条线索'));
+  reviewFindingCheckbox?.click();
+  await waitFor(() => !container.querySelector('.health-center__batch-bar'), { label: '清除 Review 选择' });
+  container.querySelector('.health-center__actions .btn')?.click();
+  await waitFor(() => container.querySelector('.notelist') || container.querySelector('.empty-state'), { label: '返回笔记视图' });
+
   section('目录创建');
   container.querySelector('button[aria-label="新建目录"]')?.click();
   let toolbarFolderNode = null;
@@ -331,6 +351,27 @@ async function main() {
   );
   check('AI 文件操作走本地预览接口', Boolean(filePreview));
   check('AI 文件预览显示 diff', Boolean(filePreview?.querySelector('.ai-operation__diff')));
+  const removePreviewAction = await waitFor(
+    () => {
+      const button = filePreview?.querySelector('.ai-operation__remove');
+      return button && !button.disabled ? button : null;
+    },
+    { label: '等待 AI 操作预览可编辑' },
+  );
+  check('AI 操作预览支持逐条取消', Boolean(removePreviewAction));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  removePreviewAction?.click();
+  await waitFor(() => filePreview?.querySelector('.ai-operation.is-removed'), { label: '取消单项 AI 操作' });
+  check('取消单项后确认按钮被锁定', filePreview?.querySelector('button.is-primary')?.disabled === true);
+  filePreview?.querySelector('button[aria-label="恢复此操作"]')?.click();
+  const refreshPreviewButton = await waitFor(
+    () => [...(filePreview?.querySelectorAll('button') ?? [])]
+      .find((button) => button.textContent.includes('更新预览') && !button.disabled),
+    { label: '等待更新预览按钮可用' },
+  );
+  check('恢复后出现更新预览入口', Boolean(refreshPreviewButton && !refreshPreviewButton.disabled));
+  refreshPreviewButton?.click();
+  await waitFor(() => container.querySelector('.ai-operation-preview__risk')?.textContent.includes('项操作'), { label: '重新生成 AI 操作预览' });
   filePreview?.querySelector('button.is-primary')?.click();
   const executionSummary = await waitFor(
     () => container.querySelector('.ai-execution-summary'),
@@ -539,6 +580,26 @@ async function main() {
   check('导出配置包含补齐后的密钥',
     (container.querySelector('.mcp-settings__config pre')?.textContent ?? '').includes('test-brave-key'));
 
+  section('MCP 插件市场：必需参数（路径）');
+  const gitCard = () => marketCardByTitle('Git');
+  cardInstallButton(gitCard())?.click();
+  await waitFor(() => container.querySelector('[data-testid="mcp-editor"]'), { label: '需要路径的条目打开配置' });
+  const gitRow = () => [...container.querySelectorAll('.mcp-server-row')].find((row) => row.textContent.includes('Git'));
+  check('需要路径的条目默认停用', gitRow()?.classList.contains('is-disabled') === true);
+  check('安装提示指出缺少的是参数', container.textContent.includes('Git 仓库路径'));
+  const repoInput = container.querySelector('.mcp-editor__args input[aria-label="Git 仓库路径"]');
+  check('编辑器为路径参数提供独立输入框', Boolean(repoInput));
+  check('路径参数提供「填入知识库目录」预设',
+    [...container.querySelectorAll('.mcp-editor__args .btn')].some((button) => button.textContent.includes('填入知识库目录')));
+  setFieldValue(repoInput, 'D:/code/demo-repo');
+  await waitFor(() => container.querySelector('.mcp-editor__enable input')?.checked === true, { label: '路径补齐后自动勾选启用' });
+  container.querySelector('.mcp-editor__actions .btn--primary')?.click();
+  await waitFor(() => !container.querySelector('.mcp-editor'), { label: 'Git 配置保存后编辑器关闭' });
+  await waitFor(() => gitRow()?.classList.contains('is-enabled'), { label: 'Git 补齐路径后启用' });
+  const exportedConfig = container.querySelector('.mcp-settings__config pre')?.textContent ?? '';
+  check('导出配置把占位符换成实际路径', exportedConfig.includes('mcp-server-git') && exportedConfig.includes('D:/code/demo-repo'));
+  check('导出配置里不残留任何 {占位符}', !/\{[a-zA-Z]\w*\}/.test(exportedConfig));
+
   section('MCP Server 移除');
   const latticeRow = [...container.querySelectorAll('.mcp-server-row')]
     .find((row) => row.textContent.includes('Lattice'));
@@ -554,7 +615,7 @@ async function main() {
   await waitFor(() => !braveRow(), { label: '移除后列表不再包含该 Server' });
   check('移除后列表不再包含该 Server', !braveRow());
   check('移除后市场卡片回到未添加', marketCardByTitle('Brave Search')?.classList.contains('is-installed') === false);
-  await waitFor(() => container.querySelector('[data-testid="mcp-market"] .settings-value')?.textContent.includes('已添加 1'),
+  await waitFor(() => container.querySelector('[data-testid="mcp-market"] .settings-value')?.textContent.includes('已添加 2'),
     { label: '移除后市场计数更新' });
 
   container.querySelector('.settings-content__head button[aria-label="关闭设置"]')?.click();
@@ -825,6 +886,39 @@ async function main() {
   await waitFor(() => container.querySelector('.savestate--saved'), { label: '还原标题', timeout: 6000 });
 
   section('运行期错误');
+  section('context-menu rename persistence');
+  const pendingRenameTitle = `smoke-pending-title-${Date.now()}`;
+  const renamedNoteTitle = `smoke-context-renamed-${Date.now()}`;
+  setFieldValue(editorTitle, pendingRenameTitle);
+  const renameTarget = await waitFor(
+    () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === beforeTitle),
+    { label: 'find opened note in tree' },
+  );
+  renameTarget.dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 160,
+    clientY: 160,
+  }));
+  const renameMenu = await waitFor(() => document.querySelector('.context-menu'), { label: 'open note rename menu' });
+  [...renameMenu.querySelectorAll('.menu__item')]
+    .find((button) => button.textContent.includes('重命名'))
+    ?.click();
+  const renameInput = await waitFor(() => container.querySelector('#rename-file-name'), { label: 'open note rename dialog' });
+  setFieldValue(renameInput, renamedNoteTitle);
+  renameInput.closest('form')?.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(
+    () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === renamedNoteTitle),
+    { label: 'rename note in tree' },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  const renamedDetailResponse = await fetch(`${BASE_URL}/api/notes/${fixtureId}`);
+  const renamedDetailPayload = await renamedDetailResponse.json();
+  const renamedDetail = renamedDetailPayload?.data;
+  check('context-menu rename survives autosave', renamedDetail?.title === renamedNoteTitle);
+  check('context-menu rename updates the Markdown path', renamedDetail?.filePath?.endsWith(`${renamedNoteTitle}.md`));
+  check('editor title follows context-menu rename', container.querySelector('.editor__title')?.value === renamedNoteTitle);
+
   const realErrors = consoleErrors.filter((text) => !text.includes('Warning:'));
   check('控制台没有未处理异常', realErrors.length === 0, realErrors.slice(0, 2).join(' | '));
 

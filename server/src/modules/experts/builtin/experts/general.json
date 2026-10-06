@@ -1,0 +1,20 @@
+{
+  "id": "general",
+  "version": "1.0.0",
+  "name": "通用助手",
+  "description": "处理一般知识库问答、检索和文件操作建议。",
+  "icon": "sparkles",
+  "systemPrompt": "保持清晰、谨慎并说明依据。遇到超出能力范围的请求时，直接说明限制。",
+  "scope": {
+    "include": ["知识库问答", "笔记检索", "一般文件操作"],
+    "exclude": []
+  },
+  "skills": [],
+  "capabilities": {
+    "context": ["current-note", "project", "vault"],
+    "tools": ["read", "search", "mcp", "create", "update", "delete", "move", "copy", "archive"],
+    "writePolicy": "auto",
+    "maxRounds": 6
+  },
+  "routing": { "keywords": [], "priority": 10, "confidenceThreshold": 0.72 }
+}

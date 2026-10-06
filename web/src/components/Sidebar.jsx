@@ -103,7 +103,7 @@ export default function Sidebar({
   return (
     <aside className="sidebar" aria-label="知识库导航">
       <div className="sidebar__toolbar" role="toolbar" aria-label="文件列表操作">
-        <button type="button" className="sidebar__toolbtn" onClick={onCreateNote} aria-label="新建笔记" title="新建笔记">
+        <button type="button" className="sidebar__toolbtn" onClick={() => onCreateNote?.()} aria-label="新建笔记" title="新建笔记">
           <FilePlus2 size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button

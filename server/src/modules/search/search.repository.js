@@ -8,6 +8,8 @@ function mapRow(row, excerpt) {
     folderId: row.folder_id,
     filePath: row.file_path || null,
     isPinned: row.is_pinned === 1,
+    contentHash: row.content_hash ?? null,
+    propertiesJson: row.properties_json ?? null,
     updatedAt: row.updated_at,
     excerpt,
   };
@@ -28,7 +30,7 @@ export function searchFullText(phrase, limit, folderId) {
   const params = folderId && folderId !== '__none__' ? [phrase, folderId, limit] : [phrase, limit];
   return getDb()
     .prepare(
-      `SELECT n.id, n.title, n.folder_id, n.file_path, n.is_pinned, n.updated_at, n.content
+      `SELECT n.id, n.title, n.folder_id, n.file_path, n.is_pinned, n.content_hash, n.properties_json, n.updated_at, n.content
          FROM notes_fts
          JOIN notes n ON n.id = notes_fts.note_id
         WHERE notes_fts MATCH ? ${folderFilter}
@@ -54,7 +56,7 @@ export function searchLike(pattern, limit, folderId) {
     : [pattern, pattern, limit];
   return getDb()
     .prepare(
-      `SELECT id, title, folder_id, file_path, is_pinned, updated_at, content
+      `SELECT id, title, folder_id, file_path, is_pinned, content_hash, properties_json, updated_at, content
          FROM notes
         WHERE (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\') ${folderFilter}
         ORDER BY is_pinned DESC, updated_at DESC

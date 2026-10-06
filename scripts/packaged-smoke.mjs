@@ -152,6 +152,27 @@ function readAppliedMigrations(dataDir) {
   }
 }
 
+/**
+ * 查 SQLite 里某个表是否带指定列 / 是否存在。
+ *
+ * 「迁移文件在包内且被记进 schema_migrations」**不等于**「表结构真的变了」：
+ * ALTER TABLE / CREATE TABLE 写错、被后续迁移覆盖、或磁盘上的库是从更早的版本
+ * 拷来的，都会让版本号齐全但列/表缺失——而应用启动不报错，只是到用时才炸。
+ */
+function inspectSchema(dataDir, { table, column = null }) {
+  const dbFile = findDatabase(dataDir);
+  if (!dbFile) return { exists: false, columns: [] };
+  const db = new DatabaseSync(dbFile);
+  try {
+    const columns = db.prepare(`PRAGMA table_info(${JSON.stringify(table)})`).all();
+    return { exists: columns.length > 0, columns: columns.map((row) => row.name) };
+  } catch {
+    return { exists: false, columns: [] };
+  } finally {
+    db.close();
+  }
+}
+
 async function main() {
   const productDir = locateProduct(productArg);
   const layout = detectLayout(productDir);
@@ -176,6 +197,18 @@ async function main() {
     unresolvedImports.length
       ? `解析失败：${unresolvedImports.join(' | ')}（有源码跨目录引用仓库根 scripts/，需补进 electron-builder.yml 的 files 段）`
       : `已扫描 server/src 与 src 的 .js`);
+
+  // ---- 包完整性：内置 MCP Server 及其依赖必须随包发出 ----
+  // 设置页「导出配置」的 Lattice 条目指向包内 scripts/mcp-server/server.mjs。
+  // 漏打不崩任何进程（后端/页面都正常），只有外部客户端拉起配置时报「文件不存在」，
+  // 属于最阴的静默失效 —— 与 fc-core.mjs 同一级别，必须在冒烟里立案。
+  const mcpServerFile = path.join(layout.appRoot, 'scripts', 'mcp-server', 'server.mjs');
+  const mcpSdkFile = path.join(layout.appRoot, 'scripts', 'mcp-server', 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
+  check('内置 MCP Server 及其 SDK 依赖随包发出',
+    fs.existsSync(mcpServerFile) && fs.existsSync(mcpSdkFile),
+    fs.existsSync(mcpServerFile)
+      ? (fs.existsSync(mcpSdkFile) ? 'server.mjs 与 @modelcontextprotocol/sdk 都在' : '缺 scripts/mcp-server/node_modules（SDK 依赖未打包）')
+      : '缺 scripts/mcp-server/server.mjs（需补进 electron-builder.yml 的 files 段）');
 
   try {
     if (layout.kind === 'desktop') {
@@ -238,6 +271,24 @@ async function main() {
       onDisk.length > 0 && appliedVersions.length === onDisk.length,
       `包内 ${onDisk.length} 个=[${onDisk.map((n) => n.replace(/\.sql$/, '')).join(', ')}] ` +
       `已应用 ${appliedVersions.length} 个=[${appliedVersions.join(', ')}]`);
+
+    // 「迁移版本号齐全」只说明 .sql 被跑过；这里再钉住新结构真的建出来了。
+    // 008 给 notes 加了属性投影列——知识健康扫描与 Inbox 过滤都直接 SELECT 它，
+    // 列不存在时 /api/review/health 会整片 500；009 建了对话度量表；
+    // 007 给 ai_sessions 加了 expert_id，会话按专家隔离全靠这一列（缺列时
+    // listSessionPage 的 WHERE expert_id = ? 直接抛错，会话列表整片 500）。
+    const propertiesColumn = inspectSchema(dataDir, { table: 'notes', column: 'properties_json' });
+    const metricsTable = inspectSchema(dataDir, { table: 'ai_chat_metrics' });
+    const sessionsTable = inspectSchema(dataDir, { table: 'ai_sessions' });
+    check('迁移 008 的 notes.properties_json 投影列真的建出来了',
+      propertiesColumn.exists && propertiesColumn.columns.includes('properties_json'),
+      `notes 列=[${propertiesColumn.columns.join(', ') || '表不存在'}]`);
+    check('迁移 009 的 ai_chat_metrics 表真的建出来了',
+      metricsTable.exists,
+      `ai_chat_metrics 列=[${metricsTable.columns.join(', ') || '表不存在'}]`);
+    check('迁移 007 的 ai_sessions.expert_id 专家归属列真的建出来了',
+      sessionsTable.exists && sessionsTable.columns.includes('expert_id'),
+      `ai_sessions 列=[${sessionsTable.columns.join(', ') || '表不存在'}]`);
 
     // ---- 前端与资源（不能只看 / 返回 200） ----
     const indexRes = await get('/');
@@ -310,6 +361,32 @@ async function main() {
     check('GET /sw.js 在站点根能下发（service worker scope 依赖根路径）',
       swRes.ok && /javascript|ecmascript/i.test(swType),
       `status=${swRes.status} type=${swType}`);
+
+    // ---- MCP 插件市场的品牌 logo 必须随包发出且能从根路径取到 ----
+    // 与 PWA 资源同一类风险：`web/public/mcp-logos/*.svg` 由 vite **原样拷**进 web/dist 根下的
+    // `mcp-logos/`，设置页用绝对路径 `/mcp-logos/<name>.svg` 引用。它们不在 assets/ 里、
+    // 没有 hash 与体积校验，漏发时后端与页面一切正常，只有市场卡片的品牌图标静默裂图。
+    // 判据不数「有几个文件」（那是魔法数字），而是从**市场目录源码**里取出被引用的 logo 集合
+    // 逐个核对：新增条目引用了没拷进 dist 的 logo（忘放文件 / 改了名）时能被精确指出来。
+    const catalogSource = fs.readFileSync(path.join(REPO, 'web', 'src', 'settings', 'mcpMarketplace.js'), 'utf8');
+    const referencedLogos = [...new Set([...catalogSource.matchAll(/LOGO\('([a-z0-9-]+)'\)/g)].map((m) => m[1]))].sort();
+    const logoProblems = [];
+    for (const name of referencedLogos) {
+      const packedFile = path.join(layout.appRoot, 'web', 'mcp-logos', `${name}.svg`);
+      const repoFile = path.join(REPO, 'web', 'dist', 'mcp-logos', `${name}.svg`);
+      if (!fs.existsSync(packedFile)) logoProblems.push(`${name}.svg 未随包发出`);
+      else if (!fs.existsSync(repoFile)) logoProblems.push(`${name}.svg 不在仓库 web/dist`);
+      else if (!fs.readFileSync(packedFile).equals(fs.readFileSync(repoFile))) logoProblems.push(`${name}.svg 与仓库不一致`);
+    }
+    check('市场目录引用的品牌 logo 全部随包发出且与仓库 web/dist 逐字节一致',
+      referencedLogos.length > 0 && logoProblems.length === 0,
+      logoProblems.length ? logoProblems.join('；') : `覆盖 ${referencedLogos.length} 个 logo`);
+
+    const logoRes = await get('/mcp-logos/mcp.svg');
+    const logoType = logoRes.headers.get('content-type') ?? '';
+    check('GET /mcp-logos/mcp.svg 能从站点根下发为 svg',
+      logoRes.ok && /svg/i.test(logoType),
+      `status=${logoRes.status} type=${logoType}`);
 
     // ---- 桌面壳是否与仓库同版 ----
     // desktop/ 在 .gitignore 的 `!` 白名单里、且常常还没 `git add`，所以「改了壳没重打」
@@ -473,6 +550,8 @@ async function main() {
       ['search', '/api/search?q=smoke'],
       ['jobs', '/api/jobs'],
       ['mcp', '/api/mcp/info'],
+      ['experts', '/api/experts'],
+      ['review', '/api/review/health'],
       ['vault', '/api/vault/info'],
       ['ai', '/api/ai/settings'],
     ];
@@ -483,6 +562,193 @@ async function main() {
     }
     check('各服务端模块路由都已入包（非 404）', missingModules.length === 0,
       missingModules.length ? `缺失：${missingModules.join(', ')}` : `覆盖 ${MODULE_PROBES.length} 个模块`);
+
+    // ---- MCP 能力清单的语义指纹 ----
+    // `/api/mcp/info` 已从「未开启写入时把 3 个写工具从数组里删掉（只剩 7 条）」改为
+    // **返回全量 11 条工具并逐条带 `enabled`**（写工具默认 enabled=false），另附
+    // enabledToolCount / writeToolCount / writesEnvVar。设置页据此才能同时展示「现在可用」
+    // 与「开启后可用」。旧包同样是 200，路由探针抓不到这种语义回退 —— 只能读响应体。
+    const mcpInfoRes = await api('/api/mcp/info');
+    let mcpInfo = null;
+    try { mcpInfo = (await mcpInfoRes.json()).data ?? null; } catch { mcpInfo = null; }
+    const mcpTools = Array.isArray(mcpInfo?.tools) ? mcpInfo.tools : [];
+    const mcpNames = mcpTools.map((tool) => tool.name);
+    const mcpWriteTools = mcpTools.filter((tool) => tool.write === true);
+    const mcpReadTools = mcpTools.filter((tool) => tool.write === false);
+    check('MCP info 返回全量工具并逐条标注 enabled（默认只读：写工具未启用）',
+      mcpTools.length === 11
+        && mcpNames.includes('search_by_tag')
+        && mcpWriteTools.length === 3
+        && mcpWriteTools.every((tool) => tool.enabled === false)
+        && mcpReadTools.length === 8
+        && mcpReadTools.every((tool) => tool.enabled === true)
+        && mcpInfo.enabledToolCount === mcpReadTools.length
+        && mcpInfo.writeToolCount === 3
+        && mcpInfo.writesEnabled === false
+        && mcpInfo.writesEnvVar === 'LATTICE_MCP_ALLOW_WRITES',
+      `tools=${mcpTools.length} write=${mcpWriteTools.length} enabled=${mcpInfo?.enabledToolCount ?? '?'} `
+      + `env=${mcpInfo?.writesEnvVar ?? '?'} 名单=[${mcpNames.join(', ') || '空'}]`);
+
+    // ---- 知识健康中心（review 模块）的扫描语义指纹 ----
+    // `/api/review/health` 的前端契约是固定的 6 个分类键 + `summary.counts` 汇总：
+    // 知识健康中心按 key 渲染卡片、按 counts 决定「需要处理多少条」。若服务端正文缺键
+    // （例如某个分类忘了导出、或读 properties 的投影列没迁到），页面会静默少一块面板 ——
+    // 路由探针只看非 404，抓不到这种回退。
+    const healthRes = await api('/api/review/health?limit=5');
+    let healthReport = null;
+    try { healthReport = (await healthRes.json()).data ?? null; } catch { healthReport = null; }
+    const HEALTH_CATEGORY_KEYS = ['inbox', 'brokenLinks', 'isolated', 'stale', 'duplicates', 'incomplete'];
+    const healthCategories = healthReport?.categories ?? null;
+    const missingCategoryKeys = healthCategories
+      ? HEALTH_CATEGORY_KEYS.filter((key) => !Array.isArray(healthCategories[key]))
+      : HEALTH_CATEGORY_KEYS;
+    const counts = healthReport?.summary?.counts ?? null;
+    check('GET /api/review/health 返回 6 个知识分类与自洽的汇总计数',
+      healthRes.ok
+        && healthCategories !== null
+        && missingCategoryKeys.length === 0
+        && counts !== null
+        && HEALTH_CATEGORY_KEYS.every((key) => counts[key] === healthCategories[key].length)
+        && healthReport.summary.total === HEALTH_CATEGORY_KEYS.reduce((sum, key) => sum + counts[key], 0)
+        && healthReport.limits?.perCategory === 5
+        && Number.isInteger(healthReport.noteCount),
+      `status=${healthRes.status} noteCount=${healthReport?.noteCount ?? '?'} `
+      + `缺失分类=[${missingCategoryKeys.join(', ') || '无'}] `
+      + `counts=${counts ? JSON.stringify(counts) : '?'}`);
+    check('知识健康扫描的 limit 参数被服务端强制（每类不超过上限）',
+      healthRes.ok
+        && healthCategories !== null
+        && HEALTH_CATEGORY_KEYS.every((key) => healthCategories[key].length <= 5),
+      healthCategories
+        ? `各类长度=[${HEALTH_CATEGORY_KEYS.map((key) => `${key}:${healthCategories[key].length}`).join(', ')}]`
+        : `status=${healthRes.status}`);
+
+    // ---- AI 会话：分页元数据 + 专家隔离 ----
+    // 这两件事都靠「迁移 007 的 ai_sessions.expert_id」+「listSessionPage 的 meta」实现。
+    // 语义回退时接口照样 200，只是 meta 消失、或不同专家的会话串在一起 ——
+    // 路由探针（非 404）与「GET /api/ai/settings」都抓不到，必须读 body。
+    const SESSION_EXPERT = 'general';
+    const sessionListRes = await api(`/api/ai/sessions?expertId=${SESSION_EXPERT}&limit=5&offset=0`);
+    let sessionPage = null;
+    try { sessionPage = await sessionListRes.json(); } catch { sessionPage = null; }
+    const sessionItems = Array.isArray(sessionPage?.data) ? sessionPage.data : null;
+    const sessionMeta = sessionPage?.meta ?? null;
+    const sessionMetaComplete = sessionMeta !== null
+      && ['total', 'limit', 'offset', 'hasMore'].every((key) => sessionMeta[key] !== undefined)
+      && Number.isInteger(sessionMeta.total)
+      && sessionMeta.limit === 5
+      && sessionMeta.offset === 0
+      && typeof sessionMeta.hasMore === 'boolean';
+    check('GET /api/ai/sessions 返回分页元数据（total/limit/offset/hasMore）',
+      sessionListRes.ok && sessionItems !== null && sessionMetaComplete,
+      `status=${sessionListRes.status} items=${sessionItems?.length ?? '?'} `
+      + `meta=${sessionMeta ? JSON.stringify(sessionMeta) : '缺失'}`);
+
+    // 专家隔离：新建一个非 general 专家的会话，再用 default 专家列一次。
+    // 若查询条件里的 expert_id 被丢掉（回归到「列全部」），下面这条立刻报红。
+    const OTHER_EXPERT = 'smoke-expert';
+    const otherSessionRes = await api('/api/ai/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'packaged-smoke-other-expert', expertId: OTHER_EXPERT }),
+    });
+    let otherSession = null;
+    try { otherSession = (await otherSessionRes.json()).data ?? null; } catch { otherSession = null; }
+    const otherListRes = await api(`/api/ai/sessions?expertId=${SESSION_EXPERT}&limit=200&offset=0`);
+    let otherPageItems = null;
+    try { otherPageItems = (await otherListRes.json()).data ?? null; } catch { otherPageItems = null; }
+    const leakedSessions = Array.isArray(otherPageItems)
+      ? otherPageItems.filter((item) => item?.expertId && item.expertId !== SESSION_EXPERT)
+      : null;
+    check('AI 会话按 expert_id 隔离（别的专家的会话不会串到当前专家列表）',
+      otherSessionRes.ok
+        && otherSession !== null
+        && otherSession.expertId === OTHER_EXPERT
+        && Array.isArray(otherPageItems)
+        && leakedSessions.length === 0,
+      `create status=${otherSessionRes.status} expertId=${otherSession?.expertId ?? '?'} `
+      + `当前专家列表=[${(otherPageItems ?? []).map((item) => `${item?.expertId}:${item?.title}`).join(', ') || '空'}]`);
+    check('AI 会话列表对非法 expertId 直接拒绝（正则白名单在服务端生效）',
+      await (async () => {
+        const bad = await api('/api/ai/sessions?expertId=NOT_VALID');
+        return bad.status === 422;
+      })(),
+      `expertId=NOT_VALID 的响应码应为 422`);
+    if (otherSession?.id) {
+      await api(`/api/ai/sessions/${encodeURIComponent(otherSession.id)}`, { method: 'DELETE' });
+    }
+
+    // ---- 内置专家 / Skill 是**运行时数据文件**，必须随包发出且真能加载 ----
+    // `server/src/modules/experts/builtin/` 里是 6 个 expert `.json` + 7 个 skill 目录
+    // （每个必须同时有 SKILL.md 与 skill.json）。registry 用 `<包>/server/src/modules/experts/builtin`
+    // 读它们，而 `listExperts()` / `listSkills()` 把读取异常**静默吞掉** —— 漏文件不会报错，
+    // 只会「专家中心里少个人」或某个 skill 的 `available` 变成 false。所以这里三层一起核：
+    // 文件集合、逐字节一致、以及**走 HTTP 真把它们加载出来**（最贴近用户看到的结果）。
+    const builtinDir = path.join(REPO, 'server', 'src', 'modules', 'experts', 'builtin');
+    const repoExpertIds = fs.readdirSync(path.join(builtinDir, 'experts'))
+      .filter((name) => name.endsWith('.json')).map((name) => name.replace(/\.json$/, '')).sort();
+    const repoSkillIds = fs.readdirSync(path.join(builtinDir, 'skills'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    const packedBuiltin = path.join(layout.appRoot, 'server', 'src', 'modules', 'experts', 'builtin');
+    const builtinFiles = [
+      ...repoExpertIds.map((id) => `experts/${id}.json`),
+      ...repoSkillIds.flatMap((id) => [`skills/${id}/SKILL.md`, `skills/${id}/skill.json`]),
+    ];
+    const builtinMismatch = builtinFiles.filter((rel) => {
+      const packedFile = path.join(packedBuiltin, rel);
+      const repoFile = path.join(builtinDir, rel);
+      return !fs.existsSync(packedFile) || !fs.readFileSync(packedFile).equals(fs.readFileSync(repoFile));
+    });
+    check('内置专家 / Skill 资源随包发出且与仓库 server/src 逐字节一致',
+      repoExpertIds.length > 0 && repoSkillIds.length > 0 && builtinMismatch.length === 0,
+      builtinMismatch.length
+        ? `缺失/不一致：${builtinMismatch.join(', ')}`
+        : `覆盖 ${repoExpertIds.length} 个专家 / ${repoSkillIds.length} 个 Skill`);
+
+    const expertsRes = await api('/api/experts');
+    let expertsPayload = [];
+    try { expertsPayload = (await expertsRes.json()).data ?? []; } catch { expertsPayload = []; }
+    const expertsById = new Map(expertsPayload.map((expert) => [expert.id, expert]));
+    const missingExperts = repoExpertIds.filter((id) => !expertsById.has(id));
+    const unavailableSkills = [];
+    for (const expert of expertsPayload) {
+      for (const skill of expert.skills ?? []) {
+        if (skill.available !== true) unavailableSkills.push(`${expert.id}→${skill.id}`);
+      }
+    }
+    check('GET /api/experts 能加载出全部内置专家，且绑定的 Skill 全部 available',
+      expertsRes.ok && expertsPayload.length > 0
+        && missingExperts.length === 0 && unavailableSkills.length === 0,
+      `status=${expertsRes.status} 加载 ${expertsPayload.length} 个 `
+      + `缺失=[${missingExperts.join(', ') || '无'}] 不可用绑定=[${unavailableSkills.join(', ') || '无'}]`);
+
+    const skillsRes = await api('/api/experts/skills');
+    let skillsPayload = [];
+    try { skillsPayload = (await skillsRes.json()).data ?? []; } catch { skillsPayload = []; }
+    const loadedSkillIds = new Set(skillsPayload.map((skill) => skill.id));
+    const missingSkills = repoSkillIds.filter((id) => !loadedSkillIds.has(id));
+    check('GET /api/experts/skills 能加载出全部内置 Skill',
+      skillsRes.ok && skillsPayload.length > 0 && missingSkills.length === 0,
+      `status=${skillsRes.status} 加载 ${skillsPayload.length} 个 缺失=[${missingSkills.join(', ') || '无'}]`);
+
+    // 正文只有真读进来才算数：SKILL.md 与 skill.json 缺任何一个，readSkillFromDir 都返回 null。
+    const sampleSkillId = repoSkillIds[0];
+    const sampleSkillRes = await api(`/api/experts/skills/${sampleSkillId}`);
+    let sampleSkill = null;
+    try { sampleSkill = (await sampleSkillRes.json()).data ?? null; } catch { sampleSkill = null; }
+    check(`GET /api/experts/skills/${sampleSkillId} 能读到 SKILL.md 正文与内容哈希`,
+      sampleSkillRes.ok
+        && typeof sampleSkill?.content === 'string' && sampleSkill.content.trim().length > 0
+        && typeof sampleSkill?.contentHash === 'string' && sampleSkill.contentHash.length === 64,
+      `status=${sampleSkillRes.status} 正文字符=${sampleSkill?.content?.length ?? 0} hash=${sampleSkill?.contentHash?.slice(0, 8) ?? '无'}`);
+
+    // `server/src/modules/ai/ai.mcp.js` 在**模块加载期**裸导入 @modelcontextprotocol/sdk，
+    // 由 `<包>/node_modules` 解析。后端既然已经起来了，这里再核一次文件级存在 ——
+    // 这条挂掉就是整站白屏，而「后端没起来」在冒烟里只会呈现成一句无信息的启动失败。
+    const sdkManifest = path.join(layout.appRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
+    check('包内 app/node_modules 含 @modelcontextprotocol/sdk（ai.mcp.js 的裸导入）',
+      fs.existsSync(sdkManifest),
+      sdkManifest.replace(layout.appRoot, '<app>'));
 
     // ---- 新增查询参数确实进了包（用「非法值必须被拒」当指纹） ----
     // `listQuery` 新增了 inboxStatus 枚举。若包里是旧 schema（没这个 key），zod 默认会

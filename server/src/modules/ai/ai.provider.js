@@ -134,6 +134,20 @@ export function composeAbortSignals(timeoutSignal, externalSignal) {
   return composite.signal;
 }
 
+/** 归一上游 usage（OpenAI 规范字段，部分网关缺省）；无有效字段时返回 null */
+function normalizeUsage(raw) {
+  const prompt = Number(raw?.prompt_tokens);
+  const completion = Number(raw?.completion_tokens);
+  if (!Number.isFinite(prompt) && !Number.isFinite(completion)) return null;
+  return {
+    prompt_tokens: Number.isFinite(prompt) ? prompt : 0,
+    completion_tokens: Number.isFinite(completion) ? completion : 0,
+    total_tokens: Number.isFinite(Number(raw?.total_tokens))
+      ? Number(raw.total_tokens)
+      : (Number.isFinite(prompt) ? prompt : 0) + (Number.isFinite(completion) ? completion : 0),
+  };
+}
+
 async function readErrorPayload(response) {
   const responseText = await response.text();
   let payload = null;
@@ -156,123 +170,193 @@ function abortOutcomeError(signal, timeoutMessage) {
 
 /**
  * 非流式对话补全。返回 { raw, meta }；解析成结构化回复是调用方（ai.service）的职责。
+ * 429/5xx/建连网络错误自动重试（AI_RETRY_MAX，默认 1 次，指数退避）；超时与客户端取消不重试。
  */
 export async function callChatProvider({ messages, provider, signal = null, temperature = 0.2, maxTokens = null }) {
   const endpoint = normalizeChatEndpoint(provider.endpoint);
   await assertPublicEndpoint(endpoint);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: buildProviderHeaders(provider),
-      body: JSON.stringify({
-        model: provider.model || 'gpt-4o-mini',
-        temperature,
-        messages,
-        ...(maxTokens ? { max_tokens: maxTokens } : {}),
-      }),
-      signal: composeAbortSignals(controller.signal, signal),
-    });
-    if (!response.ok) {
-      const { payload, responseText } = await readErrorPayload(response);
-      throw new AiProviderError(formatProviderError(response.status, payload, responseText, endpoint));
+  const body = JSON.stringify({
+    model: provider.model || 'gpt-4o-mini',
+    temperature,
+    messages,
+    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+  });
+  const headers = buildProviderHeaders(provider);
+
+  for (let attempt = 0; ; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt - 1)));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body,
+        signal: composeAbortSignals(controller.signal, signal),
+      });
+      if (!response.ok) {
+        const { payload, responseText } = await readErrorPayload(response);
+        if (isRetryableStatus(response.status) && attempt < config.aiRetryMax) continue;
+        throw new AiProviderError(formatProviderError(response.status, payload, responseText, endpoint));
+      }
+      const payload = await response.json();
+      const raw = payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? '';
+      if (!raw) throw new AiProviderError('外部 AI 没有返回内容');
+      const reasoning = String(payload?.choices?.[0]?.message?.reasoning_content ?? '');
+      const usage = normalizeUsage(payload?.usage);
+      return { raw: String(raw), reasoning, meta: { provider: 'external', model: provider.model || 'default', ...(usage ? { usage } : {}) } };
+    } catch (error) {
+      if (error instanceof AiProviderError) throw error;
+      if (isRetryableNetworkError(error, signal) && attempt < config.aiRetryMax) continue;
+      if (error?.name === 'AbortError') {
+        throw abortOutcomeError(signal, `外部 AI 响应超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    const payload = await response.json();
-    const raw = payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? '';
-    if (!raw) throw new AiProviderError('外部 AI 没有返回内容');
-    return { raw: String(raw), meta: { provider: 'external', model: provider.model || 'default' } };
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw abortOutcomeError(signal, `外部 AI 响应超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
+/** 429 与 5xx 属瞬时故障，值得一次退避重试；4xx 参数错误重试无意义 */
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500;
+}
+
+function retryDelayMs(attempt) {
+  return Math.min(500 * 2 ** attempt, 4_000);
+}
+
+/** 建连层网络错误（fetch failed / 连接被重置）；客户端已取消时绝不重试 */
+function isRetryableNetworkError(error, signal) {
+  if (signal?.aborted) return false;
+  if (error?.name === 'AbortError') return false;
+  if (error instanceof TypeError) return true; // node fetch 的网络层失败统一是 TypeError: fetch failed
+  return /ECONNRESET|ECONNREFUSED|EPIPE|UND_ERR/i.test(String(error?.cause?.code ?? ''));
+}
+
 /**
- * 流式对话补全（SSE）。逐段回调 onDelta(文本增量)，结束后返回完整文本。
+ * 流式对话补全（SSE）。逐段回调 onDelta(正文增量) 与 onReasoning(思维链增量，
+ * 推理模型如 glm-5.3-flashx 会在 delta.reasoning_content 里输出)，结束后返回完整文本。
  * 上游断流 / [DONE] / 客户端取消都会正常收尾。
+ * 429/5xx/建连失败在首包之前自动重试（AI_RETRY_MAX）；已开始输出后不可重试，
+ * 中断一律按取消/超时语义收尾，避免向调用方重复下发前一段内容。
  */
-export async function streamChatProvider({ messages, provider, signal = null, onDelta, temperature = 0.2 }) {
+export async function streamChatProvider({ messages, provider, signal = null, onDelta, onReasoning, temperature = 0.2, maxTokens = null }) {
   const endpoint = normalizeChatEndpoint(provider.endpoint);
   await assertPublicEndpoint(endpoint);
-  const controller = new AbortController();
-  // 空闲超时而非总时长：每收到一段数据就重置计时，长回复不会被误中断；
-  // 上游 hang 住（连接建立后不再出数据）超过阈值仍会被 abort。
-  let timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
-  const resetIdleTimeout = () => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+  const body = JSON.stringify({
+    model: provider.model || 'gpt-4o-mini',
+    temperature,
+    messages,
+    stream: true,
+    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+  });
+  const headers = { ...buildProviderHeaders(provider), Accept: 'text/event-stream' };
+
+  // 首包之后 receivedAny 为真：重试只对「还没向调用方吐出任何内容」的失败生效
+  let receivedAny = false;
+  const trackDelta = (text) => {
+    receivedAny = true;
+    onDelta?.(text);
   };
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { ...buildProviderHeaders(provider), Accept: 'text/event-stream' },
-      body: JSON.stringify({
-        model: provider.model || 'gpt-4o-mini',
-        temperature,
-        messages,
-        stream: true,
-      }),
-      signal: composeAbortSignals(controller.signal, signal),
-    });
-    if (!response.ok) {
-      const { payload, responseText } = await readErrorPayload(response);
-      throw new AiProviderError(formatProviderError(response.status, payload, responseText, endpoint));
-    }
-    if (!response.body) throw new AiProviderError('上游服务不支持流式响应');
+  const trackReasoning = (text) => {
+    receivedAny = true;
+    onReasoning?.(text);
+  };
 
-    // 部分兼容网关会忽略 stream:true 直接回整体 JSON：按非流式解析，
-    // 否则流式解析读不到任何 data: 行，误报「外部 AI 没有返回内容」。
-    const contentType = String(response.headers?.get('content-type') ?? '');
-    if (/application\/json/i.test(contentType)) {
-      const payload = await response.json();
-      const raw = String(payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? '');
-      if (!raw) throw new AiProviderError('外部 AI 没有返回内容');
-      onDelta?.(raw);
-      return { raw, meta: { provider: 'external', model: provider.model || 'default' } };
-    }
+  for (let attempt = 0; ; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt - 1)));
+    const controller = new AbortController();
+    // 空闲超时而非总时长：每收到一段数据就重置计时，长回复不会被误中断；
+    // 上游 hang 住（连接建立后不再出数据）超过阈值仍会被 abort。
+    let timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+    const resetIdleTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS());
+    };
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body,
+        signal: composeAbortSignals(controller.signal, signal),
+      });
+      if (!response.ok) {
+        const { payload, responseText } = await readErrorPayload(response);
+        if (isRetryableStatus(response.status) && attempt < config.aiRetryMax && !receivedAny) continue;
+        throw new AiProviderError(formatProviderError(response.status, payload, responseText, endpoint));
+      }
+      if (!response.body) throw new AiProviderError('上游服务不支持流式响应');
 
-    let full = '';
-    const decoder = new TextDecoder();
-    let buffer = '';
-    for await (const chunk of response.body) {
-      resetIdleTimeout();
-      buffer += decoder.decode(chunk, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const data = trimmed.slice(5).trim();
-        if (!data || data === '[DONE]') continue;
-        try {
-          const event = JSON.parse(data);
-          const delta = event?.choices?.[0]?.delta?.content
-            ?? event?.choices?.[0]?.message?.content
-            ?? event?.output_text
-            ?? '';
-          if (delta) {
-            full += delta;
-            onDelta?.(delta);
+      // 部分兼容网关会忽略 stream:true 直接回整体 JSON：按非流式解析，
+      // 否则流式解析读不到任何 data: 行，误报「外部 AI 没有返回内容」。
+      const contentType = String(response.headers?.get('content-type') ?? '');
+      if (/application\/json/i.test(contentType)) {
+        const payload = await response.json();
+        const raw = String(payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? '');
+        if (!raw) throw new AiProviderError('外部 AI 没有返回内容');
+        const reasoning = String(payload?.choices?.[0]?.message?.reasoning_content ?? '');
+        if (reasoning) trackReasoning(reasoning);
+        trackDelta(raw);
+        const usage = normalizeUsage(payload?.usage);
+        return { raw, reasoning, meta: { provider: 'external', model: provider.model || 'default', ...(usage ? { usage } : {}) } };
+      }
+
+      let full = '';
+      let reasoning = '';
+      // 用量一般随最后一个 chunk 下发（DeepSeek/GLM 默认带；OpenAI 需 stream_options，这里被动捕获、不发兼容性存疑的参数）
+      let usage = null;
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for await (const chunk of response.body) {
+        resetIdleTimeout();
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+          try {
+            const event = JSON.parse(data);
+            if (event?.usage) usage = normalizeUsage(event.usage) ?? usage;
+            const delta = event?.choices?.[0]?.delta ?? event?.choices?.[0]?.message ?? {};
+            const reasoningDelta = String(delta.reasoning_content ?? delta.reasoning ?? '');
+            if (reasoningDelta) {
+              reasoning += reasoningDelta;
+              trackReasoning(reasoningDelta);
+            }
+            const contentDelta = delta.content ?? event?.output_text ?? '';
+            if (contentDelta) {
+              full += contentDelta;
+              trackDelta(contentDelta);
+            }
+          } catch {
+            // 非 JSON 的 data 行（心跳/注释）忽略
           }
-        } catch {
-          // 非 JSON 的 data 行（心跳/注释）忽略
         }
       }
+      if (!full.trim()) throw new AiProviderError('外部 AI 没有返回内容');
+      return { raw: full, reasoning, meta: { provider: 'external', model: provider.model || 'default', ...(usage ? { usage } : {}) } };
+    } catch (error) {
+      if (receivedAny) {
+        // 已有输出下发：不可重试，按既有的取消/超时语义收尾
+        if (error?.name === 'AbortError') {
+          throw abortOutcomeError(signal, `外部 AI 连接空闲超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒未收到新内容），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
+        }
+        throw error;
+      }
+      if (error instanceof AiProviderError) throw error;
+      if (isRetryableNetworkError(error, signal) && attempt < config.aiRetryMax) continue;
+      if (error?.name === 'AbortError') {
+        throw abortOutcomeError(signal, `外部 AI 连接空闲超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒未收到新内容），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    if (!full.trim()) throw new AiProviderError('外部 AI 没有返回内容');
-    return { raw: full, meta: { provider: 'external', model: provider.model || 'default' } };
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw abortOutcomeError(signal, `外部 AI 连接空闲超时（${Math.round(CHAT_TIMEOUT_MS() / 1000)} 秒未收到新内容），模型生成较慢或不可达；可用 AI_CHAT_TIMEOUT_MS 调整`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

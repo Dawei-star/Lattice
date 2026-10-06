@@ -26,18 +26,19 @@ export function registerJobHandler(type, handler) {
 }
 
 export function enqueueJob({ type, payload = {}, total = 0, idempotencyKey = null } = {}) {
-  const existing = idempotencyKey
-    ? getDb().prepare(
+  const db = getDb();
+  const active = idempotencyKey
+    ? db.prepare(
       'SELECT * FROM jobs WHERE type = ? AND idempotency_key = ? AND status IN (\'queued\', \'running\') ORDER BY created_at DESC LIMIT 1',
     ).get(type, idempotencyKey)
     : null;
-  if (existing) return mapJob(existing);
+  if (active) return mapJob(active);
 
   const timestamp = nowIso();
   const id = randomUUID();
   try {
     withTransaction(() => {
-      getDb().prepare(
+      db.prepare(
         `INSERT INTO jobs (
            id, type, status, progress, total, payload, idempotency_key,
            created_at, updated_at
@@ -45,14 +46,28 @@ export function enqueueJob({ type, payload = {}, total = 0, idempotencyKey = nul
       ).run(id, type, Math.max(0, Number(total) || 0), JSON.stringify(payload ?? {}), idempotencyKey, timestamp, timestamp);
     });
   } catch (error) {
-    // 两次相同的用户请求可能同时到达，唯一索引下返回已存在的活动任务。
-    if (idempotencyKey) {
-      const concurrent = getDb().prepare(
-        'SELECT * FROM jobs WHERE type = ? AND idempotency_key = ? AND status IN (\'queued\', \'running\') ORDER BY created_at DESC LIMIT 1',
-      ).get(type, idempotencyKey);
-      if (concurrent) return mapJob(concurrent);
+    // ux_jobs_idempotency 对终态任务同样唯一：同键旧任务已完结时不重置就会永久占键，
+    // 后续入队全部撞约束失败。这里把同键旧任务重置回 queued 复用（新载荷覆盖旧状态）；
+    // 撞约束后却找不到同键行，说明是其他约束问题，原样抛出。
+    if (!idempotencyKey) throw error;
+    const occupied = db.prepare(
+      'SELECT * FROM jobs WHERE type = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1',
+    ).get(type, idempotencyKey);
+    if (!occupied) throw error;
+    if (occupied.status === 'queued' || occupied.status === 'running') return mapJob(occupied);
+    const reused = db.prepare(
+      `UPDATE jobs
+          SET status = 'queued', progress = 0, total = ?, message = NULL, payload = ?, result = NULL, error = NULL,
+              attempts = 0, started_at = NULL, finished_at = NULL, updated_at = ?
+        WHERE id = ? AND status IN ('completed', 'failed', 'cancelled')`,
+    ).run(Math.max(0, Number(total) || 0), JSON.stringify(payload ?? {}), timestamp, occupied.id);
+    if (!reused.changes) {
+      // 并发下已被其他请求重置为活动任务，直接复用
+      return mapJob(db.prepare('SELECT * FROM jobs WHERE id = ?').get(occupied.id));
     }
-    throw error;
+    scheduled.add(occupied.id);
+    scheduleDrain();
+    return getJob(occupied.id);
   }
 
   scheduled.add(id);
@@ -196,7 +211,7 @@ function finishJob(id, status, result, error) {
   getDb().prepare(
     `UPDATE jobs
         SET status = ?, result = ?, error = ?, finished_at = ?, updated_at = ?
-      WHERE id = ?`,
+      WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
   ).run(status, result === null || result === undefined ? null : JSON.stringify(result), error, timestamp, timestamp, id);
 }
 

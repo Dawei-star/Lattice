@@ -10,6 +10,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getDb, withTransaction } from '../../db/index.js';
+import { config } from '../../config/index.js';
 import { nowIso } from '../../lib/time.js';
 import { callEmbeddingProvider } from './ai.provider.js';
 import { resolveEmbeddingProvider } from './ai.settings.js';
@@ -133,6 +134,42 @@ function unpackVector(blob) {
   return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
 }
 
+// ── 向量内存缓存 ─────────────────────────────────────────────────────
+// 每次检索都全表读 BLOB + 反序列化是检索段最大开销（1 万分块 ≈ 40MB/查询）。
+// 缓存已反序列化的 Float32Array，按 indexVersion 失效：本模块的两个写入口
+// （storeNoteChunks / removeNoteIndex）都会递增版本。超大库超出内存预算时
+// 不缓存、回退逐查询加载，行为与旧版完全一致。
+const VECTOR_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+let indexVersion = 0;
+const vectorCache = new Map(); // model → { version, entries, bytes }
+
+function loadVectorEntries(model) {
+  const useCache = config.aiVectorCache;
+  if (useCache) {
+    const cached = vectorCache.get(model);
+    if (cached && cached.version === indexVersion) return cached.entries;
+  }
+  const rows = getDb()
+    .prepare(
+      `SELECT e.chunk_id, e.vector, e.dim, c.note_id, c.anchor, c.content
+         FROM note_chunk_embeddings e
+         JOIN note_chunks c ON c.id = e.chunk_id
+        WHERE e.model = ?`,
+    )
+    .all(model);
+  let bytes = 0;
+  const entries = rows.map((row) => {
+    const vector = unpackVector(row.vector);
+    bytes += vector.byteLength;
+    return { chunkId: row.chunk_id, noteId: row.note_id, anchor: row.anchor, content: row.content, dim: row.dim, vector };
+  });
+  if (useCache) {
+    if (bytes <= VECTOR_CACHE_MAX_BYTES) vectorCache.set(model, { version: indexVersion, entries, bytes });
+    else vectorCache.delete(model);
+  }
+  return entries;
+}
+
 export function cosineSimilarity(a, b) {
   if (a.length !== b.length || !a.length) return 0;
   let dot = 0;
@@ -196,6 +233,7 @@ export function storeNoteChunks(noteId, { chunks, vectors = null, model, noteCon
            status = 'indexed', error = NULL, attempts = 0, updated_at = excluded.updated_at`,
     ).run(noteId, noteContentHash, model, chunks.length, nowIso());
 
+    indexVersion += 1; // 向量缓存失效
     return { chunks: chunks.length };
   });
 }
@@ -203,26 +241,22 @@ export function storeNoteChunks(noteId, { chunks, vectors = null, model, noteCon
 export function removeNoteIndex(noteId) {
   getDb().prepare('DELETE FROM note_chunks WHERE note_id = ?').run(noteId);
   getDb().prepare('DELETE FROM ai_index_state WHERE note_id = ?').run(noteId);
+  indexVersion += 1; // 向量缓存失效
 }
 
 /**
  * 暴力余弦检索全库分块。queryVector 已由调用方 embedding 好最新模型维度。
+ * 结果集由内存缓存（可开关）供给；excludeNoteId 在扫描时过滤。
  * @returns {Array<{ chunkId, noteId, anchor, content, score }>}
  */
 export function searchVectors(queryVector, { limit = 12, model, excludeNoteId = null } = {}) {
-  const db = getDb();
-  const rows = db.prepare(
-    `SELECT e.chunk_id, e.vector, e.dim, c.note_id, c.anchor, c.content
-       FROM note_chunk_embeddings e
-       JOIN note_chunks c ON c.id = e.chunk_id
-      WHERE e.model = ? ${excludeNoteId ? 'AND c.note_id <> ?' : ''}`,
-  ).all(...(excludeNoteId ? [model, excludeNoteId] : [model]));
-
+  const entries = loadVectorEntries(model);
   const scored = [];
-  for (const row of rows) {
-    if (row.dim !== queryVector.length) continue;
-    const score = cosineSimilarity(queryVector, unpackVector(row.vector));
-    if (score > 0.05) scored.push({ chunkId: row.chunk_id, noteId: row.note_id, anchor: row.anchor, content: row.content, score });
+  for (const entry of entries) {
+    if (entry.dim !== queryVector.length) continue;
+    if (excludeNoteId && entry.noteId === excludeNoteId) continue;
+    const score = cosineSimilarity(queryVector, entry.vector);
+    if (score > 0.05) scored.push({ chunkId: entry.chunkId, noteId: entry.noteId, anchor: entry.anchor, content: entry.content, score });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, limit);
@@ -255,14 +289,27 @@ export function noteMeanVector(noteId, model) {
  * 用当前配置的 embedding 模型把若干文本转向量。未配置模型时抛出带 code 的错误，
  * 由路由层翻译成 409，前端据此引导用户先配置 embedding。
  */
-export async function embedTexts(texts, { provider = null } = {}) {
+export async function embedTexts(texts, { provider = null, priority = null } = {}) {
   const resolved = provider ?? resolveEmbeddingProvider();
   if (!resolved) {
     const error = new Error('尚未配置 embedding 模型，语义功能不可用；请在模型管理中心配置');
     error.code = 'EMBEDDING_NOT_CONFIGURED';
     throw error;
   }
+  if (priority === 'chat') lastChatEmbeddingAt = Date.now();
   return callEmbeddingProvider({ inputs: texts, provider: resolved });
+}
+
+// ── 对话流量优先 ─────────────────────────────────────────────────────
+// 索引批量 embedding 与对话查询共用同一上游配额。对话查询到来时记录时间戳，
+// 索引循环在批间让路（短暂 sleep），避免大库重建索引期间对话请求被上游限流。
+let lastChatEmbeddingAt = 0;
+
+/** 索引批间调用：近期有对话 embedding 时给上游留出喘息窗口 */
+export async function yieldToChatTraffic({ idleWindowMs = 5_000, minGapMs = 250 } = {}) {
+  const sinceChat = Date.now() - lastChatEmbeddingAt;
+  if (sinceChat >= idleWindowMs || sinceChat >= minGapMs) return;
+  await new Promise((resolve) => setTimeout(resolve, minGapMs - sinceChat));
 }
 
 /** 当前索引统计（模型中心 / 索引状态面板用） */
@@ -275,6 +322,12 @@ export function indexStatus() {
   ).all();
   const byStatus = Object.fromEntries(states.map((row) => [row.status, row.c]));
   const totalChunks = states.reduce((sum, row) => sum + row.chunks, 0);
+  // 失败原因直接透出：否则上游 400/401 只能靠开库排查，面板上永远只有一句通用文案
+  const latestError = db.prepare(
+    `SELECT error, updated_at FROM ai_index_state
+      WHERE status = 'failed' AND error IS NOT NULL
+      ORDER BY updated_at DESC LIMIT 1`,
+  ).get();
   return {
     configured: Boolean(provider),
     model: provider?.model ?? null,
@@ -283,5 +336,6 @@ export function indexStatus() {
     pending: byStatus.pending ?? 0,
     failed: byStatus.failed ?? 0,
     totalChunks,
+    latestError: latestError ? { message: latestError.error, updatedAt: latestError.updated_at } : null,
   };
 }

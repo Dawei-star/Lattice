@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "createdAt": "2026-10-06",
+  "description": "Lattice AI golden set 基线题集。评分规则：mustInclude 关键词命中率给部分分（0~1），forbid 任一命中直接 0 分。关键词是『好答案必然包含/必然不含』的宽松锚点，用于捕捉质量回退，不是精确评分；任何改动上线前后各跑一次对比即可。",
+  "scoring": {
+    "mustInclude": "partial credit",
+    "forbid": "zero if hit"
+  },
+  "items": [
+    { "id": "sum-001", "category": "summarize", "question": "用两句话解释费曼学习法的核心思想。", "mustInclude": ["讲", "理解"], "forbid": [] },
+    { "id": "sum-002", "category": "summarize", "question": "用不超过三句话总结间隔重复（Spaced Repetition）记忆法的原理。", "mustInclude": ["遗忘", "复习"], "forbid": [] },
+    { "id": "sum-003", "category": "summarize", "question": "把这段话总结成一句话：『本文提出了一个把碎片想法先收集到统一收件箱、再定期整理进永久笔记的工作流，作者实践三个月后认为它显著降低了写作启动成本。』", "mustInclude": ["收件箱", "整理"], "forbid": ["三个月后认为它显著降低了写作启动成本，并且作者还"] },
+    { "id": "knw-001", "category": "knowledge", "question": "Zettelkasten 卡片盒笔记法的两个核心原则是什么？", "mustInclude": ["卡片", "链接"], "forbid": [] },
+    { "id": "knw-002", "category": "knowledge", "question": "艾森豪威尔矩阵的四个象限分别是什么？", "mustInclude": ["重要", "紧急"], "forbid": [] },
+    { "id": "knw-003", "category": "knowledge", "question": "PARA 方法论把信息分为哪几类？", "mustInclude": ["Projects", "Areas", "Resources", "Archives"], "forbid": [] },
+    { "id": "knw-004", "category": "knowledge", "question": "双向链接和传统文件夹分类相比有什么优势？举一个理由即可。", "mustInclude": ["链接"], "forbid": [] },
+    { "id": "knw-005", "category": "knowledge", "question": "GTD（Getting Things Done）工作流的五个步骤是什么？", "mustInclude": ["收集", "回顾"], "forbid": [] },
+    { "id": "knw-006", "category": "knowledge", "question": "MOC（Map of Content）在知识管理里起什么作用？", "mustInclude": ["笔记", "主题"], "forbid": [] },
+    { "id": "wrt-001", "category": "writing", "question": "写一个读书笔记模板，必须包含标题、摘要和感想三个部分，用 Markdown 输出。", "mustInclude": ["标题", "摘要", "感想", "#"], "forbid": [] },
+    { "id": "wrt-002", "category": "writing", "question": "把这句话改写得更专业、更适合周报：『这个功能不太行，得改改。』只输出改写结果。", "mustInclude": [], "forbid": ["不太行", "得改改"] },
+    { "id": "wrt-003", "category": "writing", "question": "为笔记《如何高效开会》拟三个备选标题，一行一个。", "mustInclude": ["会议", "开会"], "forbid": [] },
+    { "id": "code-001", "category": "code", "question": "用 JavaScript 写一个判断字符串是否为回文的函数，并简要解释思路。", "mustInclude": ["function", "return"], "forbid": [] },
+    { "id": "code-002", "category": "code", "question": "Markdown 里怎么写表格？给出一个两列三行的示例。", "mustInclude": ["|", "---"], "forbid": [] },
+    { "id": "vlt-001", "category": "vault", "question": "我想开始整理我的知识库。请先问我两个必要的问题，再给出整理步骤建议。", "mustInclude": ["整理"], "forbid": [] },
+    { "id": "vlt-002", "category": "vault", "question": "长期不用的笔记应该删除还是归档？请给出判断标准和操作建议。", "mustInclude": ["归档"], "forbid": ["直接删除"] }
+  ]
+}

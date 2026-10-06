@@ -17,6 +17,7 @@
     "dist:portable": "npm run build:web && electron-builder --win portable"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "express": "^5.1.0",
     "zod": "^3.25.76"
   },

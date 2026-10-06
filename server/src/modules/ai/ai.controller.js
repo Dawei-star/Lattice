@@ -9,6 +9,7 @@ import { generateDigest as createDigest } from './ai.digest.js';
 // execute 语义与 SQL 无关，为免静态扫描误判，导入时起名为 runFileActions
 import { preview as previewFileActions, execute as runFileActions, history as listAuditLog } from './ai.operations.js';
 import { loadServerSettings, maskServerSettings, mergeSettingsPatch, saveServerSettings } from './ai.settings.js';
+import { warmupMcpConnections } from './ai.mcp.js';
 import { applyAiPrincipal } from './ai.auth.js';
 import { NotFoundError } from '../../lib/errors.js';
 import { listJobs } from '../../lib/jobs.js';
@@ -24,6 +25,16 @@ export async function chat(req, res) {
     if (!res.writableEnded) upstreamAbort.abort();
   });
   res.json({ data: await service.chat(principal(req, req.valid.body), { signal: upstreamAbort.signal }) });
+}
+
+/**
+ * MCP 预热（前端打开 AI 面板时调用）。不等待连接建立：spawn 进程 + listTools
+ * 可能耗时数秒到 20 秒，调用方拿到 202 即可，预热结果不回传（失败时正式对话
+ * 仍会按原路径自行连接，行为与未预热完全一致）。
+ */
+export function warmupMcp(req, res) {
+  void warmupMcpConnections(req.valid.body.mcpServers ?? []);
+  res.status(202).json({ data: { started: true } });
 }
 
 /**
@@ -174,9 +185,29 @@ export function putSettings(req, res) {
 
 // ── 会话 ─────────────────────────────────────────────────────────────
 
-export function listSessions(_req, res) {
+// 会话内容会在每轮对话后变化。若让 Express 对 JSON 响应做条件缓存，
+// 浏览器收到 304 时没有消息体，前端就会把当前对话误还原成空会话。
+function disableSessionCaching(req, res) {
+  // Express decides whether to emit 304 from request headers before writing
+  // the JSON body. Mark the request stale too, because no-store on the
+  // response alone does not override If-None-Match: *.
+  req.headers['cache-control'] = 'no-cache';
+  res.setHeader('Cache-Control', 'no-store');
+}
+
+export function listSessions(req, res) {
+  disableSessionCaching(req, res);
   sessions.deleteEmptySessions();
-  res.json({ data: sessions.listSessions() });
+  const page = sessions.listSessionPage(req.valid.query);
+  res.json({
+    data: page.items,
+    meta: {
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+      hasMore: page.hasMore,
+    },
+  });
 }
 
 export function createSession(req, res) {
@@ -185,6 +216,7 @@ export function createSession(req, res) {
 }
 
 export function sessionMessages(req, res) {
+  disableSessionCaching(req, res);
   const session = sessions.getSession(req.valid.params.id);
   if (!session) throw new NotFoundError('会话不存在');
   res.json({ data: { session, messages: sessions.listMessages(session.id) } });

@@ -14,7 +14,7 @@ runMigrations();
 
 const { chunkNoteContent, chunkEmbedText, storeNoteChunks, searchVectors, noteMeanVector, cosineSimilarity, indexStatus } = await import('../src/modules/ai/ai.embeddings.js');
 const { scheduleNoteIndex, indexNote } = await import('../src/modules/ai/ai.indexer.js');
-const { createSession, appendMessage, listMessages, renameSession, deleteSession, getSession } = await import('../src/modules/ai/ai.sessions.js');
+const { createSession, appendMessage, listMessages, listSessions, listSessionPage, renameSession, deleteSession, getSession } = await import('../src/modules/ai/ai.sessions.js');
 const { loadServerSettings, saveServerSettings, resolveChatProvider, resolveEmbeddingProvider } = await import('../src/modules/ai/ai.settings.js');
 const { validateCitations, buildContextSections } = await import('../src/modules/ai/ai.retrieval.js');
 const { getDb } = await import('../src/db/index.js');
@@ -105,6 +105,19 @@ test('indexer marks notes pending without embedding config and skips indexing sa
   assert.ok(status.totalNotes >= 1);
 });
 
+test('indexStatus surfaces the latest failure message for the panel', () => {
+  const noteId = 'note-idx-error';
+  insertNote(noteId, '失败笔记', '正文');
+  getDb().prepare(
+    `INSERT INTO ai_index_state (note_id, content_hash, model, chunk_count, status, error, attempts, updated_at)
+       VALUES (?, ?, ?, 0, 'failed', ?, 1, ?)`,
+  ).run(noteId, 'hash-error', 'BAAI/bge-m3', '外部模型服务返回 400：测试失败原因', new Date().toISOString());
+  const status = indexStatus();
+  assert.ok(status.failed >= 1);
+  assert.match(status.latestError.message, /测试失败原因/);
+  assert.ok(status.latestError.updatedAt);
+});
+
 test('sessions persist turns, autotitle from first user message, and support rename/delete', () => {
   const session = createSession({});
   appendMessage(session.id, { role: 'user', content: '帮我总结项目笔记的关键结论', autotitle: true });
@@ -122,8 +135,82 @@ test('sessions persist turns, autotitle from first user message, and support ren
 
   assert.equal(renameSession(session.id, '新标题'), true);
   assert.equal(getSession(session.id).title, '新标题');
+
+  const expertSession = createSession({ title: '研究会话', expertId: 'knowledge-researcher' });
+  assert.ok(listSessions({ expertId: 'knowledge-researcher' }).some((item) => item.id === expertSession.id));
+  assert.ok(!listSessions({ expertId: 'general' }).some((item) => item.id === expertSession.id));
+  assert.equal(getSession(expertSession.id).expertId, 'knowledge-researcher');
+  assert.equal(deleteSession(expertSession.id), true);
+
   assert.equal(deleteSession(session.id), true);
   assert.equal(getSession(session.id), null);
+});
+
+test('model history preserves completed tool results for the next turn', () => {
+  const session = createSession({ title: '工具续接' });
+  appendMessage(session.id, { role: 'user', content: '读取知识库状态' });
+  appendMessage(session.id, {
+    role: 'assistant',
+    content: '我已读取知识库状态。',
+    payload: {
+      meta: {
+        toolExecutions: [{
+          kind: 'mcp',
+          server: 'lattice',
+          tool: 'read_graph',
+          transport: 'stdio',
+          ok: true,
+          result: '{"nodes":3}',
+        }],
+      },
+    },
+  });
+
+  const modelMessages = listMessages(session.id, { forModel: true });
+  assert.match(modelMessages.at(-1).content, /read_graph/);
+  assert.match(modelMessages.at(-1).content, /\{"nodes":3\}/);
+  assert.match(modelMessages.at(-1).content, /不要因为用户说/);
+});
+
+test('model history reads the newest window when a session exceeds the query limit', () => {
+  const session = createSession({ title: '超长上下文' });
+  for (let index = 1; index <= 2_005; index += 1) {
+    appendMessage(session.id, {
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      content: `history-${index}`,
+    });
+  }
+
+  const modelMessages = listMessages(session.id, { forModel: true, limit: 2_000 });
+  assert.equal(modelMessages.length, 2_000);
+  assert.equal(modelMessages[0].content, 'history-6');
+  assert.equal(modelMessages.at(-1).content, 'history-2005');
+  assert.equal(modelMessages[0].role, 'assistant');
+  assert.equal(modelMessages.at(-1).role, 'user');
+});
+
+test('session listing searches titles or message content and paginates', () => {
+  const titleMatch = createSession({ title: '整理 Vault 的文件', expertId: 'general' });
+  const contentMatch = createSession({ title: '项目回顾', expertId: 'general' });
+  appendMessage(contentMatch.id, { role: 'user', content: '查找只出现在正文里的唯一关键词 session-body-needle' });
+
+  const titlePage = listSessionPage({ expertId: 'general', query: '整理 Vault', limit: 1 });
+  assert.equal(titlePage.total, 1);
+  assert.equal(titlePage.items[0].id, titleMatch.id);
+
+  const titleOnlyBodySearch = listSessionPage({ expertId: 'general', query: 'session-body-needle' });
+  assert.equal(titleOnlyBodySearch.total, 0);
+  const contentPage = listSessionPage({ expertId: 'general', query: 'session-body-needle', searchContent: true });
+  assert.equal(contentPage.total, 1);
+  assert.equal(contentPage.items[0].id, contentMatch.id);
+
+  const firstPage = listSessionPage({ expertId: 'general', limit: 1, offset: 0 });
+  assert.equal(firstPage.items.length, 1);
+  assert.equal(firstPage.limit, 1);
+  assert.ok(firstPage.hasMore);
+
+  assert.equal(deleteSession(titleMatch.id), true);
+  assert.equal(deleteSession(contentMatch.id), true);
 });
 
 test('server settings roundtrip drives provider resolution', () => {

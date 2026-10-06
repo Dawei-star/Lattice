@@ -1,0 +1,11 @@
+{
+  "id": "vault-health-check",
+  "version": "1.0.0",
+  "name": "知识库巡检",
+  "description": "扫描整个知识库，找出孤立笔记、断链、重复内容和僵尸笔记，输出分级体检报告。",
+  "triggers": ["知识库体检", "巡检", "找孤立笔记", "断链检查", "重复笔记", "整理知识库"],
+  "tools": ["read", "search"],
+  "permissions": ["read"],
+  "inputSchema": { "type": "object", "properties": { "scope": { "type": "string" } } },
+  "outputSchema": { "type": "object", "required": ["orphans", "brokenLinks", "duplicates", "stale"] }
+}

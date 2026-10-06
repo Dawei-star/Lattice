@@ -27,9 +27,16 @@ function insertNote(id, title, content, updatedAt) {
 
 test('digest creates a Journal note listing today\'s modified notes, idempotent on regenerate', async () => {
   const iso = (offsetMinutes) => new Date(now.getTime() - offsetMinutes * 60_000).toISOString();
-  insertNote('digest-src-1', '会议纪要', '关键结论：按期上线。', iso(30));
+  // 摘要按「本地当天零点」过滤，因此不能拿「30 分钟前」当今天：
+  // 本地 00:03 跑测试时那已是昨天，测试会每天前半小时必挂。
+  // 改为按「今天已过去的时长」取比例点，任何时刻都落在当天内。
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const elapsedToday = now.getTime() - dayStart.getTime();
+  const withinToday = (fraction) => new Date(dayStart.getTime() + Math.max(1000, Math.floor(elapsedToday * fraction))).toISOString();
+  insertNote('digest-src-1', '会议纪要', '关键结论：按期上线。', withinToday(0.5));
   insertNote('digest-src-2', '旧笔记', '很久之前的内容。', iso(60 * 48)); // 48 小时前，不应出现在摘要里
-  insertNote('digest-src-3', '今日随笔', '随手记录。', iso(10));
+  insertNote('digest-src-3', '今日随笔', '随手记录。', withinToday(0.9));
 
   const first = await generateDigest({ date: now });
   assert.equal(first.created, true);

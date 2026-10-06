@@ -12,7 +12,9 @@ import {
   createServerFromMarketEntry,
   isMarketEntryInstalled,
   resolveMarketArgs,
+  unresolvedMarketArgs,
 } from '../src/settings/mcpMarketplace.js';
+import { pendingArgTokens } from '../src/settings/mcpSettings.js';
 
 const byKey = (key) => MCP_MARKET_CATALOG.find((entry) => entry.key === key);
 const logoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'mcp-logos');
@@ -90,7 +92,26 @@ test('every catalog category is reachable from the filter chips', () => {
   assert.equal(new Set(MCP_MARKET_CATEGORIES).size, MCP_MARKET_CATEGORIES.length, 'filter categories should be unique');
 });
 
-test('entries that need secrets declare them and install disabled', () => {
+test('every placeholder in args is declared as a required argument', () => {
+  for (const entry of MCP_MARKET_CATALOG) {
+    const declared = new Set((entry.requiresArgs ?? []).map((item) => item.token));
+    for (const token of pendingArgTokens(entry.args)) {
+      assert.ok(declared.has(token), `entry ${entry.key} uses {${token}} without declaring it in requiresArgs`);
+    }
+    for (const item of entry.requiresArgs ?? []) {
+      assert.ok(item.label?.trim(), `${entry.key} 的参数 ${item.token} 需要有中文标签`);
+      assert.ok(item.hint?.trim(), `${entry.key} 的参数 ${item.token} 需要说明用途`);
+      assert.ok(entry.args.includes(`{${item.token}}`), `${entry.key} 的 requiresArgs 里 ${item.token} 没有对应的占位符`);
+      assert.ok(['', 'vaultDir', 'dbFile'].includes(item.preset ?? ''), `${entry.key} 的 preset 非法：${item.preset}`);
+    }
+  }
+
+  // 官方 Git server 必须带 --repository，此前条目里根本没写
+  assert.deepEqual(byKey('git').args, ['mcp-server-git', '--repository', '{repository}']);
+  assert.deepEqual(byKey('git').requiresArgs.map((item) => item.token), ['repository']);
+});
+
+test('entries that need secrets or required arguments install disabled', () => {
   const withSecrets = MCP_MARKET_CATALOG.filter((entry) => (entry.requiresEnv ?? []).length > 0);
   assert.ok(withSecrets.length >= 3, 'catalog should mark the API-key servers');
 
@@ -104,8 +125,29 @@ test('entries that need secrets declare them and install disabled', () => {
     assert.equal(server.enabled, false, `${entry.key} must not be enabled before its key is filled in`);
   }
 
-  for (const entry of MCP_MARKET_CATALOG.filter((item) => !(item.requiresEnv ?? []).length)) {
-    assert.equal(createServerFromMarketEntry(entry).enabled, true, `${entry.key} needs no secret and should be ready to use`);
+  // 需要路径参数、且当前上下文给不出值的条目，同样默认停用并等用户填
+  const git = createServerFromMarketEntry(byKey('git'));
+  assert.equal(git.enabled, false, 'git 没有仓库路径时不该启用');
+  assert.deepEqual(git.requiresArgs.map((item) => item.token), ['repository']);
+  assert.equal(git.args[2], '{repository}', '未填的占位符要保留，不能退化成相对路径');
+  assert.deepEqual(unresolvedMarketArgs(byKey('git')), ['repository']);
+
+  // 上下文能给出路径的条目（filesystem / sqlite）开箱即可用
+  const filesystem = createServerFromMarketEntry(byKey('filesystem'), { vaultDir: 'D:/notes' });
+  const sqlite = createServerFromMarketEntry(byKey('sqlite'), { dbFile: 'D:/data/lattice.db' });
+  assert.equal(filesystem.enabled, true);
+  assert.equal(sqlite.enabled, true);
+  assert.deepEqual(filesystem.argValues, { vaultDir: 'D:/notes' });
+  assert.deepEqual(sqlite.argValues, { dbFile: 'D:/data/lattice.db' });
+
+  // info 尚未返回时拿不到路径 → 停用并在编辑器里问用户，而不是给一份跑不起来的配置
+  const orphan = createServerFromMarketEntry(byKey('filesystem'));
+  assert.equal(orphan.enabled, false);
+  assert.deepEqual(orphan.args, ['-y', '@modelcontextprotocol/server-filesystem', '{vaultDir}']);
+  assert.deepEqual(unresolvedMarketArgs(byKey('filesystem')), ['vaultDir']);
+
+  for (const entry of MCP_MARKET_CATALOG.filter((item) => !(item.requiresEnv ?? []).length && !(item.requiresArgs ?? []).length)) {
+    assert.equal(createServerFromMarketEntry(entry).enabled, true, `${entry.key} needs nothing and should be ready to use`);
   }
 });
 
@@ -120,16 +162,18 @@ test('placeholders resolve against the live vault and database paths', () => {
   );
 });
 
-test('placeholders fall back to entry defaults, and never silently disappear', () => {
-  assert.equal(resolveMarketArgs(byKey('filesystem'))[2], '.');
-  assert.equal(resolveMarketArgs(byKey('sqlite'))[2], './data/lattice.db');
+test('unresolved placeholders stay visible instead of silently degrading', () => {
+  // 拿不到上下文时保留占位符：客户端从任意工作目录拉起进程，'.' 这类相对路径毫无意义
+  assert.deepEqual(resolveMarketArgs(byKey('filesystem')), ['-y', '@modelcontextprotocol/server-filesystem', '{vaultDir}']);
+  assert.equal(resolveMarketArgs(byKey('sqlite'))[2], '{dbFile}');
+  assert.equal(resolveMarketArgs(byKey('git'))[2], '{repository}');
 
-  // 空串 / 纯空白视为没有提供上下文，保留占位符以便用户自行补齐。
+  // 空串 / 纯空白视为没有提供上下文
   assert.deepEqual(resolveMarketArgs({ args: ['{vaultDir}'] }, { vaultDir: '   ' }), ['{vaultDir}']);
   assert.deepEqual(resolveMarketArgs({ args: ['{vaultDir}'] }, { vaultDir: '' }), ['{vaultDir}']);
   assert.deepEqual(resolveMarketArgs({ args: ['{unknown}'] }, { vaultDir: 'D:/notes' }), ['{unknown}']);
 
-  // 只替换「整段即占位符」的参数：内嵌写法保持原样，避免误删命令行片段。
+  // 只替换「整段即占位符」的参数：内嵌写法保持原样，避免误删命令行片段
   assert.deepEqual(resolveMarketArgs({ args: ['--path={vaultDir}'] }, { vaultDir: 'D:/notes' }), ['--path={vaultDir}']);
   assert.deepEqual(resolveMarketArgs({ args: [] }, {}), []);
   assert.deepEqual(resolveMarketArgs({}, {}), []);

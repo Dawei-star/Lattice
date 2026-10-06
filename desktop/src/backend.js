@@ -130,20 +130,38 @@ async function startBackend({ appRoot, userDataDir, vaultDir, log = () => {} }) 
 
   // 首次启动灌入示例知识库，避免用户面对一个空白库
   const expressApp = createApp();
-  const httpServer = await listen(expressApp, port);
-  const url = `http://127.0.0.1:${port}`;
+  // pickPort 与真正 listen 之间存在 TOCTOU（探测后端口可能被抢）：
+  // 绑定失败就重新探测一轮再试，而不是把启动失败直接抛给用户
+  let httpServer = null;
+  let boundPort = port;
+  for (let attempt = 0; attempt < 3 && !httpServer; attempt += 1) {
+    try {
+      httpServer = await listen(expressApp, boundPort);
+    } catch {
+      if (attempt === 2) throw new Error('连续三次端口绑定失败，请稍后重试');
+      boundPort = await pickPort();
+    }
+  }
+  const url = `http://127.0.0.1:${boundPort}`;
 
   await waitUntilReady(url);
   log(`后端已就绪：${url}（前端产物 ${webDistDir}）`);
 
-  runtime = { httpServer, closeDatabase, stopVaultWatcher, url, dbFile };
+  runtime = { httpServer, closeDatabase, stopVaultWatcher, url, dbFile, serverRoot };
 
-  return { url, port, dbFile, webDistDir, firstRun, migrationsApplied: applied.length };
+  return { url, port: boundPort, dbFile, webDistDir, firstRun, migrationsApplied: applied.length };
 }
 
 /** 同步停机：先断开 HTTP，再 checkpoint 并关闭数据库 */
 function stopBackendSync() {
   if (!runtime) return;
+
+  // 用户配置的 MCP Server 由 ai.mcp 拉起为子进程，停机时显式关闭：
+  // 否则只能靠「管道断开后对方自觉退出」，感知不到 stdin 结束的会变孤儿进程
+  const serverRoot = runtime.serverRoot;
+  importModule(path.join(serverRoot, 'src', 'modules', 'ai', 'ai.mcp.js'))
+    .then((mod) => mod.closeAllMcpConnections())
+    .catch(() => {});
 
   try {
     runtime.httpServer.close();

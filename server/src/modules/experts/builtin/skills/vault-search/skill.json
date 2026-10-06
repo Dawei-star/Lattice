@@ -1,0 +1,11 @@
+{
+  "id": "vault-search",
+  "version": "1.0.0",
+  "name": "知识库检索",
+  "description": "围绕用户问题搜索知识库并返回可引用的证据。",
+  "triggers": ["搜索资料", "研究主题", "找相关笔记", "整理引用"],
+  "tools": ["search", "read"],
+  "permissions": ["read"],
+  "inputSchema": { "type": "object", "required": ["query"] },
+  "outputSchema": { "type": "object", "required": ["sources", "summary"] }
+}

@@ -180,6 +180,35 @@ export function validateReferences({ content = '', filePath = '' } = {}) {
   };
 }
 
+/** Windows 上附件常被预览窗格/杀软短暂占用：短重试几轮再放弃。 */
+function sleepSync(milliseconds) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+  } catch {
+    const deadline = Date.now() + milliseconds;
+    while (Date.now() < deadline) { /* 环境不支持 Atomics.wait 时退化忙等 */ }
+  }
+}
+
+function unlinkWithRetry(target) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.unlinkSync(target);
+      return;
+    } catch (error) {
+      // EPERM/EBUSY 在 Windows 上通常几百毫秒内自行释放；ENOENT 视为已删除
+      if (error?.code === 'ENOENT') return;
+      if (attempt >= 2 || !['EPERM', 'EBUSY', 'EACCES'].includes(error?.code ?? '')) {
+        if (['EPERM', 'EBUSY'].includes(error?.code ?? '')) {
+          throw new ConflictError('文件正被其他程序占用，无法删除，请稍后重试');
+        }
+        throw error;
+      }
+      sleepSync(120);
+    }
+  }
+}
+
 export function deleteAttachment(relativePath) {
   const safePath = assertAttachmentPath(relativePath);
   const target = resolveInsideVault(config.vaultDir, safePath);
@@ -192,7 +221,7 @@ export function deleteAttachment(relativePath) {
     });
   }
 
-  fs.unlinkSync(target);
+  unlinkWithRetry(target);
   removeEmptyParents(config.vaultDir, path.posix.dirname(safePath));
   return { path: safePath, deleted: true };
 }
@@ -215,8 +244,13 @@ export function cleanupOrphans({ dryRun = true } = {}) {
     }
     const target = resolveInsideVault(config.vaultDir, candidate.path);
     if (!target || !fs.existsSync(target)) continue;
-    fs.unlinkSync(target);
-    deleted.push(candidate.path);
+    try {
+      unlinkWithRetry(target);
+      deleted.push(candidate.path);
+    } catch (error) {
+      // 单个文件被占用不中断整批清理：记录为 skipped，其余继续
+      skipped.push({ ...candidate, error: error?.message ?? '删除失败' });
+    }
   }
   removeEmptyParents(config.vaultDir, ATTACHMENT_ROOT);
   return { dryRun: false, candidates, deleted, skipped };

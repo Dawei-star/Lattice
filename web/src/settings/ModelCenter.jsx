@@ -42,6 +42,7 @@ export default function ModelCenter() {
       name: '',
       apiKey: '',
       authHeader: 'bearer',
+      contextWindowTokens: '',
     });
     setAddStep('form');
   };
@@ -316,6 +317,9 @@ function IndexStatusSection() {
           : '未配置 embedding 模型，语义功能未启用')
         : '索引状态加载中…'}
     </p>
+    {status?.failed && status?.latestError ? (
+      <p className="model-center__index-summary" role="status">最近失败原因：{status.latestError.message}</p>
+    ) : null}
     {reindexError ? <p className="model-center__index-summary" role="alert">{reindexError}</p> : null}
   </section>;
 }
@@ -468,7 +472,7 @@ function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, on
     {isCustom ? <label><em>*</em> 自定义请求地址<span className="model-center__label-hint">填写兼容 OpenAI API 的服务端地址，/chat/completions 会根据地址自动补全。</span>{endpointInput}</label> : null}
     {modelField}
     {keyField}
-    <details><summary>高级配置 <span>›</span></summary>{!isCustom ? nameField : null}{!isCustom ? <label>请求地址 (OpenAI 兼容)<span className="model-center__label-hint">{draft.providerHint || '服务商默认地址已自动填入，可按需修改。'}</span>{endpointInput}</label> : null}<label>认证方式<select value={draft.authHeader} onChange={(event) => onChange({ authHeader: event.target.value })}><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option></select></label></details>
+    <details><summary>高级配置 <span>›</span></summary>{!isCustom ? nameField : null}{!isCustom ? <label>请求地址 (OpenAI 兼容)<span className="model-center__label-hint">{draft.providerHint || '服务商默认地址已自动填入，可按需修改。'}</span>{endpointInput}</label> : null}<label>认证方式<select value={draft.authHeader} onChange={(event) => onChange({ authHeader: event.target.value })}><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option></select></label><label>温度 temperature (0–2)<span className="model-center__label-hint">越高回答越发散，越低越稳定；留空使用系统默认 0.2。</span><input type="number" min="0" max="2" step="0.1" value={draft.temperature ?? ''} onChange={(event) => onChange({ temperature: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="0.2" /></label><label>最大输出 tokens<span className="model-center__label-hint">限制单次回复长度，控制成本与时长；留空不限制。</span><input type="number" min="1" step="1" value={draft.maxTokens ?? ''} onChange={(event) => onChange({ maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /></label><label>上下文窗口 tokens<span className="model-center__label-hint">填写模型官方上下文上限；留空使用 128k，最大支持 1M。</span><input type="number" min="8000" max="1000000" step="1000" value={draft.contextWindowTokens ?? ''} onChange={(event) => onChange({ contextWindowTokens: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="128000" /></label></details>
     {testResult ? <p className={`model-center__test-result ${testResult.ok ? 'is-ok' : 'is-failed'}`} role="status">{testResult.ok ? `✓ 连通性测试通过 · ${testResult.latencyMs ?? '?'}ms · ${draft.model}` : `✗ ${testResult.error ?? '连通性测试失败'}`}</p> : null}
     {error ? <p className="model-center__form-error" role="alert">{error}</p> : null}
     <footer>

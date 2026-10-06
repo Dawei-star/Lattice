@@ -17,6 +17,8 @@ import { createFileStore } from '../../../../scripts/fc-core.mjs';
 import { auditAction, createOperationPlan } from '../../../../scripts/operation-plan.mjs';
 
 const AUDIT_FILE = path.join(path.dirname(config.dbFile), 'ai-audit.jsonl');
+// 轮转阈值：审计日志只追加不清理的话会无限增长，且 history() 每次全量读文件
+const AUDIT_ROTATE_BYTES = 5 * 1024 * 1024;
 export const MUTATING_ACTIONS = new Set(['create', 'update', 'delete', 'move', 'copy', 'archive']);
 export const ACTIONS = new Set(['read', ...MUTATING_ACTIONS]);
 const MAX_READ_BYTES = 200_000;
@@ -83,7 +85,6 @@ export async function execute(actions = [], {
   const executable = internalAutoApprove
     ? normalized.filter((action) => action.type !== 'delete')
     : normalized;
-  const skippedDeletes = normalized.length - executable.length;
 
   const results = [];
   for (const action of executable) {
@@ -340,6 +341,7 @@ export function recordAudit(entry) {
 
 function appendAudit(entry) {
   fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
+  rotateAuditIfNeeded();
   const safeEntry = {
     id: randomUUID(),
     at: new Date().toISOString(),
@@ -357,4 +359,17 @@ function appendAudit(entry) {
     ...(entry.error ? { error: entry.error } : {}),
   };
   fs.appendFileSync(AUDIT_FILE, `${JSON.stringify(safeEntry)}\n`, 'utf8');
+}
+
+/** 超过阈值时把当前日志归档为 .old（覆盖上一份），保持单文件体积有界 */
+function rotateAuditIfNeeded() {
+  try {
+    if (!fs.existsSync(AUDIT_FILE)) return;
+    const { size } = fs.statSync(AUDIT_FILE);
+    if (size < AUDIT_ROTATE_BYTES) return;
+    fs.rmSync(`${AUDIT_FILE}.old`, { force: true });
+    fs.renameSync(AUDIT_FILE, `${AUDIT_FILE}.old`);
+  } catch {
+    // 轮转失败不阻断审计写入：最坏情况是文件继续增长到下次再试
+  }
 }

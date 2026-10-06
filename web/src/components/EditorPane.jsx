@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import MarkdownPreview from './MarkdownPreview.jsx';
 import { formatDateTime, formatNumber } from '../lib/format.js';
 import { parseOutline, renderMarkdown } from '../lib/markdown.js';
@@ -13,7 +13,7 @@ import Modal from '../ui/Modal.jsx';
 import { encodeMarkdownUrlReference, markdownLinkLabel, relativeAttachmentReference, resolveAttachmentPath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
 import { buildStaticHtml } from '../lib/static-export.js';
 import { getClipboardImageFiles } from '../lib/clipboard.js';
-import { BookOpenText, Bug, CalendarDays, FilePlus2, ImagePlus, Inbox, RefreshCw, Search, Scale, UsersRound } from 'lucide-react';
+import { BookOpenText, Bug, CalendarDays, Download, FilePlus2, History, ImagePlus, Inbox, Pin, RefreshCw, Search, Scale, Trash2, UsersRound } from 'lucide-react';
 
 const MODES = [
   { key: 'edit', label: '编辑' },
@@ -87,6 +87,7 @@ export default function EditorPane({
   const [templates, setTemplates] = useState([]);
 
   const noteIdRef = useRef(note ? `${note.id}:${note.externalRevision ?? ''}` : null);
+  const previousNoteRef = useRef(note);
   const draftRef = useRef(draft);
   const textareaRef = useRef(null);
   const attachmentInputRef = useRef(null);
@@ -137,16 +138,31 @@ export default function EditorPane({
   }, [note]);
 
   /** 切换笔记时重置草稿；同一篇笔记的回写不覆盖用户正在输入的内容 */
-  useEffect(() => {
+  // useLayoutEffect：必须在浏览器有机会派发用户输入事件之前同步对齐草稿。
+  // 若用异步 useEffect，用户在「渲染提交」与「effect 执行」的间隙里输入的内容
+  // 会被这里的 setDraft 按旧值覆盖（自动保存/改名往返时是真实发生的竞态）
+  useLayoutEffect(() => {
+    const previousNote = previousNoteRef.current;
     const nextId = note ? `${note.id}:${note.externalRevision ?? ''}` : null;
-    if (noteIdRef.current === nextId) return;
-    noteIdRef.current = nextId;
-    setDraft({ title: note?.title ?? '', content: note?.content ?? '', properties: note?.properties ?? {} });
-    setStatus('idle');
-    setErrorMessage('');
-    setConflict(false);
-    setAttachmentError('');
-    setAttachmentNotice('');
+    if (noteIdRef.current !== nextId) {
+      noteIdRef.current = nextId;
+      setDraft({ title: note?.title ?? '', content: note?.content ?? '', properties: note?.properties ?? {} });
+      setStatus('idle');
+      setErrorMessage('');
+      setConflict(false);
+      setAttachmentError('');
+      setAttachmentNotice('');
+    } else if (
+      note
+      && previousNote?.id === note.id
+      && previousNote.title !== note.title
+      && (draftRef.current.title === previousNote.title || previousNote.filePath !== note.filePath)
+    ) {
+      // A context-menu rename updates the note outside the editor. Keep the
+      // local draft aligned so the next autosave cannot restore the old title.
+      setDraft((current) => ({ ...current, title: note.title }));
+    }
+    previousNoteRef.current = note;
   }, [note]);
 
   useEffect(() => () => window.clearTimeout(attachmentNoticeTimerRef.current), []);
@@ -561,7 +577,14 @@ export default function EditorPane({
       }
       setAssist((current) => (current ? { ...current, done: true, result: payload?.text ?? '' } : current));
     } catch (requestError) {
-      setAssist((current) => (current ? { ...current, error: requestError?.message ?? '写作助手调用失败' } : current));
+      // 主动「停止」（AbortError）不是故障：直接收起预览面板。否则面板停在
+      // error 态只剩失效的停止按钮，assistBusy 也卡死所有 AI 按钮直到切换笔记。
+      if (requestError?.name === 'AbortError') {
+        setAssist(null);
+        return;
+      }
+      // 其他错误置 done：让完成分支的「丢弃」按钮可用来关闭面板、解除 busy
+      setAssist((current) => (current ? { ...current, done: true, error: requestError?.message ?? '写作助手调用失败' } : current));
     } finally {
       assistAbortRef.current = null;
     }
@@ -642,17 +665,17 @@ export default function EditorPane({
             <p>把想法先放进 Inbox，或直接用开发者模板开始工作。</p>
           </div>
           <div className="empty-state__actions" role="group" aria-label="新标签页操作">
-            <button type="button" className="empty-state__action empty-state__action--primary" onClick={onCreateNote}>
+            <button type="button" className="empty-state__action" onClick={() => onCreateNote?.()}>
               <span className="empty-state__action-icon" aria-hidden="true"><FilePlus2 size={17} strokeWidth={1.8} /></span>
               <span className="empty-state__action-copy"><strong>新建笔记</strong><small>从空白页面开始</small></span>
               <kbd>Ctrl + N</kbd>
             </button>
-            <button type="button" className="empty-state__action" onClick={onCaptureInbox}>
+            <button type="button" className="empty-state__action" onClick={() => onCaptureInbox?.()}>
               <span className="empty-state__action-icon" aria-hidden="true"><Inbox size={17} strokeWidth={1.8} /></span>
               <span className="empty-state__action-copy"><strong>收集到 Inbox</strong><small>先记录，再整理</small></span>
               <kbd>Ctrl + Shift + I</kbd>
             </button>
-            <button type="button" className="empty-state__action" onClick={onOpenSwitcher}>
+            <button type="button" className="empty-state__action" onClick={() => onOpenSwitcher?.()}>
               <span className="empty-state__action-icon" aria-hidden="true"><Search size={17} strokeWidth={1.8} /></span>
               <span className="empty-state__action-copy"><strong>打开笔记</strong><small>搜索已有知识</small></span>
               <kbd>Ctrl + K</kbd>
@@ -745,7 +768,7 @@ export default function EditorPane({
                 title={note.isPinned ? '取消置顶' : '置顶'}
                 onClick={() => onTogglePin(note)}
               >
-                ★
+                <Pin size={15} strokeWidth={1.8} aria-hidden="true" />
               </button>
 
               <select
@@ -789,7 +812,7 @@ export default function EditorPane({
                 disabled={exportBusy}
                 onClick={handleStaticExport}
               >
-                ↓
+                <Download size={15} strokeWidth={1.8} aria-hidden="true" />
               </button>
 
               <button
@@ -799,18 +822,19 @@ export default function EditorPane({
                 aria-label="版本历史"
                 onClick={openHistory}
               >
-                ◷
+                <History size={15} strokeWidth={1.8} aria-hidden="true" />
               </button>
 
               <button
                 type="button"
                 className="icon-btn icon-btn--danger"
                 title="删除这篇笔记"
+                aria-label="删除这篇笔记"
                 onClick={() => {
                   if (window.confirm(`确定删除「${note.title}」吗？此操作不可撤销。`)) onDelete(note.id);
                 }}
               >
-                删除
+                <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
               </button>
             </>
           )}
@@ -857,7 +881,13 @@ export default function EditorPane({
         maxLength={200}
         aria-label="笔记标题"
         readOnly={isExternal}
-        onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+        onChange={(event) => {
+          // 值必须在这里同步捕获：React 18 里 updater 可能延迟/多次执行，
+          // 届时受控输入的 DOM value 已被恢复成旧 state，读到的是旧标题，
+          // 会把用户刚输入的内容静默改回去（自动保存往返时尤其容易触发）
+          const { value } = event.target;
+          setDraft((current) => ({ ...current, title: value }));
+        }}
       />
 
       {!isExternal ? (
@@ -948,7 +978,7 @@ export default function EditorPane({
           {assist ? (
             <div className="ai-write__preview" role="status">
               <header>
-                <strong>{assist.label}{assist.done ? ' · 完成' : ' · 生成中…'}</strong>
+                <strong>{assist.label}{assist.error ? ' · 失败' : (assist.done ? ' · 完成' : ' · 生成中…')}</strong>
                 <span className="ai-write__preview-actions">
                   {assist.done
                     ? (
@@ -995,7 +1025,11 @@ export default function EditorPane({
             placeholder={'开始写作…\n\n用 [[标题]] 建立双链，用 #标签 归类，独占一行的 ![[标题]] 会展开为嵌入。'}
             aria-label="笔记正文"
             onChange={(event) => {
-              if (canEdit) setDraft((current) => ({ ...current, content: event.target.value }));
+              // 与标题输入同理：同步捕获值，updater 内不能读 event.target
+              if (canEdit) {
+                const { value } = event.target;
+                setDraft((current) => ({ ...current, content: value }));
+              }
             }}
             onScroll={handleScroll}
             onKeyDown={handleKeyDown}

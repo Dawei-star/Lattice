@@ -42,6 +42,7 @@ export default function MarkdownPreview({
       await hydrateEmbeds(root, {
         resolveEmbed,
         resolveTitle,
+        resolveAsset,
         depth,
         /** 当前这条嵌入链上已经展开过的标题，用于识别真正的循环引用 */
         trail: new Set(),
@@ -54,7 +55,7 @@ export default function MarkdownPreview({
     return () => {
       cancelled = true;
     };
-  }, [html, resolveEmbed, resolveTitle, depth]);
+  }, [html, resolveEmbed, resolveTitle, resolveAsset, depth]);
 
   const handleClick = (event) => {
     // 点击图片打开灯箱（嵌入卡片里的图片同样生效）
@@ -138,7 +139,9 @@ async function hydrateEmbeds(root, context) {
     }
 
     context.trail.add(key);
-    body.innerHTML = renderMarkdown(content, { resolveTitle: context.resolveTitle });
+    // resolveAsset 必须随 context 传入：嵌入内容里的相对路径图片依赖它改写成
+    // 可加载的 URL，缺了就是一排裂图（顶层预览正常、嵌入内容异常的断链）
+    body.innerHTML = renderMarkdown(content, { resolveTitle: context.resolveTitle, resolveAsset: context.resolveAsset });
     node.dataset.embedState = 'ready';
 
     // 递归展开嵌入里的嵌入

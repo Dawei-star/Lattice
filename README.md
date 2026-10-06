@@ -2,10 +2,11 @@
 
 > 语言切换 Language: [中文](./README.md) | [English](./docscc/README.en.md)
 
-一个**本地优先**的双链笔记知识库，参照 Obsidian 的核心体验实现。用户选择本地 Vault 文件夹，笔记以 Markdown 文件保存，SQLite 仅作为可重建索引。默认无需联网；配置外部模型后，只有 AI 对话会按配置发送到对应服务。
+格物 Lattice 是一款面向 Windows 的**本地优先 Markdown 双链笔记知识库**，提供双向链接、全文搜索、关系图谱、Canvas 白板、可选 AI 助手和 MCP Server。笔记保存在本地 Vault 中，SQLite 仅作为可重建索引；默认无需联网，配置外部模型后只有 AI 对话会按配置发送到对应服务。
 
+Lattice is a local-first Windows desktop knowledge base for Markdown notes, with bidirectional links, full-text search, graph view, Canvas boards, an optional AI assistant, and MCP Server.
 
-所有数据都在你自己的机器上，不需要注册、不需要联网。
+所有数据都在你自己的机器上，不需要注册；不配置外部模型时可以离线使用。
 
 ---
 
@@ -96,6 +97,7 @@
 | 关系图谱 | Canvas 手写力导向布局，按度数缩放节点，支持拖拽 / 缩放 / 点击跳转 |
 | 全文检索 | SQLite FTS5 + trigram 分词，中文可做子串匹配；结果带关键词高亮 |
 | Inbox 工作队列 | 快速收集临时内容，按待整理 / 整理中 / 已处理筛选，并可标记完成或归档到项目 |
+| 知识健康 / Review 中心 | 一次扫描 Inbox 待整理、悬空链接、孤立笔记、长期未更新、可能重复与结构不完整笔记；支持勾选问题生成限定范围的批量方案，AI 建议保持只读，写入仍须预览、确认、审计并可撤销 |
 | 标签 | 正文写 `#标签` 自动归类，支持 `#工程/前端` 嵌套写法 |
 | 目录树 | 任意层级嵌套、就地重命名、删除后笔记自动回到「未分类」 |
 | 多标签页 | 并行打开多篇笔记，支持锁定、收藏、重命名、移动，以及关闭左侧 / 右侧 / 其他标签 |
@@ -106,7 +108,7 @@
 | AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、Inbox 整理建议与安全归档、自然语言文件操作（任务模式可自主多轮执行并自动审计，失败动作回填模型自纠，操作可一键撤销）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
 | 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成，并对同一天幂等更新 |
 | MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露笔记搜索、标签筛选、关系分析、统计与历史版本；默认只读，显式开启 `LATTICE_MCP_ALLOW_WRITES` 后才提供 `create_note`、`update_note`、`restore_note_version`，写入统一记录 MCP 审计；设置页按读取 / 写入分组列出全部工具并标明当前可用状态 |
-| MCP 插件市场 | 设置 → 集成 → MCP Server 内置 12 款精选 Server（文件、SQLite、Obsidian、联网搜索、记忆、Git、GitHub、时间等，六类可筛选可搜索，每款带真实品牌 logo——`web/public/mcp-logos/*.svg`，离线可用）；一键写入本机配置，Filesystem / SQLite 自动绑定当前 Vault 与 `lattice.db`，需要 API Key 的条目添加后保持停用并给出**按变量名拆分的密钥表单**（补齐自动启用）；卡片「详情」展示完整说明、全部工具、密钥获取途径与官方文档链接；已配置列表可编辑、启停与移除 |
+| MCP 插件市场 | 设置 → 集成 → MCP Server 内置 12 款精选 Server（文件、SQLite、Obsidian、联网搜索、记忆、Git、GitHub、时间等，六类可筛选可搜索，每款带真实品牌 logo——`web/public/mcp-logos/*.svg`，离线可用）；一键写入本机配置，Filesystem / SQLite 自动绑定当前 Vault 与 `lattice.db`，需要 API Key 的条目给出**按变量名拆分的密钥表单**、需要路径的条目（Git 仓库 / 允许访问的目录 / 数据库文件）给出**路径输入框与「填入知识库目录」预设**，两者未补齐前保持停用且不会被导出（配置里不残留 `{占位符}`）；卡片「详情」展示完整说明、全部工具、密钥获取途径与官方文档链接；已配置列表可编辑、启停与移除 |
 | 单篇 HTML 导出 | 从编辑区导出带 Lattice 品牌页眉、页脚、图片内联、双链可点击和嵌入展开的独立 HTML 文件 |
 | 静态站点导出 | 从设置中批量生成可部署的 `index.html`、按 Vault 路径组织的笔记页面、双链导航和 `assets/` 资源目录 |
 | PWA | Web 版提供 manifest、应用壳缓存、安装提示和更新提示；离线不写入知识库 |

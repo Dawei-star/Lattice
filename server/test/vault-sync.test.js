@@ -103,6 +103,9 @@ test('applyVaultChange 更新单文件：FTS 同步、孤儿标签清理、重�
 
   const first = await applyVaultChange(adapter, fileA);
   assert.equal(first.action, 'updated');
+  // SSE 契约：updated/added 事件必须带 id，前端靠它把变更匹配到当前打开的笔记
+  assert.equal(first.id, '33333333-3333-4333-8333-333333333333', 'updated 事件必须携带笔记 id');
+  assert.equal(first.file, fileA);
 
   const db = getDb();
   assert.match(
@@ -134,6 +137,7 @@ test('文件改名迁移保持 id，旧路径事件不产生副作用', async ()
 
   const moved = await applyVaultChange(adapter, newPath);
   assert.equal(moved.action, 'added');
+  assert.equal(moved.id, id, 'added 事件同样必须携带笔记 id');
 
   const db = getDb();
   const row = db.prepare('SELECT id, file_path FROM notes WHERE title = ?', ).get('笔记丁');
@@ -143,6 +147,62 @@ test('文件改名迁移保持 id，旧路径事件不产生副作用', async ()
   const stale = await applyVaultChange(adapter, oldPath);
   assert.equal(stale.action, 'absent', '旧行已随 id 迁走，旧路径事件无行可删');
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM notes').get().c, 1);
+});
+
+test('停机期间文件被移动：reconcile 识别为移动，id 与反链保持稳定', async () => {
+  const { dir, adapter } = makeVault();
+  const id = '47474747-4747-4477-8474-747474747474';
+  const oldPath = writeNote(adapter, { id, title: '被移动的笔记', content: '移动不换身份' });
+  writeNote(adapter, {
+    id: '48484848-4848-4488-8484-848484848484',
+    title: '引用方',
+    content: '指向 [[被移动的笔记]]',
+  });
+  await reconcileVault(adapter, { mode: 'full' });
+
+  // 模拟停机窗口：文件被外部直接移动，没有产生任何 watcher 事件
+  fs.mkdirSync(path.join(dir, '归档'), { recursive: true });
+  const newPath = '归档/被移动的笔记.md';
+  fs.renameSync(path.join(dir, oldPath), path.join(dir, newPath));
+
+  const stats = await reconcileVault(adapter, { mode: 'full' });
+  // 移动 = 新路径计入 added、旧路径的行就地更新而不再是 removed
+  assert.equal(stats.added, 1);
+  assert.equal(stats.removed, 0, '旧行应随移动就地更新，而不是被删除');
+
+  const db = getDb();
+  const row = db.prepare('SELECT id, file_path FROM notes WHERE title = ?').get('被移动的笔记');
+  assert.equal(row.id, id, '移动后的笔记必须保留原 id');
+  assert.equal(row.file_path, newPath);
+  assert.equal(
+    db.prepare("SELECT target_note_id FROM links WHERE target_title = '被移动的笔记'").get().target_note_id,
+    id,
+    '指向该笔记的反链不得因移动而丢失',
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM notes').get().c, 2);
+});
+
+test('properties_json 投影列：随投影写入，存量 NULL 行读取时惰性回填', async () => {
+  const { adapter } = makeVault();
+  writeNote(adapter, { id: '49494949-4949-4494-8494-494949494949', title: '属性笔记', content: '有 frontmatter 属性 #工程' });
+  await reconcileVault(adapter, { mode: 'full' });
+
+  const db = getDb();
+  const row = db.prepare('SELECT properties_json FROM notes WHERE title = ?').get('属性笔记');
+  assert.ok(row.properties_json && row.properties_json !== 'null', 'reconcile 的投影更新应写入 properties_json');
+
+  // 模拟迁移前的存量行：置空 properties_json，文件未变
+  db.prepare('UPDATE notes SET properties_json = NULL WHERE title = ?').run('属性笔记');
+
+  const index = await applyVaultChange(adapter, '属性笔记.md'); // skipped：不写库
+  assert.equal(index.action, 'skipped');
+  // 直接走服务层的读路径验证回填
+  const { getDetail } = await import('../src/modules/notes/notes.service.js');
+  const detail = getDetail('49494949-4949-4494-8494-494949494949');
+  assert.equal(typeof detail.properties, 'object');
+
+  const backfilled = db.prepare('SELECT properties_json FROM notes WHERE title = ?').get('属性笔记');
+  assert.ok(backfilled.properties_json && backfilled.properties_json !== 'null', '读取时应把 NULL 行惰性回填');
 });
 
 test('外部改标题：原指向链接退回悬空，新标题认领悬空链接', async () => {

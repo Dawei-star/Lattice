@@ -15,7 +15,7 @@ import { getDb, withTransaction } from '../../db/index.js';
 import { nowIso } from '../../lib/time.js';
 import { createLogger } from '../../lib/logger.js';
 import { enqueueJob, registerJobHandler } from '../../lib/jobs.js';
-import { chunkNoteContent, chunkEmbedText, embedTexts, storeNoteChunks, removeNoteIndex } from './ai.embeddings.js';
+import { chunkNoteContent, chunkEmbedText, embedTexts, storeNoteChunks, removeNoteIndex, yieldToChatTraffic } from './ai.embeddings.js';
 import { resolveEmbeddingProvider } from './ai.settings.js';
 
 const logger = createLogger({ app: 'lattice', scope: 'ai-indexer' });
@@ -222,6 +222,8 @@ export async function indexNote(noteId, { provider = null } = {}) {
       // 分批：上游对批量大小普遍有上限（常见 16~64），取保守值
       const BATCH = 16;
       for (let offset = 0; offset < needEmbedding.length; offset += BATCH) {
+        // 对话流量优先：近期有对话查询时给上游留喘息窗口，避免重建索引把对话限流
+        await yieldToChatTraffic();
         const batch = needEmbedding.slice(offset, offset + BATCH);
         const batchVectors = await embedTexts(batch.map((item) => item.text), { provider: resolved });
         batch.forEach((item, index) => {

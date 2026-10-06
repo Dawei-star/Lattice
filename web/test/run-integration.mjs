@@ -6,6 +6,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * undici（Node fetch）拒绝连接的端口。本机动态端口范围可能从 1024 起，
+ * 随机端口一旦落到这些值，测试对临时后端的 fetch 就会直接报 `bad port`。
+ * 必须声明在 reservePort() 调用之前（模块顶层会立刻调用它）。
+ */
+const BLOCKED_PORTS = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566,
+  6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
+]);
+
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDir, '..', '..');
 const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lattice-web-integration-'));
@@ -41,15 +51,22 @@ try {
   await fs.rm(runtimeRoot, { recursive: true, force: true });
 }
 
+/**
+ * undici（Node fetch）拒绝连接的端口。本机动态端口范围可能从 1024 起，
+ * 随机端口一旦落到这些值，测试对临时后端的 fetch 就会直接报 `bad port`。
+ */
 async function reservePort() {
-  const probe = net.createServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolve);
-  });
-  const { port } = probe.address();
-  await new Promise((resolve) => probe.close(resolve));
-  return port;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const probe = net.createServer();
+    await new Promise((resolve, reject) => {
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = probe.address();
+    await new Promise((resolve) => probe.close(resolve));
+    if (!BLOCKED_PORTS.has(port)) return port;
+  }
+  throw new Error('20 次尝试都没拿到未被 undici 屏蔽的端口');
 }
 
 async function waitUntilReady(url) {

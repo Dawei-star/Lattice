@@ -1,0 +1,11 @@
+{
+  "id": "note-structure-audit",
+  "version": "1.0.0",
+  "name": "笔记结构体检",
+  "description": "检查单篇笔记的标题层级、链接、标签和待办完整性，给出可确认的修复清单。",
+  "triggers": ["检查笔记", "整理结构", "体检笔记", "标题层级", "补标签"],
+  "tools": ["read", "search", "update"],
+  "permissions": ["read", "write:confirm"],
+  "inputSchema": { "type": "object", "required": ["path"] },
+  "outputSchema": { "type": "object", "required": ["issues", "proposedEdits"] }
+}

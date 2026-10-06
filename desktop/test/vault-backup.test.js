@@ -55,9 +55,9 @@ test('backup cannot be created inside the source Vault', async (t) => {
 test('desktop exposes the backup bridge and IPC handler', () => {
   const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
-    assert.match(mainSource, /ipcMain\.handle\('vault:backup'/);
+    assert.match(mainSource, /handleIpc\('vault:backup'/);
     assert.match(mainSource, /copyVaultToBackup\(vaultDir/);
     assert.match(preloadSource, /backupVault: \(\) => ipcRenderer\.invoke\('vault:backup'\)/);
-    assert.match(mainSource, /ipcMain\.handle\('vault:export-static-site'/);
+    assert.match(mainSource, /handleIpc\('vault:export-static-site'/);
     assert.match(preloadSource, /exportStaticSite: \(files\) => ipcRenderer\.invoke\('vault:export-static-site', files\)/);
   });

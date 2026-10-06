@@ -181,6 +181,9 @@ function normalizeProvider(value, { nullable = false } = {}) {
   if (!value || typeof value !== 'object') return nullable ? null : null;
   const endpoint = typeof value.endpoint === 'string' ? value.endpoint.trim().slice(0, 500) : '';
   if (!endpoint) return nullable ? null : null;
+  const temperature = Number(value.temperature);
+  const maxTokens = Number(value.maxTokens);
+  const contextWindowTokens = Number(value.contextWindowTokens);
   return {
     id: typeof value.id === 'string' && value.id.trim() ? value.id.trim().slice(0, 120) : 'provider-server',
     name: typeof value.name === 'string' && value.name.trim() ? value.name.trim().slice(0, 80) : '未命名模型',
@@ -190,6 +193,12 @@ function normalizeProvider(value, { nullable = false } = {}) {
     apiKey: typeof value.apiKey === 'string' ? value.apiKey.slice(0, 500) : '',
     authHeader: value.authHeader === 'x-api-key' ? 'x-api-key' : 'bearer',
     enabled: value.enabled !== false,
+    // 高级参数：非法/缺省时不下发，服务端回落内置默认
+    ...(Number.isFinite(temperature) ? { temperature: Math.min(Math.max(temperature, 0), 2) } : {}),
+    ...(Number.isFinite(maxTokens) && maxTokens >= 1 ? { maxTokens: Math.min(Math.floor(maxTokens), 200_000) } : {}),
+    ...(Number.isFinite(contextWindowTokens) && contextWindowTokens >= 8_000
+      ? { contextWindowTokens: Math.min(Math.floor(contextWindowTokens), 1_000_000) }
+      : {}),
   };
 }
 

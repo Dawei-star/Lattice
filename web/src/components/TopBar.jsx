@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Inbox } from 'lucide-react';
+import { Activity, Inbox } from 'lucide-react';
 
 /**
  * 顶栏：品牌、全局检索入口、视图切换、新建、主题与手动刷新。
@@ -90,17 +90,21 @@ export default function TopBar({
           </button>
         </div>
 
-        <button type="button" className="btn" onClick={onOpenSwitcher} title="快速切换（Ctrl / Cmd + K）">
+        <button type="button" className="btn" onClick={() => onOpenSwitcher?.()} title="快速切换（Ctrl / Cmd + K）">
           <span className="kbd">Ctrl</span>
           <span className="kbd">K</span>
         </button>
 
-        <button type="button" className="btn btn--primary" onClick={onCreateNote} title="新建笔记（Ctrl / Cmd + N）">
+        <button type="button" className="btn btn--primary" onClick={() => onCreateNote?.()} title="新建笔记（Ctrl / Cmd + N）">
           新建笔记
         </button>
 
-        <button type="button" className="btn btn--icon" onClick={onCaptureInbox} title="收集到 Inbox（Ctrl / Cmd + Shift + I）" aria-label="收集到 Inbox">
+        <button type="button" className="btn btn--icon" onClick={() => onCaptureInbox?.()} title="收集到 Inbox（Ctrl / Cmd + Shift + I）" aria-label="收集到 Inbox">
           <Inbox size={17} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+
+        <button type="button" className={`btn btn--icon ${view === 'review' ? 'is-on' : ''}`} onClick={() => onViewChange('review')} title="知识健康 / Review" aria-label="知识健康">
+          <Activity size={17} strokeWidth={1.8} aria-hidden="true" />
         </button>
 
         <button

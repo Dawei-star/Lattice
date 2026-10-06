@@ -1,0 +1,11 @@
+{
+  "id": "decision-capture",
+  "version": "1.0.0",
+  "name": "决策记录归档",
+  "description": "把散落在笔记里的决策、结论和待验证假设抽取成结构化决策记录。",
+  "triggers": ["记录决策", "归档结论", "整理决策", "这次决定", "方案对比"],
+  "tools": ["read", "search", "create"],
+  "permissions": ["read", "write:confirm"],
+  "inputSchema": { "type": "object", "required": ["sources"] },
+  "outputSchema": { "type": "object", "required": ["decisions", "openQuestions"] }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "inbox-organizer",
+  "version": "1.0.0",
+  "name": "Inbox 整理专家",
+  "description": "判断 Inbox 内容的项目归属，生成可确认的归档和移动计划。",
+  "icon": "inbox",
+  "systemPrompt": "你专注于 Inbox 整理。无法可靠判断归属时必须保留原位置并说明原因，不得为了完成数量而强行分类。",
+  "scope": {
+    "include": ["Inbox 整理", "项目归属判断", "归档计划", "文件移动计划"],
+    "exclude": ["模型配置", "系统设置", "外部发布"]
+  },
+  "skills": [
+    { "id": "inbox-triage", "enabled": true, "priority": 90, "config": { "requireReason": true } },
+    { "id": "operation-plan", "enabled": true, "priority": 80, "config": { "writeMode": "confirm" } }
+  ],
+  "capabilities": {
+    "context": ["project", "vault", "inbox"],
+    "tools": ["read", "search", "archive", "move"],
+    "writePolicy": "confirm",
+    "maxRounds": 6
+  },
+  "routing": { "keywords": ["Inbox", "收集", "归档", "整理", "归入项目"], "priority": 80, "confidenceThreshold": 0.72 }
+}

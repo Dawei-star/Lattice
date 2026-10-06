@@ -20,6 +20,7 @@ function mapNote(row) {
     isPinned: row.is_pinned === 1,
     wordCount: row.word_count,
     contentHash: row.content_hash ?? null,
+    propertiesJson: row.properties_json ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -32,6 +33,8 @@ function mapSummary(row) {
     folderId: row.folder_id,
     isPinned: row.is_pinned === 1,
     wordCount: row.word_count,
+    contentHash: row.content_hash ?? null,
+    propertiesJson: row.properties_json ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     excerpt: buildExcerpt(row.content),
@@ -85,25 +88,31 @@ export function listByFilePathPrefix(prefix) {
 
 import { escapeLikePattern } from '../../lib/sql.js';
 
-export function insert({ id, title, content, folderId, filePath, wordCount, contentHash, createdAt, updatedAt }) {
+export function insert({ id, title, content, folderId, filePath, wordCount, contentHash, propertiesJson, createdAt, updatedAt }) {
   getDb()
     .prepare(
-      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, content_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      `INSERT INTO notes (id, title, content, folder_id, file_path, is_pinned, word_count, content_hash, properties_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     )
-    .run(id, title, content, folderId, filePath, wordCount, contentHash, createdAt, updatedAt);
+    .run(id, title, content, folderId, filePath, wordCount, contentHash, propertiesJson ?? null, createdAt, updatedAt);
   return findById(id);
 }
 
-export function update(id, { title, content, folderId, filePath, isPinned, wordCount, contentHash, updatedAt }) {
+export function update(id, { title, content, folderId, filePath, isPinned, wordCount, contentHash, propertiesJson, updatedAt }) {
   getDb()
     .prepare(
       `UPDATE notes
-          SET title = ?, content = ?, folder_id = ?, file_path = ?, is_pinned = ?, word_count = ?, content_hash = ?, updated_at = ?
+          SET title = ?, content = ?, folder_id = ?, file_path = ?, is_pinned = ?, word_count = ?, content_hash = ?,
+              properties_json = COALESCE(?, properties_json), updated_at = ?
         WHERE id = ?`,
     )
-    .run(title, content, folderId, filePath, isPinned ? 1 : 0, wordCount, contentHash, updatedAt, id);
+    .run(title, content, folderId, filePath, isPinned ? 1 : 0, wordCount, contentHash, propertiesJson ?? null, updatedAt, id);
   return findById(id);
+}
+
+/** 惰性回填 properties_json（读路径遇到 NULL 的存量行时调用）。 */
+export function backfillPropertiesJson(id, propertiesJson) {
+  getDb().prepare('UPDATE notes SET properties_json = ? WHERE id = ? AND properties_json IS NULL').run(propertiesJson, id);
 }
 
 export function remove(id) {
@@ -140,7 +149,7 @@ export function list({ folderId, tagId, sort = 'updated', limit, offset, paginat
   const pagination = paginate ? ' LIMIT ? OFFSET ?' : '';
   const rows = db
     .prepare(
-      `SELECT n.id, n.title, n.folder_id, n.file_path, n.is_pinned, n.word_count, n.created_at, n.updated_at,
+      `SELECT n.id, n.title, n.folder_id, n.file_path, n.is_pinned, n.word_count, n.content_hash, n.properties_json, n.created_at, n.updated_at,
               substr(n.content, 1, 400) AS content_excerpt
          FROM notes n ${where}
         ORDER BY ${orderBy}${pagination}`,
@@ -153,7 +162,7 @@ export function list({ folderId, tagId, sort = 'updated', limit, offset, paginat
 
 /** 全量轻量索引：图谱、快速切换器、双链解析与嵌入预览共用，不含正文 */
 export function listIndex({ order = false } = {}) {
-  const sql = `SELECT id, title, folder_id, file_path, is_pinned, word_count, updated_at FROM notes${order ? ' ORDER BY updated_at DESC' : ''}`;
+  const sql = `SELECT id, title, folder_id, file_path, is_pinned, word_count, content_hash, properties_json, updated_at FROM notes${order ? ' ORDER BY updated_at DESC' : ''}`;
   return getDb()
     .prepare(sql)
     .all()
@@ -164,8 +173,23 @@ export function listIndex({ order = false } = {}) {
       isPinned: row.is_pinned === 1,
       filePath: row.file_path || `${sanitizeFilePart(row.title)}.md`,
       wordCount: row.word_count,
+      contentHash: row.content_hash ?? null,
+      propertiesJson: row.properties_json ?? null,
       updatedAt: row.updated_at,
     }));
+}
+
+/** Review 扫描用的投影：只在本地健康检查时读取正文，不改变普通列表的轻量契约。 */
+export function listForHealth() {
+  return getDb()
+    .prepare(
+      `SELECT id, title, content, folder_id, file_path, is_pinned, word_count, content_hash,
+              properties_json, created_at, updated_at
+         FROM notes
+        ORDER BY updated_at DESC`,
+    )
+    .all()
+    .map(mapNote);
 }
 
 export function statistics() {

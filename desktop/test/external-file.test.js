@@ -79,10 +79,10 @@ test('desktop entry point uses tokenized external-file sessions', () => {
   assert.match(mainSource, /app\.on\('second-instance', \(_event, commandLine\)/);
   assert.match(mainSource, /createExternalSession\(initialFilePath\)/);
   assert.match(mainSource, /webContents\.send\('lattice:open-external-file'/);
-  assert.match(mainSource, /ipcMain\.handle\('external:read'/);
-  assert.match(mainSource, /ipcMain\.handle\('external:grant-write'/);
+  assert.match(mainSource, /handleIpc\('external:read'/);
+  assert.match(mainSource, /handleIpc\('external:grant-write'/);
   assert.match(mainSource, /if \(!session\.writeGranted\)/);
-  assert.match(mainSource, /ipcMain\.handle\('external:write'/);
+  assert.match(mainSource, /handleIpc\('external:write'/);
 });
 
 test('desktop entry point registers a tray toggle and explicit quit path', () => {

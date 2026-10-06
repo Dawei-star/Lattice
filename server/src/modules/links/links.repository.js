@@ -114,6 +114,28 @@ export function listDangling() {
     .map((row) => ({ targetTitle: row.targetTitle, referenceCount: row.referenceCount }));
 }
 
+/** Review 用的悬空链接证据：除目标标题外保留引用来源，便于用户逐条回看。 */
+export function listDanglingDetails() {
+  return getDb()
+    .prepare(
+      `SELECT l.target_title AS targetTitle,
+              l.source_note_id AS sourceId,
+              n.title AS sourceTitle,
+              n.file_path AS sourcePath
+         FROM links l
+         JOIN notes n ON n.id = l.source_note_id
+        WHERE l.target_note_id IS NULL
+        ORDER BY l.target_title COLLATE NOCASE ASC, n.updated_at DESC`,
+    )
+    .all()
+    .map((row) => ({
+      targetTitle: row.targetTitle,
+      sourceId: row.sourceId,
+      sourceTitle: row.sourceTitle,
+      sourcePath: row.sourcePath || `${row.sourceTitle}.md`,
+    }));
+}
+
 /** 批量统计指定笔记的出链/入链数量，避免逐条查询 */
 export function countsForNotes(noteIds) {
   const empty = { outgoing: new Map(), incoming: new Map() };

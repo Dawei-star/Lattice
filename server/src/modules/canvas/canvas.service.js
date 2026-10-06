@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { config } from '../../config/index.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
 import { resolveVaultPath } from '../../vault/path.js';
-import { VaultAdapter } from '../../vault/vault.adapter.js';
+import { VaultAdapter, assertWritablePathSync } from '../../vault/vault.adapter.js';
 
 const FILE_PATH = '画板.canvas';
 const vaultFile = (filePath = FILE_PATH) => resolveVaultPath(config.vaultDir, filePath, '.canvas');
@@ -64,10 +64,17 @@ export function move(fromPath, toPath) {
   const source = vaultFile(fromPath);
   const target = vaultFile(toPath);
   if (!fs.existsSync(source)) throw new NotFoundError('画布文件不存在');
-  if (source !== target && fs.existsSync(target)) throw new ConflictError('目标位置已存在同名画布文件');
+  // Windows 文件系统大小写不敏感：仅改大小写的重命名（画板.canvas → 画板.Canvas）
+  // 会被字符串比较 + existsSync 误判为「目标已存在」，用 relative 同路径判定豁免
+  const sameFile = path.relative(source, target) === '';
+  if (!sameFile && fs.existsSync(target)) throw new ConflictError('目标位置已存在同名画布文件');
 
+  // 与 write/remove 一致的符号链接防护：move 之前同样不能跳过
+  assertWritablePathSync(config.vaultDir, source);
+  assertWritablePathSync(config.vaultDir, target);
+  if (sameFile) return { fromPath, toPath };
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  if (source !== target) fs.renameSync(source, target);
+  fs.renameSync(source, target);
   return { fromPath, toPath };
 }
 

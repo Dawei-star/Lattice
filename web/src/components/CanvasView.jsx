@@ -62,6 +62,9 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
   const [clipboardState, setClipboardState] = useState('idle');
   const [clipboardError, setClipboardError] = useState('');
   const [saveState, setSaveState] = useState('loading');
+  // 加载失败与保存失败分开呈现：共用一个状态会把「画布加载失败」误报成
+  // 「保存失败」，让用户误以为刚保存的内容丢了
+  const [loadError, setLoadError] = useState(false);
   const loadedFromVault = useRef(false);
   const hasLocalChanges = useRef(false);
   const hasAutoFitted = useRef(false);
@@ -208,6 +211,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     setClipboardState('idle');
     setClipboardError('');
     setSaveState('loading');
+    setLoadError(false);
 
     canvasApi.get(canvasPath).then((value) => {
       if (cancelled) return;
@@ -221,7 +225,8 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     }).catch(() => {
       // 加载失败必须保持「未从库中加载」状态：若置为已加载，随后的自动保存
       // 会把空文档整体写回服务器，覆盖掉真正的画布内容（新建画布走 200 空文档，不受影响）
-      setSaveState('error');
+      setSaveState('idle');
+      setLoadError(true);
     });
 
     return () => { cancelled = true; };
@@ -1039,7 +1044,9 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     return () => observer.disconnect();
   }, [canvasDocument.nodes.length]);
 
-  const stageStatusText = clipboardState === 'uploading'
+  const stageStatusText = loadError
+    ? '画布加载失败，重新打开可重试'
+    : clipboardState === 'uploading'
     ? '正在导入图片…'
     : clipboardState === 'error'
       ? clipboardError
@@ -1054,7 +1061,9 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
               : saveState === 'error'
                 ? '保存失败'
                 : '已保存';
-  const stageStatusTone = clipboardState === 'uploading'
+  const stageStatusTone = loadError
+    ? 'error'
+    : clipboardState === 'uploading'
     ? 'saving'
     : clipboardState === 'error'
       ? 'error'

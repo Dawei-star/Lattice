@@ -10,8 +10,12 @@ export const aiApi = {
   chat: (input, options = {}) => http.post('/ai/chat', input, { timeout: 300_000, retries: 0, ...options }),
   // 连通性测试直连上游服务商（kind: 'chat' | 'embedding'），关闭重试避免重复消耗上游额度
   test: (input, options = {}) => http.post('/ai/test', input, { timeout: 30_000, retries: 0, ...options }),
+  // MCP 预热：服务端后台建连 + listTools，立即返回 202（打开面板时调用，缩短首条消息 TTFT）
+  warmupMcp: (mcpServers = [], options = {}) => http.post('/ai/mcp/warmup', { mcpServers }, { timeout: 10_000, retries: 0, ...options }),
   preview: (input, options = {}) => http.post('/ai/operations/preview', input, options),
-  execute: (input, options = {}) => http.post('/ai/operations/execute', input, options),
+  // 写操作端点：关闭自动重试——超时后服务端可能已执行成功，重试会重复执行
+  // 同一批文件动作（与 filesApi.execute / ai.write 同一口径）
+  execute: (input, options = {}) => http.post('/ai/operations/execute', input, { retries: 0, ...options }),
   history: (options = {}) => http.get('/ai/history', options),
 
   // ── 服务端模型配置（Key 同步到服务端，供索引管道与 CLI 共用）─────────
@@ -19,7 +23,8 @@ export const aiApi = {
   putSettings: (input, options = {}) => http.put('/ai/settings', input, options),
 
   // ── 会话 ──────────────────────────────────────────────────────────
-  listSessions: (options = {}) => http.get('/ai/sessions', options),
+  // 列表仍从 data 读取数组；getFull 同时保留分页 meta 供会话历史面板使用
+  listSessions: (options = {}) => http.getFull('/ai/sessions', options),
   createSession: (input = {}, options = {}) => http.post('/ai/sessions', input, options),
   sessionMessages: (sessionId, options = {}) => http.get(`/ai/sessions/${encodeURIComponent(sessionId)}/messages`, options),
   renameSession: (sessionId, title, options = {}) => http.patch(`/ai/sessions/${encodeURIComponent(sessionId)}`, { title }, options),

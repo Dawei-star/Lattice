@@ -48,7 +48,7 @@ export const MCP_MARKET_CATALOG = Object.freeze([
     description: '官方参考服务器：在受控目录内提供读取、写入、移动、搜索文件与目录树等工具，越界路径会被拒绝。安装时自动绑定当前 Vault 目录。',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-filesystem', '{vaultDir}'],
-    argDefaults: { vaultDir: '.' },
+    requiresArgs: [{ token: 'vaultDir', label: '允许访问的目录', hint: '默认是当前知识库目录，也可换成别的文件夹', preset: 'vaultDir' }],
     env: {},
     tools: [
       { name: 'read_file', description: '读取单个文件内容' },
@@ -68,7 +68,7 @@ export const MCP_MARKET_CATALOG = Object.freeze([
     description: '安装时自动绑定 Lattice 的 lattice.db，可以用 SQL 检索笔记元数据、标签、双链等投影数据。含写工具，日常只读使用即可。',
     command: 'uvx',
     args: ['mcp-server-sqlite', '--db-path', '{dbFile}'],
-    argDefaults: { dbFile: './data/lattice.db' },
+    requiresArgs: [{ token: 'dbFile', label: 'SQLite 数据库路径', hint: '默认指向 Lattice 的 lattice.db', preset: 'dbFile' }],
     env: {},
     tools: [
       { name: 'read_query', description: '执行只读 SQL 查询' },
@@ -198,7 +198,8 @@ export const MCP_MARKET_CATALOG = Object.freeze([
     tagline: '只读查看 Git 仓库的状态、差异与历史',
     description: '官方参考服务器：查看仓库状态、提交历史、差异与单次提交内容；配合笔记库的 Git 备份或代码仓库都好用。',
     command: 'uvx',
-    args: ['mcp-server-git'],
+    args: ['mcp-server-git', '--repository', '{repository}'],
+    requiresArgs: [{ token: 'repository', label: 'Git 仓库路径', hint: '要交给 Agent 查看的仓库目录；留空则该 Server 不会启用', preset: 'vaultDir' }],
     env: {},
     tools: [
       { name: 'git_status', description: '查看工作区状态' },
@@ -265,19 +266,38 @@ export const MCP_MARKET_CATALOG = Object.freeze([
   },
 ]);
 
-/** 把 args 中的 {vaultDir} / {dbFile} 占位符替换为当前环境路径，缺省时退回条目自带默认值。 */
+/**
+ * 把 args 里的 {vaultDir} / {dbFile} / {repository} 占位符替换成当前环境已知的路径。
+ *
+ * 拿不到值时**保留占位符本身**，不回退到条目里的相对默认值：客户端是从任意工作目录
+ * 拉起这些进程的，`--repository .` 这种相对路径对它们毫无意义，只会得到一份看着
+ * 完整、实际跑不起来的配置。未填的参数由编辑器给出输入框，并在填齐前保持停用。
+ */
 export function resolveMarketArgs(entry, context = {}) {
   return (entry.args ?? []).map((arg) => {
     const match = /^\{(\w+)\}$/.exec(arg);
     if (!match) return arg;
-    const token = match[1];
-    const value = context[token] ?? entry.argDefaults?.[token];
+    const value = context[match[1]];
     return value != null && String(value).trim() ? String(value) : arg;
   });
 }
 
-/** 由市场条目生成一份本机 MCP Server 配置；需要密钥的条目默认先停用。 */
+/** 条目里声明的必需参数中，当前上下文还填不出来的那些（用来决定是否默认停用并弹编辑器）。 */
+export function unresolvedMarketArgs(entry, context = {}) {
+  return (entry.requiresArgs ?? [])
+    .map((item) => item.token)
+    .filter((token) => !(context[token] != null && String(context[token]).trim()));
+}
+
+/**
+ * 由市场条目生成一份本机 MCP Server 配置。
+ * 需要密钥或必需参数的条目默认先停用——包括 filesystem / sqlite 这类平时能自动绑定、
+ * 但 info 尚未返回时无从得知路径的条目。
+ */
 export function createServerFromMarketEntry(entry, context = {}) {
+  const requiresEnv = entry.requiresEnv ?? [];
+  const requiresArgs = entry.requiresArgs ?? [];
+  const unresolved = unresolvedMarketArgs(entry, context);
   return createMcpServer({
     id: MARKET_ID_PREFIX + entry.key,
     key: entry.key,
@@ -287,10 +307,14 @@ export function createServerFromMarketEntry(entry, context = {}) {
     args: resolveMarketArgs(entry, context),
     env: { ...entry.env },
     transport: 'stdio',
-    enabled: !(entry.requiresEnv ?? []).length,
+    enabled: requiresEnv.length === 0 && unresolved.length === 0,
     tools: entry.tools ?? [],
-    // 编辑器据此为每个待补的密钥渲染独立输入框
-    requiresEnv: entry.requiresEnv ?? [],
+    // 编辑器据此为每个待补的密钥 / 参数渲染独立输入框
+    requiresEnv,
+    requiresArgs,
+    argValues: Object.fromEntries(Object.entries(context)
+      .filter(([token, value]) => requiresArgs.some((item) => item.token === token) && value != null && String(value).trim())
+      .map(([token, value]) => [token, String(value)])),
   });
 }
 

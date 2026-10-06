@@ -2,11 +2,116 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="refresh" content="0; url=website/lattice-docs.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>格物 Lattice</title>
+    <meta name="description" content="格物 Lattice 是一款 Windows 本地优先 Markdown 双链笔记知识库，支持全文搜索、关系图谱、Canvas 白板、AI 助手和 MCP Server。" />
+    <meta name="application-name" content="格物 Lattice" />
+    <link rel="canonical" href="https://dawei-star.github.io/Lattice/" />
+    <link rel="icon" href="web/public/lattice-icon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="格物 Lattice：Windows 本地优先 Markdown 双链笔记" />
+    <meta property="og:description" content="本地优先的 Markdown 知识库，支持双向链接、全文搜索、关系图谱、Canvas、AI 助手和 MCP Server。" />
+    <meta property="og:url" content="https://dawei-star.github.io/Lattice/" />
+    <meta property="og:image" content="https://dawei-star.github.io/Lattice/FILES/README.md/lattice-workspace-light.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="格物 Lattice：Windows 本地优先 Markdown 双链笔记" />
+    <meta name="twitter:description" content="本地优先的 Markdown 知识库，支持双向链接、全文搜索、关系图谱、Canvas、AI 助手和 MCP Server。" />
+    <meta name="twitter:image" content="https://dawei-star.github.io/Lattice/FILES/README.md/lattice-workspace-light.png" />
+    <title>格物 Lattice：Windows 本地优先 Markdown 双链笔记知识库</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "格物 Lattice",
+        "alternateName": "Lattice",
+        "applicationCategory": "ProductivityApplication",
+        "operatingSystem": "Windows",
+        "description": "A local-first Windows desktop knowledge base for Markdown notes, with bidirectional links, full-text search, graph view, Canvas boards, an optional AI assistant, and MCP Server.",
+        "url": "https://dawei-star.github.io/Lattice/",
+        "downloadUrl": "https://github.com/Dawei-star/Lattice/releases/latest",
+        "license": "https://github.com/Dawei-star/Lattice/blob/main/LICENSE",
+        "sameAs": "https://github.com/Dawei-star/Lattice"
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #f4f6f9;
+        --surface: #ffffff;
+        --ink: #172033;
+        --muted: #5f6b7d;
+        --line: #dce2eb;
+        --brand: #3152c8;
+        --brand-dark: #233a9d;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--canvas); color: var(--ink); font: 16px/1.7 "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+      main { width: min(1100px, calc(100% - 40px)); margin: 0 auto; padding: 56px 0 72px; }
+      .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1.1fr); gap: 48px; align-items: center; }
+      .eyebrow { color: var(--brand); font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+      h1 { margin: 12px 0 18px; font-size: 3.75rem; line-height: 1.12; }
+      h1 span { color: var(--brand); }
+      .lead { max-width: 620px; margin: 0; color: var(--muted); font-size: 1.12rem; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+      .actions a { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 0 18px; border: 1px solid var(--brand); color: var(--brand-dark); font-weight: 700; text-decoration: none; }
+      .actions a.primary { background: var(--brand); color: #fff; }
+      .actions a:hover { filter: brightness(.95); }
+      figure { margin: 0; }
+      figure img { display: block; width: 100%; border: 1px solid var(--line); box-shadow: 0 18px 50px rgba(35, 58, 157, .14); }
+      figcaption { margin-top: 10px; color: var(--muted); font-size: .85rem; text-align: center; }
+      .content { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 64px; }
+      .content article { padding: 22px; border-top: 3px solid var(--brand); background: var(--surface); }
+      .content h2 { margin: 0 0 8px; font-size: 1.1rem; }
+      .content p { margin: 0; color: var(--muted); }
+      footer { margin-top: 48px; color: var(--muted); font-size: .9rem; }
+      footer a { color: var(--brand-dark); }
+      @media (max-width: 760px) {
+        main { width: min(100% - 28px, 620px); padding-top: 34px; }
+        .hero, .content { grid-template-columns: 1fr; }
+        .hero { gap: 30px; }
+        .content { margin-top: 42px; }
+        h1 { font-size: 2.5rem; }
+      }
+    </style>
   </head>
   <body>
-    <p><a href="website/lattice-docs.html">打开格物 Lattice 文档站</a></p>
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <div class="eyebrow">Local-first Markdown knowledge base</div>
+          <h1 id="page-title">格物 <span>Lattice</span></h1>
+          <p class="lead">面向 Windows 的本地优先 Markdown 双链笔记知识库。用双向链接、全文搜索、关系图谱、Canvas 白板和可选 AI 助手，把零散想法整理成可以继续工作的知识。</p>
+          <div class="actions">
+            <a class="primary" href="website/lattice-download.html">下载 Windows 版本</a>
+            <a href="website/lattice-docs.html">查看产品文档</a>
+            <a href="https://github.com/Dawei-star/Lattice" rel="noopener">查看 GitHub</a>
+          </div>
+        </div>
+        <figure>
+          <img src="FILES/README.md/lattice-workspace-light.png" alt="Lattice Windows 本地知识库工作区" />
+          <figcaption>Markdown 笔记、双向链接、关系图谱和本地 Vault</figcaption>
+        </figure>
+      </section>
+
+      <section class="content" aria-label="核心能力">
+        <article>
+          <h2>本地优先</h2>
+          <p>笔记以 Markdown 文件保存在自己的 Vault 中，不需要注册；SQLite 只保存可重建索引。</p>
+        </article>
+        <article>
+          <h2>知识连接</h2>
+          <p>使用双向链接、标签、全文搜索、关系图谱和 Canvas 白板组织长期知识。</p>
+        </article>
+        <article>
+          <h2>AI 与 MCP</h2>
+          <p>按需配置 AI 知识库助手，并通过默认只读的 MCP Server 连接 Claude 等外部 Agent。</p>
+        </article>
+      </section>
+
+      <footer>
+        格物 Lattice · <a href="website/lattice-user-guide.html">使用说明</a> · <a href="website/lattice-mcp-guide.html">MCP 集成指南</a> · <a href="https://github.com/Dawei-star/Lattice/releases/latest" rel="noopener">最新 Release</a>
+      </footer>
+    </main>
   </body>
 </html>

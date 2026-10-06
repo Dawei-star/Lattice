@@ -11,6 +11,9 @@ import { createFileStore } from './fc-core.mjs';
 
 const WRITE_COMMANDS = new Set(['create', 'write', 'append', 'edit', 'copy', 'move', 'delete', 'mkdir', 'batch', 'undo']);
 const BOOLEAN_OPTIONS = new Set(['all', 'dry-run', 'force', 'help', 'h', 'regex', 'yes', 'V', 'version']);
+// 已知取值选项：不在清单里的选项名直接报错——否则拼错（--limt）会静默吞掉
+// 下一个位置参数当值，命令语义无声改变
+const VALUE_OPTIONS = new Set(['content', 'id', 'limit', 'mode', 'offset', 'plan-hash', 'replace', 'root', 'type', 'with']);
 const MODES = new Set(['default', 'readonly']);
 const EXIT_SLASH_COMMANDS = new Set(['/exit', '/quit', '/q']);
 
@@ -88,7 +91,7 @@ async function executeCommand(store, command, positionals, options, context) {
     return store.undo(options.id ?? positionals[0] ?? null, { force: options.force });
   }
   if (command === 'doctor') {
-    return inspectHealth(store);
+    return inspectHealth(store, { mode: context.mode });
   }
   if (WRITE_COMMANDS.has(command)) {
     const input = inputFor(command, positionals, options);
@@ -177,9 +180,10 @@ async function runServe(store, { mode }) {
   rl.close();
 }
 
-function inspectHealth(store) {
+function inspectHealth(store, { mode = 'default' } = {}) {
   const checks = [];
   const add = (name, ok, detail) => checks.push({ name, ok, detail });
+  const readonly = mode === 'readonly';
 
   let rootIsDirectory = false;
   try {
@@ -190,13 +194,58 @@ function inspectHealth(store) {
   add('root', rootIsDirectory, rootIsDirectory ? String(store.rootDir) : `missing or not a directory: ${store.rootDir}`);
 
   if (rootIsDirectory) {
-    const probe = path.join(store.rootDir, `.fc-doctor-${randomUUID().slice(0, 8)}.tmp`);
-    try {
-      fs.writeFileSync(probe, '');
-      fs.rmSync(probe, { force: true });
-      add('writable', true, 'root accepts writes');
-    } catch (error) {
-      add('writable', false, `root is not writable: ${error.message}`);
+    if (readonly) {
+      // readonly 门禁止 doctor 之外的一切写入，doctor 自己也不该越线写探针文件
+      try {
+        fs.accessSync(store.rootDir, fs.constants.W_OK);
+        add('writable', true, 'root is writable (checked without probe file)');
+      } catch (error) {
+        add('writable', false, `root is not writable: ${error.message}`);
+      }
+    } else {
+      const probe = path.join(store.rootDir, `.fc-doctor-${randomUUID().slice(0, 8)}.tmp`);
+      try {
+        fs.writeFileSync(probe, '');
+        add('writable', true, 'root accepts writes');
+      } catch (error) {
+        add('writable', false, `root is not writable: ${error.message}`);
+      } finally {
+        try {
+          fs.rmSync(probe, { force: true });
+        } catch {
+          // 探针残留会在下次 doctor 重试清理
+        }
+      }
+    }
+  }
+
+  // 审计与回收站都在 .fc 状态目录下：只查 root 不查它，会出现「doctor 全绿
+  // 但一切写操作/undo 必失败」的假健康
+  const stateDir = store.stateDir;
+  if (rootIsDirectory) {
+    const probeTarget = fs.existsSync(stateDir) ? stateDir : store.rootDir;
+    const stateDetail = fs.existsSync(stateDir) ? String(stateDir) : `${stateDir} (not created yet, checked via root)`;
+    if (readonly) {
+      try {
+        fs.accessSync(probeTarget, fs.constants.W_OK);
+        add('state-dir', true, `state dir writable: ${stateDetail}`);
+      } catch (error) {
+        add('state-dir', false, `state dir not writable: ${stateDetail}: ${error.message}`);
+      }
+    } else {
+      const probe = path.join(probeTarget, `.fc-doctor-${randomUUID().slice(0, 8)}.tmp`);
+      try {
+        fs.writeFileSync(probe, '');
+        add('state-dir', true, `state dir writable: ${stateDetail}`);
+      } catch (error) {
+        add('state-dir', false, `state dir not writable: ${stateDetail}: ${error.message}`);
+      } finally {
+        try {
+          fs.rmSync(probe, { force: true });
+        } catch {
+          // 同上：残留探针不掩盖检查结论
+        }
+      }
     }
   }
 
@@ -266,13 +315,23 @@ function parseArgs(args) {
       positionals.push(arg);
       continue;
     }
+    // 同时支持 --opt value 与 --opt=value；后者也允许以 - 开头的值（负数等）
+    if (arg.includes('=')) {
+      const separator = arg.indexOf('=');
+      const key = arg.slice(0, separator).replace(/^-+/, '');
+      if (!BOOLEAN_OPTIONS.has(key) && !VALUE_OPTIONS.has(key)) throw new Error(`Unknown option: --${key}`);
+      options[key] = arg.slice(separator + 1);
+      continue;
+    }
     const key = arg.replace(/^-+/, '');
     if (BOOLEAN_OPTIONS.has(key)) options[key] = true;
-    else {
+    else if (VALUE_OPTIONS.has(key)) {
       const value = args[index + 1];
       if (value === undefined || value.startsWith('-')) throw new Error(`Option --${key} requires a value`);
       options[key] = value;
       index += 1;
+    } else {
+      throw new Error(`Unknown option: --${key}`);
     }
   }
   return { positionals, options };

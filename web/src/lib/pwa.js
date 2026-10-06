@@ -1,5 +1,9 @@
 export function registerPwa({ onInstallAvailable, onUpdateAvailable } = {}) {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return () => {};
+  // 开发模式绝不注册：SW 的 cache-first 会把 Vite 的 /src 模块永久缓存，
+  // 热更新全部失效，且新旧模块 ESM 导出对不上时整页白屏（生产构建资源
+  // 带内容哈希，才适合 SW 缓存）。import.meta.env 仅在 Vite 构建时存在。
+  if (import.meta.env?.DEV) return () => {};
 
   let installEvent = null;
   let registration = null;

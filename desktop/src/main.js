@@ -158,11 +158,31 @@ process.on('unhandledRejection', (reason) => {
  * 驱动正常的机器上永远不会触发。
  */
 const GPU_CRASH_THRESHOLD = 3;
+// 标记一旦落下就永久禁用 GPU 沙箱，但驱动/环境是可能被修复的：
+// 标记超过 30 天就自动清除并重试一次沙箱（环境仍坏的话阈值机制会重写标记，
+// 最坏代价是每 30 天多一个 GPU 崩溃会话），避免用户被永久困在降级模式里
+const GPU_FALLBACK_RETRY_MS = 30 * 24 * 60 * 60 * 1000;
 const gpuFallbackMarker = path.join(userDataDir, 'gpu-sandbox-unusable');
 let gpuCrashCount = 0;
 
 if (fs.existsSync(gpuFallbackMarker)) {
-  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  let markerStale = false;
+  try {
+    const markerTime = Date.parse(fs.readFileSync(gpuFallbackMarker, 'utf8').trim()) || fs.statSync(gpuFallbackMarker).mtimeMs;
+    markerStale = Date.now() - markerTime > GPU_FALLBACK_RETRY_MS;
+  } catch {
+    markerStale = false;
+  }
+  if (markerStale) {
+    try {
+      fs.rmSync(gpuFallbackMarker, { force: true });
+      console.log('[main] GPU 兼容性标记已超过 30 天，清除后重试 GPU 沙箱');
+    } catch {
+      app.commandLine.appendSwitch('disable-gpu-sandbox');
+    }
+  } else {
+    app.commandLine.appendSwitch('disable-gpu-sandbox');
+  }
 }
 
 app.on('child-process-gone', (_event, details) => {
@@ -374,6 +394,22 @@ async function ensureVaultSelected() {
   return selected;
 }
 
+/**
+ * ipcMain.handle 的统一入口：校验调用来源是主窗口自身的 webContents。
+ * 渲染层是 http://127.0.0.1 纯网页（安全边界同浏览器），这批 IPC 又都是
+ * 高权限读写入口——今天只有这一个窗口，但将来新增任何 BrowserWindow/webview
+ * 都会自动继承这批通道，不加校验等于把 vault 读写敞给任意 frame。
+ */
+function handleIpc(channel, handler) {
+  ipcMain.removeHandler(channel);
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) {
+      throw new Error(`IPC ${channel} 被拒绝：调用来源不是主窗口`);
+    }
+    return handler(event, ...args);
+  });
+}
+
 function registerVaultIpc() {
   ipcMain.removeHandler('vault:info');
   ipcMain.removeHandler('vault:select');
@@ -393,8 +429,8 @@ function registerVaultIpc() {
   ipcMain.removeHandler('external:grant-write');
   ipcMain.removeHandler('external:write');
 
-  ipcMain.handle('vault:info', () => ({ path: vaultDir }));
-  ipcMain.handle('vault:backup', async () => {
+  handleIpc('vault:info', () => ({ path: vaultDir }));
+  handleIpc('vault:backup', async () => {
     if (!vaultDir) return { canceled: true };
     const result = await dialog.showOpenDialog({
       title: '选择知识库备份位置',
@@ -406,7 +442,7 @@ function registerVaultIpc() {
     const backup = await copyVaultToBackup(vaultDir, result.filePaths[0]);
     return { canceled: false, ...backup };
   });
-  ipcMain.handle('vault:export-static-site', async (_event, files) => {
+  handleIpc('vault:export-static-site', async (_event, files) => {
     if (!Array.isArray(files) || files.length === 0 || files.length > 20_000) throw new Error('静态站点文件清单无效');
     const result = await dialog.showOpenDialog({
       title: '选择静态站点导出目录',
@@ -433,7 +469,7 @@ function registerVaultIpc() {
     }
     return { canceled: false, exportPath: exportRoot, fileCount: files.length, byteCount };
   });
-  ipcMain.handle('vault:select-path', async (_event, nextPath) => {
+  handleIpc('vault:select-path', async (_event, nextPath) => {
     if (typeof nextPath !== 'string' || !nextPath.trim()) return { canceled: true, path: vaultDir };
     const selected = path.resolve(nextPath.trim());
     try {
@@ -442,6 +478,18 @@ function registerVaultIpc() {
       return { canceled: true, path: vaultDir };
     }
     if (selected === vaultDir) return { canceled: false, path: vaultDir, requiresRestart: false };
+    // 渲染层是纯网页（安全边界同浏览器）：切库 = 把后续所有读写授权给任意目录。
+    // 加一道原生确认框，即便前端被注入 XSS 也无法静默把 vault 指向系统目录。
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      title: '切换知识库',
+      message: `确定把知识库切换到：\n${selected} ？`,
+      detail: '应用将重启以挂载新的知识库。',
+      buttons: ['切换', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (response !== 0) return { canceled: true, path: vaultDir };
     vaultDir = selected;
     writeVaultDir(userDataDir, vaultDir);
     setTimeout(() => {
@@ -454,7 +502,7 @@ function registerVaultIpc() {
     }, 250);
     return { canceled: false, path: vaultDir, requiresRestart: true };
   });
-  ipcMain.handle('vault:select', async () => {
+  handleIpc('vault:select', async () => {
     const result = await dialog.showOpenDialog({
       title: '选择知识库文件夹',
       properties: ['openDirectory', 'createDirectory'],
@@ -471,12 +519,12 @@ function registerVaultIpc() {
     }, 250);
     return { canceled: false, path: vaultDir, requiresRestart: true };
   });
-  ipcMain.handle('vault:reveal', () => {
+  handleIpc('vault:reveal', () => {
     if (!vaultDir) return false;
     shell.openPath(vaultDir);
     return true;
   });
-  ipcMain.handle('vault:reveal-path', (_event, relativePath) => {
+  handleIpc('vault:reveal-path', (_event, relativePath) => {
     if (!vaultDir || typeof relativePath !== 'string') return false;
     const root = path.resolve(vaultDir);
     const target = path.resolve(root, relativePath);
@@ -486,18 +534,18 @@ function registerVaultIpc() {
     shell.showItemInFolder(target);
     return true;
   });
-  ipcMain.handle('vault:open-file', (_event, relativePath) => {
+  handleIpc('vault:open-file', (_event, relativePath) => {
     const target = resolveVaultFile(relativePath, OPENABLE_FILE_EXTENSIONS);
     if (!target || !fs.existsSync(target)) return false;
     shell.openPath(target);
     return true;
   });
-  ipcMain.handle('vault:read-file', (_event, relativePath) => {
+  handleIpc('vault:read-file', (_event, relativePath) => {
     const target = resolveVaultFile(relativePath, '.canvas');
     if (!target || !fs.existsSync(target)) return null;
     return fs.readFileSync(target, 'utf8');
   });
-  ipcMain.handle('vault:write-file', (_event, relativePath, content) => {
+  handleIpc('vault:write-file', (_event, relativePath, content) => {
     const target = resolveVaultFile(relativePath, '.canvas');
     if (!target || typeof content !== 'string' || content.length > 2 * 1024 * 1024) return false;
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -510,12 +558,12 @@ function registerVaultIpc() {
       if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     }
   });
-  ipcMain.handle('vault:read-markdown', (_event, relativePath) => {
+  handleIpc('vault:read-markdown', (_event, relativePath) => {
     const target = resolveVaultFile(relativePath, '.md');
     if (!target || !fs.existsSync(target)) return null;
     return fs.readFileSync(target, 'utf8');
   });
-  ipcMain.handle('vault:write-markdown', (_event, relativePath, content) => {
+  handleIpc('vault:write-markdown', (_event, relativePath, content) => {
     const target = resolveVaultFile(relativePath, '.md');
     if (!target || typeof content !== 'string' || content.length > 2 * 1024 * 1024) return false;
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -528,7 +576,7 @@ function registerVaultIpc() {
       if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     }
   });
-  ipcMain.handle('vault:move-markdown', (_event, fromPath, toPath, content) => {
+  handleIpc('vault:move-markdown', (_event, fromPath, toPath, content) => {
     const source = resolveVaultFile(fromPath, '.md');
     const target = resolveVaultFile(toPath, '.md');
     if (!source || !target || typeof content !== 'string' || content.length > 2 * 1024 * 1024) return false;
@@ -544,19 +592,19 @@ function registerVaultIpc() {
       if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     }
   });
-  ipcMain.handle('vault:remove-markdown', (_event, relativePath) => {
+  handleIpc('vault:remove-markdown', (_event, relativePath) => {
     const target = resolveVaultFile(relativePath, '.md');
     if (!target) return false;
     fs.rmSync(target, { force: true });
     return true;
   });
 
-  ipcMain.handle('external:read', (_event, token) => {
+  handleIpc('external:read', (_event, token) => {
     const session = getExternalSession(token);
     if (!session) return null;
     return externalFileInfo(session);
   });
-  ipcMain.handle('external:grant-write', (_event, token) => {
+  handleIpc('external:grant-write', (_event, token) => {
     const session = getExternalSession(token);
     if (!session) return { granted: false, message: '外部文件会话已失效，请重新打开文件' };
 
@@ -574,7 +622,7 @@ function registerVaultIpc() {
       };
     }
   });
-  ipcMain.handle('external:write', (_event, token, content) => {
+  handleIpc('external:write', (_event, token, content) => {
     const session = getExternalSession(token);
     if (!session) throw new Error('外部文件会话已失效，请重新打开文件');
     if (!session.writeGranted) throw new Error('请先点击“获取写权限”');

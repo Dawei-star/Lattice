@@ -12,9 +12,10 @@
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/index.js",
     "db:migrate": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/db/migrate.js",
     "db:seed": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/db/seed.js",
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+    "test": "node --disable-warning=ExperimentalWarning --import ./test/helpers/reserve-blocked-ports.mjs --test \"test/**/*.test.js\""
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "express": "^5.1.0",
     "zod": "^3.25.76"
   }

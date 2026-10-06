@@ -47,8 +47,13 @@ const linksService = await import('../../server/src/modules/links/links.service.
 const { recordAudit } = await import('../../server/src/modules/ai/ai.operations.js');
 
 openDatabase();
-runMigrations();
+if (config.autoMigrate) runMigrations();
 resolveVaultDir(config.vaultDir);
+
+// stdio 协议里 stderr 才是日志通道：缺省 DB_FILE 是相对 CWD 的，从别的目录
+// 启动会静默新建空库、检索「成功」返回空结果——启动时把实际路径报出来，
+// 让配置问题当场可见
+process.stderr.write(`[mcp] DB_FILE=${config.dbFile}\n[mcp] VAULT_DIR=${resolveVaultDir(config.vaultDir)}\n`);
 
 function asText(value) {
   return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
@@ -366,6 +371,13 @@ function shutdown() {
   }
   process.exit(0);
 }
+
+// stdio 是这里唯一的宿主信号来源：宿主（Lattice AI / 外部客户端）退出或
+// transport 异常关闭后必须跟着退出，否则成为持有 SQLite WAL 的孤儿进程。
+// SDK 的 StdioServerTransport 只监听 data/error，不感知 stdin 结束。
+process.stdin.once('end', shutdown);
+process.stdin.once('close', shutdown);
+transport.onclose = shutdown;
 
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
