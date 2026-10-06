@@ -9,22 +9,8 @@ web/test/.build/
 
 # 本地工作目录，不入库（桌面壳、文档、打包配置）
 docs/
-# Keep desktop source, tests and package metadata; ignore generated releases and design assets.
-desktop/*
-!desktop/src/
-!desktop/src/**
-!desktop/test/
-!desktop/test/**
-!desktop/assets/
-!desktop/assets/**
-!desktop/package.json
-!desktop/package-lock.json
-!desktop/electron-builder.yml
-!desktop/build/
-desktop/build/*
-!desktop/build/icon.ico
-!desktop/build/verify-package.cjs
-!desktop/build/make-icon.py
+# 桌面端仅本机保留，不入库（源码、测试、打包配置、产物均在本地）
+desktop/
 # 本地脚本与资产目录（远程已移除，仅本机开发保留，不入库）
 scripts/
 .agents/
