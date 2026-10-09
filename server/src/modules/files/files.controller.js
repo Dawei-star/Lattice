@@ -19,14 +19,19 @@ export function grep(req, res) {
 export function preview(req, res) {
   const principal = getPrincipal(req);
   const action = actionFromBody(req.valid.body);
-  const data = service.preview(action);
+  const actions = Array.isArray(req.valid.body.actions)
+    ? req.valid.body.actions.map(actionFromBody)
+    : null;
+  const previewInput = actions ? { actions } : action;
+  const data = service.preview(previewInput);
   res.json({
     data: {
       ...data,
-      plan: createOperationPlan([action], { actor: principal.actor, role: principal.role, source: 'files-api' }),
+      plan: createOperationPlan(actions ?? [action], { actor: principal.actor, role: principal.role, source: 'files-api' }),
       actor: principal.actor,
       role: principal.role,
-      blocked: principal.role === 'viewer' && WRITE_TYPES.has(action.type),
+      blocked: principal.role === 'viewer' && (actions ?? [action]).some((item) => WRITE_TYPES.has(item.type)),
+      confirmation: confirmationRequirements(data, actions ?? [action]),
     },
   });
 }
@@ -35,7 +40,13 @@ export function execute(req, res) {
   const principal = assertCanWrite(req);
   if (req.valid.body.confirmed !== true) throw new ValidationError('File changes require explicit confirmation');
   if (!req.valid.body.planHash) throw new ValidationError('File changes require a preview plan');
-  const result = service.execute(actionFromBody(req.valid.body), {
+  const actions = Array.isArray(req.valid.body.actions)
+    ? req.valid.body.actions.map(actionFromBody)
+    : null;
+  if ((actions ?? [req.valid.body]).some((item) => item.type === 'delete') && req.valid.body.secondConfirmed !== true) {
+    throw new ValidationError('Delete operations require a second confirmation');
+  }
+  const result = service.execute(actions ? { actions } : actionFromBody(req.valid.body), {
     actor: principal.actor,
     role: principal.role,
     source: 'files-api',
@@ -59,6 +70,19 @@ export function log(req, res) {
 function actionFromBody(body) {
   const { type, path, targetPath, content, replace, with: replacement, all } = body;
   return { type, path, targetPath, content, replace, with: replacement, all };
+}
+
+function confirmationRequirements(preview, actions) {
+  const deletes = actions.filter((action) => action.type === 'delete').length;
+  return {
+    required: actions.some((action) => WRITE_TYPES.has(action.type)),
+    secondConfirmationRequired: deletes > 0,
+    deleteCount: deletes,
+    itemCount: actions.length,
+    paths: preview.operations?.flatMap((operation) => operation.changes?.map((change) => change.fullPath) ?? [])
+      ?? preview.changes?.map((change) => change.fullPath)
+      ?? [],
+  };
 }
 
 function getPrincipal(req) {

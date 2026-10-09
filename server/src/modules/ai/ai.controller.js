@@ -33,6 +33,12 @@ export async function chat(req, res) {
  * 仍会按原路径自行连接，行为与未预热完全一致）。
  */
 export function warmupMcp(req, res) {
+  // viewer 只读边界约束进程拉起：stdio MCP 等效于执行任意命令（与 chat 侧同款校验）
+  const { role } = applyAiPrincipal(req, req.valid.body ?? {});
+  if (role === 'viewer' && (req.valid.body.mcpServers ?? []).length) {
+    res.status(403).json({ error: { code: 'FORBIDDEN', message: 'viewer 角色不允许调用 MCP 工具' } });
+    return;
+  }
   void warmupMcpConnections(req.valid.body.mcpServers ?? []);
   res.status(202).json({ data: { started: true } });
 }

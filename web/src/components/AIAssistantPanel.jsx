@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BrainCircuit, CheckCircle2, ChevronLeft, ChevronRight, Circle, CircleAlert, Copy, Layers3, List, LoaderCircle, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, TriangleAlert, X } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleAlert, Copy, Layers3, List, LoaderCircle, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, TriangleAlert, X } from 'lucide-react';
 import { aiApi } from '../api/ai.js';
 import { expertsApi } from '../api/experts.js';
 import { filesApi } from '../api/files.js';
@@ -7,10 +7,10 @@ import { renderMarkdown } from '../lib/markdown.js';
 import { getActiveAiProvider, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.js';
 import { collectActiveMcpServers, loadMcpSettings, mergeProjectServers } from '../settings/mcpSettings.js';
 import { mcpApi } from '../api/mcp.js';
+import Modal from '../ui/Modal.jsx';
 
 // 这里的「执行」是调用文件内核 / AI 动作的 HTTP 接口，与 SQL 无关；
 // 为免静态扫描把 execute + 变量传参误判为动态 SQL，解构时即改名
-const { execute: submitFileMutation } = filesApi;
 const { execute: submitAiActions } = aiApi;
 
 const LAST_SESSION_KEY = 'lattice-ai-active-session-v2';
@@ -31,8 +31,11 @@ const CONTEXT_CAPABILITY_LABELS = {
 const WRITE_POLICY_LABELS = {
   disabled: '只读',
   confirm: '写入需确认',
-  auto: '任务模式可写',
+  auto: '任务模式（需确认）',
 };
+// The local UI has one owner. Keep the compatibility value for older server APIs,
+// but do not expose or derive permissions from a user role in this panel.
+const LOCAL_OWNER_ROLE = 'editor';
 
 function expertAllowsScope(expert, scope) {
   if (!scope || scope === 'auto') return true;
@@ -150,10 +153,19 @@ function updateProgressDetail(steps, detail) {
   return steps.map((step, itemIndex) => itemIndex === actualIndex ? { ...step, detail: String(detail ?? '') } : step);
 }
 
-function completeProgress(steps) {
-  return steps.map((step) => step.status === 'failed' || step.status === 'waiting'
+function completeProgress(steps, { awaitingConfirmation = false } = {}) {
+  const normalized = steps.map((step) => step.status === 'failed' || step.status === 'waiting'
     ? step
-    : { ...step, status: 'completed', detail: step.detail || '已完成' });
+    : awaitingConfirmation
+      ? { ...step, status: 'waiting', detail: step.detail || '文件操作等待确认' }
+      : { ...step, status: 'completed', detail: step.detail || '已完成' });
+  if (!awaitingConfirmation || normalized.some((step) => step.status === 'waiting')) return normalized;
+  return [...normalized, {
+    id: 'client-confirmation',
+    label: '等待确认',
+    detail: '文件操作不会自动执行',
+    status: 'waiting',
+  }];
 }
 
 function failProgress(steps, detail) {
@@ -174,6 +186,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const [streamText, setStreamText] = useState('');
   const [streamStatus, setStreamStatus] = useState('');
   const [progressSteps, setProgressSteps] = useState([]);
+  const [activeTaskMode, setActiveTaskMode] = useState(false);
   // 推理模型的思维链（delta.reasoning_content）：流式滚动展示，完成后折叠进消息
   const [reasoningText, setReasoningText] = useState('');
   const [settings, setSettings] = useState(() => loadAiSettings());
@@ -211,6 +224,13 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const [contextScope, setContextScope] = useState('auto');
   // 通用专家下发送消息后，按 routing 关键词给出的切换建议（服务端 /experts/route 打分）
   const [expertSuggestion, setExpertSuggestion] = useState(null);
+  // 会话重命名：Electron 不支持 window.prompt，改用面板内 Modal
+  const [sessionRename, setSessionRename] = useState(null);
+  const [sessionRenameSaving, setSessionRenameSaving] = useState(false);
+  const sessionRenameInputRef = useRef(null);
+  // 任务模式消息的批量撤销：operationId 来自服务端 meta.executedOperations
+  const [taskUndoBusyId, setTaskUndoBusyId] = useState('');
+  const [undoneTaskMessages, setUndoneTaskMessages] = useState(() => new Set());
   const abortRef = useRef(null);
   const forceModelRef = useRef(false);
   const progressStepsRef = useRef([]);
@@ -222,6 +242,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const reasoningRef = useRef('');
   const streamFrameRef = useRef(0);
   const stickToBottomRef = useRef(true);
+  const scrollPositionsRef = useRef(new Map());
 
   const commitProgressSteps = (nextSteps) => {
     setProgressSteps((current) => {
@@ -467,19 +488,51 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   // 新消息 / 流式输出时滚到最新
   useEffect(() => {
     const container = messagesRef.current;
-    if (container && stickToBottomRef.current) container.scrollTop = container.scrollHeight;
-  }, [messages, streamText, sending, preview, execution]);
+    if (!container || !stickToBottomRef.current) return;
+    container.scrollTop = container.scrollHeight;
+    if (sessionId) {
+      scrollPositionsRef.current.set(sessionId, {
+        scrollTop: container.scrollTop,
+        stickToBottom: true,
+      });
+    }
+  }, [execution, messages, preview, sending, sessionId, streamText]);
 
   useEffect(() => {
     const container = messagesRef.current;
     if (!container) return undefined;
     const updateScrollIntent = () => {
-      stickToBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
+      const stickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
+      stickToBottomRef.current = stickToBottom;
+      if (sessionId) {
+        scrollPositionsRef.current.set(sessionId, {
+          scrollTop: container.scrollTop,
+          stickToBottom,
+        });
+      }
     };
-    updateScrollIntent();
     container.addEventListener('scroll', updateScrollIntent, { passive: true });
     return () => container.removeEventListener('scroll', updateScrollIntent);
-  }, [open]);
+  }, [open, sessionId]);
+
+  useLayoutEffect(() => {
+    if (!open || !sessionId || !sessionsReady) return;
+    const container = messagesRef.current;
+    if (!container) return;
+    const saved = scrollPositionsRef.current.get(sessionId);
+    if (saved?.stickToBottom || !saved) {
+      container.scrollTop = container.scrollHeight;
+      stickToBottomRef.current = true;
+      scrollPositionsRef.current.set(sessionId, {
+        scrollTop: container.scrollTop,
+        stickToBottom: true,
+      });
+      return;
+    }
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.min(Math.max(0, saved.scrollTop), maxScrollTop);
+    stickToBottomRef.current = false;
+  }, [messages.length, open, sessionId, sessionsReady]);
 
   // 输入框随内容自动增高，超过上限后内部滚动
   useEffect(() => {
@@ -652,7 +705,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     let cancelled = false;
     (async () => {
       const servers = await resolveMcpServers();
-      if (!cancelled && servers.length) void aiApi.warmupMcp(servers).catch(() => {});
+      if (!cancelled && servers.length) void aiApi.warmupMcp(servers, { role: LOCAL_OWNER_ROLE }).catch(() => {});
     })();
     return () => {
       cancelled = true;
@@ -665,6 +718,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     const message = String(value).trim();
     if (!message || composerBusy) return;
     const preferModel = options.preferModel ?? (forceModelRef.current || settings.preferModel === true);
+    const taskMode = settings.autoApprove === true;
     forceModelRef.current = false;
     const requestSessionId = sessionId;
     const stale = () => sessionIdRef.current !== requestSessionId;
@@ -676,7 +730,8 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     setExecution(null);
     setPreview(null);
     setExpertSuggestion(null);
-    commitProgressSteps(createInitialProgress());
+    setActiveTaskMode(taskMode);
+    commitProgressSteps(taskMode ? createInitialProgress() : []);
     streamTextRef.current = '';
     streamStatusRef.current = '';
     reasoningRef.current = '';
@@ -707,11 +762,11 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         context,
         sessionId,
         expertId,
-        mode: settings.autoApprove ? 'agent' : 'assist',
-        preferModel,
-        autoApprove: settings.autoApprove === true,
+         mode: taskMode ? 'agent' : 'assist',
+         preferModel,
+         autoApprove: taskMode,
         actor: 'local-user',
-        role: settings.role,
+         role: LOCAL_OWNER_ROLE,
         // 重新生成：服务端先移除会话里上一轮 user+assistant，再执行本条
         ...(options.regenerate ? { regenerate: true } : {}),
         // 用户在设置页启用的外部 MCP Server：空数组时后端不拉起任何进程
@@ -754,12 +809,25 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
       });
       if (stale()) return;
 
-      const persistedProgress = Array.isArray(payload?.meta?.progress) && payload.meta.progress.length
-        ? payload.meta.progress
-        : completeProgress(progressStepsRef.current);
-      const assistantMeta = persistedProgress.length
-        ? { ...(payload?.meta ?? {}), progress: persistedProgress }
-        : payload?.meta;
+       const pendingWrites = Array.isArray(payload?.actions) && payload.actions.some((action) => (
+         ['create', 'update', 'delete', 'move', 'copy', 'archive'].includes(String(action?.type ?? '').toLowerCase())
+       ));
+       const awaitingConfirmation = payload?.meta?.awaitingConfirmation === true
+         || payload?.meta?.completionStatus === 'waiting_confirmation'
+         || pendingWrites;
+       const persistedProgress = taskMode
+         ? (Array.isArray(payload?.meta?.progress) && payload.meta.progress.length
+           ? payload.meta.progress
+           : completeProgress(progressStepsRef.current, { awaitingConfirmation }))
+         : [];
+       const { progress: _serverProgress, ...metaWithoutProgress } = payload?.meta ?? {};
+       const assistantMeta = {
+         ...metaWithoutProgress,
+         taskMode,
+         completionStatus: payload?.meta?.completionStatus ?? (awaitingConfirmation ? 'waiting_confirmation' : 'completed'),
+         awaitingConfirmation,
+         ...(taskMode && persistedProgress.length ? { progress: persistedProgress } : {}),
+       };
       commitProgressSteps(persistedProgress);
       const assistant = {
         id: `assistant-${Date.now()}`,
@@ -771,9 +839,9 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         meta: assistantMeta,
       };
       appendMessage(assistant);
-      if (settings.autoApprove === true) refreshHistory();
+       if (taskMode) refreshHistory();
       if (payload?.actions?.length) {
-        const previewResponse = await buildOperationPreview(payload.actions, requestOptions, settings.role);
+         const previewResponse = await buildOperationPreview(payload.actions, requestOptions, LOCAL_OWNER_ROLE);
         if (stale()) return;
         setPreview(previewResponse);
       }
@@ -793,6 +861,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
       // composerBusy 会永久卡住。内容写入（消息/预览/报错）才需要 stale 守卫。
       abortRef.current = null;
       setSending(false);
+      setActiveTaskMode(false);
       streamTextRef.current = '';
       streamStatusRef.current = '';
       setStreamText('');
@@ -830,6 +899,13 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     onInitialPromptConsumed?.();
   }, [initialPrompt, initialPromptPreferModel, onInitialPromptConsumed, open]);
 
+  // 面板关闭时中止进行中的生成：否则 agent 循环继续烧 Token 并执行写操作，
+  // 且用户没有任何停止入口
+  useEffect(() => {
+    if (open) return;
+    abortRef.current?.abort();
+  }, [open]);
+
   if (!open) return null;
 
   const stopGenerating = () => abortRef.current?.abort();
@@ -857,8 +933,14 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   };
 
   const selectSession = (session) => {
+    // 生成中切走：先中止旧请求（其 finally 会复位 sending/流式状态），
+    // 否则旧会话的半截流文本与输入框锁定会"占用"新会话
+    if (sending) stopGenerating();
     setSessions((current) => current.some((item) => item.id === session.id) ? current : [session, ...current]);
     setSessionId(session.id);
+    setPreview(null);
+    setError('');
+    setRetryMessage('');
     setTab('chat');
     setSessionBrowserOpen(false);
   };
@@ -897,21 +979,64 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     }
   };
 
-  const renameCurrentSession = async () => {
+  const renameCurrentSession = () => {
     const current = sessions.find((session) => session.id === sessionId);
-    const input = window.prompt('重命名会话', current?.title ?? '');
-    if (input === null) return;
-    const title = input.trim();
-    if (!title || title === current?.title) return;
+    setSessionRename({ id: sessionId, title: current?.title ?? '' });
+  };
+
+  const submitSessionRename = async (event) => {
+    event.preventDefault();
+    if (!sessionRename || sessionRenameSaving) return;
+    const title = sessionRename.title.trim();
+    if (!title) return;
+    setSessionRenameSaving(true);
     try {
-      await aiApi.renameSession(sessionId, title, requestOptions);
+      await aiApi.renameSession(sessionRename.id, title, requestOptions);
+      setSessionRename(null);
       await refreshSessions();
     } catch {
       setError('会话重命名失败，请稍后再试');
+    } finally {
+      setSessionRenameSaving(false);
     }
   };
 
-  const executePreview = async () => {
+  // 任务模式整批撤销：后执行的先撤（后续动作可能依赖前面的结果），与 undoExecution 同口径
+  const undoTaskModeOperations = async (message) => {
+    const operations = Array.isArray(message?.meta?.executedOperations) ? message.meta.executedOperations : [];
+    if (!operations.length || taskUndoBusyId) return;
+    setTaskUndoBusyId(message.id);
+    setError('');
+    try {
+      let undoneCount = 0;
+      let firstFailure = '';
+      for (const operation of [...operations].reverse()) {
+        try {
+          await filesApi.undo(operation.operationId, requestOptions);
+          undoneCount += 1;
+        } catch (requestError) {
+          firstFailure = requestError?.message ?? '撤销失败';
+          break;
+        }
+      }
+      if (undoneCount) {
+        setUndoneTaskMessages((current) => new Set(current).add(message.id));
+        appendMessage({
+          id: `system-${Date.now()}`,
+          role: 'system',
+          content: `已撤销 ${undoneCount} 项操作${firstFailure ? `，另有未撤销的失败项：${firstFailure}` : ''}。`,
+        });
+        await refreshHistory();
+        await onOperationComplete?.();
+      } else if (firstFailure) {
+        setError(firstFailure);
+      }
+    } finally {
+      setTaskUndoBusyId('');
+    }
+  };
+
+  const executePreview = async ({ additionalConfirmed = false } = {}) => {
     if (!preview || preview.blocked || sending) return;
     setSending(true);
     setStreamStatus('正在执行文件操作…');
@@ -929,39 +1054,51 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
           error: operation.error ?? '预览失败',
         });
       }
-      // 保持模型给出的顺序：后一个动作可能依赖前一个 mkdir/move。
+      // 所有 AI 文件动作都走服务端 AI 预览/确认协议，避免文件内核接口绕过
+      // 敏感路径策略和计划哈希。
       for (const operation of preview.fileOperations ?? []) {
         try {
-          const response = await submitFileMutation({ ...operation.mutation, confirmed: true }, requestOptions);
+          const response = await submitAiActions({
+            actions: [operation.action],
+             actor: 'local-user',
+             role: LOCAL_OWNER_ROLE,
+             source: 'ai-chat',
+             confirmed: true,
+             additionalConfirmed,
+             sensitiveConfirmed: operation.sensitive ? additionalConfirmed : false,
+             planId: operation.planId,
+            planHash: operation.planHash,
+          }, requestOptions);
           const result = response?.data ?? response;
-          results.push({
+          results.push(...(result.results ?? [{
             id: operation.id,
-            type: operation.originalType,
-            path: operation.path,
-            targetPath: operation.targetPath,
+            type: operation.action.type,
+            path: operation.action.path,
+            targetPath: operation.action.targetPath,
             status: 'completed',
             result,
-          });
+          }]));
         } catch (requestError) {
           results.push({
             id: operation.id,
-            type: operation.originalType,
-            path: operation.path,
-            targetPath: operation.targetPath,
+            type: operation.action.type,
+            path: operation.action.path,
+            targetPath: operation.action.targetPath,
             status: 'failed',
             error: requestError?.message ?? '操作失败',
           });
         }
       }
-
       if (preview.aiOperations?.length) {
         const response = await submitAiActions({
           actions: preview.aiOperations,
-          actor: 'local-user',
-          role: settings.role,
-          source: 'ai-chat',
-          confirmed: true,
-          planId: preview.aiPlanId,
+           actor: 'local-user',
+           role: LOCAL_OWNER_ROLE,
+           source: 'ai-chat',
+           confirmed: true,
+           additionalConfirmed,
+           sensitiveConfirmed: preview.requiresSensitiveConfirmation === true ? additionalConfirmed : false,
+           planId: preview.aiPlanId,
           planHash: preview.aiPlanHash,
         }, requestOptions);
         const legacyResult = response?.data ?? response;
@@ -997,11 +1134,11 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     setStreamStatus('正在更新操作预览…');
     setError('');
     try {
-      const next = await buildOperationPreview(actions, requestOptions, settings.role);
+      const next = await buildOperationPreview(actions, requestOptions, LOCAL_OWNER_ROLE);
       setPreview(next);
       return next;
     } catch (requestError) {
-      setError(requestError?.message ?? '鏇存柊鎿嶄綔棰勮澶辫触');
+      setError(requestError?.message ?? '更新操作预览失败');
       return null;
     } finally {
       setSending(false);
@@ -1100,6 +1237,15 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   return (
     <div className="ai-assistant-layer" role="presentation">
       <button type="button" className="ai-assistant-backdrop" onClick={onClose} aria-label="关闭 AI 知识库助手" />
+      <SessionRenameDialog
+        open={Boolean(sessionRename)}
+        title={sessionRename?.title ?? ''}
+        saving={sessionRenameSaving}
+        inputRef={sessionRenameInputRef}
+        onChange={(title) => setSessionRename((current) => (current ? { ...current, title } : current))}
+        onClose={() => { if (!sessionRenameSaving) setSessionRename(null); }}
+        onSubmit={submitSessionRename}
+      />
       <aside className="ai-assistant" aria-label="AI 知识库助手">
         <header className="ai-assistant__header">
           <div className="ai-assistant__identity">
@@ -1178,6 +1324,14 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
             onSelect={selectSession}
             onDelete={deleteSessionFromBrowser}
           />
+        ) : null}
+
+        {error && tab === 'history' ? (
+          // 错误条对历史 tab 也可见：撤销/刷新失败不能静默（聊天 tab 的错误条在下方分支里）
+          <div className="ai-assistant__error" role="alert">
+            <TriangleAlert size={14} strokeWidth={1.8} aria-hidden="true" />
+            <span>{error}</span>
+          </div>
         ) : null}
 
         {tab === 'history' ? (
@@ -1263,20 +1417,27 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                   isLastAssistant={index === lastAssistantIndex}
                   onRegenerate={regenerateLast}
                   busy={composerBusy}
+                  onUndoExecuted={() => undoTaskModeOperations(message)}
+                  undoExecutedBusy={taskUndoBusyId === message.id}
+                  undoExecutedDone={undoneTaskMessages.has(message.id)}
                 />
               ))}
               {sending ? (
                 <div className="ai-message ai-message--assistant">
                   <span className="ai-message__avatar" aria-hidden="true">✦</span>
                   <div className="ai-message__body">
-                    <ProgressChecklist steps={progressSteps} live />
+                    {activeTaskMode ? <ProgressChecklist steps={progressSteps} live /> : null}
                     {reasoningText ? (
                       <div className="ai-message__reasoning is-streaming" aria-live="off">
                         <span className="ai-message__reasoning-label">思考中…</span>
                         <div className="ai-message__reasoning-body">{reasoningText}</div>
                       </div>
                     ) : null}
-                    {streamText ? <div className="ai-message__content markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(displayStreamText(streamText)) }} /> : !reasoningText ? <div className="ai-message__typing"><span /><span /><span /></div> : null}
+                    {streamText ? <div className="ai-message__content markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(displayStreamText(streamText)) }} /> : !reasoningText ? (
+                      <div className="ai-message__typing" role="status" aria-label="AI 正在处理请求">
+                        <span aria-hidden="true" /><span aria-hidden="true" /><span aria-hidden="true" />
+                      </div>
+                    ) : null}
                     <span className="ai-message__meta">{streamStatus || (streamText ? '生成中…' : reasoningText ? '正在思考…' : '正在检索知识与文件上下文…')}</span>
                   </div>
                 </div>
@@ -1320,7 +1481,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                 <button type="button" disabled={composerBusy} onClick={() => send(settings.autoApprove
                   ? '把我的文件整理分类好：先检索全库了解每篇笔记的主题，再把它们移动到按主题命名的目录里，最后汇报整理结果'
                   : '整理当前 Vault 的文件')}
-                ><span className="ai-assistant__quick-icon">↗</span>{settings.autoApprove ? '自动整理' : '整理建议'}</button>
+                ><span className="ai-assistant__quick-icon">↗</span>{settings.autoApprove ? '智能整理' : '整理建议'}</button>
                 <button type="button" disabled={composerBusy || pendingInboxItems.length === 0} onClick={() => send('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。', { preferModel: true })}><span className="ai-assistant__quick-icon">✦</span>整理 Inbox{pendingInboxItems.length ? <em>{pendingInboxItems.length}</em> : null}</button>
                 <button type="button" disabled={composerBusy} onClick={() => send('检查当前笔记的 Markdown 问题')}><span className="ai-assistant__quick-icon">✓</span>检查内容</button>
                 <button type="button" disabled={composerBusy} onClick={runDigest}><span className="ai-assistant__quick-icon">☰</span>{digesting ? '生成中…' : '每日摘要'}</button>
@@ -1338,7 +1499,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                     }
                   }}
                   placeholder={settings.autoApprove
-                    ? '下达任务指令，AI 会自主多轮执行并汇报…'
+                    ? '下达任务指令，AI 会自主检索和读取，写入前先等待确认…'
                     : '向知识库提问，或描述要完成的文件操作…'}
                   rows={1}
                   aria-label="输入 AI 指令"
@@ -1351,7 +1512,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                       <span className="ai-assistant__mode-switch" aria-hidden="true" />
                       <span className="ai-assistant__mode-copy"><strong>模型优先</strong></span>
                     </label>
-                    <label className={`ai-assistant__mode-toggle ${settings.autoApprove ? 'is-on' : ''}`} title="开启后 AI 进入任务模式：自主多轮执行检索、读文件和写操作，全部动作记录在操作历史中；关闭则写操作需要逐批确认">
+                    <label className={`ai-assistant__mode-toggle ${settings.autoApprove ? 'is-on' : ''}`} title="开启后 AI 自主多轮检索和读取；所有文件写入都先显示预览，等待你的明确确认">
                       <input type="checkbox" id="ai-auto-approve" checked={settings.autoApprove === true} onChange={toggleAutoApprove} />
                       <span className="ai-assistant__mode-switch" aria-hidden="true" />
                       <span className="ai-assistant__mode-copy"><strong>任务模式</strong></span>
@@ -1378,26 +1539,51 @@ const CONNECTION_STATE_META = {
 };
 
 function ProgressChecklist({ steps = [], live = false }) {
-  if (!steps.length) return null;
   const completed = steps.filter((step) => step.status === 'completed').length;
   const failed = steps.filter((step) => step.status === 'failed').length;
   const waiting = steps.filter((step) => step.status === 'waiting').length;
   const allDone = completed === steps.length && !failed && !waiting;
+  const [expanded, setExpanded] = useState(() => live || !allDone);
   const statusText = failed
     ? `${failed} 项失败`
     : waiting
       ? '等待确认'
       : live
         ? '执行中'
-        : '已完成';
+        : '已完成全部步骤';
+  const summaryText = failed
+    ? `${completed}/${steps.length} 个步骤完成，${failed} 个失败`
+    : waiting
+      ? `${completed}/${steps.length} 个步骤完成，等待确认`
+      : allDone
+        ? `全部 ${completed} 个步骤已完成`
+        : `已完成 ${completed}/${steps.length} 个步骤`;
+
+  useEffect(() => {
+    if (live) setExpanded(true);
+  }, [live]);
+
+  if (!steps.length) return null;
 
   return (
-    <details className={`ai-progress ${live ? 'is-live' : ''} ${allDone ? 'is-complete' : ''}`} open={live || !allDone}>
+    <details
+      className={`ai-progress ${live ? 'is-live' : ''} ${allDone ? 'is-complete' : ''}`}
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      aria-label="任务进度"
+    >
       <summary className="ai-progress__summary">
-        <span className="ai-progress__title"><span className="ai-assistant__eyebrow">PROGRESS</span><strong>任务进度</strong></span>
-        <span className={`ai-progress__count ${failed ? 'has-failures' : ''}`}>{completed}/{steps.length}</span>
+        <span className="ai-progress__summary-main">
+          <span className="ai-assistant__eyebrow">{allDone ? 'TASK COMPLETE' : 'PROGRESS'}</span>
+          <strong>{allDone ? '执行完成' : '任务进度'}</strong>
+          <small>{summaryText}</small>
+        </span>
+        <span className="ai-progress__summary-side">
+          <span className={`ai-progress__count ${failed ? 'has-failures' : live ? 'is-live' : ''}`}>{completed}/{steps.length}</span>
+          <ChevronDown className="ai-progress__toggle" size={14} aria-hidden="true" />
+        </span>
       </summary>
-      <ol className="ai-progress__list">
+      <ol className="ai-progress__list" aria-live={live ? 'polite' : undefined}>
         {steps.map((step) => {
           const status = step.status ?? 'pending';
           const Icon = status === 'completed'
@@ -1408,8 +1594,8 @@ function ProgressChecklist({ steps = [], live = false }) {
                 ? LoaderCircle
                 : Circle;
           return (
-            <li className={`ai-progress__item is-${status}`} key={step.id}>
-              <Icon size={15} className={status === 'running' ? 'is-spinning' : undefined} aria-hidden="true" />
+            <li className={`ai-progress__item is-${status}`} key={step.id} aria-current={status === 'running' ? 'step' : undefined}>
+              <Icon size={15} aria-hidden="true" />
               <span className="ai-progress__copy">
                 <strong>{step.label}</strong>
                 {step.detail ? <small>{step.detail}</small> : null}
@@ -1419,14 +1605,14 @@ function ProgressChecklist({ steps = [], live = false }) {
         })}
       </ol>
       <footer className={`ai-progress__footer ${failed ? 'has-failures' : ''}`}>
-        <span>{statusText}</span>
-        {live ? <span>状态来自实际执行</span> : null}
+        <span aria-live={live ? 'polite' : undefined}>{statusText}</span>
+        <span>{live ? '状态来自实际执行' : expanded ? '收起明细' : '查看明细'}</span>
       </footer>
     </details>
   );
 }
 
-function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, onRegenerate, busy = false }) {
+function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, onRegenerate, busy = false, onUndoExecuted, undoExecutedBusy = false, undoExecutedDone = false }) {
   const contentRef = useRef(null);
   const [copied, setCopied] = useState('');
   const usage = message.meta?.usage;
@@ -1509,7 +1695,10 @@ function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, o
 
   const flashReference = (number) => {
     const body = contentRef.current?.parentElement;
-    const chip = body?.querySelectorAll('.ai-message__references button')?.[number - 1];
+    // 按 data-ref 编号匹配 chip，而不是按数组下标：服务端 validateCitations 只返回
+    // 被引用的编号（可能不从 1 连续），下标法会闪错或找不到
+    const chip = [...(body?.querySelectorAll('.ai-message__references button') ?? [])]
+      .find((item) => item.dataset.ref === String(number));
     if (!chip) return;
     chip.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     chip.classList.remove('is-flash');
@@ -1579,7 +1768,7 @@ function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, o
             <div className="ai-message__reasoning-body">{message.reasoning}</div>
           </details>
         ) : null}
-        {progress.length ? <ProgressChecklist steps={progress} /> : null}
+        {message.meta?.taskMode === true && progress.length ? <ProgressChecklist steps={progress} /> : null}
         <div
           className="ai-message__content markdown-body"
           ref={contentRef}
@@ -1591,6 +1780,16 @@ function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, o
             <summary>⚡ 已自动执行 {executed.length} 项操作</summary>
             <ul>{executed.map((item, index) => <li key={index}>{item}</li>)}</ul>
             {executedFailed.length ? <ul className="has-failures">{executedFailed.map((item, index) => <li key={index}>{item}</li>)}</ul> : null}
+            {onUndoExecuted && Array.isArray(message.meta?.executedOperations) && message.meta.executedOperations.length ? (
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={onUndoExecuted}
+                disabled={undoExecutedBusy || undoExecutedDone}
+              >
+                {undoExecutedDone ? '已撤销' : undoExecutedBusy ? '撤销中…' : '撤销这批操作'}
+              </button>
+            ) : null}
           </details>
         ) : null}
         {toolExecutions.length ? (
@@ -1611,7 +1810,7 @@ function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, o
         ) : null}
         {metaLine ? <span className="ai-message__meta">{metaLine}</span> : null}
         {message.references?.length ? <div className="ai-message__references">{message.references.map((reference, index) => (
-          <button type="button" key={reference.id ?? `${reference.title}-${index}`} onClick={() => reference.id && onOpenNote?.(reference.id)} title={reference.excerpt ?? ''}>
+          <button type="button" key={reference.id ?? `${reference.title}-${index}`} data-ref={String(reference.number ?? index + 1)} onClick={() => reference.id && onOpenNote?.(reference.id)} title={reference.excerpt ?? ''}>
             <span>{reference.inferred ? '◇' : `[${reference.number ?? index + 1}]`}</span>
             <strong>{reference.title}</strong>
             <small>{reference.anchor ? `${reference.anchor} · ` : ''}{reference.excerpt ? reference.excerpt.slice(0, 60) : (reference.path ?? '来源笔记')}</small>
@@ -1681,12 +1880,19 @@ function OperationPreview({ preview, onConfirm, onRefresh, onCancel, disabled })
   const [dirty, setDirty] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState('');
+  const [additionalConfirmed, setAdditionalConfirmed] = useState(false);
 
   useEffect(() => {
     setDraftActions(previewActions(preview));
     setDirty(false);
     setNotice('');
+    setAdditionalConfirmed(false);
   }, [preview]);
+
+  const requiresAdditionalConfirmation = preview.requiresAdditionalConfirmation === true;
+  const additionalConfirmationLabel = formatAdditionalConfirmationReasons(preview.additionalConfirmationReasons);
+  const qualityWarnings = preview.quality?.warnings ?? [];
+  const qualityBlocked = preview.quality?.blocked === true;
 
   const findDraft = (operation) => {
     const actionId = String(operation.action?.id ?? operation.id);
@@ -1736,22 +1942,24 @@ function OperationPreview({ preview, onConfirm, onRefresh, onCancel, disabled })
     <section className="ai-operation-preview" aria-label="文件操作预览">
       <header>
         <div><span className="ai-assistant__eyebrow">ACTION PREVIEW</span><h3>确认文件操作</h3></div>
-        <span className="ai-operation-preview__risk">{dirty ? '已修改，需更新预览' : preview.summary}</span>
+        <span className="ai-operation-preview__risk">{dirty ? '已修改，需更新预览' : preview.blocked ? '当前操作不可执行' : preview.summary}</span>
       </header>
       <div className="ai-operation-preview__hint">可取消单项，或调整目标路径和标签；更新预览后才会提交新的 diff。</div>
       <div className="ai-operation-preview__list">
-        {preview.operations.map((operation) => {
+        {preview.operations.map((operation, index) => {
           const action = findDraft(operation);
           const actionId = String(operation.action?.id ?? operation.id);
           const removed = !action;
           const editableTarget = action && ['move', 'copy', 'archive'].includes(action.type);
           const editableTags = action && ['create', 'update'].includes(action.type) && action.content !== undefined;
           return (
-            <div className={`ai-operation ${operation.previewFailed ? 'is-failed' : operation.risk} ${removed ? 'is-removed' : ''}`} key={operation.id}>
+            <div className={`ai-operation ${operation.previewFailed ? 'is-failed' : operation.risk} ${removed ? 'is-removed' : ''}`} key={`${operation.id}-${operation.orderIndex ?? index}`}>
               <span className="ai-operation__icon">{removed ? '−' : operation.previewFailed ? '!' : operation.type === 'delete' ? '×' : operation.type === 'read' ? '⌕' : '↗'}</span>
               <div className="ai-operation__body">
                 <strong>{action ? describeAiAction(action) : operation.summary}</strong>
-                {operation.previewFailed
+                {operation.sensitive
+                  ? <small className="ai-operation__error">{operation.sensitivityReason ?? '敏感文件需要额外确认后执行'}</small>
+                  : operation.previewFailed
                   ? <small className="ai-operation__error">预览失败：{operation.error}</small>
                   : <small>{removed ? '已取消，不会执行' : operation.risk === 'destructive' ? '删除操作不可逆' : operation.requiresConfirmation ? '确认后写入 Vault' : '只读操作'}</small>}
                 {action && (editableTarget || editableTags) ? (
@@ -1798,19 +2006,47 @@ function OperationPreview({ preview, onConfirm, onRefresh, onCancel, disabled })
           );
         })}
       </div>
+      {qualityWarnings.length ? (
+        <div className={`ai-operation-preview__quality ${qualityBlocked ? 'is-blocked' : ''}`} role={qualityBlocked ? 'alert' : undefined}>
+          <strong>{qualityBlocked ? '计划存在冲突，暂不能执行' : '计划检查提示'}</strong>
+          <ul>
+            {qualityWarnings.map((warning, index) => (
+              <li key={`${warning.code}-${warning.path ?? ''}-${index}`}>{warning.message}</li>
+            ))}
+          </ul>
+          {qualityBlocked ? <small>请取消冲突动作或修改目标路径，然后更新预览。</small> : null}
+        </div>
+      ) : null}
       {notice ? <div className="ai-operation-preview__notice" role="alert">{notice}</div> : null}
+      {requiresAdditionalConfirmation && draftActions.length ? (
+        <label className="ai-operation-preview__elevated-confirm">
+          <input
+            type="checkbox"
+            checked={additionalConfirmed}
+            onChange={(event) => setAdditionalConfirmed(event.target.checked)}
+            disabled={disabled || refreshing || dirty}
+          />
+          <span>我确认{additionalConfirmationLabel}，本次确认只授权当前列出的操作</span>
+        </label>
+      ) : null}
       <footer>
         <button type="button" onClick={onCancel} disabled={disabled || refreshing}>取消</button>
         <button type="button" onClick={refresh} disabled={disabled || refreshing || !dirty}>
           <RefreshCw size={13} className={refreshing ? 'is-spinning' : undefined} aria-hidden="true" />
           更新预览
         </button>
-        <button type="button" className="is-primary" onClick={onConfirm} disabled={disabled || refreshing || dirty || preview.blocked || !draftActions.length}>
-          {preview.blocked ? '当前角色只读' : '确认执行'}
+        <button type="button" className="is-primary" onClick={() => onConfirm({ additionalConfirmed })} disabled={disabled || refreshing || dirty || preview.blocked || qualityBlocked || !draftActions.length || (requiresAdditionalConfirmation && !additionalConfirmed)}>
+          {preview.blocked || qualityBlocked ? '当前操作不可执行' : requiresAdditionalConfirmation && !additionalConfirmed ? '请先确认高风险操作' : '确认执行'}
         </button>
       </footer>
     </section>
   );
+}
+
+function formatAdditionalConfirmationReasons(reasons = []) {
+  const labels = { batch: '批量操作', delete: '删除操作', sensitive: '敏感文件' };
+  const text = [...new Set(reasons)].map((reason) => labels[reason]).filter(Boolean).join('、');
+  return text || '高风险操作';
 }
 
 function ExecutionSummary({ result, undoable = false, undoBusy = false, onUndo }) {
@@ -1938,6 +2174,40 @@ function describeAiAction(action) {
   return `${ACTION_LABELS[action?.type] ?? action?.type ?? '操作'} ${action?.path ?? ''}${action?.targetPath ? ` → ${action.targetPath}` : ''}`.trim();
 }
 
+function SessionRenameDialog({ open, title, saving, inputRef, onChange, onClose, onSubmit }) {
+  return (
+    <Modal open={open} onClose={onClose} title="会话名称" ariaLabel="重命名会话" className="rename-modal" initialFocusRef={inputRef}>
+      <form className="rename-dialog" onSubmit={onSubmit}>
+        <header className="rename-dialog__header">
+          <div>
+            <span className="rename-dialog__eyebrow">AI SESSION</span>
+            <h2>重命名会话</h2>
+          </div>
+          <button type="button" className="icon-btn rename-dialog__close" onClick={onClose} aria-label="关闭重命名">
+            ×
+          </button>
+        </header>
+        <div className="rename-dialog__body">
+          <label htmlFor="rename-session-name">会话名称</label>
+          <input
+            ref={inputRef}
+            id="rename-session-name"
+            value={title}
+            maxLength={120}
+            autoComplete="off"
+            onChange={(event) => onChange(event.target.value)}
+            disabled={saving}
+          />
+        </div>
+        <footer className="rename-dialog__actions">
+          <button type="button" className="btn" onClick={onClose} disabled={saving}>取消</button>
+          <button type="submit" className="btn btn--primary" disabled={saving || !title.trim()}>{saving ? '保存中…' : '保存'}</button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
 function previewActions(preview) {
   const actions = Array.isArray(preview?.actions)
     ? preview.actions
@@ -1997,10 +2267,18 @@ async function buildOperationPreview(actions, requestOptions, role) {
   const fileActions = draftActions.filter((action) => FILE_KERNEL_ACTIONS.has(action?.type));
   const archiveActions = draftActions.filter((action) => action?.type === 'archive');
   const fileOperations = [];
+  let batchQuality = { blocked: false, warnings: [] };
   // 预览失败的动作（如模型给出非法路径）：单独标记，不拖垮其余动作的确认流程
   const failedOperations = [];
+  try {
+    const response = await aiApi.preview({ actions: draftActions, actor: 'local-user', role }, requestOptions);
+    const data = response?.data ?? response;
+    if (data?.quality) batchQuality = data.quality;
+  } catch {
+    // Keep the per-operation previews usable when the combined quality check
+    // fails because one action has an invalid path or payload.
+  }
   await Promise.all(fileActions.map(async (action, index) => {
-    const mutation = toFileMutation(action);
     const base = {
       id: String(action.id ?? `file-op-${index + 1}`),
       orderIndex: index,
@@ -2009,28 +2287,42 @@ async function buildOperationPreview(actions, requestOptions, role) {
       path: action.path,
       targetPath: action.targetPath,
       action,
-      mutation,
       risk: action.type === 'delete' ? 'destructive' : 'write',
       requiresConfirmation: true,
     };
     try {
-      const response = await filesApi.preview(mutation, requestOptions);
+      const response = await aiApi.preview({
+        actions: [action],
+        actor: 'local-user',
+        role,
+        source: 'ai-chat',
+      }, requestOptions);
       const data = response?.data ?? response;
+      const operation = data?.operations?.[0] ?? {};
+      let diff = '';
+      try {
+        const diffResponse = await filesApi.preview(toFileMutation(action), requestOptions);
+        diff = (diffResponse?.data ?? diffResponse)?.diff ?? '';
+      } catch {
+        // The AI preview remains authoritative; diff is presentation-only.
+      }
       fileOperations.push({
         ...data,
         ...base,
-        mutation: {
-          ...mutation,
-          planId: data.plan?.id,
-          planHash: data.planHash,
-        },
+        ...operation,
+        action,
+        diff,
+        planId: data.plan?.id ?? data.id,
+        planHash: data.planHash,
+         blocked: data.blocked === true,
       });
-    } catch {
+    } catch (requestError) {
+      // 保留服务端真实错误（如"File does not exist"）：统一替换成模糊文案会让用户无法分辨失败原因
       failedOperations.push({
         ...base,
         previewFailed: true,
         summary: describeAiAction(action),
-        error: '路径不合法或源文件状态异常',
+        error: requestError?.message ?? '预览失败：路径不合法或源文件状态异常',
       });
     }
   }));
@@ -2043,6 +2335,10 @@ async function buildOperationPreview(actions, requestOptions, role) {
   let aiPlanHash = null;
   let aiPlanId = null;
   let archiveBlocked = false;
+  let archiveRequiresAdditionalConfirmation = false;
+  let archiveRequiresSensitiveConfirmation = false;
+  let archiveAdditionalConfirmationReasons = [];
+  let archiveQuality = { blocked: false, warnings: [] };
   if (archiveActions.length) {
     try {
       const response = await aiApi.preview({ actions: archiveActions, actor: 'local-user', role }, requestOptions);
@@ -2056,6 +2352,10 @@ async function buildOperationPreview(actions, requestOptions, role) {
       aiPlanHash = archivePreview?.planHash ?? null;
       aiPlanId = archivePreview?.plan?.id ?? archivePreview?.id ?? null;
       archiveBlocked = archivePreview?.blocked === true;
+      archiveRequiresAdditionalConfirmation = archivePreview?.requiresAdditionalConfirmation === true;
+      archiveRequiresSensitiveConfirmation = archivePreview?.requiresSensitiveConfirmation === true;
+      archiveAdditionalConfirmationReasons = archivePreview?.additionalConfirmationReasons ?? [];
+      archiveQuality = archivePreview?.quality ?? archiveQuality;
     } catch {
       archiveOperations = archiveActions.map((action, index) => ({
         id: String(action.id ?? `archive-op-${index + 1}`),
@@ -2076,11 +2376,31 @@ async function buildOperationPreview(actions, requestOptions, role) {
 
   const operations = [...fileOperations, ...archiveOperations, ...failedOperations];
   if (!operations.length) return null;
-  const blocked = role === 'viewer' || fileOperations.some((operation) => operation.blocked) || archiveBlocked;
+  const qualityWarnings = dedupePlanWarnings([
+    ...(batchQuality.warnings ?? []),
+    ...(archiveQuality.warnings ?? []),
+    ...fileOperations.flatMap((operation) => operation.quality?.warnings ?? []),
+  ]);
+  const quality = {
+    blocked: batchQuality.blocked === true || archiveQuality.blocked === true || qualityWarnings.some((warning) => warning.severity === 'error'),
+    warnings: qualityWarnings,
+  };
+  const blocked = role === 'viewer' || quality.blocked || fileOperations.some((operation) => operation.blocked) || archiveBlocked;
   const writes = operations.filter((operation) => operation.requiresConfirmation !== false).length;
+  const additionalConfirmationReasons = [...new Set([
+    ...fileOperations.flatMap((operation) => operation.additionalConfirmationReasons ?? []),
+    ...archiveAdditionalConfirmationReasons,
+    ...(writes > 1 ? ['batch'] : []),
+    ...(operations.some((operation) => operation.type === 'delete') ? ['delete'] : []),
+    ...(operations.some((operation) => operation.sensitive) ? ['sensitive'] : []),
+  ])];
   return {
     id: globalThis.crypto?.randomUUID?.() ?? `preview-${Date.now()}`,
     blocked,
+    quality,
+    requiresAdditionalConfirmation: archiveRequiresAdditionalConfirmation || additionalConfirmationReasons.length > 0,
+    additionalConfirmationReasons,
+    requiresSensitiveConfirmation: archiveRequiresSensitiveConfirmation || operations.some((operation) => operation.sensitive),
     actions: draftActions,
     operations,
     fileOperations,
@@ -2091,6 +2411,16 @@ async function buildOperationPreview(actions, requestOptions, role) {
     summary: `${operations.length} 项操作 · ${writes} 项需要确认`,
     createdAt: new Date().toISOString(),
   };
+}
+
+function dedupePlanWarnings(warnings = []) {
+  const seen = new Set();
+  return warnings.filter((warning) => {
+    const key = `${warning.code ?? 'warning'}|${warning.path ?? ''}|${(warning.actionIds ?? []).join(',')}|${warning.message ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function toFileMutation(action) {

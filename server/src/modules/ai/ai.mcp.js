@@ -28,6 +28,10 @@ const IDLE_CLOSE_MS = 5 * 60_000;
 // ── 模块级连接缓存 ───────────────────────────────────────────────────
 // key = 身份指纹（transport+command+args+env+url）；同一配置只拉起一个进程
 const connections = new Map();
+// 建立中的连接 promise：并发首连去重，避免同一身份被两个请求各 spawn 一个进程
+const pendingConnections = new Map();
+// 连接池硬上限：key 含任意 args/env 组合，不设上限可被循环请求刷出数百个子进程
+const MAX_CONNECTIONS = 16;
 
 function identityKey(server) {
   const sortedEnv = Object.fromEntries(Object.entries(server.env ?? {}).sort(([a], [b]) => a.localeCompare(b)));
@@ -82,10 +86,41 @@ async function ensureConnection(server) {
     existing.refCount += 1;
     return existing;
   }
-  const client = await openConnection(server);
-  const entry = { client, server, refCount: 1, idleTimer: null, tools: [] };
-  connections.set(key, entry);
-  return entry;
+  // 并发首连去重：A/B 同时到达只 spawn 一个进程，B 等 A 的同一个 entry，
+  // 避免 B 覆盖 map 中 A 的槽位后空闲回收误关在用连接
+  const inFlight = pendingConnections.get(key);
+  if (inFlight) {
+    const entry = await inFlight;
+    entry.refCount += 1;
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+    return entry;
+  }
+  evictIdleConnections();
+  const promise = (async () => {
+    const client = await openConnection(server);
+    const entry = { client, server, refCount: 1, idleTimer: null, tools: [] };
+    connections.set(key, entry);
+    return entry;
+  })();
+  pendingConnections.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    pendingConnections.delete(key);
+  }
+}
+
+/** 连接总量逼近上限时驱逐空闲连接；没有空闲可驱逐时拒绝新建（createMcpRegistry 会把失败记入 status） */
+function evictIdleConnections() {
+  while (connections.size + pendingConnections.size >= MAX_CONNECTIONS) {
+    const idleEntry = [...connections.entries()].find(([, entry]) => entry.idleTimer);
+    if (!idleEntry) throw new Error(`MCP 连接数已达上限（${MAX_CONNECTIONS}），请减少 Server 配置后重试`);
+    const [key, entry] = idleEntry;
+    connections.delete(key);
+    clearTimeout(entry.idleTimer);
+    void entry.client.close().catch(() => {});
+  }
 }
 
 function scheduleIdleClose(entry, key) {
@@ -316,7 +351,15 @@ function safeSchemaText(schema) {
  * 直接复用，把 spawn 进程 + listTools 的冷启动开销移出第一条消息的 TTFT。
  * 永不抛出：预热失败静默，正式对话仍按原路径自行连接。
  */
+// warmup 节流：fire-and-forget 端点被循环调用时，spawn 进程的开销真实发生，
+// 同一 Server 身份的并发首连虽有去重，这里再按时间收敛，避免高频空转
+const WARMUP_MIN_INTERVAL_MS = 10_000;
+let lastWarmupAt = 0;
+
 export async function warmupMcpConnections(inputServers) {
+  const now = Date.now();
+  if (now - lastWarmupAt < WARMUP_MIN_INTERVAL_MS) return [];
+  lastWarmupAt = now;
   try {
     const registry = await createMcpRegistry(inputServers);
     registry.release();
@@ -330,6 +373,7 @@ export async function warmupMcpConnections(inputServers) {
 export async function closeAllMcpConnections() {
   const entries = [...connections.values()];
   connections.clear();
+  pendingConnections.clear();
   for (const entry of entries) {
     clearTimeout(entry.idleTimer);
     await entry.client.close().catch(() => {});

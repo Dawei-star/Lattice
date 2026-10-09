@@ -53,6 +53,13 @@ export class UnauthorizedError extends AppError {
   }
 }
 
+/** 403 —— 已认证但角色权限不足（如 viewer 触碰写端点） */
+export class ForbiddenError extends AppError {
+  constructor(message = '当前角色没有执行该操作的权限', options = {}) {
+    super(message, { status: 403, code: 'FORBIDDEN', ...options });
+  }
+}
+
 /** 502 —— 外部 AI 服务拒绝请求、返回异常或不可达 */
 export class AiProviderError extends AppError {
   constructor(message = '外部模型服务调用失败', options = {}) {

@@ -45,7 +45,7 @@ const providerFor = (upstream) => ({
   authHeader: 'bearer',
 });
 
-test('agent mode runs the tool loop: search → auto-approved move → final report', async () => {
+test('agent mode runs the read loop and returns write actions for confirmation', async () => {
   const vaultDir = config.vaultDir;
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(path.join(vaultDir, '会议纪要.md'), '# 会议纪要\n\n关键结论：按期上线。', 'utf8');
@@ -53,15 +53,8 @@ test('agent mode runs the tool loop: search → auto-approved move → final rep
   const upstream = await listenScriptedUpstream([
     // 第 1 轮：模型先检索
     () => '```lattice-actions\n[{"type":"search","query":"会议"}]\n```',
-    // 第 2 轮：根据检索结果决定移动文件（服务端应自动执行并回填结果）
+    // 第 2 轮：根据检索结果决定移动文件；服务端必须停在确认预览
     () => '```lattice-actions\n[{"type":"move","path":"会议纪要.md","targetPath":"归档/会议纪要.md"}]\n```',
-    // 第 3 轮：拿到执行结果，输出最终汇报
-    (body) => {
-      const lastUser = body.messages.at(-1).content;
-      assert.ok(lastUser.includes('系统已自动执行 1 项写操作'), '写操作结果应回填给模型');
-      assert.ok(lastUser.includes('✓ move 会议纪要.md → 归档/会议纪要.md'));
-      return '整理完成：已把《会议纪要》移动到「归档」目录。';
-    },
   ]);
   try {
     const result = await chat({
@@ -73,18 +66,15 @@ test('agent mode runs the tool loop: search → auto-approved move → final rep
       provider: providerFor(upstream),
     });
 
-    assert.equal(upstream.bodies.length, 3, '应发起三轮模型调用');
-    assert.equal(result.meta.rounds, 3);
-    assert.equal(result.reply, '整理完成：已把《会议纪要》移动到「归档」目录。');
-    assert.deepEqual(result.meta.executed, ['move 会议纪要.md → 归档/会议纪要.md']);
-    assert.equal(result.actions.length, 0, '已执行的动作不应再进入确认流程');
-    assert.ok(fs.existsSync(path.join(vaultDir, '归档', '会议纪要.md')), '文件应被真正移动');
-    assert.ok(!fs.existsSync(path.join(vaultDir, '会议纪要.md')));
-
-    // 写操作应有审计记录
-    const auditPath = path.join(path.dirname(config.dbFile), 'ai-audit.jsonl');
-    const audit = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.ok(audit.some((entry) => entry.action.type === 'move' && entry.status === 'completed' && entry.source === 'ai-chat'));
+    assert.equal(upstream.bodies.length, 2, '读操作完成后，写操作应停在确认预览');
+    assert.equal(result.meta.rounds, 2);
+    assert.equal(result.meta.taskMode, true, '任务模式应在结果元数据中保留');
+    assert.equal(result.meta.completionStatus, 'waiting_confirmation');
+    assert.equal(result.meta.awaitingConfirmation, true);
+    assert.deepEqual(result.actions, [{ type: 'move', path: '会议纪要.md', targetPath: '归档/会议纪要.md' }]);
+    assert.deepEqual(result.meta.executed, []);
+    assert.ok(fs.existsSync(path.join(vaultDir, '会议纪要.md')), '文件必须等确认后才能移动');
+    assert.ok(!fs.existsSync(path.join(vaultDir, '归档', '会议纪要.md')));
   } finally {
     await upstream.close();
   }
@@ -160,7 +150,7 @@ test('agent mode skips the local instant path so organize commands actually exec
   }
 });
 
-test('agent write batch with an invalid path feeds the error back instead of failing the conversation', async () => {
+test('agent write batch with an invalid path stays in confirmation preview', async () => {
   const vaultDir = config.vaultDir;
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(path.join(vaultDir, '正常.md'), '# 正常\n', 'utf8');
@@ -168,15 +158,6 @@ test('agent write batch with an invalid path feeds the error back instead of fai
   const upstream = await listenScriptedUpstream([
     // 第 1 轮：模型给出越界路径，动作整体被路径校验拒绝
     () => '```lattice-actions\n[{"type":"create","path":"../escape.md","content":"x"}]\n```',
-    // 第 2 轮：拿到失败原因后改用合法路径
-    (body) => {
-      const lastUser = body.messages.at(-1).content;
-      assert.ok(lastUser.includes('全部未执行'), '批量失败原因应回填给模型');
-      assert.ok(lastUser.includes('非法'), '应包含路径校验的错误详情');
-      return '```lattice-actions\n[{"type":"create","path":"retry.md","content":"# Retry\\n"}]\n```';
-    },
-    // 第 3 轮：执行成功后给出最终回答
-    () => '已修正路径并创建文件。',
   ]);
   try {
     const result = await chat({
@@ -188,11 +169,76 @@ test('agent write batch with an invalid path feeds the error back instead of fai
       provider: providerFor(upstream),
     });
 
-    assert.equal(upstream.bodies.length, 3, '失败应回填并继续循环，而不是整个会话报错');
-    assert.equal(result.reply, '已修正路径并创建文件。');
-    assert.ok(result.meta.executedFailed.some((item) => item.includes('批量写操作未执行')));
-    assert.deepEqual(result.meta.executed, ['create retry.md']);
-    assert.ok(fs.existsSync(path.join(vaultDir, 'retry.md')));
+    assert.equal(upstream.bodies.length, 1, '写操作不得因任务模式自动重试并落盘');
+    assert.equal(result.actions[0].type, 'create');
+    assert.equal(result.actions[0].path, '../escape.md');
+    assert.deepEqual(result.meta.executed, []);
+    assert.ok(!fs.existsSync(path.join(runtimeRoot, 'escape.md')));
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('agent mode always returns delete actions for confirmation', async () => {
+  const vaultDir = config.vaultDir;
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, '待删.md'), '# 待删\n', 'utf8');
+
+  const upstream = await listenScriptedUpstream([
+    // 第 1 轮：模型发起 delete —— 不允许自动执行，应转入待确认清单并回填说明
+    () => '```lattice-actions\n[{"type":"delete","path":"待删.md"}]\n```',
+  ]);
+  try {
+    const result = await chat({
+      message: '删除 待删.md',
+      context: { files: [], folders: [] },
+      mode: 'agent',
+      autoApprove: true,
+      role: 'editor',
+      provider: providerFor(upstream),
+    });
+
+    assert.equal(upstream.bodies.length, 1, 'delete 应直接停在确认卡片');
+    assert.equal(result.meta.rounds, 1);
+    assert.ok(fs.existsSync(path.join(vaultDir, '待删.md')), 'delete 不得自动执行');
+    assert.deepEqual(result.actions, [{ type: 'delete', path: '待删.md' }], 'delete 应随结果返回给确认卡片');
+    assert.deepEqual(result.meta.executed, [], 'delete 不应记入已执行列表');
+
+    const auditPath = path.join(path.dirname(config.dbFile), 'ai-audit.jsonl');
+    if (fs.existsSync(auditPath)) {
+      const audit = fs.readFileSync(auditPath, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(!audit.some((entry) => entry.action.type === 'delete' && entry.status === 'completed'), '不应有 delete 完成审计');
+    }
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('agent mode keeps every delete in the batch preview, including missing targets', async () => {
+  const upstream = await listenScriptedUpstream([
+    // 第 1 轮：模型对 3 个文件发起 delete，其中 2 个不存在（上一批确认已删除）
+    () => '```lattice-actions\n[{"type":"delete","path":"已删除.md"},{"type":"delete","path":"也删了.md"},{"type":"delete","path":"还在.md"}]\n```',
+  ]);
+  try {
+    const vaultDir = config.vaultDir;
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, '还在.md'), '# 还在\n', 'utf8');
+
+    const result = await chat({
+      message: '清理文件',
+      context: { files: [], folders: [] },
+      mode: 'agent',
+      autoApprove: true,
+      role: 'editor',
+      provider: providerFor(upstream),
+    });
+
+    assert.ok(fs.existsSync(path.join(vaultDir, '还在.md')), '存在的文件不得自动删除');
+    assert.deepEqual(result.actions, [
+      { type: 'delete', path: '已删除.md' },
+      { type: 'delete', path: '也删了.md' },
+      { type: 'delete', path: '还在.md' },
+    ], '批量预览不得静默跳过任何变更项');
   } finally {
     await upstream.close();
   }

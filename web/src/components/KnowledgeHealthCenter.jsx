@@ -12,6 +12,7 @@ import {
   Link2Off,
   ListChecks,
   RefreshCw,
+  ShieldCheck,
   Sparkles,
   Tags,
   TriangleAlert,
@@ -25,28 +26,45 @@ const CATEGORY_META = {
   isolated: { label: '孤立笔记', shortLabel: '孤立', description: '没有出链，也没有被引用', icon: Activity, tone: 'blue' },
   stale: { label: '长期未更新', shortLabel: '沉默', description: '长时间没有维护且缺少反向链接', icon: Clock3, tone: 'slate' },
   duplicates: { label: '可能重复', shortLabel: '重复', description: '标题或正文高度相似，需人工确认', icon: Copy, tone: 'violet' },
+  conflicts: { label: '内容冲突', shortLabel: '冲突', description: '同名内容存在差异，需要人工裁决', icon: TriangleAlert, tone: 'red' },
+  metadata: { label: '元数据缺失', shortLabel: '元数据', description: '标签、来源或时间戳不完整', icon: ListChecks, tone: 'amber' },
+  taxonomy: { label: '分类与标签', shortLabel: '分类', description: '发现标签或分类的近似写法', icon: Tags, tone: 'blue' },
   incomplete: { label: '结构不完整', shortLabel: '待补全', description: '缺少目录、标签或自定义属性', icon: Tags, tone: 'green' },
 };
 
 const EMPTY_CATEGORIES = Object.fromEntries(Object.keys(CATEGORY_META).map((key) => [key, []]));
+const EVIDENCE_FILTERS = [
+  { value: 'all', label: '全部线索' },
+  { value: 'error', label: '确定问题' },
+  { value: 'warning', label: '高风险候选' },
+  { value: 'candidate', label: '候选线索' },
+];
 const MAX_BATCH_SELECTION = 20;
 const PAGE_SIZE = 10;
 
-export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi, onBack, refreshKey = 0 }) {
+export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi, onBack, onConfirmFileOperation, refreshKey = 0 }) {
   const [report, setReport] = useState(null);
   const [selected, setSelected] = useState('inbox');
+  const [evidenceFilter, setEvidenceFilter] = useState('all');
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectionNotice, setSelectionNotice] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [scanReason, setScanReason] = useState('initial');
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairNotice, setRepairNotice] = useState('');
+  const scanRequestRef = useRef(0);
   const listRef = useRef(null);
 
-  const scan = useCallback(async () => {
+  const scan = useCallback(async ({ reason = 'manual' } = {}) => {
+    const requestId = ++scanRequestRef.current;
+    setScanReason(reason);
     setLoading(true);
     setError('');
     try {
       const next = await reviewApi.health();
+      if (requestId !== scanRequestRef.current) return;
       setReport(next);
       setSelectedIds(new Set());
       setSelectionNotice('');
@@ -54,14 +72,14 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
       const firstProblem = Object.keys(CATEGORY_META).find((key) => (next?.categories?.[key] ?? []).length > 0);
       setSelected((current) => (next?.categories?.[current]?.length ? current : firstProblem ?? 'inbox'));
     } catch (requestError) {
-      setError(requestError?.message ?? '知识库巡检失败');
+      if (requestId === scanRequestRef.current) setError(requestError?.message ?? '知识库巡检失败');
     } finally {
-      setLoading(false);
+      if (requestId === scanRequestRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void scan();
+    void scan({ reason: refreshKey ? 'sync' : 'initial' });
   }, [refreshKey, scan]);
 
   const categories = report?.categories ?? EMPTY_CATEGORIES;
@@ -69,14 +87,21 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
   const items = categories[selected] ?? [];
   const summaryCounts = report?.summary?.counts ?? {};
   const totalIssues = report?.summary?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const hardTotal = report?.summary?.hardTotal ?? 0;
+  const candidateTotal = report?.summary?.candidateTotal ?? 0;
+  const warningTotal = report?.summary?.warningTotal ?? 0;
+  const healthScore = report?.summary?.healthScore ?? 100;
+  const filteredItems = evidenceFilter === 'all'
+    ? items
+    : items.filter((item) => item.severity === evidenceFilter);
+  const pageCount = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageStart = safePage * PAGE_SIZE;
-  const pagedItems = items.slice(pageStart, pageStart + PAGE_SIZE);
+  const pagedItems = filteredItems.slice(pageStart, pageStart + PAGE_SIZE);
   const selectedFindings = useMemo(() => Object.entries(categories)
     .flatMap(([category, categoryItems]) => categoryItems.map((item) => ({ category, item, key: findingKey(category, item) })))
     .filter(({ key }) => selectedIds.has(key)), [categories, selectedIds]);
-  const currentCategorySelected = items.length > 0 && items.every((item) => selectedIds.has(findingKey(selected, item)));
+  const currentCategorySelected = filteredItems.length > 0 && filteredItems.every((item) => selectedIds.has(findingKey(selected, item)));
 
   const reviewPrompt = useMemo(() => {
     const countText = Object.entries(CATEGORY_META)
@@ -101,8 +126,8 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
   };
 
   const toggleCategorySelection = () => {
-    if (!items.length) return;
-    const keys = items.map((item) => findingKey(selected, item));
+    if (!filteredItems.length) return;
+    const keys = filteredItems.map((item) => findingKey(selected, item));
     if (currentCategorySelected) {
       setSelectedIds((current) => {
         const next = new Set(current);
@@ -124,16 +149,50 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
     setSelectionNotice(skipped ? `已选择 ${MAX_BATCH_SELECTION} 条，另有 ${skipped} 条未加入本批。` : '');
   };
 
-  const generateBatchPlan = () => {
+  const generateBatchPlan = async () => {
     if (!selectedFindings.length) return;
-    onAskAi?.({
-      expertId: 'general',
-      prompt: buildBatchPrompt(selectedFindings),
-    });
+    setRepairBusy(true);
+    setRepairNotice('');
+    try {
+      const plan = await reviewApi.createPlan(selectedFindings.map(({ item }) => item.id));
+      if (!plan?.summary?.changes) {
+        setRepairNotice(plan?.manual?.length
+          ? `本批没有可安全自动执行的变更，${plan.manual.length} 项已保留为人工处理。`
+          : '本批没有需要执行的变更。');
+        return;
+      }
+      const confirmation = await onConfirmFileOperation?.({
+        type: plan.summary.deletes ? 'delete' : 'update',
+        actions: plan.changes.map((action) => ({
+          ...action,
+          contentSummary: action.summary,
+        })),
+        summary: `健康修复计划：${plan.summary.changes} 项变更，${plan.summary.manual} 项需人工处理`,
+        impact: '将更新可安全归一化的笔记元数据/标签，或删除已确认的完全重复副本',
+        reversible: true,
+        requiresSecondConfirmation: plan.confirmation.secondConfirmationRequired,
+      });
+      if (!confirmation?.confirmed) return;
+      const result = await reviewApi.executePlan(plan.id, plan.planHash, confirmation);
+      setRepairNotice(`已完成 ${result.completed} 项，失败 ${result.failed} 项，保留 ${result.skipped} 项待人工处理。`);
+      await scan({ reason: 'repair' });
+    } catch (requestError) {
+      setRepairNotice(requestError?.message ?? '健康修复计划执行失败，请重新扫描后重试');
+    } finally {
+      setRepairBusy(false);
+    }
   };
 
   const selectCategory = (key) => {
     setSelected(key);
+    setPage(0);
+  };
+
+  const selectEvidenceFilter = (value) => {
+    if (value === evidenceFilter) return;
+    setEvidenceFilter(value);
+    setSelectedIds(new Set());
+    setSelectionNotice('');
     setPage(0);
   };
 
@@ -167,9 +226,9 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
             <Sparkles size={15} strokeWidth={1.8} aria-hidden="true" />
             AI 给出建议
           </button>
-          <button type="button" className="btn btn--primary" onClick={scan} disabled={loading} title="重新扫描知识库">
+          <button type="button" className="btn btn--primary" onClick={() => scan()} disabled={loading} title="重新扫描知识库">
             <RefreshCw size={15} strokeWidth={1.8} className={loading ? 'is-spinning' : undefined} aria-hidden="true" />
-            {loading ? '扫描中…' : '重新扫描'}
+            {loading ? (scanReason === 'sync' ? '重新验证中…' : '扫描中…') : '重新扫描'}
           </button>
         </div>
       </header>
@@ -178,9 +237,10 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
         <div className="health-center__error" role="alert">
           <TriangleAlert size={17} aria-hidden="true" />
           <span>{error}</span>
-          <button type="button" className="btn btn--sm" onClick={scan}>重试</button>
+          <button type="button" className="btn btn--sm" onClick={() => scan()}>重试</button>
         </div>
       ) : null}
+      {repairNotice ? <div className="health-center__selection-notice" role="status">{repairNotice}</div> : null}
 
       <div className="health-center__summary" aria-label="知识库健康摘要">
         <div className="health-center__summary-row">
@@ -191,10 +251,18 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
             </strong>
             <span>项需要判断</span>
           </div>
+           <div className="health-center__summary-breakdown" aria-label="问题可信度构成">
+             <span><strong>{loading ? '—' : formatNumber(hardTotal)}</strong> 确定问题</span>
+             <span><strong>{loading ? '—' : formatNumber(warningTotal)}</strong> 高风险候选</span>
+             <span><strong>{loading ? '—' : formatNumber(candidateTotal)}</strong> 候选线索</span>
+           </div>
+           <div className="health-center__summary-stat"><span>健康度</span><strong className={healthScore >= 80 ? 'is-clean' : healthScore < 50 ? 'is-heavy' : undefined}>{loading ? '—' : `${healthScore} / 100`}</strong></div>
           <div className="health-center__summary-stat"><span>扫描笔记</span><strong>{loading ? '—' : formatNumber(report?.noteCount ?? 0)}</strong></div>
           <div className="health-center__summary-stat"><span>沉默阈值</span><strong>{report?.staleDays ?? 90} 天</strong></div>
-          <div className="health-center__summary-meta">
-            {report?.scannedAt ? `最近扫描 ${formatRelativeTime(report.scannedAt)}` : '等待本地扫描'}
+          <div className="health-center__summary-meta" aria-live="polite">
+            {loading
+              ? (scanReason === 'sync' ? '正在验证最新投影…' : '正在扫描本地知识库…')
+              : report?.scannedAt ? `最近扫描 ${formatRelativeTime(report.scannedAt)}` : '等待本地扫描'}
           </div>
         </div>
         {!loading && totalIssues > 0 ? (
@@ -239,12 +307,31 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
               <p>{meta?.description ?? ''}</p>
             </div>
             <div className="health-center__results-tools">
-              {items.length && !loading ? (
+              {!loading && items.length > 0 ? (
                 <button type="button" className="btn btn--sm" onClick={toggleCategorySelection} aria-label={currentCategorySelected ? '取消选择本类问题' : '选择本类问题'}>
                   {currentCategorySelected ? '取消本类' : '选择本类'}
                 </button>
               ) : null}
-              {items.length ? <span className="health-center__result-count">{items.length} 项</span> : null}
+              {!loading && items.length > 0 ? (
+                <div className="health-center__evidence-filter" role="group" aria-label="按证据级别筛选">
+                  {EVIDENCE_FILTERS.map((filter) => (
+                    <button
+                      type="button"
+                      key={filter.value}
+                      className={evidenceFilter === filter.value ? 'is-active' : undefined}
+                      aria-pressed={evidenceFilter === filter.value}
+                      onClick={() => selectEvidenceFilter(filter.value)}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {items.length > 0 ? (
+                <span className="health-center__result-count">
+                  {evidenceFilter === 'all' ? `${items.length} 项` : `${filteredItems.length} / ${items.length} 项`}
+                </span>
+              ) : null}
             </div>
           </header>
           {selectedFindings.length ? (
@@ -252,14 +339,14 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
               <div><ListChecks size={15} aria-hidden="true" /><strong>已选择 {selectedFindings.length} 条线索</strong><span>将限定在这些问题内生成统一方案</span></div>
               <div className="health-center__batch-actions">
                 <button type="button" className="btn btn--sm" onClick={() => { setSelectedIds(new Set()); setSelectionNotice(''); }}>清空选择</button>
-                <button type="button" className="btn btn--sm btn--primary" onClick={generateBatchPlan}>
-                  <Sparkles size={13} strokeWidth={1.8} aria-hidden="true" />生成批量方案
+                <button type="button" className="btn btn--sm btn--primary" onClick={generateBatchPlan} disabled={repairBusy}>
+                  <Sparkles size={13} strokeWidth={1.8} aria-hidden="true" />{repairBusy ? '生成/执行中…' : '生成修复计划'}
                 </button>
               </div>
             </div>
           ) : null}
           {selectionNotice ? <div className="health-center__selection-notice" role="alert">{selectionNotice}</div> : null}
-          {loading ? <HealthSkeleton /> : items.length ? (
+          {loading ? <HealthSkeleton /> : filteredItems.length ? (
             <div className="health-center__list-area" ref={listRef}>
               <div className="health-center__finding-list">
                 {pagedItems.map((item, index) => (
@@ -280,12 +367,19 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
                 <HealthPagination
                   page={safePage}
                   pageCount={pageCount}
-                  total={items.length}
+                  total={filteredItems.length}
                   pageStart={pageStart}
                   pageSize={PAGE_SIZE}
                   onPageChange={changePage}
                 />
               ) : null}
+            </div>
+          ) : items.length ? (
+            <div className="health-center__empty health-center__empty--filtered">
+              <TriangleAlert size={28} strokeWidth={1.5} aria-hidden="true" />
+              <strong>当前筛选没有匹配线索</strong>
+              <span>本类仍有 {items.length} 项，切换到“全部线索”查看。</span>
+              <button type="button" className="btn btn--sm" onClick={() => selectEvidenceFilter('all')}>查看全部</button>
             </div>
           ) : (
             <div className="health-center__empty">
@@ -301,7 +395,7 @@ export default function KnowledgeHealthCenter({ onOpenNote, onOpenInbox, onAskAi
 }
 
 function Finding({ category, item, index = 0, selected, onToggleSelect, onOpenNote, onOpenInbox, onAskAi }) {
-  const isGroup = category === 'duplicates';
+  const isGroup = category === 'duplicates' || category === 'conflicts';
   const prompt = buildActionPrompt(category, item);
   return (
     <article
@@ -320,8 +414,14 @@ function Finding({ category, item, index = 0, selected, onToggleSelect, onOpenNo
       <div className="health-finding__body">
         <div className="health-finding__topline">
           <div className="health-finding__title-wrap">
-            <h3>{isGroup ? '可能重复的笔记' : item.title ?? item.targetTitle}</h3>
-            {item.confidence === 'review' ? <span className="health-finding__badge">需人工确认</span> : null}
+            <h3>{category === 'conflicts' ? '同名内容冲突' : isGroup ? '可能重复的笔记' : item.title ?? item.targetTitle}</h3>
+            {item.severity === 'error' ? (
+              <span className="health-finding__badge health-finding__badge--error"><ShieldCheck size={11} aria-hidden="true" />确定问题</span>
+            ) : item.severity === 'warning' ? (
+              <span className="health-finding__badge health-finding__badge--warning"><TriangleAlert size={11} aria-hidden="true" />高风险候选</span>
+            ) : (
+              <span className="health-finding__badge">候选线索</span>
+            )}
           </div>
           <span className="health-finding__kind">{categoryLabel(category)}</span>
         </div>
@@ -436,7 +536,7 @@ function categoryLabel(category) {
 function buildActionPrompt(category, item) {
   const evidence = category === 'brokenLinks'
     ? `目标「${item.targetTitle}」，来源：${(item.sources ?? []).map((source) => source.path).join('、')}`
-    : category === 'duplicates'
+    : category === 'duplicates' || category === 'conflicts'
       ? (item.notes ?? []).map((note) => `${note.path}（${note.title}）`).join('、')
       : `${item.path ?? item.title}：${item.reason}`;
   return `请处理知识健康 Review 中这条线索：${categoryLabel(category)}。证据是：${evidence}。先读取相关文件并说明判断依据，再生成可预览的操作方案；任何移动、改写、合并或删除都必须等待我确认，不能直接执行。无法确定时保留原文件并说明原因。`;
@@ -450,7 +550,7 @@ function buildBatchPrompt(findings) {
   const lines = findings.map(({ category, item }, index) => {
     const evidence = category === 'brokenLinks'
       ? `目标「${item.targetTitle}」，来源：${(item.sources ?? []).map((source) => source.path).join('、')}`
-      : category === 'duplicates'
+      : category === 'duplicates' || category === 'conflicts'
         ? (item.notes ?? []).map((note) => `${note.path}（${note.title}）`).join('、')
         : `${item.path ?? item.title}：${item.reason}`;
     return `${index + 1}. ${categoryLabel(category)} · ${evidence}`;

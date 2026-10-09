@@ -52,13 +52,79 @@ test('knowledge health scan reports actionable vault findings', async (t) => {
 
   assert.equal(response.status, 200);
   assert.equal(payload.data.noteCount, 7);
-  assert.equal(payload.data.categories.inbox.some((item) => item.id === inbox.id), true);
-  assert.equal(payload.data.categories.isolated.some((item) => item.id === isolated.id), true);
-  assert.equal(payload.data.categories.brokenLinks[0].targetTitle, '尚未创建的概念');
-  assert.equal(payload.data.categories.brokenLinks[0].sources[0].id, source.id);
+  const inboxFinding = payload.data.categories.inbox.find((item) => item.id === inbox.id);
+  assert.equal(Boolean(inboxFinding), true);
+  assert.equal(inboxFinding.status, 'open');
+  assert.equal(inboxFinding.severity, 'error');
+  assert.equal(inboxFinding.confidence, 'high');
+  const isolatedFinding = payload.data.categories.isolated.find((item) => item.id === isolated.id);
+  assert.equal(Boolean(isolatedFinding), true);
+  assert.equal(isolatedFinding.status, 'open');
+  assert.equal(isolatedFinding.severity, 'candidate');
+  assert.equal(isolatedFinding.confidence, 'review');
+  const brokenLinkFinding = payload.data.categories.brokenLinks[0];
+  assert.equal(brokenLinkFinding.targetTitle, '尚未创建的概念');
+  assert.equal(brokenLinkFinding.sources[0].id, source.id);
+  assert.equal(brokenLinkFinding.status, 'open');
+  assert.equal(brokenLinkFinding.severity, 'error');
+  assert.equal(brokenLinkFinding.confidence, 'high');
   assert.equal(payload.data.categories.stale.some((item) => item.id === old.id), true);
   assert.equal(payload.data.categories.incomplete.some((item) => item.id === incomplete.id), true);
-  assert.equal(payload.data.categories.duplicates.some((item) => item.noteIds.includes(duplicateA.id) && item.noteIds.includes(duplicateB.id)), true);
+  const duplicateFinding = payload.data.categories.duplicates.find((item) => item.noteIds.includes(duplicateA.id) && item.noteIds.includes(duplicateB.id));
+  assert.equal(Boolean(duplicateFinding), true);
+  assert.equal(duplicateFinding.status, 'open');
+  assert.equal(duplicateFinding.severity, 'warning');
+  assert.equal(duplicateFinding.confidence, 'high');
   assert.equal(payload.data.summary.total > 0, true);
+  assert.equal(payload.data.summary.hardTotal >= 2, true);
+  assert.equal(payload.data.summary.candidateTotal > 0, true);
   assert.match(payload.data.scannedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const planResponse = await fetch(`http://127.0.0.1:${port}/api/review/health/plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ findingIds: [duplicateFinding.id] }),
+  });
+  const planPayload = await planResponse.json();
+  assert.equal(planResponse.status, 200);
+  assert.equal(planPayload.data.summary.deletes, 1);
+  assert.equal(planPayload.data.confirmation.secondConfirmationRequired, true);
+  assert.equal(planPayload.data.manual.length, 0);
+
+  const unconfirmedRepair = await fetch(`http://127.0.0.1:${port}/api/review/health/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ planId: planPayload.data.id, planHash: planPayload.data.planHash }),
+  });
+  assert.equal(unconfirmedRepair.status, 422);
+
+  const firstConfirmationOnly = await fetch(`http://127.0.0.1:${port}/api/review/health/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ planId: planPayload.data.id, planHash: planPayload.data.planHash, confirmed: true }),
+  });
+  assert.equal(firstConfirmationOnly.status, 422);
+
+  const executeRepair = await fetch(`http://127.0.0.1:${port}/api/review/health/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      planId: planPayload.data.id,
+      planHash: planPayload.data.planHash,
+      confirmed: true,
+      secondConfirmed: true,
+    }),
+  });
+  const executePayload = await executeRepair.json();
+  assert.equal(executeRepair.status, 200);
+  assert.equal(executePayload.data.completed, 1, JSON.stringify(executePayload.data));
+  const remainingDuplicateIds = [duplicateA.id, duplicateB.id].filter((id) => {
+    try {
+      notes.getDetail(id);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  assert.deepEqual(remainingDuplicateIds.length, 1);
 });

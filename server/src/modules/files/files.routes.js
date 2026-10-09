@@ -7,7 +7,7 @@ const relativePath = z.string().trim().min(1).max(2048);
 const fileType = z.string().trim().min(1).max(20).optional();
 const regexFlag = z.enum(['true', 'false']).default('false').transform((value) => value === 'true');
 const mutationType = z.enum(['create', 'write', 'append', 'edit', 'copy', 'move', 'delete', 'mkdir']);
-const mutationBody = z.object({
+const mutationFields = {
   type: mutationType,
   path: relativePath,
   targetPath: relativePath.optional(),
@@ -15,10 +15,22 @@ const mutationBody = z.object({
   replace: z.string().max(200_000).optional(),
   with: z.string().max(200_000).optional(),
   all: z.boolean().default(false),
+};
+const singleMutationBody = z.object({
+  ...mutationFields,
   confirmed: z.boolean().default(false),
+  secondConfirmed: z.boolean().default(false),
   planId: z.string().uuid().optional(),
   planHash: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
 }).passthrough();
+const batchMutationBody = z.object({
+  actions: z.array(z.object(mutationFields).passthrough()).min(1).max(30),
+  confirmed: z.boolean().default(false),
+  secondConfirmed: z.boolean().default(false),
+  planId: z.string().uuid().optional(),
+  planHash: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
+}).passthrough();
+const mutationBody = z.union([singleMutationBody, batchMutationBody]);
 
 export const filesRouter = Router();
 

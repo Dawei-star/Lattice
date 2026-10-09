@@ -14,6 +14,7 @@ import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import { useToast } from './hooks/useToast.jsx';
 import { useVault } from './hooks/useVault.js';
+import { useFileConfirmation } from './hooks/useFileConfirmation.jsx';
 import Ribbon from './shell/Ribbon.jsx';
 import TabBar from './shell/TabBar.jsx';
 import StatusBar from './shell/StatusBar.jsx';
@@ -23,7 +24,7 @@ import Modal from './ui/Modal.jsx';
 import Resizer from './ui/Resizer.jsx';
 import { loadImportedTheme } from './lib/theme.js';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout } from './lib/layout.js';
-import { noteFilePath } from './api/vault-files.js';
+import { noteFilePath, vaultFiles } from './api/vault-files.js';
 import { expertsApi } from './api/experts.js';
 import { applySettings, loadSettings, subscribeSettings } from './settings/settings.js';
 import { registerPwa } from './lib/pwa.js';
@@ -52,13 +53,15 @@ function captureTitle() {
 
 export default function App() {
   const toast = useToast();
-  const vault = useVault();
+  const fileConfirmation = useFileConfirmation();
+  const vault = useVault({ requestFileConfirmation: fileConfirmation.requestFileConfirmation });
 
   // 从 vault 里解构出动作：它们都是稳定的 useCallback，
   // 直接依赖 vault 对象本身会导致下方所有依赖它的 hook 每次渲染都失效
   const {
     folders,
     profile,
+    vaultDir,
     tags,
     overview,
     notes,
@@ -108,6 +111,7 @@ export default function App() {
     refreshNotes,
     refreshSidebar,
     refreshGraph,
+    vaultChangeRevision,
     registerNavigationGuard,
     registerDirtyProbe,
     confirmNavigation,
@@ -496,6 +500,7 @@ export default function App() {
           updatedAt: timestamp,
           external: true,
           externalToken: token,
+          externalPath: payload.filePath ?? '',
           externalWriteGranted: Boolean(payload.writeGranted),
           externalRevision: payload.modifiedAt ?? timestamp,
         };
@@ -826,7 +831,14 @@ export default function App() {
 
   const handleCreateFromTemplate = useCallback(async (template) => {
     try {
-      const created = await notesApi.createFromTemplate({ template, folderId: targetFolderId });
+      const confirmation = await fileConfirmation.requestFileConfirmation({
+        type: 'create',
+        path: `${targetFolderId ? 'folder/' : ''}${template}.md`,
+        contentSummary: `从模板「${template}」创建一篇 Markdown 笔记`,
+        impact: '新增 1 个 Markdown 文件并更新知识库索引',
+      });
+      if (!confirmation?.confirmed) return;
+      const created = await notesApi.createFromTemplate({ template, folderId: targetFolderId, confirmed: true, secondConfirmed: false });
       if (!created) return;
       openInTab(created.id);
       setView('notes');
@@ -834,11 +846,18 @@ export default function App() {
     } catch (error) {
       toast.error(error?.message ?? '模板创建失败');
     }
-  }, [openInTab, targetFolderId, toast]);
+  }, [fileConfirmation.requestFileConfirmation, openInTab, targetFolderId, toast]);
 
   const handleCreateDaily = useCallback(async () => {
     try {
-      const created = await notesApi.createDaily();
+      const confirmation = await fileConfirmation.requestFileConfirmation({
+        type: 'create',
+        path: 'Daily',
+        contentSummary: '创建当天的每日笔记 Markdown 文件',
+        impact: '新增或打开 1 个 Daily Markdown 文件',
+      });
+      if (!confirmation?.confirmed) return;
+      const created = await notesApi.createDaily({ confirmed: true, secondConfirmed: false });
       if (!created) return;
       openInTab(created.id);
       setView('notes');
@@ -846,7 +865,7 @@ export default function App() {
     } catch (error) {
       toast.error(error?.message ?? '每日笔记创建失败');
     }
-  }, [openInTab, toast]);
+  }, [fileConfirmation.requestFileConfirmation, openInTab, toast]);
 
   /** 画布内新建：创建笔记并在画布上落一张卡片，不离开画布视图 */
   const handleCreateCanvasNote = useCallback(async () => {
@@ -868,6 +887,11 @@ export default function App() {
     await handleRefreshAll();
     setReviewRefreshKey((value) => value + 1);
   }, [handleRefreshAll]);
+
+  useEffect(() => {
+    if (!vaultChangeRevision) return;
+    setReviewRefreshKey((value) => value + 1);
+  }, [vaultChangeRevision]);
 
   const handleVaultProfileSaved = useCallback(() => refreshSidebar({ silent: true }), [refreshSidebar]);
 
@@ -1039,6 +1063,17 @@ export default function App() {
     if (!opened) toast.error('无法使用默认应用打开附件');
   }, [toast]);
 
+  const handleDownloadAttachment = useCallback(async (relativePath) => {
+    const normalizedPath = String(relativePath ?? '').replaceAll('\\', '/');
+    if (!normalizedPath) return;
+    try {
+      await vaultFiles.download(normalizedPath);
+      toast.success('文件下载已开始');
+    } catch (error) {
+      toast.error(error?.message ?? '文件下载失败');
+    }
+  }, [toast]);
+
   const handleRevealAttachment = useCallback(async (relativePath) => {
     const normalizedPath = String(relativePath ?? '').replaceAll('\\', '/');
     if (!normalizedPath) return;
@@ -1150,11 +1185,20 @@ export default function App() {
     }
   }, [setActiveNote, toast]);
 
-  const handleSaveExternal = useCallback(async (token, content) => {
+  const handleSaveExternal = useCallback(async (token, content, note) => {
     if (!token || typeof window.latticeDesktop?.writeExternalMarkdownFile !== 'function') {
       throw new Error('当前运行环境不支持保存外部 Markdown 文件');
     }
-    const saved = await window.latticeDesktop.writeExternalMarkdownFile(token, content);
+    const confirmation = await fileConfirmation.requestFileConfirmation({
+      type: 'update',
+      path: note?.filePath ?? note?.title ?? '外部 Markdown 文件',
+      fullPath: note?.externalPath,
+      contentSummary: `覆盖外部 Markdown 文件「${note?.title ?? '未命名文件'}」的当前正文`,
+      impact: '修改 1 个 Vault 之外的 Markdown 文件；内容不会进入知识库索引',
+      reversible: true,
+    });
+    if (!confirmation?.confirmed) return false;
+    const saved = await window.latticeDesktop.writeExternalMarkdownFile(token, content, confirmation);
     if (!saved) throw new Error('外部 Markdown 文件保存失败');
     const timestamp = new Date().toISOString();
     setExternalNotes((current) => {
@@ -1166,7 +1210,7 @@ export default function App() {
       current?.externalToken === token ? { ...current, content, updatedAt: timestamp } : current
     ));
     return true;
-  }, [setActiveNote]);
+  }, [fileConfirmation.requestFileConfirmation, setActiveNote]);
 
   return (
     <div className={`app app--${shellMode}`}>
@@ -1242,6 +1286,8 @@ export default function App() {
         </div>
       ) : null}
 
+      {fileConfirmation.ConfirmationCard}
+
       {pwaState.updateRegistration ? (
         <div className="banner banner--info banner--global">
           <span>Lattice 有可用更新，刷新后即可使用最新版本。</span>
@@ -1307,6 +1353,7 @@ export default function App() {
             onRenameCanvas={handleRenameCanvas}
             onDeleteCanvas={handleDeleteCanvas}
             onOpenAttachment={handleOpenAttachment}
+            onDownloadAttachment={handleDownloadAttachment}
             onRevealAttachment={handleRevealAttachment}
             onCopyAttachmentPath={handleCopyAttachmentPath}
             onCopyCanvasPath={handleCopyCanvasPath}
@@ -1317,6 +1364,7 @@ export default function App() {
             onRevealNote={handleRevealFile}
             onRenameNote={handleRenameNote}
             onDeleteNote={handleDeleteNote}
+            onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
           />
         ) : (
           <button
@@ -1367,6 +1415,7 @@ export default function App() {
               onOpenNote={handleOpenNote}
               onOpenInbox={handleOpenReviewInbox}
               onAskAi={handleOpenReviewAi}
+              onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
               onBack={() => handleViewChange('notes')}
               refreshKey={reviewRefreshKey}
             />
@@ -1380,7 +1429,7 @@ export default function App() {
               onRefresh={refreshGraph}
             />
           ) : view === 'canvas' ? (
-            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateCanvasNote} blockedPaths={deletedCanvasPathsRef.current} />
+            <CanvasView canvasPath={canvasPath} noteIndex={noteIndex} activeNoteId={activeNote?.id ?? null} onOpenNote={handleOpenNote} onCreateNote={handleCreateCanvasNote} blockedPaths={deletedCanvasPathsRef.current} onConfirmFileOperation={fileConfirmation.requestFileConfirmation} />
           ) : (
             <div
               className={`workspace__editor ${panelOpen ? '' : 'workspace__editor--wide'}`}
@@ -1392,6 +1441,7 @@ export default function App() {
                 resolveTitle={resolveTitle}
                 resolveEmbed={resolveEmbed}
                 onSave={saveNote}
+                onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
                 externalWriteGranted={Boolean(activeNote?.external && activeNote.externalWriteGranted)}
                 onRequestExternalWrite={handleRequestExternalWrite}
                 onSaveExternal={handleSaveExternal}
@@ -1484,6 +1534,7 @@ export default function App() {
         theme={theme}
         onThemeChange={setTheme}
         onVaultProfileSaved={handleVaultProfileSaved}
+        onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
       />
       <ExpertsCenter
         open={expertsCenterOpen}
@@ -1495,6 +1546,8 @@ export default function App() {
         activeExpertId={activeExpertId}
         onSelectExpert={handleSelectExpert}
         onChanged={() => refreshExperts()}
+        onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
+        vaultDir={vaultDir}
       />
       <AIAssistantPanel
         open={aiOpen}

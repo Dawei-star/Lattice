@@ -2,6 +2,7 @@ import path from 'node:path';
 import { serverRoot, config } from '../../config/index.js';
 import { resolveVaultDir } from '../../vault/config.js';
 import { loadProjectMcpConfig, saveProjectMcpConfig } from './mcp.project.js';
+import { requireFileConfirmation } from '../../lib/file-confirmation.js';
 
 /**
  * 内置 Lattice MCP Server 的完整工具清单。
@@ -73,7 +74,9 @@ export function getProject(_req, res) {
 
 /** 保存项目级 MCP 配置；body 允许 { mcpServers: {...} } 或裸映射 */
 export function putProject(req, res) {
-  const result = saveProjectMcpConfig(req.valid.body);
+  requireFileConfirmation(req);
+  const { confirmed: _confirmed, secondConfirmed: _secondConfirmed, ...document } = req.valid.body;
+  const result = saveProjectMcpConfig(document);
   res.json({
     data: {
       path: result.filePath,

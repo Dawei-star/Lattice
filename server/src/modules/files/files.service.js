@@ -17,7 +17,9 @@ export function grep(query) {
 }
 
 export function preview(action) {
-  return guarded(() => store.previewMutation(action.type, action));
+  return guarded(() => Array.isArray(action.actions)
+    ? store.previewBatch(action.actions)
+    : store.previewMutation(action.type, action));
 }
 
 export function execute(action, {
@@ -27,13 +29,9 @@ export function execute(action, {
   planId = null,
   planHash = null,
 } = {}) {
-  return guarded(() => store.mutate(action.type, action, {
-    actor,
-    role,
-    source,
-    planId,
-    planHash,
-  }));
+  return guarded(() => Array.isArray(action.actions)
+    ? store.mutateBatch(action.actions, { actor, role, source, planId, planHash })
+    : store.mutate(action.type, action, { actor, role, source, planId, planHash }));
 }
 
 export function undo(operationId, { force = false, actor = 'local-user', role = 'editor', source = 'files-api' } = {}) {

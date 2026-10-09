@@ -172,6 +172,7 @@ test('chat auto-executes read-only actions and feeds file content back for the f
 
     assert.equal(upstream.bodies.length, 2, '应发起两轮模型调用');
     assert.equal(result.meta.rounds, 2);
+    assert.equal(result.meta.taskMode, false, '助手模式不应标记为任务模式');
     assert.equal(result.reply, '这份纪要的关键结论是：项目按期上线。');
     assert.deepEqual(result.actions, [], '最终回答不应再带 read 动作去走确认流程');
     const toolText = upstream.bodies[1].messages.at(-1).content;

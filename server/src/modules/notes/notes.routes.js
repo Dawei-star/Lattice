@@ -5,8 +5,15 @@ import * as controller from './notes.controller.js';
 
 const idParam = z.object({ id: z.string().uuid('笔记 ID 必须是合法 UUID') });
 
+const confirmationFields = {
+  confirmed: z.boolean().default(false),
+  secondConfirmed: z.boolean().default(false),
+  planHash: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+};
+
 const duplicateBody = z.object({
   folderId: z.string().uuid('目标目录 ID 必须是合法 UUID').nullish().transform((v) => v ?? undefined),
+  ...confirmationFields,
 }).default({});
 
 /** folderId 支持特殊值 __none__，表示「未分类」 */
@@ -39,6 +46,7 @@ const createBody = z.object({
   content: z.string().max(2_000_000, '单篇正文最长 200 万字符').default(''),
   folderId: z.string().uuid().nullish().transform((v) => v ?? null),
   properties: propertiesBody.default({}),
+  ...confirmationFields,
 });
 
 const updateBody = z
@@ -50,6 +58,7 @@ const updateBody = z
     properties: propertiesBody.optional(),
     // 乐观锁：携带读取时返回的 contentHash，不匹配返回 409
     expectedHash: z.string().regex(/^[a-f0-9]{64}$/i, '版本哈希无效').optional(),
+    ...confirmationFields,
   })
   .refine((value) => Object.keys(value).length > 0, { message: '至少要提供一个待更新字段' });
 
@@ -60,6 +69,7 @@ const versionParam = z.object({
 
 const restoreBody = z.object({
   expectedCurrentHash: z.string().regex(/^[a-f0-9]{64}$/i, '当前版本哈希无效').optional(),
+  ...confirmationFields,
 }).default({});
 
 const templateBody = z.object({
@@ -67,11 +77,15 @@ const templateBody = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期必须使用 YYYY-MM-DD 格式').optional(),
   folderId: z.string().uuid().nullish().transform((v) => v ?? null),
+  ...confirmationFields,
 });
 
 const dailyBody = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期必须使用 YYYY-MM-DD 格式').optional(),
+  ...confirmationFields,
 }).default({});
+
+const deleteBody = z.object(confirmationFields).default({});
 
 export const notesRouter = Router();
 
@@ -88,4 +102,4 @@ notesRouter.get('/:id/history/:version', validate({ params: versionParam }), con
 notesRouter.post('/:id/history/:version/restore', validate({ params: versionParam, body: restoreBody }), controller.restoreHistory);
 notesRouter.get('/:id', validate({ params: idParam }), controller.getNote);
 notesRouter.patch('/:id', validate({ params: idParam, body: updateBody }), controller.updateNote);
-notesRouter.delete('/:id', validate({ params: idParam }), controller.deleteNote);
+notesRouter.delete('/:id', validate({ params: idParam, body: deleteBody }), controller.deleteNote);

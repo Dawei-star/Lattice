@@ -6,6 +6,7 @@ import { migrateSqliteToVault } from '../../vault/migrate-sqlite.js';
 import { loadVaultProfile, saveVaultProfile } from '../../vault/profile.js';
 import * as service from './vault.service.js';
 import * as attachments from './vault.attachments.js';
+import { requireFileConfirmation } from '../../lib/file-confirmation.js';
 
 export function getInfo(_req, res) {
   const loaded = loadVaultProfile(config.vaultDir);
@@ -13,9 +14,11 @@ export function getInfo(_req, res) {
 }
 
 export function updateProfile(req, res) {
+  requireFileConfirmation(req);
   const principal = req.workspacePrincipal ?? { role: 'editor' };
   if (principal.role === 'viewer') throw new ValidationError('当前角色只有读取权限，不能修改 Vault profile');
-  const loaded = saveVaultProfile(config.vaultDir, req.valid.body);
+  const { confirmed: _confirmed, secondConfirmed: _secondConfirmed, ...profile } = req.valid.body;
+  const loaded = saveVaultProfile(config.vaultDir, profile);
   res.json({ data: profileInfo(loaded) });
 }
 
@@ -39,7 +42,8 @@ export async function readAsset(req, res) {
   res.sendFile(asset.absolutePath);
 }
 
-export async function migrate(_req, res) {
+export async function migrate(req, res) {
+  requireFileConfirmation(req);
   const result = await migrateSqliteToVault(resolveVaultDir(config.vaultDir));
   res.status(200).json({ data: result });
 }
@@ -53,6 +57,7 @@ export function listVaultFiles(_req, res) {
 }
 
 export function uploadAttachment(req, res) {
+  requireFileConfirmation(req);
   const result = attachments.uploadAttachment({
     name: req.valid.query.name,
     mimeType: req.get('content-type'),
@@ -77,6 +82,20 @@ export function readAttachment(req, res) {
   res.sendFile(asset.absolutePath);
 }
 
+export function downloadFile(req, res) {
+  const asset = attachments.readVaultFile(req.valid.query.path);
+  if (!asset) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: '文件不存在', requestId: req.id ?? 'unknown' } });
+    return;
+  }
+  res.type(asset.mimeType || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(asset.name)}`);
+  res.setHeader('Content-Length', String(asset.size));
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.sendFile(asset.absolutePath);
+}
+
 /**
  * 静态资产响应的沙箱头：CSP 只加在 SPA 路由上，资产端点若不带同样约束，
  * SVG/HTML 类附件可在应用同源下执行脚本、调用全部 API。
@@ -95,10 +114,12 @@ export function validateAttachmentReferences(req, res) {
 }
 
 export function deleteAttachment(req, res) {
+  requireFileConfirmation(req, { destructive: true });
   res.json({ data: attachments.deleteAttachment(req.valid.query.path) });
 }
 
 export function cleanupAttachments(req, res) {
+  if (!req.valid.body.dryRun) requireFileConfirmation(req, { destructive: true });
   res.json({ data: attachments.cleanupOrphans(req.valid.body) });
 }
 

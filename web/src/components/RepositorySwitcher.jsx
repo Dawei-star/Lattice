@@ -34,7 +34,7 @@ function saveRepositories(items) {
   }
 }
 
-export default function RepositorySwitcher() {
+export default function RepositorySwitcher({ onConfirmFileOperation }) {
   const toast = useToast();
   const rootRef = useRef(null);
   const menuRef = useRef(null);
@@ -124,7 +124,16 @@ export default function RepositorySwitcher() {
 
     setBusy(true);
     try {
-      const result = await selectPath(repository.path);
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir: currentPath,
+        type: 'update',
+        path: '.lattice/vault-config.json',
+        targetPath: repository.path,
+        contentSummary: `切换当前知识库到 ${repository.path}`,
+        impact: '修改 1 个桌面配置文件，并重启应用挂载新的知识库',
+      });
+      if (!confirmation?.confirmed) return;
+      const result = await selectPath(repository.path, confirmation);
       if (result?.canceled) return;
       rememberRepository(result?.path ?? repository.path);
       toast.info('正在切换仓库，应用将自动重启');
@@ -145,7 +154,15 @@ export default function RepositorySwitcher() {
 
     setBusy(true);
     try {
-      const result = await selectVault();
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir: currentPath,
+        type: 'update',
+        path: '.lattice/vault-config.json',
+        contentSummary: '选择并挂载新的本地知识库目录',
+        impact: '修改 1 个桌面配置文件，并重启应用挂载新的知识库',
+      });
+      if (!confirmation?.confirmed) return;
+      const result = await selectVault(confirmation);
       if (result?.canceled) return;
       if (result?.path) rememberRepository(result.path);
       toast.info('正在打开仓库，应用将自动重启');

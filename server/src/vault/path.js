@@ -37,7 +37,10 @@ export function normalizeVaultRelativePath(input, extension = '.md') {
     throw new Error('知识库路径包含非法片段');
   }
 
-  const result = parts.join('/');
+  // Win32 层会剥离段尾的点/空格（'x./' 与 'x' 指向同一文件），词法层同步归一，
+  // 避免校验时看到的路径与 fs 实际命中的路径不一致（如 '.lattice.' 绕过内部目录检查）。
+  // 应用创建文件时 sanitizeFilePart 已禁止段尾点/空格，这里不会改到合法存量路径。
+  const result = parts.map((part) => part.replace(/[. ]+$/, '')).join('/');
   return result.endsWith(extension) ? result : `${result}${extension}`;
 }
 

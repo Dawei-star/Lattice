@@ -1,4 +1,5 @@
 import { BASE_URL, http } from './client.js';
+import { workspaceHeaders } from './workspace-auth.js';
 
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
 
@@ -9,14 +10,14 @@ export const vaultFiles = {
     if (raw === null) return null;
     return raw.replace(FRONTMATTER_RE, '');
   },
-  writeMarkdown(filePath, note) {
-    return writeMarkdownContent(filePath, note);
+  writeMarkdown(filePath, note, confirmation = {}) {
+    return writeMarkdownContent(filePath, note, confirmation);
   },
-  moveMarkdown(fromPath, toPath, note) {
-    return window.latticeDesktop.moveMarkdownFile(fromPath, toPath, writeMarkdownContentValue(note));
+  moveMarkdown(fromPath, toPath, note, confirmation = {}) {
+    return window.latticeDesktop.moveMarkdownFile(fromPath, toPath, writeMarkdownContentValue(note), confirmation);
   },
-  removeMarkdown(filePath) {
-    return window.latticeDesktop.removeMarkdownFile(filePath);
+  removeMarkdown(filePath, confirmation = {}) {
+    return window.latticeDesktop.removeMarkdownFile(filePath, confirmation);
   },
   assetUrl(filePath) {
     const url = new URL(`${BASE_URL}/vault/asset`, window.location.origin);
@@ -27,6 +28,22 @@ export const vaultFiles = {
     const url = new URL(`${BASE_URL}/vault/attachment`, window.location.origin);
     url.searchParams.set('path', filePath);
     return url.toString();
+  },
+  downloadUrl(filePath) {
+    const url = new URL(`${BASE_URL}/vault/download`, window.location.origin);
+    url.searchParams.set('path', filePath);
+    return url.toString();
+  },
+  async download(filePath) {
+    const response = await fetch(this.downloadUrl(filePath), { headers: workspaceHeaders() });
+    if (!response.ok) throw new Error(`文件下载失败（HTTP ${response.status}）`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = String(filePath).replaceAll('\\', '/').split('/').pop() || 'download';
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   },
 };
 
@@ -97,8 +114,8 @@ export function markdownLinkLabel(value) {
   return String(value ?? '').replace(/[[\]()]/g, '').trim() || '附件';
 }
 
-function writeMarkdownContent(filePath, note) {
-  return window.latticeDesktop.writeMarkdownFile(filePath, writeMarkdownContentValue(note));
+function writeMarkdownContent(filePath, note, confirmation = {}) {
+  return window.latticeDesktop.writeMarkdownFile(filePath, writeMarkdownContentValue(note), confirmation);
 }
 
 function writeMarkdownContentValue(note) {

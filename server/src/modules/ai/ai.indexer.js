@@ -159,7 +159,13 @@ async function drain() {
     while (queuedNoteIds.size > 0) {
       const [noteId] = queuedNoteIds;
       queuedNoteIds.delete(noteId);
-      await indexNote(noteId);
+      // 单篇隔离：一篇持续失败（如上游对某输入 400）不允许中断整批，
+      // indexNote 内部已记录失败状态并抛出，这里吞掉并安排退避重试
+      try {
+        await indexNote(noteId);
+      } catch {
+        scheduleRetry(noteId);
+      }
       // 让出事件循环：索引永远不与用户操作抢主线程
       await new Promise((resolve) => setImmediate(resolve));
     }
@@ -167,6 +173,28 @@ async function drain() {
     draining = false;
     if (queuedNoteIds.size > 0) scheduleFlush();
   }
+}
+
+/** 失败退避重试：attempts 上限内按指数延迟重新入队，超限后保持 failed 等待内容变化/重建 */
+const retryTimers = new Map();
+
+function scheduleRetry(noteId) {
+  if (retryTimers.has(noteId)) return;
+  let attempts = 1;
+  try {
+    attempts = getDb().prepare('SELECT attempts FROM ai_index_state WHERE note_id = ?').get(noteId)?.attempts ?? 1;
+  } catch {
+    return;
+  }
+  if (attempts >= MAX_ATTEMPTS) return;
+  const delay = Math.min(60_000, DEBOUNCE_MS * 2 ** (attempts - 1));
+  const timer = setTimeout(() => {
+    retryTimers.delete(noteId);
+    queuedNoteIds.add(noteId);
+    scheduleFlush();
+  }, delay);
+  timer.unref?.();
+  retryTimers.set(noteId, timer);
 }
 
 /**

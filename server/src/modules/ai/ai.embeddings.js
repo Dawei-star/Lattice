@@ -239,9 +239,24 @@ export function storeNoteChunks(noteId, { chunks, vectors = null, model, noteCon
 }
 
 export function removeNoteIndex(noteId) {
-  getDb().prepare('DELETE FROM note_chunks WHERE note_id = ?').run(noteId);
-  getDb().prepare('DELETE FROM ai_index_state WHERE note_id = ?').run(noteId);
+  removeNoteIndexes([noteId]);
+}
+
+/** 批量移除笔记索引（notes.remove 与 vault 同步删除路径共用），并使向量缓存失效 */
+export function removeNoteIndexes(noteIds) {
+  const ids = [...new Set(noteIds)].filter(Boolean);
+  if (!ids.length) return 0;
+  const db = getDb();
+  const removeChunks = db.prepare('DELETE FROM note_chunks WHERE note_id = ?');
+  const removeState = db.prepare('DELETE FROM ai_index_state WHERE note_id = ?');
+  withTransaction(() => {
+    for (const id of ids) {
+      removeChunks.run(id);
+      removeState.run(id);
+    }
+  });
   indexVersion += 1; // 向量缓存失效
+  return ids.length;
 }
 
 /**

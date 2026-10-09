@@ -20,7 +20,7 @@ const CANVAS_NAME = `删除回归-${Date.now()}.canvas`;
 const createResponse = await fetch(`${baseUrl}/api/canvas?path=${encodeURIComponent(CANVAS_NAME)}`, {
   method: 'PUT',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ nodes: [], edges: [] }),
+  body: JSON.stringify({ nodes: [], edges: [], confirmed: true }),
 });
 if (!createResponse.ok) throw new Error(`无法准备测试画布（HTTP ${createResponse.status}）`);
 
@@ -67,6 +67,10 @@ try {
   await waitFor(() => !document.querySelector('.toast-host')?.textContent?.includes('资源管理器') || true, { label: 'settle' });
   await openCanvasMenu();
   menuLabel('删除画布').closest('[role="menuitem"]').click();
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: 'canvas delete confirmation card' });
+  document.querySelector('.file-confirmation-card button.btn--danger')?.click();
+  await waitFor(() => document.querySelector('.file-confirmation-card h2')?.textContent?.includes('删除不可逆'), { label: 'canvas delete second confirmation' });
+  document.querySelector('.file-confirmation-card button.btn--danger')?.click();
   await waitFor(() => !canvasItem(), { label: 'canvas entry removed from tree' });
 
   const filesResponse = await fetch(`${baseUrl}/api/canvas/files`);
@@ -78,5 +82,5 @@ try {
   console.log('canvas delete/reveal regression passed');
 } finally {
   root.unmount();
-  await fetch(`${baseUrl}/api/canvas/file?path=${encodeURIComponent(CANVAS_NAME)}`, { method: 'DELETE' }).catch(() => {});
+  await fetch(`${baseUrl}/api/canvas/file?path=${encodeURIComponent(CANVAS_NAME)}&confirmed=true&secondConfirmed=true`, { method: 'DELETE' }).catch(() => {});
 }

@@ -19,6 +19,19 @@ const logger = createLogger({ app: 'lattice', scope: 'migrate' });
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
+/**
+ * Git and release tooling may materialize SQL files with different newline
+ * styles. Newlines are formatting, so they must not change a migration's
+ * identity or invalidate an already-applied migration on Windows.
+ */
+export function normalizeMigrationSql(sql) {
+  return sql.replace(/\r\n?/g, '\n');
+}
+
+export function migrationChecksum(sql) {
+  return createHash('sha256').update(normalizeMigrationSql(sql), 'utf8').digest('hex');
+}
+
 function ensureMigrationsTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -41,7 +54,7 @@ function readMigrationFiles() {
       return {
         version: name.replace(/\.sql$/, ''),
         sql,
-        checksum: createHash('sha256').update(sql).digest('hex'),
+        checksum: migrationChecksum(sql),
       };
     });
 }

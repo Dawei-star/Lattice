@@ -50,6 +50,7 @@ export default function EditorPane({
   resolveTitle,
   resolveEmbed,
   onSave,
+  onConfirmFileOperation,
   externalWriteGranted = false,
   onRequestExternalWrite,
   onSaveExternal,
@@ -192,7 +193,14 @@ export default function EditorPane({
     const selected = historyState.selected;
     if (!note || !selected || !window.confirm(`确定恢复到 ${new Date(selected.createdAt).toLocaleString()} 吗？`)) return;
     try {
-      await notesApi.restoreHistory(note.id, selected.version, { expectedCurrentHash: historyState.currentHash });
+      const confirmation = await onConfirmFileOperation?.({
+        type: 'update',
+        path: note.filePath ?? `${note.id}.md`,
+        contentSummary: `将笔记恢复到 ${new Date(selected.createdAt).toLocaleString()} 的历史版本`,
+        impact: '覆盖 1 个 Markdown 文件，并新增 1 条历史快照',
+      });
+      if (!confirmation?.confirmed) return;
+      await notesApi.restoreHistory(note.id, selected.version, { expectedCurrentHash: historyState.currentHash, ...confirmation });
       // 先把草稿同步为恢复后的内容：否则防抖自动保存会用旧草稿把刚恢复的版本覆盖回去
       setDraft({ title: selected.title ?? '', content: selected.content ?? '', properties: selected.properties ?? {} });
       setHistoryState((current) => ({ ...current, open: false, selected: null }));
@@ -200,7 +208,7 @@ export default function EditorPane({
     } catch (error) {
       setHistoryState((current) => ({ ...current, error: error?.message ?? '恢复版本失败' }));
     }
-  }, [historyState.currentHash, historyState.selected, note, onSave]);
+  }, [historyState.currentHash, historyState.selected, note, onConfirmFileOperation, onSave]);
 
   const commit = useCallback(
     async ({ silent = true, force = false } = {}) => {
@@ -210,7 +218,7 @@ export default function EditorPane({
         if (!canEdit || draftRef.current.content === note.content) return;
         setStatus('saving');
         try {
-          await onSaveExternal?.(note.externalToken, draftRef.current.content);
+          await onSaveExternal?.(note.externalToken, draftRef.current.content, note);
           setStatus('saved');
           setErrorMessage('');
         } catch (error) {
@@ -386,8 +394,15 @@ export default function EditorPane({
     setAttachmentError('');
     announceAttachment('正在上传附件…');
     try {
+      const confirmation = await onConfirmFileOperation?.({
+        type: 'create',
+        path: `attachments/${note.title}/${file.name}`,
+        contentSummary: `上传附件「${file.name}」（约 ${file.size} 字节）`,
+        impact: '新增 1 个附件文件，并在当前笔记中插入引用',
+      });
+      if (!confirmation?.confirmed) return;
       // 按当前笔记归组存放（Yank Note 式），便于按笔记查找附件
-      const uploaded = await vaultAttachmentsApi.upload(file, { query: { folder: note.title } });
+      const uploaded = await vaultAttachmentsApi.upload(file, { query: { folder: note.title, confirmed: 'true' } });
       const reference = encodeMarkdownUrlReference(relativeAttachmentReference(note.filePath, uploaded.path));
       const label = markdownLinkLabel(uploaded.name ?? file.name);
       const syntax = uploaded.mimeType?.startsWith('image/')
@@ -413,7 +428,7 @@ export default function EditorPane({
     } finally {
       setAttachmentBusy(false);
     }
-  }, [announceAttachment, canEdit, isExternal, note, selection.end, selection.start]);
+  }, [announceAttachment, canEdit, isExternal, note, onConfirmFileOperation, selection.end, selection.start]);
 
   const handlePaste = useCallback(async (event) => {
     const files = getClipboardImageFiles(event.clipboardData);
@@ -441,10 +456,19 @@ export default function EditorPane({
     setAttachmentError('');
     announceAttachment(files.length === 1 ? '正在上传图片…' : `正在上传 ${files.length} 张图片…`);
     try {
+      const confirmation = await onConfirmFileOperation?.({
+        actions: files.map((file) => ({
+          type: 'create',
+          path: `attachments/${note.title}/${file.name}`,
+          contentSummary: `上传图片「${file.name}」（约 ${file.size} 字节）`,
+        })),
+        impact: `新增 ${files.length} 个附件文件，并在当前笔记中插入引用`,
+      });
+      if (!confirmation?.confirmed) return;
       const syntaxParts = [];
       for (const file of files) {
         // 按当前笔记归组存放（Yank Note 式），便于按笔记查找附件
-        const uploaded = await vaultAttachmentsApi.upload(file, { query: { folder: note.title } });
+        const uploaded = await vaultAttachmentsApi.upload(file, { query: { folder: note.title, confirmed: 'true' } });
         const reference = encodeMarkdownUrlReference(relativeAttachmentReference(note.filePath, uploaded.path));
         const label = markdownLinkLabel(uploaded.name ?? file.name);
         syntaxParts.push(`![${label}](${reference})`);
@@ -467,7 +491,7 @@ export default function EditorPane({
     } finally {
       setAttachmentBusy(false);
     }
-  }, [announceAttachment, attachmentBusy, canEdit, isExternal, note, selection.end, selection.start]);
+  }, [announceAttachment, attachmentBusy, canEdit, isExternal, note, onConfirmFileOperation, selection.end, selection.start]);
 
   const handleStaticExport = useCallback(async () => {
     if (!note || exportBusy) return;

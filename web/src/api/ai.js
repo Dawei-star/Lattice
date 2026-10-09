@@ -10,8 +10,9 @@ export const aiApi = {
   chat: (input, options = {}) => http.post('/ai/chat', input, { timeout: 300_000, retries: 0, ...options }),
   // 连通性测试直连上游服务商（kind: 'chat' | 'embedding'），关闭重试避免重复消耗上游额度
   test: (input, options = {}) => http.post('/ai/test', input, { timeout: 30_000, retries: 0, ...options }),
-  // MCP 预热：服务端后台建连 + listTools，立即返回 202（打开面板时调用，缩短首条消息 TTFT）
-  warmupMcp: (mcpServers = [], options = {}) => http.post('/ai/mcp/warmup', { mcpServers }, { timeout: 10_000, retries: 0, ...options }),
+  // MCP 预热：服务端后台建连 + listTools，立即返回 202（打开面板时调用，缩短首条消息 TTFT）。
+  // role 随body下发：viewer 角色在服务端被拒绝拉起 MCP 进程
+  warmupMcp: (mcpServers = [], options = {}) => http.post('/ai/mcp/warmup', { mcpServers, role: options.role }, { timeout: 10_000, retries: 0, ...options }),
   preview: (input, options = {}) => http.post('/ai/operations/preview', input, options),
   // 写操作端点：关闭自动重试——超时后服务端可能已执行成功，重试会重复执行
   // 同一批文件动作（与 filesApi.execute / ai.write 同一口径）

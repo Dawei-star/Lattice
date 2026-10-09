@@ -94,11 +94,12 @@ function normalizeAttachmentFiles(files) {
   });
 }
 
-export function useVault() {
+export function useVault({ requestFileConfirmation } = {}) {
   const toast = useToast();
 
   const [folders, setFolders] = useState([]);
   const [profile, setProfile] = useState(DEFAULT_VAULT_PROFILE);
+  const [vaultDir, setVaultDir] = useState('');
   const [tags, setTags] = useState([]);
   const [overview, setOverview] = useState(null);
   const [noteIndex, setNoteIndex] = useState([]);
@@ -121,6 +122,7 @@ export function useVault() {
   const [loading, setLoading] = useState({ sidebar: true, notes: true, note: false, graph: false });
   const [connectionDown, setConnectionDown] = useState(false);
   const [workspaceToken, setWorkspaceToken] = useState(() => getWorkspaceAccessToken());
+  const [vaultChangeRevision, setVaultChangeRevision] = useState(0);
 
   /** 编辑器未保存内容的重载保护：切换笔记前由编辑区注册拦截器 */
   const navigationGuard = useRef(null);
@@ -175,6 +177,16 @@ export function useVault() {
     [toast],
   );
 
+  const confirmFileOperation = useCallback(async (operation) => {
+    if (typeof requestFileConfirmation !== 'function') {
+      throw new Error('文件操作确认组件未挂载，已阻止本次写入');
+    }
+    const result = await requestFileConfirmation({ ...operation, vaultDir });
+    return result?.confirmed === true
+      ? { confirmed: true, secondConfirmed: result.secondConfirmed === true }
+      : null;
+  }, [requestFileConfirmation, vaultDir]);
+
   // ── 数据加载 ────────────────────────────────────────────────────
   // scope: 'all' = 完整侧栏（含画布/附件全库扫描/vault 信息）；
   // 'notes' = 只刷 folders/tags/overview/index。SSE 笔记级事件走 'notes'：
@@ -198,6 +210,7 @@ export function useVault() {
           return;
         }
         const vaultInfo = await vaultApi.info().catch(() => null);
+        setVaultDir(vaultInfo?.vaultDir ?? '');
         setProfile(normalizeVaultProfile(vaultInfo?.profile));
         try {
           setCanvasFiles(ensureDefaultCanvas(await canvasApi.list()));
@@ -458,7 +471,14 @@ export function useVault() {
             updatedAt: timestamp,
           };
           const filePath = uniqueNoteFilePath(note, folders, noteIndex);
-          const written = await vaultFiles.writeMarkdown(filePath, { ...note, filePath });
+          const confirmation = await confirmFileOperation({
+            type: 'create',
+            path: filePath,
+            contentSummary: `创建 Markdown 笔记「${note.title}」，正文约 ${String(note.content).length} 个字符`,
+            impact: '新增 1 个 Markdown 文件，并等待索引同步',
+          });
+          if (!confirmation) return null;
+          const written = await vaultFiles.writeMarkdown(filePath, { ...note, filePath }, confirmation);
           if (!written) throw new Error('无法创建 Markdown 文件');
           for (let attempt = 0; attempt < 4; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 220));
@@ -477,7 +497,19 @@ export function useVault() {
             }
           }
         }
-        const note = await notesApi.create(input);
+        const filePath = uniqueNoteFilePath({
+          id: input.id,
+          title: input.title?.trim() || '未命名笔记',
+          folderId: input.folderId ?? null,
+        }, folders, noteIndex);
+        const confirmation = await confirmFileOperation({
+          type: 'create',
+          path: filePath,
+          contentSummary: `创建 Markdown 笔记「${input.title?.trim() || '未命名笔记'}」`,
+          impact: '新增 1 个 Markdown 文件，并更新知识库索引',
+        });
+        if (!confirmation) return null;
+        const note = await notesApi.create({ ...input, ...confirmation });
         // 同桌面分支：激活交给调用方的 openInTab，避免顶掉未保存的草稿
         await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
         setGraphStale(true);
@@ -487,7 +519,7 @@ export function useVault() {
         return null;
       }
     },
-    [folders, handleError, noteIndex, refreshNotes, refreshSidebar],
+    [confirmFileOperation, folders, handleError, noteIndex, refreshNotes, refreshSidebar],
   );
 
   /** 保存后即时更新列表中的对应行；与服务器/磁盘的完整同步交给 SSE 驱动的刷新 */
@@ -565,9 +597,21 @@ export function useVault() {
         const nextPath = pathChanged
           ? uniqueNoteFilePath(saved, folders, noteIndex)
           : current.filePath ?? noteFilePath(saved, folders);
+        // 普通覆盖是编辑器的正常保存，不需要阻塞式确认；改变标题或目录会改变
+        // 磁盘路径，仍作为高风险的移动/重命名操作单独确认。
+        const confirmation = pathChanged
+          ? await confirmFileOperation({
+            type: 'move',
+            path: current.filePath ?? nextPath,
+            targetPath: nextPath,
+            contentSummary: `将「${current.filePath}」移动到「${nextPath}」并更新正文`,
+            impact: '改变文件路径并更新 1 篇笔记的索引',
+          })
+          : {};
+        if (pathChanged && !confirmation) throw new Error('用户取消了文件操作');
         const written = nextPath === current.filePath
-          ? await vaultFiles.writeMarkdown(current.filePath, saved)
-          : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved);
+          ? await vaultFiles.writeMarkdown(current.filePath, saved, confirmation)
+          : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved, confirmation);
         if (!written) throw new Error('无法写入 Markdown 文件');
         saved.filePath = nextPath;
         activeNoteRef.current = saved;
@@ -577,7 +621,17 @@ export function useVault() {
         return saved;
       }
       try {
-        const saved = await notesApi.update(id, nextPatch);
+        const pathChanged = nextPatch.title !== undefined || nextPatch.folderId !== undefined;
+        const confirmation = pathChanged
+          ? await confirmFileOperation({
+            type: 'move',
+            path: current?.filePath ?? `${id}.md`,
+            contentSummary: '更新笔记标题或目录归属，并同步调整文件路径',
+            impact: '改变 1 篇笔记的文件路径并更新索引',
+          })
+          : {};
+        if (pathChanged && !confirmation) throw new Error('用户取消了文件操作');
+        const saved = await notesApi.update(id, { ...nextPatch, ...confirmation });
         activeNoteRef.current = activeNoteRef.current?.id === saved.id
           ? { ...activeNoteRef.current, ...saved }
           : activeNoteRef.current;
@@ -592,7 +646,7 @@ export function useVault() {
         throw error;
       }
     }),
-    [enqueueNoteMutation, folders, handleError, noteIndex, patchNoteListItem, refreshNotes],
+    [confirmFileOperation, enqueueNoteMutation, folders, handleError, noteIndex, patchNoteListItem, refreshNotes],
   );
 
   const deleteNote = useCallback(
@@ -600,12 +654,21 @@ export function useVault() {
       try {
         const current = activeNote?.id === id ? activeNote : null;
         let deletedOnDisk = false;
+        const confirmation = await confirmFileOperation({
+          type: 'delete',
+          path: current?.filePath ?? `${id}.md`,
+          contentSummary: `删除笔记「${current?.title ?? id}」及其 Markdown 文件`,
+          impact: '移除 1 个 Markdown 文件；已生成快照，可在操作历史中撤销',
+          reversible: true,
+          requiresSecondConfirmation: true,
+        });
+        if (!confirmation) return false;
         if (vaultFiles.isAvailable() && current?.filePath) {
-          const removed = await vaultFiles.removeMarkdown(current.filePath);
+          const removed = await vaultFiles.removeMarkdown(current.filePath, confirmation);
           if (!removed) throw new Error('无法删除 Markdown 文件');
           deletedOnDisk = true;
         } else {
-          await notesApi.remove(id);
+          await notesApi.remove(id, { body: confirmation, retries: 0 });
         }
         setActiveNote((current) => (current && current.id === id ? null : current));
         setGraphStale(true);
@@ -623,7 +686,7 @@ export function useVault() {
         return false;
       }
     },
-    [activeNote, handleError, refreshNotes, refreshSidebar, toast],
+    [activeNote, confirmFileOperation, handleError, refreshNotes, refreshSidebar, toast],
   );
 
   const duplicateNote = useCallback(
@@ -678,7 +741,14 @@ export function useVault() {
   const createFolder = useCallback(
     async (name, parentId = null) => {
       try {
-        const folder = await foldersApi.create({ name, parentId });
+        const confirmation = await confirmFileOperation({
+          type: 'mkdir',
+          path: name,
+          contentSummary: `创建目录「${name}」`,
+          impact: '新增 1 个目录，后续笔记可移动到该目录',
+        });
+        if (!confirmation) return null;
+        const folder = await foldersApi.create({ name, parentId, ...confirmation });
         await refreshSidebar({ silent: true });
         toast.success(`已创建目录「${folder.name}」`);
         return folder;
@@ -687,13 +757,20 @@ export function useVault() {
         return null;
       }
     },
-    [handleError, refreshSidebar, toast],
+    [confirmFileOperation, handleError, refreshSidebar, toast],
   );
 
   const moveFolder = useCallback(
     async (id, parentId) => {
       try {
-        await foldersApi.update(id, { parentId });
+        const confirmation = await confirmFileOperation({
+          type: 'move',
+          path: `folder:${id}`,
+          contentSummary: '移动目录及其下属笔记文件',
+          impact: '可能移动多个 Markdown 文件，并更新它们的索引路径',
+        });
+        if (!confirmation) return false;
+        await foldersApi.update(id, { parentId, ...confirmation });
         await refreshSidebar({ silent: true });
         toast.success(parentId ? '文件夹已移动' : '文件夹已移至根目录');
         return true;
@@ -702,7 +779,7 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshSidebar, toast],
+    [confirmFileOperation, handleError, refreshSidebar, toast],
   );
 
   // 外部编辑器、同步软件和文件管理器都会直接改变 Vault。watcher 完成
@@ -765,6 +842,7 @@ export function useVault() {
         const changed = (change.added ?? 0) + (change.updated ?? 0) + (change.removed ?? 0);
         if (!changed) return;
         setGraphStale(true);
+        setVaultChangeRevision((value) => value + 1);
         refreshFromVault('all');
         return;
       }
@@ -788,6 +866,8 @@ export function useVault() {
       // 笔记级事件只刷核心数据（folders/tags/overview/index），跳过画布与
       // 附件的全库扫描——自动保存风暴从每秒十几个请求降到四个
       setGraphStale(true);
+      // 事件是在 SQLite 投影完成后发布的，Review 可以安全地重新读取当前事实。
+      setVaultChangeRevision((value) => value + 1);
       refreshFromVault('notes');
     };
 
@@ -855,7 +935,15 @@ export function useVault() {
   const moveCanvas = useCallback(
     async (fromPath, toPath) => {
       try {
-        await canvasApi.move(fromPath, toPath);
+        const confirmation = await confirmFileOperation({
+          type: 'move',
+          path: fromPath,
+          targetPath: toPath,
+          contentSummary: `移动画布「${fromPath}」到「${toPath}」`,
+          impact: '改变 1 个 Canvas 文件的路径',
+        });
+        if (!confirmation) return false;
+        await canvasApi.move(fromPath, toPath, confirmation);
         await refreshSidebar({ silent: true });
         return true;
       } catch (error) {
@@ -863,13 +951,21 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshSidebar],
+    [confirmFileOperation, handleError, refreshSidebar],
   );
 
   const renameCanvas = useCallback(
     async (fromPath, toPath) => {
       try {
-        await canvasApi.rename(fromPath, toPath);
+        const confirmation = await confirmFileOperation({
+          type: 'rename',
+          path: fromPath,
+          targetPath: toPath,
+          contentSummary: `重命名 Canvas 文件为「${toPath}」`,
+          impact: '改变 1 个 Canvas 文件的路径',
+        });
+        if (!confirmation) return false;
+        await canvasApi.rename(fromPath, toPath, confirmation);
         await refreshSidebar({ silent: true });
         return true;
       } catch (error) {
@@ -877,13 +973,21 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshSidebar],
+    [confirmFileOperation, handleError, refreshSidebar],
   );
 
   const deleteCanvas = useCallback(
     async (filePath) => {
       try {
-        await canvasApi.remove(filePath);
+        const confirmation = await confirmFileOperation({
+          type: 'delete',
+          path: filePath,
+          contentSummary: `删除 Canvas 文件「${filePath}」`,
+          impact: '移除 1 个 Canvas 文件；已生成快照，可撤销',
+          requiresSecondConfirmation: true,
+        });
+        if (!confirmation) return false;
+        await canvasApi.remove(filePath, confirmation);
         await refreshSidebar({ silent: true });
         return true;
       } catch (error) {
@@ -891,14 +995,21 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshSidebar],
+    [confirmFileOperation, handleError, refreshSidebar],
   );
 
   const createCanvas = useCallback(
     async (folderPath = '') => {
       const filePath = nextCanvasPath(canvasFiles, folderPath);
       try {
-        await canvasApi.save(filePath, { nodes: [], edges: [] });
+        const confirmation = await confirmFileOperation({
+          type: 'create',
+          path: filePath,
+          contentSummary: `创建空白 Canvas「${filePath}」`,
+          impact: '新增 1 个 Canvas 文件',
+        });
+        if (!confirmation) return null;
+        await canvasApi.save(filePath, { nodes: [], edges: [], ...confirmation });
         await refreshSidebar({ silent: true });
         return filePath;
       } catch (error) {
@@ -906,7 +1017,7 @@ export function useVault() {
         return null;
       }
     },
-    [canvasFiles, handleError, refreshSidebar],
+    [canvasFiles, confirmFileOperation, handleError, refreshSidebar],
   );
 
   const duplicateFolder = useCallback(
@@ -927,12 +1038,14 @@ export function useVault() {
         }
 
         const folderIds = new Map();
-        const rootCopy = await foldersApi.create({ name, parentId: source.parentId ?? null });
+         const rootCopy = await createFolder(name, source.parentId ?? null);
+         if (!rootCopy) return false;
         folderIds.set(source.id, rootCopy.id);
 
         const copyChildren = async (original, parentId) => {
           for (const child of original.children ?? []) {
-            const copy = await foldersApi.create({ name: child.name, parentId });
+             const copy = await createFolder(child.name, parentId);
+             if (!copy) return;
             folderIds.set(child.id, copy.id);
             await copyChildren(child, copy.id);
           }
@@ -954,13 +1067,21 @@ export function useVault() {
         return false;
       }
     },
-    [folders, handleError, noteIndex, refreshNotes, refreshSidebar, toast],
+    [createFolder, folders, handleError, noteIndex, refreshNotes, refreshSidebar, toast],
   );
 
   const deleteFolder = useCallback(
     async (id) => {
       try {
-        const result = await foldersApi.remove(id);
+        const confirmation = await confirmFileOperation({
+          type: 'delete',
+          path: `folder:${id}`,
+          contentSummary: '删除目录；目录下的笔记会移至未分类，相关文件可能被移动',
+          impact: '影响目录及其下属笔记路径，操作可撤销但需核对结果',
+          requiresSecondConfirmation: true,
+        });
+        if (!confirmation) return false;
+        const result = await foldersApi.remove(id, { body: confirmation, retries: 0 });
         setFilter((current) => (current.kind === 'folder' && current.folderId === id ? DEFAULT_FILTER : current));
         await Promise.all([refreshSidebar({ silent: true }), refreshNotes()]);
         toast.success(
@@ -974,13 +1095,21 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshNotes, refreshSidebar, toast],
+    [confirmFileOperation, handleError, refreshNotes, refreshSidebar, toast],
   );
 
   const renameFolder = useCallback(
     async (id, name) => {
       try {
-        await foldersApi.update(id, { name });
+        const confirmation = await confirmFileOperation({
+          type: 'rename',
+          path: `folder:${id}`,
+          targetPath: name,
+          contentSummary: `重命名目录为「${name}」，同步更新其下笔记路径`,
+          impact: '可能移动多个 Markdown 文件，并更新索引路径',
+        });
+        if (!confirmation) return false;
+        await foldersApi.update(id, { name, ...confirmation });
         await refreshSidebar({ silent: true });
         return true;
       } catch (error) {
@@ -988,7 +1117,7 @@ export function useVault() {
         return false;
       }
     },
-    [handleError, refreshSidebar],
+    [confirmFileOperation, handleError, refreshSidebar],
   );
 
   const moveNote = useCallback(
@@ -1083,6 +1212,7 @@ export function useVault() {
     // 数据
     folders,
     profile,
+    vaultDir,
     tags,
     overview,
     notes,
@@ -1101,6 +1231,7 @@ export function useVault() {
     query,
     loading,
     connectionDown,
+    vaultChangeRevision,
 
     // 状态设置
     setQuery,

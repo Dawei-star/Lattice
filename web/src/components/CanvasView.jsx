@@ -42,7 +42,7 @@ const EDGE_STROKE_COLORS = {
 
 gsap.registerPlugin(useGSAP);
 
-export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [], activeNoteId, onOpenNote, onCreateNote, blockedPaths }) {
+export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [], activeNoteId, onOpenNote, onCreateNote, blockedPaths, onConfirmFileOperation }) {
   const [canvasDocument, setCanvasDocument] = useState(EMPTY_DOCUMENT);
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [selected, setSelected] = useState([]);
@@ -263,6 +263,8 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
       saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
         if (revision !== saveRevision.current) return;
         if (blockedPaths?.has(canvasPath)) return;
+        // 已打开的 Canvas 更新属于正常编辑，直接保存；创建、移动、删除仍由
+        // useVault 的高风险操作确认流程处理。
         await canvasApi.save(canvasPath, snapshot);
         if (revision === saveRevision.current) setSaveState('saved');
       }).catch(() => {
@@ -888,8 +890,20 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
     setClipboardError('');
     setClipboardState('uploading');
     try {
+      const confirmation = await onConfirmFileOperation?.({
+        actions: files.map((file) => ({
+          type: 'create',
+          path: `attachments/${file.name}`,
+          contentSummary: `从剪贴板上传图片「${file.name}」（约 ${file.size} 字节）`,
+        })),
+        impact: `新增 ${files.length} 个图片附件，并在当前 Canvas 中添加节点`,
+      });
+      if (!confirmation?.confirmed) {
+        setClipboardState('idle');
+        return;
+      }
       for (const [index, file] of files.entries()) {
-        const uploaded = await vaultAttachmentsApi.upload(file);
+        const uploaded = await vaultAttachmentsApi.upload(file, { query: { confirmed: 'true' } });
         addImage(
           { path: uploaded.path, name: uploaded.name ?? file.name },
           position ? { x: position.x + index * 28, y: position.y + index * 28 } : undefined,

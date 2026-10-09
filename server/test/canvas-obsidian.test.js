@@ -86,7 +86,7 @@ test('读取 Obsidian 画布时归一化边端点、颜色与节点类型，且�
   const saveResponse = await fetch(`http://127.0.0.1:${port}/api/canvas?path=${encodeURIComponent('导入.canvas')}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodes, edges }),
+    body: JSON.stringify({ nodes, edges, confirmed: true }),
   });
   assert.equal(saveResponse.status, 200);
 

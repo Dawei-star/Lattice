@@ -27,6 +27,31 @@ const fileStore = createFileStore(config.vaultDir);
 
 /** vault 内部目录：AI 动作不得读写或改写（.lattice 存历史快照，walker 也不扫描） */
 const FORBIDDEN_ACTION_DIRS = new Set(['.lattice', '.fc', '_templates']);
+// A directory called API_KEY is not enough to classify every file below it as sensitive.
+// Check the file name itself, plus a small allowlist of explicitly protected directories.
+const SENSITIVE_FILE_NAME_RE = /^(?:api[_ -]?key|secret|token|password|credential|private[_ -]?key|id_rsa|\.env)(?:[._ -].*)?$/i;
+const SENSITIVE_DIRECTORY_NAME_RE = /^(?:secrets?|credentials?|private(?:[_ -]?keys?)?)$/i;
+const SENSITIVE_TEXT_RE = /\u5bc6\u94a5|\u5bc6\u7801|\u51ed\u636e|\u4ee4\u724c|\u79c1\u94a5/i;
+
+export function getSensitivePathInfo(action = {}) {
+  const paths = [action.path, action.targetPath].filter((value) => typeof value === 'string' && value.trim());
+  const sensitivePaths = paths.filter(isSensitivePath);
+  if (!sensitivePaths.length) return { sensitive: false, paths: [], reason: null };
+  return {
+    sensitive: true,
+    paths: sensitivePaths,
+    reason: '目标路径可能包含密钥、凭据或其他敏感信息',
+  };
+}
+
+function isSensitivePath(value) {
+  const segments = String(value).replaceAll('\\', '/').split('/').filter(Boolean);
+  const fileName = segments.at(-1) ?? '';
+  if (SENSITIVE_FILE_NAME_RE.test(fileName) || SENSITIVE_TEXT_RE.test(fileName)) return true;
+  return segments.slice(0, -1).some((segment) => (
+    SENSITIVE_DIRECTORY_NAME_RE.test(segment) || SENSITIVE_TEXT_RE.test(segment)
+  ));
+}
 
 export function preview(actions = [], {
   actor = 'local-user',
@@ -36,7 +61,11 @@ export function preview(actions = [], {
 } = {}) {
   const normalized = normalizeActions(actions);
   const operations = normalized.map((action, index) => previewAction(action, index));
-  const blocked = role === 'viewer' && operations.some((operation) => operation.requiresConfirmation);
+  const quality = inspectPlan(normalized, operations);
+  const sensitiveOperations = operations.filter((operation) => operation.sensitive);
+  const additionalConfirmationReasons = getAdditionalConfirmationReasons(normalized);
+  const roleBlocked = role === 'viewer' && operations.some((operation) => operation.requiresConfirmation);
+  const blocked = roleBlocked || quality.blocked;
   const plan = createOperationPlan(normalized, { id: planId ?? randomUUID(), actor, role, source });
 
   return {
@@ -47,6 +76,11 @@ export function preview(actions = [], {
     source,
     plan,
     blocked,
+    blockedReason: roleBlocked ? '当前角色只有读取权限' : quality.blocked ? '操作计划存在冲突，请修改后更新预览' : null,
+    quality,
+    requiresAdditionalConfirmation: additionalConfirmationReasons.length > 0,
+    additionalConfirmationReasons,
+    requiresSensitiveConfirmation: sensitiveOperations.length > 0,
     operations,
     planHash: hashPlan(normalized),
     summary: summarizeOperations(operations),
@@ -61,18 +95,32 @@ export async function execute(actions = [], {
   source = 'ai-chat',
   planHash = null,
   planId = null,
-  internalAutoApprove = false,
+  sensitiveConfirmed = false,
+  additionalConfirmed = false,
 } = {}) {
   const normalized = normalizeActions(actions);
+  const operations = normalized.map((action, index) => previewAction(action, index));
+  const quality = inspectPlan(normalized, operations);
   const plan = createOperationPlan(normalized, { id: planId ?? randomUUID(), actor, role, source });
   const hasWrites = normalized.some((action) => MUTATING_ACTIONS.has(action.type));
+  const sensitiveWrites = normalized.filter((action) => MUTATING_ACTIONS.has(action.type) && getSensitivePathInfo(action).sensitive);
+  const additionalConfirmationReasons = getAdditionalConfirmationReasons(normalized);
   if (role === 'viewer' && hasWrites) {
     throw new ValidationError('当前角色只有读取权限，不能执行文件修改');
   }
   if (hasWrites && confirmed !== true) {
     throw new ValidationError('文件修改必须先确认操作预览');
   }
-  if (hasWrites && !internalAutoApprove) {
+  if (additionalConfirmationReasons.length && additionalConfirmed !== true) {
+    throw new ValidationError('删除、批量或敏感文件操作需要额外确认当前计划');
+  }
+  if (sensitiveWrites.length && sensitiveConfirmed !== true) {
+    throw new ValidationError('包含受保护文件，必须单独确认敏感文件后才能执行');
+  }
+  if (quality.blocked) {
+    throw new ValidationError('操作计划存在冲突，请修改后重新预览');
+  }
+  if (hasWrites) {
     if (typeof planHash !== 'string' || !/^[a-f0-9]{64}$/i.test(planHash)) {
       throw new ValidationError('文件修改必须携带有效的操作计划');
     }
@@ -82,9 +130,7 @@ export async function execute(actions = [], {
   }
   // 自动批准只来自模型自答循环：检索到的笔记内容可能携带提示注入，
   // 删除是不可逆动作，绝不允许绕过用户确认自动执行。
-  const executable = internalAutoApprove
-    ? normalized.filter((action) => action.type !== 'delete')
-    : normalized;
+  const executable = normalized;
 
   const results = [];
   for (const action of executable) {
@@ -162,9 +208,15 @@ function normalizeActions(actions) {
   });
 }
 
-/** AI 动作不允许触及内部目录：模型输出可能被笔记内容注入，历史快照与模板必须隔离 */
+/** AI 动作不允许触及内部目录：模型输出可能被笔记内容注入，历史快照与模板必须隔离。
+ *  Windows 文件系统大小写不敏感且会剥离段尾点/空格（'.LATTICE.' 与 '.lattice' 同路径），
+ *  比对前必须做同样归一，否则守卫可被大小写/尾点变体绕过。 */
+function canonicalSegment(value) {
+  return String(value).toLowerCase().replace(/[. ]+$/, '');
+}
+
 function assertNotInternalPath(relativePath) {
-  const firstSegment = String(relativePath).split('/')[0];
+  const firstSegment = canonicalSegment(String(relativePath).split('/')[0]);
   if (FORBIDDEN_ACTION_DIRS.has(firstSegment)) {
     throw new ValidationError(`不允许操作 Vault 内部目录：${relativePath}`);
   }
@@ -184,6 +236,15 @@ function absoluteFilePath(relativePath) {
   return resolveVaultPath(config.vaultDir, relativePath, '');
 }
 
+/** 判断 Vault 内文件是否存在（与动作执行同一套路径校验）；供任务循环在入队/回填前做存在性检查 */
+export function fileExistsInVault(relativePath) {
+  try {
+    return fs.existsSync(absoluteFilePath(relativePath));
+  } catch {
+    return false;
+  }
+}
+
 function previewAction(action, index) {
   const source = absoluteFilePath(action.path);
   const sourceState = snapshotFile(source);
@@ -192,7 +253,10 @@ function previewAction(action, index) {
   const targetState = target ? snapshotFile(target) : null;
   const targetExists = targetState?.exists ?? false;
   const requiresConfirmation = MUTATING_ACTIONS.has(action.type);
-  const risk = action.type === 'delete' ? 'destructive' : requiresConfirmation ? 'write' : 'read';
+  const sensitivity = requiresConfirmation
+    ? getSensitivePathInfo(action)
+    : { sensitive: false, paths: [], reason: null };
+  const risk = sensitivity.sensitive ? 'sensitive' : action.type === 'delete' ? 'destructive' : requiresConfirmation ? 'write' : 'read';
 
   return {
     ...action,
@@ -202,6 +266,8 @@ function previewAction(action, index) {
     targetExists,
     targetIsFile: targetState?.type === 'file',
     risk,
+    sensitive: sensitivity.sensitive,
+    sensitivityReason: sensitivity.reason,
     requiresConfirmation,
     summary: describeAction(action, exists, targetExists),
     before: sourceState.type === 'file'
@@ -213,6 +279,93 @@ function previewAction(action, index) {
         : { type: targetState.type }
       : null,
     after: action.type === 'delete' ? null : action.targetPath ? { path: action.targetPath } : action.type === 'read' ? null : { path: action.path },
+  };
+}
+
+function getAdditionalConfirmationReasons(actions) {
+  const writes = actions.filter((action) => MUTATING_ACTIONS.has(action.type));
+  const reasons = [];
+  if (writes.length > 1) reasons.push('batch');
+  if (writes.some((action) => action.type === 'delete')) reasons.push('delete');
+  if (writes.some((action) => getSensitivePathInfo(action).sensitive)) reasons.push('sensitive');
+  return reasons;
+}
+
+function inspectPlan(actions, operations) {
+  const warnings = [];
+  const actionIds = new Map();
+  const targets = new Map();
+
+  const addWarning = (warning) => {
+    warnings.push({ severity: 'error', ...warning });
+  };
+
+  for (const action of actions) {
+    const id = String(action.id);
+    const idEntries = actionIds.get(id) ?? [];
+    idEntries.push(action);
+    actionIds.set(id, idEntries);
+
+    if (!MUTATING_ACTIONS.has(action.type)) continue;
+    const targetPath = action.targetPath ?? action.path;
+    const targetEntries = targets.get(targetPath) ?? [];
+    targetEntries.push(action);
+    targets.set(targetPath, targetEntries);
+  }
+
+  for (const [id, entries] of actionIds) {
+    if (entries.length < 2) continue;
+    addWarning({
+      code: 'duplicate-action-id',
+      message: `动作 ID “${id}”重复，无法可靠追踪或撤销`,
+      actionIds: entries.map((action) => action.id),
+    });
+  }
+
+  for (const [targetPath, entries] of targets) {
+    if (entries.length < 2) continue;
+    addWarning({
+      code: 'duplicate-target',
+      message: `多个动作将写入同一目标“${targetPath}”，执行顺序会产生冲突`,
+      actionIds: entries.map((action) => action.id),
+      path: targetPath,
+    });
+  }
+
+  for (const operation of operations) {
+    const action = operation;
+
+    if (['read', 'update', 'delete', 'move', 'copy', 'archive'].includes(action.type) && !operation.exists) {
+      addWarning({
+        code: 'missing-source',
+        message: `源文件“${action.path}”不存在，无法执行${action.type}操作`,
+        actionIds: [action.id],
+        path: action.path,
+      });
+    } else if (['read', 'update', 'delete', 'move', 'copy', 'archive'].includes(action.type) && !operation.isFile) {
+      addWarning({
+        code: 'source-not-file',
+        message: `源路径“${action.path}”不是文件，无法执行${action.type}操作`,
+        actionIds: [action.id],
+        path: action.path,
+      });
+    }
+
+    const targetExists = action.type === 'create' ? operation.exists : operation.targetExists;
+    if (['create', 'move', 'copy', 'archive'].includes(action.type) && targetExists) {
+      const targetPath = action.targetPath ?? action.path;
+      addWarning({
+        code: 'target-exists',
+        message: `目标“${targetPath}”已存在，继续执行会覆盖或冲突`,
+        actionIds: [action.id],
+        path: targetPath,
+      });
+    }
+  }
+
+  return {
+    blocked: warnings.some((warning) => warning.severity === 'error'),
+    warnings,
   };
 }
 
@@ -340,25 +493,32 @@ export function recordAudit(entry) {
 }
 
 function appendAudit(entry) {
-  fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
-  rotateAuditIfNeeded();
-  const safeEntry = {
-    id: randomUUID(),
-    at: new Date().toISOString(),
-    planVersion: entry.plan?.version ?? 1,
-    planId: entry.plan?.id ?? entry.planId ?? null,
-    actor: entry.actor,
-    role: entry.role,
-    source: entry.source,
-    status: entry.status,
-    type: entry.action?.type ?? null,
-    path: entry.action?.path ?? null,
-    targetPath: entry.action?.targetPath ?? null,
-    action: auditAction(entry.action),
-    ...(entry.operationId ? { operationId: entry.operationId } : {}),
-    ...(entry.error ? { error: entry.error } : {}),
-  };
-  fs.appendFileSync(AUDIT_FILE, `${JSON.stringify(safeEntry)}\n`, 'utf8');
+  // 审计失败（磁盘满/权限异常）绝不能改变业务结果：execute 的成功分支在 try 内
+  // 调用本函数，审计抛错会把已落盘的操作标成 failed，二次抛错还会中断整批执行。
+  // 与 rotateAuditIfNeeded 的容错策略一致：尽力写，失败静默。
+  try {
+    fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
+    rotateAuditIfNeeded();
+    const safeEntry = {
+      id: randomUUID(),
+      at: new Date().toISOString(),
+      planVersion: entry.plan?.version ?? 1,
+      planId: entry.plan?.id ?? entry.planId ?? null,
+      actor: entry.actor,
+      role: entry.role,
+      source: entry.source,
+      status: entry.status,
+      type: entry.action?.type ?? null,
+      path: entry.action?.path ?? null,
+      targetPath: entry.action?.targetPath ?? null,
+      action: auditAction(entry.action),
+      ...(entry.operationId ? { operationId: entry.operationId } : {}),
+      ...(entry.error ? { error: entry.error } : {}),
+    };
+    fs.appendFileSync(AUDIT_FILE, `${JSON.stringify(safeEntry)}\n`, 'utf8');
+  } catch {
+    // 审计写失败静默：业务结果已定，不因日志丢真
+  }
 }
 
 /** 超过阈值时把当前日志归档为 .old（覆盖上一份），保持单文件体积有界 */

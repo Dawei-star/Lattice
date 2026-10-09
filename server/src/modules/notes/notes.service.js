@@ -4,10 +4,12 @@ import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.
 import { computeWordCount, extractNoteTags, inferTitle } from '../../lib/markdown.js';
 import { nowIso } from '../../lib/time.js';
 import * as foldersRepository from '../folders/folders.repository.js';
+import * as linksRepository from '../links/links.repository.js';
 import * as linksService from '../links/links.service.js';
 import * as tagsRepository from '../tags/tags.repository.js';
 import * as tagsService from '../tags/tags.service.js';
 import * as repository from './notes.repository.js';
+import { removeNoteIndexes } from '../ai/ai.embeddings.js';
 import { config } from '../../config/index.js';
 import { VaultAdapter } from '../../vault/vault.adapter.js';
 import { hashDocument, parseMarkdownDocument } from '../../vault/markdown.js';
@@ -358,7 +360,7 @@ export function update(id, patch) {
   return getDetail(id);
 }
 
-export function remove(id) {
+export function remove(id, { replacementId = null } = {}) {
   const current = repository.findById(id);
   if (!current) return { id, deleted: false };
   const oldFilePath = noteFilePath(current);
@@ -367,12 +369,20 @@ export function remove(id) {
   vault.removeSync(oldFilePath);
   try {
     withTransaction(() => {
+      if (replacementId && replacementId !== id) linksRepository.reassignTarget(id, replacementId);
       repository.remove(id);
       tagsService.pruneOrphans();
     });
   } catch (error) {
     if (raw !== null) vault.writeRawSync(oldFilePath, raw);
     throw error;
+  }
+  // 外键级联清掉的只有投影表；向量索引（note_chunks/ai_index_state）必须显式移除，
+  // 否则已删内容会继续留在语义检索的内存缓存里被召回
+  try {
+    removeNoteIndexes([id]);
+  } catch {
+    // 索引清理失败不回滚删除；下次任意写入触发 indexVersion 递增前，最多短暂残留
   }
   return { id, deleted: true };
 }

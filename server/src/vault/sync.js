@@ -23,6 +23,7 @@ import { claimForTitle, rebuildForNote, releaseStaleLinks } from '../modules/lin
 import { findByFilePath } from '../modules/notes/notes.repository.js';
 import * as historyStore from '../modules/notes/notes.history.js';
 import { scheduleNoteIndex } from '../modules/ai/ai.indexer.js';
+import { removeNoteIndexes } from '../modules/ai/ai.embeddings.js';
 import { pruneOrphans as pruneOrphanTags, syncForNote } from '../modules/tags/tags.service.js';
 import { hashRaw, parseMarkdownDocument, serializeMarkdownDocument } from './markdown.js';
 import { normalizeVaultRelativePath, resolveVaultPath } from './path.js';
@@ -89,7 +90,15 @@ export async function applyVaultChange(adapter, relativePath) {
     // 该路径上的其他占用者：它的文件已被当前文件替换，DB 行随之清位。
     // （改名场景下行早已迁移到新路径，这里通常查不到东西。）
     const squatter = db.prepare('SELECT id FROM notes WHERE file_path = ? AND id <> ?').get(safePath, note.id);
-    if (squatter) db.prepare('DELETE FROM notes WHERE id = ?').run(squatter.id);
+    if (squatter) {
+      db.prepare('DELETE FROM notes WHERE id = ?').run(squatter.id);
+      // 投影表靠外键级联，向量索引必须显式清，否则已删内容残留在语义检索缓存里
+      try {
+        removeNoteIndexes([squatter.id]);
+      } catch {
+        // 索引清理失败不影响投影
+      }
+    }
     upsertProjection(note, contentHash);
     pruneOrphanTags();
   });
@@ -164,6 +173,7 @@ export async function reconcileVault(adapter, { mode = 'full' } = {}) {
   }
 
   // 阶段 B（单事务）：目录 upsert → 笔记 upsert → 清理消失的路径与孤儿。
+  const removedRows = [];
   withTransaction(() => {
     // 盘上的目录（含空目录）全部进入投影：目录以磁盘为准，与 scanFolders 语义一致
     for (const folderPath of diskFolders) ensureFolderPath(folderPath);
@@ -190,14 +200,24 @@ export async function reconcileVault(adapter, { mode = 'full' } = {}) {
       stats.removed += 1;
       stats.notes -= 1;
     }
+    removedRows.push(...removed);
 
     pruneMissingFolders(diskFolders);
     pruneOrphanTags();
   });
 
-  // 语义索引跟进（内部自带保护，失败不影响投影）；被删除的笔记由外键级联清理
+  // 语义索引跟进（内部自带保护，失败不影响投影）
   for (const { note, contentHash } of pending) {
     scheduleNoteIndex(note.id, { contentHash });
+  }
+  // 被删除的笔记：外键级联只清投影表，向量索引（note_chunks/ai_index_state）
+  // 必须显式移除并递增 indexVersion，否则已删内容会继续被语义检索召回
+  if (removedRows.length) {
+    try {
+      removeNoteIndexes(removedRows.map((row) => row.id));
+    } catch {
+      // 索引清理失败不影响投影对齐
+    }
   }
 
   return stats;

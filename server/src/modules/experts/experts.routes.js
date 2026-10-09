@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import * as controller from './experts.controller.js';
 
 const id = z.string().trim().regex(/^[a-z0-9][a-z0-9-_]{1,79}$/);
@@ -10,6 +11,10 @@ const skillBinding = z.object({
   priority: z.number().int().min(0).max(100).default(50),
   config: z.record(z.unknown()).default({}),
 });
+const confirmationFields = {
+  confirmed: z.boolean().default(false),
+  secondConfirmed: z.boolean().default(false),
+};
 const expertBody = z.object({
   id: id.optional(),
   version: z.string().trim().max(40).optional(),
@@ -31,6 +36,7 @@ const expertBody = z.object({
     priority: z.number().int().min(0).max(100).default(50),
     confidenceThreshold: z.number().min(0).max(1).default(0.72),
   }).default({}),
+  ...confirmationFields,
 }).strict();
 const skillBody = z.object({
   id: id.optional(),
@@ -44,6 +50,7 @@ const skillBody = z.object({
   outputSchema: z.record(z.unknown()).default({ type: 'object' }),
   enabled: z.boolean().default(true),
   content: z.string().trim().min(1).max(30000),
+  ...confirmationFields,
 }).strict();
 
 export const expertsRouter = Router();
@@ -55,12 +62,12 @@ expertsRouter.post('/route', validate({ body: z.object({
 }) }), controller.route);
 expertsRouter.get('/skills', controller.listSkills);
 expertsRouter.get('/skills/:id', validate({ params: z.object({ id }) }), controller.skillDetail);
-expertsRouter.post('/skills', validate({ body: skillBody }), controller.createSkill);
-expertsRouter.put('/skills/:id', validate({ params: z.object({ id }), body: skillBody.omit({ id: true }) }), controller.updateSkill);
-expertsRouter.delete('/skills/:id', validate({ params: z.object({ id }) }), controller.removeSkill);
+expertsRouter.post('/skills', forbidViewerWrite, validate({ body: skillBody }), controller.createSkill);
+expertsRouter.put('/skills/:id', forbidViewerWrite, validate({ params: z.object({ id }), body: skillBody.omit({ id: true }) }), controller.updateSkill);
+expertsRouter.delete('/skills/:id', forbidViewerWrite, validate({ params: z.object({ id }), body: z.object(confirmationFields).default({}) }), controller.removeSkill);
 expertsRouter.get('/:id', validate({ params: z.object({ id }) }), controller.detail);
-expertsRouter.post('/', validate({ body: expertBody }), controller.create);
-expertsRouter.put('/:id', validate({ params: z.object({ id }), body: expertBody.omit({ id: true }) }), controller.update);
-expertsRouter.delete('/:id', validate({ params: z.object({ id }) }), controller.remove);
+expertsRouter.post('/', forbidViewerWrite, validate({ body: expertBody }), controller.create);
+expertsRouter.put('/:id', forbidViewerWrite, validate({ params: z.object({ id }), body: expertBody.omit({ id: true }) }), controller.update);
+expertsRouter.delete('/:id', forbidViewerWrite, validate({ params: z.object({ id }), body: z.object(confirmationFields).default({}) }), controller.remove);
 
 export { expertBody, skillBody };

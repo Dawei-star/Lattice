@@ -67,6 +67,7 @@ test('vault profile defaults, hot reloads, validates, and drives system folders'
     body: JSON.stringify({
       version: 1,
       paths: { inbox: 'Capture/New', daily: 'Work/Daily Notes', journal: 'Work/Journal' },
+      confirmed: true,
     }),
   });
   const updated = await updateResponse.json();
@@ -85,6 +86,7 @@ test('vault profile defaults, hot reloads, validates, and drives system folders'
     body: JSON.stringify({
       version: 1,
       paths: { inbox: '../escape', daily: 'Daily', journal: 'Journal' },
+      confirmed: true,
     }),
   });
   const invalidUpdate = await invalidUpdateResponse.json();

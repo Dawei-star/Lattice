@@ -55,6 +55,7 @@ export default function Sidebar({
   onRenameCanvas,
   onDeleteCanvas,
   onOpenAttachment,
+  onDownloadAttachment,
   onRevealAttachment,
   onCopyAttachmentPath,
   onOpenCanvasDefault,
@@ -65,6 +66,7 @@ export default function Sidebar({
   onRevealNote,
   onRenameNote,
   onDeleteNote,
+  onConfirmFileOperation,
 }) {
   const [collapsed, setCollapsed] = useState({ tags: false, stats: false });
   const [renameFolderId, setRenameFolderId] = useState(null);
@@ -180,6 +182,7 @@ export default function Sidebar({
           onRenameCanvas={onRenameCanvas}
           onDeleteCanvas={onDeleteCanvas}
           onOpenAttachment={onOpenAttachment}
+          onDownloadAttachment={onDownloadAttachment}
           onRevealAttachment={onRevealAttachment}
           onCopyAttachmentPath={onCopyAttachmentPath}
           onOpenCanvasDefault={onOpenCanvasDefault}
@@ -222,7 +225,7 @@ export default function Sidebar({
       </Section>
 
       <div className="sidebar__footer">
-        <RepositorySwitcher />
+        <RepositorySwitcher onConfirmFileOperation={onConfirmFileOperation} />
       </div>
     </aside>
   );

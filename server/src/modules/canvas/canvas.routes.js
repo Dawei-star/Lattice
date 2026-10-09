@@ -24,6 +24,8 @@ const documentBody = z.object({
   edges: z.array(edge).max(20000),
   // 乐观锁：传 GET 返回的 revision，服务端发现画布已变则返回 409
   expectedHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  confirmed: z.boolean().default(false),
+  secondConfirmed: z.boolean().default(false),
 }).passthrough();
 const canvasPath = z.string().min(1).max(2048).superRefine((value, ctx) => {
   try {
@@ -33,12 +35,22 @@ const canvasPath = z.string().min(1).max(2048).superRefine((value, ctx) => {
   }
 });
 const canvasPathQuery = z.object({ path: canvasPath.default('画板.canvas') });
-const moveBody = z.object({ fromPath: canvasPath, toPath: canvasPath });
-const deleteQuery = z.object({ path: canvasPath });
+const moveBody = z.object({
+  fromPath: canvasPath,
+  toPath: canvasPath,
+  confirmed: z.boolean().default(false),
+  secondConfirmed: z.boolean().default(false),
+});
+const deleteQuery = z.object({
+  path: canvasPath,
+  confirmed: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  secondConfirmed: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+});
+const deleteBody = z.object({ confirmed: z.boolean().default(false), secondConfirmed: z.boolean().default(false) }).default({});
 
 export const canvasRouter = Router();
 canvasRouter.get('/files', controller.listCanvasFiles);
 canvasRouter.patch('/file', validate({ body: moveBody }), controller.moveCanvas);
-canvasRouter.delete('/file', validate({ query: deleteQuery }), controller.deleteCanvas);
+canvasRouter.delete('/file', validate({ query: deleteQuery, body: deleteBody }), controller.deleteCanvas);
 canvasRouter.get('/', validate({ query: canvasPathQuery }), controller.readCanvas);
 canvasRouter.put('/', validate({ query: canvasPathQuery, body: documentBody }), controller.writeCanvas);

@@ -27,6 +27,7 @@ const createResponse = await fetch(`${baseUrl}/api/canvas?path=${encodeURICompon
       { id: 'n2', type: 'text', text: '乙', x: 500, y: 320 },
     ],
     edges: [],
+    confirmed: true,
   }),
 });
 if (!createResponse.ok) throw new Error(`无法准备测试画布（HTTP ${createResponse.status}）`);
@@ -95,5 +96,5 @@ try {
   console.log('canvas pan regression passed');
 } finally {
   root.unmount();
-  await fetch(`${baseUrl}/api/canvas/file?path=${encodeURIComponent(CANVAS_NAME)}`, { method: 'DELETE' }).catch(() => {});
+  await fetch(`${baseUrl}/api/canvas/file?path=${encodeURIComponent(CANVAS_NAME)}&confirmed=true&secondConfirmed=true`, { method: 'DELETE' }).catch(() => {});
 }

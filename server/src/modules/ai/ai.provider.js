@@ -193,6 +193,8 @@ export async function callChatProvider({ messages, provider, signal = null, temp
         headers,
         body,
         signal: composeAbortSignals(controller.signal, signal),
+        // 禁止跟随重定向：endpoint 已过 SSRF 校验，跟随 302 可被打到内网
+        redirect: 'manual',
       });
       if (!response.ok) {
         const { payload, responseText } = await readErrorPayload(response);
@@ -281,6 +283,8 @@ export async function streamChatProvider({ messages, provider, signal = null, on
         headers,
         body,
         signal: composeAbortSignals(controller.signal, signal),
+        // 禁止跟随重定向：endpoint 已过 SSRF 校验，跟随 302 可被打到内网
+        redirect: 'manual',
       });
       if (!response.ok) {
         const { payload, responseText } = await readErrorPayload(response);
@@ -376,6 +380,7 @@ export async function callEmbeddingProvider({ inputs, provider, signal = null })
       headers: buildProviderHeaders(provider),
       body: JSON.stringify({ model: provider.model, input: inputs }),
       signal: composeAbortSignals(controller.signal, signal),
+      redirect: 'manual',
     });
     if (!response.ok) {
       const { payload, responseText } = await readErrorPayload(response);
@@ -431,6 +436,7 @@ export async function testChatProvider({ provider }) {
           messages: [{ role: 'user', content: 'ping' }],
         }),
         signal: controller.signal,
+        redirect: 'manual',
       });
       if (!response.ok) {
         const { payload, responseText } = await readErrorPayload(response);

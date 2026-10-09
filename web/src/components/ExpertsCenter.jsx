@@ -58,7 +58,7 @@ function writePolicyLabel(expert) {
   return WRITE_POLICY_LABELS[expert.capabilities?.writePolicy] ?? WRITE_POLICY_LABELS.confirm;
 }
 
-export default function ExpertsCenter({ open, initialTab = 'experts', onClose, onOpenConnections, experts, skills, activeExpertId, onSelectExpert, onChanged }) {
+export default function ExpertsCenter({ open, initialTab = 'experts', onClose, onOpenConnections, experts, skills, activeExpertId, onSelectExpert, onChanged, onConfirmFileOperation, vaultDir }) {
   const [tab, setTab] = useState(initialTab);
   const [expertDraft, setExpertDraft] = useState(null);
   const [skillDraft, setSkillDraft] = useState(null);
@@ -110,8 +110,19 @@ export default function ExpertsCenter({ open, initialTab = 'experts', onClose, o
     try {
       const existing = experts.find((item) => item.id === expertDraft.id);
       const payload = toExpertPayload(expertDraft, !existing);
-      if (existing) await expertsApi.update(existing.id, payload);
-      else await expertsApi.create(payload);
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir,
+        actions: [{
+          type: existing ? 'update' : 'create',
+          path: `.lattice/experts/${expertDraft.id}.json`,
+          contentSummary: `${existing ? '更新' : '创建'}专家配置「${expertDraft.name}」`,
+        }],
+        impact: '修改 1 个 .lattice 专家配置文件，影响后续 AI 路由与权限策略',
+      });
+      if (!confirmation?.confirmed) return;
+      const request = { ...payload, ...confirmation };
+      if (existing) await expertsApi.update(existing.id, request);
+      else await expertsApi.create(request);
       await onChanged?.();
       setExpertDraft(null);
       setNotice('专家已保存');
@@ -132,8 +143,18 @@ export default function ExpertsCenter({ open, initialTab = 'experts', onClose, o
     try {
       const existing = skills.find((item) => item.id === skillDraft.id);
       const payload = toSkillPayload(skillDraft, !existing);
-      if (existing) await expertsApi.updateSkill(existing.id, payload);
-      else await expertsApi.createSkill(payload);
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir,
+        actions: [
+          { type: existing ? 'update' : 'create', path: `.lattice/skills/${skillDraft.id}/skill.json`, contentSummary: `${existing ? '更新' : '创建'} Skill 清单` },
+          { type: existing ? 'update' : 'create', path: `.lattice/skills/${skillDraft.id}/SKILL.md`, contentSummary: `写入 Skill「${skillDraft.name}」正文` },
+        ],
+        impact: '修改 2 个 .lattice Skill 文件，影响 AI 工具与提示词行为',
+      });
+      if (!confirmation?.confirmed) return;
+      const request = { ...payload, ...confirmation };
+      if (existing) await expertsApi.updateSkill(existing.id, request);
+      else await expertsApi.createSkill(request);
       await onChanged?.();
       setSkillDraft(null);
       setNotice('Skill 已保存');
@@ -145,10 +166,18 @@ export default function ExpertsCenter({ open, initialTab = 'experts', onClose, o
   };
 
   const removeExpert = async (expert) => {
-    if (!window.confirm(`删除工作区专家「${expert.name}」？内置专家只会删除工作区覆盖配置。`)) return;
     setBusy(true);
     try {
-      await expertsApi.remove(expert.id);
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir,
+        type: 'delete',
+        path: `.lattice/experts/${expert.id}.json`,
+        contentSummary: `删除工作区专家「${expert.name}」配置`,
+        impact: '移除 1 个专家配置；内置专家本体不受影响',
+        requiresSecondConfirmation: true,
+      });
+      if (!confirmation?.confirmed) return;
+      await expertsApi.remove(expert.id, { body: confirmation });
       await onChanged?.();
       if (expert.id === activeExpertId) onSelectExpert('general');
       setNotice('专家已删除');
@@ -160,10 +189,18 @@ export default function ExpertsCenter({ open, initialTab = 'experts', onClose, o
   };
 
   const removeSkill = async (skill) => {
-    if (!window.confirm(`删除工作区 Skill「${skill.name}」？`)) return;
     setBusy(true);
     try {
-      await expertsApi.removeSkill(skill.id);
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir,
+        type: 'delete',
+        path: `.lattice/skills/${skill.id}/`,
+        contentSummary: `删除工作区 Skill「${skill.name}」及其清单、正文`,
+        impact: '递归删除 1 个 Skill 目录及其中的配置文件',
+        requiresSecondConfirmation: true,
+      });
+      if (!confirmation?.confirmed) return;
+      await expertsApi.removeSkill(skill.id, { body: confirmation });
       await onChanged?.();
       setNotice('Skill 已删除');
     } catch (error) {

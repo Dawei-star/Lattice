@@ -62,7 +62,7 @@ async function buildEntry() {
 /** 通过正式上传接口准备附件样例，重复运行安全（接口会自动去重命名）。 */
 async function seedAttachmentFixture() {
   const content = '%PDF-1.4\n% 附件开关验收样例\n';
-  const response = await fetch(`${BASE_URL}/api/vault/attachments?name=${encodeURIComponent('附件开关验收.pdf')}`, {
+  const response = await fetch(`${BASE_URL}/api/vault/attachments?name=${encodeURIComponent('附件开关验收.pdf')}&confirmed=true`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/pdf' },
     body: content,
@@ -143,7 +143,7 @@ async function main() {
     const payload = await response.json();
     const leftovers = (payload?.data ?? []).filter((file) => file.name.startsWith('附件开关验收'));
     for (const file of leftovers) {
-      await fetch(`${BASE_URL}/api/vault/attachments?path=${encodeURIComponent(file.path)}`, { method: 'DELETE' });
+      await fetch(`${BASE_URL}/api/vault/attachments?path=${encodeURIComponent(file.path)}&confirmed=true&secondConfirmed=true`, { method: 'DELETE' });
     }
   } catch {
     // 清理失败不影响测试结论

@@ -26,10 +26,20 @@ await new Promise((resolve) => server.once('listening', resolve));
 const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
 async function request(method, pathname, body) {
+  const requestBody = body === undefined || method === 'GET' ? body : { confirmed: true, ...body };
   const response = await fetch(`${baseUrl}${pathname}`, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: requestBody === undefined ? undefined : { 'content-type': 'application/json' },
+    body: requestBody === undefined ? undefined : JSON.stringify(requestBody),
+  });
+  return { response, payload: await response.json() };
+}
+
+async function requestWithoutConfirmation(method, pathname, body) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   });
   return { response, payload: await response.json() };
 }
@@ -48,8 +58,17 @@ test('note history snapshots preserve raw markdown and protect restores from sta
   assert.equal(created.response.status, 201);
   const noteId = created.payload.data.id;
 
-  const updated = await request('PATCH', `/api/notes/${noteId}`, { content: '# Second\n\nchanged' });
+  const updated = await requestWithoutConfirmation('PATCH', `/api/notes/${noteId}`, {
+    content: '# Second\n\nchanged',
+    expectedHash: created.payload.data.contentHash,
+  });
   assert.equal(updated.response.status, 200);
+
+  const unconfirmedRename = await requestWithoutConfirmation('PATCH', `/api/notes/${noteId}`, {
+    title: 'History renamed',
+    expectedHash: updated.payload.data.contentHash,
+  });
+  assert.equal(unconfirmedRename.response.status, 422);
 
   const history = await request('GET', `/api/notes/${noteId}/history`);
   assert.equal(history.response.status, 200);

@@ -30,6 +30,7 @@ export default function FolderTree({
   canvasFiles = [],
   attachmentFiles = [],
   onOpenAttachment,
+  onDownloadAttachment,
   onRevealAttachment,
   onCopyAttachmentPath,
   onDuplicateFolder,
@@ -165,6 +166,7 @@ export default function FolderTree({
           canvasFiles={canvasFiles}
           attachmentFiles={attachmentFiles}
           onOpenAttachment={onOpenAttachment}
+          onDownloadAttachment={onDownloadAttachment}
           onRevealAttachment={onRevealAttachment}
           onCopyAttachmentPath={onCopyAttachmentPath}
           folderOptions={folderOptions}
@@ -214,6 +216,7 @@ export default function FolderTree({
           depth={0}
           folderOptions={folderOptions}
           onOpenAttachment={onOpenAttachment}
+          onDownloadAttachment={onDownloadAttachment}
           onRevealAttachment={onRevealAttachment}
           onCopyAttachmentPath={onCopyAttachmentPath}
         />
@@ -282,6 +285,7 @@ function FolderNode({
   canvasFiles,
   attachmentFiles,
   onOpenAttachment,
+  onDownloadAttachment,
   onRevealAttachment,
   onCopyAttachmentPath,
   folderOptions,
@@ -564,6 +568,7 @@ function FolderNode({
               canvasFiles={canvasFiles}
               attachmentFiles={attachmentFiles}
               onOpenAttachment={onOpenAttachment}
+              onDownloadAttachment={onDownloadAttachment}
               onRevealAttachment={onRevealAttachment}
               onCopyAttachmentPath={onCopyAttachmentPath}
               folderOptions={folderOptions}
@@ -596,6 +601,7 @@ function FolderNode({
               depth={depth + 1}
               folderOptions={folderOptions}
               onOpenAttachment={onOpenAttachment}
+              onDownloadAttachment={onDownloadAttachment}
               onRevealAttachment={onRevealAttachment}
               onCopyAttachmentPath={onCopyAttachmentPath}
             />
@@ -834,7 +840,7 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onCreate
   );
 }
 
-function AttachmentFile({ file, depth, folderOptions, onOpenAttachment, onRevealAttachment, onCopyAttachmentPath }) {
+function AttachmentFile({ file, depth, folderOptions, onOpenAttachment, onDownloadAttachment, onRevealAttachment, onCopyAttachmentPath }) {
   const name = file.name ?? file.path.split('/').pop() ?? file.path;
   return (
     <li role="treeitem">
@@ -843,6 +849,7 @@ function AttachmentFile({ file, depth, folderOptions, onOpenAttachment, onReveal
         label={`附件「${name}」操作`}
         getItems={() => [
           { id: 'open-attachment', label: '使用默认应用打开', icon: '↗', onSelect: () => onOpenAttachment?.(file.path) },
+          { id: 'download-attachment', label: '下载文件', icon: '↓', onSelect: () => onDownloadAttachment?.(file.path) },
           {
             id: 'copy-attachment-path',
             label: '复制路径',

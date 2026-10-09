@@ -55,6 +55,17 @@ export function listAttachments() {
 const NOTE_FILE_EXTENSIONS = new Set(['.md', '.markdown', '.canvas']);
 const IGNORED_VAULT_DIRECTORY_NAMES = new Set(['node_modules']);
 
+function isVisibleVaultPath(relativePath) {
+  const normalized = String(relativePath ?? '').replaceAll('\\', '/');
+  const parts = normalized.split('/');
+  const extension = path.extname(normalized).toLowerCase();
+  return Boolean(normalized)
+    && !parts.some((part) => part.startsWith('.')
+      || part.toLowerCase() === 'node_modules'
+      || part.endsWith('.tmp'))
+    && !NOTE_FILE_EXTENSIONS.has(extension);
+}
+
 /**
  * 列出整个 Vault 中除笔记 / 画布之外的所有文件（「显示附件」开关使用）。
  * 与 listAttachments 不同，这里不限于 attachments/ 目录——用户可能把
@@ -106,6 +117,20 @@ function getVaultFileInfo(rootDir, relativePath) {
     size: stat.size,
     modifiedAt: stat.mtime.toISOString(),
   };
+}
+
+function assertVaultFilePath(relativePath) {
+  let safePath;
+  try {
+    safePath = normalizeVaultRelativePath(relativePath, '');
+  } catch {
+    throw new ValidationError('文件路径必须是 Vault 内的相对路径');
+  }
+
+  if (!isVisibleVaultPath(safePath)) {
+    throw new ValidationError('只能下载显示列表中的附件文件');
+  }
+  return safePath;
 }
 
 export function uploadAttachment({ name, mimeType, body, folder = '' }) {
@@ -161,6 +186,27 @@ export function readAttachment(relativePath) {
 
   return {
     ...getAttachmentInfo(rootDir, safePath),
+    absolutePath: target,
+  };
+}
+
+export function readVaultFile(relativePath) {
+  const safePath = assertVaultFilePath(relativePath);
+  const rootDir = config.vaultDir;
+  const target = resolveInsideVault(rootDir, safePath, { attachmentsOnly: false, visibleOnly: true });
+  if (!target) return null;
+
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!stat.isFile()) return null;
+
+  return {
+    ...getVaultFileInfo(rootDir, safePath),
     absolutePath: target,
   };
 }
@@ -370,7 +416,7 @@ function assertAttachmentPath(relativePath) {
   return safePath;
 }
 
-function resolveInsideVault(rootDir, relativePath) {
+function resolveInsideVault(rootDir, relativePath, { attachmentsOnly = true, visibleOnly = true } = {}) {
   const target = resolveVaultPath(rootDir, relativePath, '');
   let root;
   let real;
@@ -383,7 +429,9 @@ function resolveInsideVault(rootDir, relativePath) {
   }
   const relative = path.relative(root, real);
   if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  if (!relative.replaceAll('\\', '/').startsWith(`${ATTACHMENT_ROOT}/`)) return null;
+  const normalizedRelative = relative.replaceAll('\\', '/');
+  if (attachmentsOnly && !normalizedRelative.startsWith(`${ATTACHMENT_ROOT}/`)) return null;
+  if (visibleOnly && !isVisibleVaultPath(normalizedRelative)) return null;
   return real;
 }
 

@@ -72,6 +72,7 @@ export function installDom(baseUrl = 'http://127.0.0.1:5177') {
     HTMLTextAreaElement: window.HTMLTextAreaElement,
     Element: window.Element,
     Node: window.Node,
+    NodeFilter: window.NodeFilter,
     Event: window.Event,
     MouseEvent: window.MouseEvent,
     KeyboardEvent: window.KeyboardEvent,

@@ -26,10 +26,9 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
   activeProviderId: DEFAULT_PROVIDER.id,
   embedding: DEFAULT_EMBEDDING,
   accessToken: '',
-  role: 'editor',
   // 默认让确定性查询走本地快路径；关闭后，已配置模型会优先参与回答。
   preferModel: false,
-  // 任务模式：勾选后 AI 以 agent 循环执行任务，写操作免逐批确认（全部动作照常审计）
+  // 任务模式：勾选后 AI 以 agent 循环检索和读取；写操作仍必须经过确认预览
   autoApprove: false,
 });
 
@@ -188,7 +187,6 @@ function normalize(value) {
     activeProviderId,
     embedding: normalizeEmbedding(value?.embedding),
     accessToken: typeof value?.accessToken === 'string' ? value.accessToken.slice(0, 500) : '',
-    role: ['viewer', 'editor', 'admin'].includes(value?.role) ? value.role : 'editor',
     preferModel: value?.preferModel === true,
     autoApprove: value?.autoApprove === true,
   };

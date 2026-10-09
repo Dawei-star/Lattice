@@ -46,7 +46,7 @@ const GROUPS = [
   { title: '集成', items: [['mcp', 'MCP Server', 'link']] },
 ];
 
-export default function SettingsModal({ open, initialSection = 'about', onClose, theme, onThemeChange, onVaultProfileSaved }) {
+export default function SettingsModal({ open, initialSection = 'about', onClose, theme, onThemeChange, onVaultProfileSaved, onConfirmFileOperation }) {
   const [active, setActive] = useState(initialSection);
   const [search, setSearch] = useState('');
   const [settings, setSettings] = useState(() => loadSettings());
@@ -156,7 +156,18 @@ export default function SettingsModal({ open, initialSection = 'about', onClose,
     setVaultProfileErrors({});
     setVaultProfileError('');
     try {
-      const info = await vaultApi.updateProfile({ version: 1, paths: validation.paths });
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir: vaultPath,
+        type: 'update',
+        path: '.lattice/profile.json',
+        contentSummary: '更新知识库目录配置 profile.json',
+        impact: '修改 1 个知识库配置文件，影响 Inbox、Daily、Journal 默认路径',
+      });
+      if (!confirmation?.confirmed) {
+        setVaultProfileSaveState('idle');
+        return;
+      }
+      const info = await vaultApi.updateProfile({ version: 1, paths: validation.paths, ...confirmation });
       setVaultProfile(normalizeVaultProfile(info?.profile ?? { version: 1, paths: validation.paths }));
       setVaultProfileStatus(info?.profileStatus ?? 'loaded');
       setVaultProfileWarning(info?.profileWarning ?? null);
@@ -191,10 +202,16 @@ export default function SettingsModal({ open, initialSection = 'about', onClose,
   };
 
   const migrate = async () => {
-    if (!window.confirm('将旧版 SQLite 笔记导出为 Markdown 文件？原数据库不会被删除。')) return;
+    const confirmation = await onConfirmFileOperation?.({
+      type: 'create',
+      path: 'migrate/',
+      contentSummary: '将旧版 SQLite 笔记导出为 Markdown 文件',
+      impact: '可能新增或覆盖多篇 Markdown 笔记；原数据库保留',
+    });
+    if (!confirmation?.confirmed) return;
     setMigration('running');
     try {
-      await vaultApi.migrate();
+      await vaultApi.migrate(confirmation);
       setMigration('done');
     } catch {
       setMigration('error');
@@ -206,11 +223,18 @@ export default function SettingsModal({ open, initialSection = 'about', onClose,
       setBackup('unavailable');
       return;
     }
-    if (!window.confirm('备份当前知识库？将复制 Markdown、Canvas、附件、模板和历史快照，不会复制 AI API Key。')) return;
+    const confirmation = await onConfirmFileOperation?.({
+      type: 'copy',
+      path: 'Vault',
+      targetPath: 'backup/',
+      contentSummary: '复制 Markdown、Canvas、附件、模板和历史快照（不含 AI API Key）',
+      impact: '批量复制整个知识库的可备份内容',
+    });
+    if (!confirmation?.confirmed) return;
     setBackup('running');
     setBackupResult(null);
     try {
-      const result = await window.latticeDesktop.backupVault();
+      const result = await window.latticeDesktop.backupVault(confirmation);
       if (result?.canceled) {
         setBackup('idle');
         return;
@@ -224,7 +248,13 @@ export default function SettingsModal({ open, initialSection = 'about', onClose,
 
   const exportStaticSite = async () => {
     if (staticExport === 'running') return;
-    if (!window.confirm('导出当前知识库为静态站点？导出内容为当前可读取的 Markdown 和引用图片，不会包含 AI API Key。')) return;
+    const confirmation = await onConfirmFileOperation?.({
+      type: 'create',
+      path: 'static-export/',
+      contentSummary: '导出当前可读取的 Markdown 与引用图片为静态站点',
+      impact: '批量生成静态站点文件，不包含 AI API Key',
+    });
+    if (!confirmation?.confirmed) return;
 
     setStaticExport('running');
     setStaticExportResult(null);
@@ -247,7 +277,7 @@ export default function SettingsModal({ open, initialSection = 'about', onClose,
 
       let mode = 'directory';
       if (window.latticeDesktop?.exportStaticSite) {
-        const result = await window.latticeDesktop.exportStaticSite(serializeStaticSiteFiles(site.files));
+        const result = await window.latticeDesktop.exportStaticSite(serializeStaticSiteFiles(site.files), confirmation);
         if (result?.canceled) {
           setStaticExport('idle');
           return;
@@ -674,7 +704,7 @@ function McpServerSettings() {
       <div className="mcp-manager__panel mcp-manager__project">
         <div className="mcp-manager__server-icon">MCP</div><div><strong>启用项目级 MCP</strong><p>从知识库根目录的 .lattice/mcp.json 加载 MCP Server，随本库走、可与用户级配置同名覆盖（用户级优先）。</p></div><McpToggle checked={settings.projectEnabled} onChange={(value) => updateSettings((current) => ({ ...current, projectEnabled: value }))} label="启用项目级 MCP" />
       </div>
-      {settings.projectEnabled ? <ProjectMcpSection onNotify={setNotice} /> : null}
+      {settings.projectEnabled ? <ProjectMcpSection onNotify={setNotice} onConfirmFileOperation={onConfirmFileOperation} vaultDir={vaultPath} /> : null}
     </section>
     <section className="mcp-manager__block">
       <div className="mcp-manager__section-head"><div><h4>已配置的 MCP Servers</h4><p>可启用、编辑或移除；导出的配置在页面底部。</p></div><span className="settings-value">{enabledCount} / {managedServers.length} 已启用</span></div>
@@ -780,7 +810,7 @@ const PRESET_LABELS = { vaultDir: '知识库目录', dbFile: '数据库路径' }
  * 列表展示 + 逐项启停 + 原始 JSON 编辑；与用户级编辑器刻意分开——
  * 项目配置是随知识库走的文件，保持「手改文件即可生效」的简单语义。
  */
-function ProjectMcpSection({ onNotify }) {
+function ProjectMcpSection({ onNotify, onConfirmFileOperation, vaultDir }) {
   const [info, setInfo] = useState(null);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');
@@ -810,7 +840,15 @@ function ProjectMcpSection({ onNotify }) {
   const save = async (document, successText) => {
     setBusy(true);
     try {
-      const data = await mcpApi.saveProject(document);
+      const confirmation = await onConfirmFileOperation?.({
+        vaultDir,
+        type: 'update',
+        path: '.lattice/mcp.json',
+        contentSummary: '更新项目级 MCP Server 配置 JSON',
+        impact: '覆盖 1 个项目配置文件，影响后续外部工具连接与 AI 工具清单',
+      });
+      if (!confirmation?.confirmed) return false;
+      const data = await mcpApi.saveProject({ ...document, ...confirmation });
       apply(data);
       setError('');
       onNotify({ tone: 'success', text: `${successText}${data?.warning ? ` ${data.warning}` : ''}` });

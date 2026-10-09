@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import { authenticateAi } from './ai.auth.js';
 import * as controller from './ai.controller.js';
 
@@ -72,7 +73,7 @@ const chatBody = z.object({
   mode: z.enum(['assist', 'agent']).default('assist'),
   // 默认会对确定性查询走本地秒答；开启后即使是搜索/检查等请求也优先调用外部模型
   preferModel: z.boolean().default(false),
-  // agent 模式下允许服务端自动执行写操作（viewer 角色强制无效，全部动作照常审计）
+  // 保留旧字段兼容客户端；服务端不会根据该字段自动批准写操作
   autoApprove: z.boolean().default(false),
   actor: z.string().trim().max(80).default('local-user'),
   role,
@@ -94,6 +95,7 @@ aiRouter.post('/chat/stream', validate({ body: chatBody }), controller.chatStrea
 // MCP 预热：打开连接并列出工具后立即返回（预热在后台继续），把冷启动移出第一条消息
 aiRouter.post('/mcp/warmup', validate({ body: z.object({
   mcpServers: z.array(mcpServer).max(8).default([]),
+  role,
 }) }), controller.warmupMcp);
 
 // 连通性测试：kind 缺省为对话模型，embedding 用于语义索引配置
@@ -109,7 +111,7 @@ aiRouter.post('/test', validate({ body: z.object({
 
 // ── 服务端模型配置（Key 落地服务端，索引管道与 CLI 共用）───────────────
 aiRouter.get('/settings', controller.getSettings);
-aiRouter.put('/settings', validate({ body: z.object({
+aiRouter.put('/settings', forbidViewerWrite, validate({ body: z.object({
   providers: z.array(z.object({
     id: z.string().max(120).optional(),
     name: z.string().max(80).optional(),
@@ -200,6 +202,8 @@ aiRouter.post('/operations/execute', validate({ body: z.object({
   role,
   source: z.enum(['ai-chat', 'cli', 'api']).default('ai-chat'),
   confirmed: z.boolean().default(false),
+  additionalConfirmed: z.boolean().default(false),
+  sensitiveConfirmed: z.boolean().default(false),
   planId: z.string().uuid().optional(),
   planHash: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
 }) }), controller.execute);

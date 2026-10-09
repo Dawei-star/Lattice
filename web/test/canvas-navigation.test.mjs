@@ -10,7 +10,7 @@ const baseUrl = process.env.LATTICE_BASE_URL ?? 'http://127.0.0.1:5177';
 const folderResponse = await fetch(`${baseUrl}/api/folders`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ name: `画布导航回归-${Date.now()}` }),
+  body: JSON.stringify({ name: `画布导航回归-${Date.now()}`, confirmed: true }),
 });
 const folderPayload = await folderResponse.json();
 const seededFolderId = folderPayload?.data?.id;
@@ -25,6 +25,7 @@ const seeded = await fetch(`${baseUrl}/api/notes`, {
     title: `画布导航回归-${Date.now()}`,
     content: '画布导航回归测试的临时笔记。',
     folderId: seededFolderId,
+    confirmed: true,
   }),
 });
 const seededPayload = await seeded.json();
@@ -72,6 +73,14 @@ try {
   console.log('canvas navigation regression passed');
 } finally {
   root.unmount();
-  await fetch(`${baseUrl}/api/notes/${seededNoteId}`, { method: 'DELETE' });
-  await fetch(`${baseUrl}/api/folders/${seededFolderId}`, { method: 'DELETE' });
+  await fetch(`${baseUrl}/api/notes/${seededNoteId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+  });
+  await fetch(`${baseUrl}/api/folders/${seededFolderId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+  });
 }

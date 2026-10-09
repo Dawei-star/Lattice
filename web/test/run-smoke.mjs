@@ -70,7 +70,7 @@ async function seedCanvasFixture() {
   const createResponse = await fetch(`${BASE_URL}/api/canvas?path=${encodeURIComponent(path)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodes: [], edges: [] }),
+    body: JSON.stringify({ nodes: [], edges: [], confirmed: true }),
   });
   if (!createResponse.ok) throw new Error(`无法准备画布样例：HTTP ${createResponse.status}`);
   return { path, created: true };
@@ -83,14 +83,14 @@ async function seedFolderTreeFixture() {
   const parentResponse = await fetch(`${BASE_URL}/api/folders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: parentName }),
+    body: JSON.stringify({ name: parentName, confirmed: true }),
   });
   const parentPayload = await parentResponse.json();
   const parent = parentPayload?.data;
   const childResponse = await fetch(`${BASE_URL}/api/folders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: childName, parentId: parent?.id }),
+    body: JSON.stringify({ name: childName, parentId: parent?.id, confirmed: true }),
   });
   const childPayload = await childResponse.json();
   const rootNoteResponse = await fetch(`${BASE_URL}/api/notes`, {
@@ -99,6 +99,7 @@ async function seedFolderTreeFixture() {
     body: JSON.stringify({
       title: rootNoteTitle,
       content: '# 根目录笔记\n\n用于验证文件树显示工作区根目录下的 Markdown 文件。',
+      confirmed: true,
     }),
   });
   const rootNotePayload = await rootNoteResponse.json();
@@ -131,7 +132,11 @@ async function cleanupFixtures() {
   });
 
   for (const note of leftovers) {
-    await fetch(`${BASE_URL}/api/notes/${note.id}`, { method: 'DELETE' });
+    await fetch(`${BASE_URL}/api/notes/${note.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+    });
     await pause();
   }
   return leftovers.length;
@@ -149,7 +154,7 @@ async function seedEmbedFixture() {
       const folderResponse = await fetch(`${BASE_URL}/api/folders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, confirmed: true }),
       });
       const folderPayload = await folderResponse.json();
       folders.push(folderPayload?.data);
@@ -162,6 +167,7 @@ async function seedEmbedFixture() {
       title: '双向链接是什么',
       folderId: folders[0]?.id,
       content: '# 双向链接是什么\n\n知识管理与 FTS5 检索示例。',
+      confirmed: true,
     }),
   });
   await fetch(`${BASE_URL}/api/notes`, {
@@ -171,6 +177,7 @@ async function seedEmbedFixture() {
       title: '关系图谱怎么看',
       folderId: folders[1]?.id,
       content: '# 关系图谱怎么看\n\n[[双向链接是什么]]',
+      confirmed: true,
     }),
   });
   // 造一篇带块级嵌入的笔记，用来验证 ![[...]] 的转译与异步注入
@@ -182,6 +189,7 @@ async function seedEmbedFixture() {
       title: FIXTURE_TITLE,
       folderId: folders[1]?.id,
       content: `# 嵌入样例\n\n下面是嵌入内容：\n\n![[双向链接是什么]]\n\n以及一个不存在的目标：\n\n![[${missingTitle}]]\n`,
+      confirmed: true,
     }),
   });
   const payload = await response.json();
@@ -263,8 +271,16 @@ async function main() {
   check('知识健康入口存在', Boolean(reviewButton));
   reviewButton?.click();
   await waitFor(() => container.querySelector('.health-center'), { label: '知识健康中心加载' });
+  await waitFor(() => container.querySelector('.health-center__evidence-filter'), { label: '知识健康证据筛选加载' });
   check('知识健康中心渲染摘要', Boolean(container.querySelector('.health-center__summary')));
-  check('知识健康中心展示问题分类', container.querySelectorAll('.health-center__category').length === 6);
+  check('知识健康中心展示问题分类', container.querySelectorAll('.health-center__category').length >= 9);
+  const evidenceFilter = container.querySelector('.health-center__evidence-filter');
+  check('知识健康中心提供证据级别筛选', evidenceFilter?.querySelectorAll('button').length === 4);
+  evidenceFilter?.querySelector('button:last-child')?.click();
+  await waitFor(() => container.querySelector('.health-center__empty--filtered'), { label: '筛选后的 Review 空状态' });
+  check('筛选无结果时保留本类问题提示', Boolean(container.querySelector('.health-center__empty--filtered')));
+  evidenceFilter?.querySelector('button:first-child')?.click();
+  await waitFor(() => !container.querySelector('.health-center__empty--filtered'), { label: '恢复全部 Review 线索' });
   check('知识健康中心提供 AI 建议入口', Boolean([...container.querySelectorAll('.health-center__actions button')].find((button) => button.textContent.includes('AI 给出建议'))));
   const reviewFindingCheckbox = container.querySelector('.health-finding__select input');
   check('知识健康问题支持勾选', Boolean(reviewFindingCheckbox));
@@ -279,6 +295,8 @@ async function main() {
 
   section('目录创建');
   container.querySelector('button[aria-label="新建目录"]')?.click();
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '顶部新建目录确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   let toolbarFolderNode = null;
   try {
     toolbarFolderNode = await waitFor(
@@ -312,6 +330,8 @@ async function main() {
   [...document.querySelectorAll('.context-menu .menu__item')]
     .find((button) => button.textContent.includes('新建文件夹'))
     ?.click();
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '父目录内新建文件夹确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   let childCreatedButton = null;
   try {
     childCreatedButton = await waitFor(
@@ -812,6 +832,8 @@ async function main() {
   renamedCanvasPath = `${renamedCanvasBase}.canvas`;
   setFieldValue(canvasRenameInput, renamedCanvasBase);
   canvasRenameInput.closest('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '画布重命名确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   const renamedCanvasTrigger = await waitFor(
     () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.title === renamedCanvasPath),
     { label: '画布重命名完成' },
@@ -871,6 +893,8 @@ async function main() {
     () => !container.querySelector('.savestate--saved'),
     { label: '进入待保存状态' },
   );
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '自动保存确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   await waitFor(
     () => container.querySelector('.savestate--saved'),
     { label: '自动保存完成', timeout: 6000 },
@@ -883,13 +907,41 @@ async function main() {
     () => !container.querySelector('.savestate--saved'),
     { label: '进入还原保存状态' },
   );
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '还原标题确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   await waitFor(() => container.querySelector('.savestate--saved'), { label: '还原标题', timeout: 6000 });
+
+  const editorContent = container.querySelector('.editor__textarea');
+  const beforeContent = editorContent.value;
+  setFieldValue(editorContent, `${beforeContent}\n\n普通自动保存回归-${Date.now()}`);
+  await waitFor(
+    () => !container.querySelector('.savestate--saved'),
+    { label: '正文进入待保存状态' },
+  );
+  await waitFor(
+    () => container.querySelector('.savestate--saved'),
+    { label: '普通正文自动保存完成', timeout: 6000 },
+  );
+  check('普通正文自动保存不弹确认卡片', !document.querySelector('.file-confirmation-card'));
+
+  setFieldValue(editorContent, beforeContent);
+  await waitFor(
+    () => !container.querySelector('.savestate--saved'),
+    { label: '正文还原进入待保存状态' },
+  );
+  await waitFor(
+    () => container.querySelector('.savestate--saved'),
+    { label: '正文还原保存完成', timeout: 6000 },
+  );
 
   section('运行期错误');
   section('context-menu rename persistence');
   const pendingRenameTitle = `smoke-pending-title-${Date.now()}`;
   const renamedNoteTitle = `smoke-context-renamed-${Date.now()}`;
   setFieldValue(editorTitle, pendingRenameTitle);
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '待重命名标题自动保存确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
+  await waitFor(() => container.querySelector('.savestate--saved'), { label: '待重命名标题已保存', timeout: 6000 });
   const renameTarget = await waitFor(
     () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === beforeTitle),
     { label: 'find opened note in tree' },
@@ -907,6 +959,8 @@ async function main() {
   const renameInput = await waitFor(() => container.querySelector('#rename-file-name'), { label: 'open note rename dialog' });
   setFieldValue(renameInput, renamedNoteTitle);
   renameInput.closest('form')?.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '笔记重命名确认卡片' });
+  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   await waitFor(
     () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === renamedNoteTitle),
     { label: 'rename note in tree' },
@@ -924,19 +978,31 @@ async function main() {
 
   // 清理冒烟产生的样例笔记
   if (fixtureId) {
-    await fetch(`${BASE_URL}/api/notes/${fixtureId}`, { method: 'DELETE' });
+    await fetch(`${BASE_URL}/api/notes/${fixtureId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+    });
   }
   if (folderTreeFixture.rootNote?.id) {
-    await fetch(`${BASE_URL}/api/notes/${folderTreeFixture.rootNote.id}`, { method: 'DELETE' });
+    await fetch(`${BASE_URL}/api/notes/${folderTreeFixture.rootNote.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+    });
   }
   if (folderTreeFixture.parent?.id) {
-    await fetch(`${BASE_URL}/api/folders/${folderTreeFixture.parent.id}`, { method: 'DELETE' });
+    await fetch(`${BASE_URL}/api/folders/${folderTreeFixture.parent.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+    });
   }
   if (renamedCanvasPath && renamedCanvasPath !== canvasFixture.path) {
     await fetch(`${BASE_URL}/api/canvas/file`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fromPath: renamedCanvasPath, toPath: canvasFixture.path }),
+      body: JSON.stringify({ fromPath: renamedCanvasPath, toPath: canvasFixture.path, confirmed: true }),
     });
   }
 

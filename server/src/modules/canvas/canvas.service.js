@@ -19,6 +19,10 @@ export function list() {
   return files.sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'));
 }
 
+export function exists(filePath = FILE_PATH) {
+  return fs.existsSync(vaultFile(filePath));
+}
+
 export async function read(filePath = FILE_PATH) {
   const file = vaultFile(filePath);
   let raw = null;
@@ -33,7 +37,7 @@ export async function read(filePath = FILE_PATH) {
 }
 
 export async function write(document, filePath = FILE_PATH) {
-  const { expectedHash, ...payload } = document ?? {};
+  const { expectedHash, confirmed: _confirmed, secondConfirmed: _secondConfirmed, ...payload } = document ?? {};
   const file = vaultFile(filePath);
 
   let currentRaw = null;

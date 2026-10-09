@@ -4,22 +4,26 @@
  * 因此这里不需要额外的 try/catch 包装。
  */
 import * as service from './folders.service.js';
+import { requireFileConfirmation } from '../../lib/file-confirmation.js';
 
 export async function listFolders(_req, res) {
   res.json({ data: service.listTree() });
 }
 
 export async function createFolder(req, res) {
+  requireFileConfirmation(req);
   const folder = service.create(req.valid.body);
   res.status(201).json({ data: folder });
 }
 
 export async function updateFolder(req, res) {
+  requireFileConfirmation(req);
   const folder = service.update(req.valid.params.id, req.valid.body);
   res.json({ data: folder });
 }
 
 export async function deleteFolder(req, res) {
+  requireFileConfirmation(req, { destructive: true });
   const result = service.remove(req.valid.params.id);
   res.json({ data: result });
 }

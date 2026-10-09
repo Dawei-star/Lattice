@@ -41,11 +41,32 @@ test('GET /api/canvas/files lists nested canvas files and excludes hidden direct
   assert.equal(response.status, 200);
   assert.deepEqual(payload.data.map((file) => file.path), ['首页.CANVAS', '项目/原型/流程.canvas']);
 
+  const updateResponse = await fetch(`http://127.0.0.1:${port}/api/canvas?path=${encodeURIComponent('项目/原型/流程.canvas')}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes: [], edges: [] }),
+  });
+  assert.equal(updateResponse.status, 200);
+
+  const createResponse = await fetch(`http://127.0.0.1:${port}/api/canvas?path=${encodeURIComponent('未确认创建.canvas')}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes: [], edges: [] }),
+  });
+  assert.equal(createResponse.status, 422);
+
   await fs.writeFile(path.join(vaultDir, '待改名.canvas'), '{"nodes":[],"edges":[]}');
+  const unconfirmedRenameResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fromPath: '待改名.canvas', toPath: '未确认改名.canvas' }),
+  });
+  assert.equal(unconfirmedRenameResponse.status, 422);
+
   const renameResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fromPath: '待改名.canvas', toPath: '已改名' }),
+    body: JSON.stringify({ fromPath: '待改名.canvas', toPath: '已改名', confirmed: true }),
   });
   const renamePayload = await renameResponse.json();
   assert.equal(renameResponse.status, 200);
@@ -56,13 +77,13 @@ test('GET /api/canvas/files lists nested canvas files and excludes hidden direct
   const conflictResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fromPath: '冲突源.canvas', toPath: '已改名.canvas' }),
+    body: JSON.stringify({ fromPath: '冲突源.canvas', toPath: '已改名.canvas', confirmed: true }),
   });
   assert.equal(conflictResponse.status, 409);
 
   const deletablePath = path.join(vaultDir, '待删除.canvas');
   await fs.writeFile(deletablePath, '{"nodes":[],"edges":[]}');
-  const deleteResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file?path=${encodeURIComponent('待删除.canvas')}`, {
+  const deleteResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file?path=${encodeURIComponent('待删除.canvas')}&confirmed=true&secondConfirmed=true`, {
     method: 'DELETE',
   });
   const deletePayload = await deleteResponse.json();
@@ -71,7 +92,7 @@ test('GET /api/canvas/files lists nested canvas files and excludes hidden direct
   await assert.rejects(fs.stat(deletablePath));
 
   // 删除已设计为幂等：文件不在磁盘（外部删除、树列表过期）时同样返回 200，让前端能清掉过期条目
-  const missingDeleteResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file?path=${encodeURIComponent('待删除.canvas')}`, {
+  const missingDeleteResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/file?path=${encodeURIComponent('待删除.canvas')}&confirmed=true&secondConfirmed=true`, {
     method: 'DELETE',
   });
   const missingDeletePayload = await missingDeleteResponse.json();

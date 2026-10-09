@@ -88,6 +88,13 @@ export function updateLinkTarget({ sourceNoteId, targetTitle, targetNoteId }) {
     .run(targetNoteId, sourceNoteId, targetTitle).changes;
 }
 
+/** 将指向即将删除的重复笔记的反向链接迁移到保留笔记。 */
+export function reassignTarget(fromNoteId, toNoteId) {
+  return getDb()
+    .prepare('UPDATE links SET target_note_id = ? WHERE target_note_id = ?')
+    .run(toNoteId, fromNoteId).changes;
+}
+
 /** 图谱用的边集合（仅含已解析的链接） */
 export function listEdges() {
   return getDb()
