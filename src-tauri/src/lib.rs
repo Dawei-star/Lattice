@@ -20,7 +20,7 @@ mod vault;
 mod watcher;
 mod workspace;
 
-use index::{IndexStats, NoteIndexEntry, NoteMatch, ScanSummary, TagEntry};
+use index::{IndexStats, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, TagEntry};
 use jobs::Job;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -82,7 +82,8 @@ pub fn run() {
             job_get,
             job_cancel,
             tag_list,
-            note_index
+            note_index,
+            note_create
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -227,6 +228,26 @@ fn note_index(state: State<'_, WorkspaceState>) -> Result<Vec<NoteIndexEntry>, S
             .index()
             .list_note_index()
             .map_err(|error| ServiceError::new("NOTES_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn note_create(
+    state: State<'_, WorkspaceState>,
+    id: Option<String>,
+    title: Option<String>,
+    content: Option<String>,
+    properties: Option<serde_json::Map<String, serde_json::Value>>,
+    confirmed: bool,
+) -> Result<NoteDetail, String> {
+    with_workspace(state, |workspace| {
+        workspace.create_note(
+            id,
+            title,
+            content.as_deref().unwrap_or(""),
+            &properties.unwrap_or_default(),
+            confirmed,
+        )
     })
 }
 

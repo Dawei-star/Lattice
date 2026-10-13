@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// 001：索引投影初版。
 ///
@@ -110,6 +110,11 @@ ALTER TABLE notes ADD COLUMN properties_json TEXT;
 CREATE INDEX ix_notes_note_id ON notes (note_id);
 "#;
 
+/// 005：updated_at 业务时间戳列（frontmatter updated_at 的投影，P1-04 第二批）。
+const MIGRATION_005: &str = r#"
+ALTER TABLE notes ADD COLUMN updated_at TEXT;
+"#;
+
 /// 打开索引库并把 Schema 迁移到最新版本。
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -178,7 +183,7 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         return Ok(());
     }
     // 每个迁移步骤一个事务：失败只回滚当前步，已完成的低版本保留。
-    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003), (4, MIGRATION_004)];
+    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003), (4, MIGRATION_004), (5, MIGRATION_005)];
     for &(target, script) in steps {
         if version < target {
             let transaction = connection

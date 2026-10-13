@@ -308,6 +308,24 @@ pub fn parse_frontmatter(raw: &str) -> Option<Frontmatter> {
     None
 }
 
+/// 去掉 frontmatter，返回正文（Express 的 note.content 口径不含 frontmatter）。
+pub fn strip_frontmatter(raw: &str) -> &str {
+    let mut lines = raw.lines();
+    if !lines.next().is_some_and(|first| first.trim_end_matches('\r') == "---") {
+        return raw;
+    }
+    let mut offset = 0usize;
+    for line in raw.lines() {
+        let line_end = offset + line.len();
+        if line.trim_end_matches('\r') == "---" {
+            // 正文从闭合栏之后开始（跳过换行符）
+            return &raw[(line_end + 1).min(raw.len())..];
+        }
+        offset = line_end + 1;
+    }
+    raw
+}
+
 /// 字数统计（对齐 computeWordCount）：CJK 字符数 + 拉丁词数。
 pub fn compute_word_count(text: &str) -> u64 {
     let mut cjk = 0u64;
@@ -329,6 +347,112 @@ pub fn compute_word_count(text: &str) -> u64 {
         }
     }
     cjk + latin_words
+}
+
+/// 标题上限（对齐 Express MAX_TITLE_LENGTH）。
+pub const MAX_TITLE_LENGTH: usize = 200;
+
+/// 文件名清洗（对齐 sanitizeFilePart）：非法字符→_、尾部 ./空格 去除、
+/// Windows 保留设备名前缀 _、空值回退「未命名笔记」。
+pub fn sanitize_file_part(value: &str, fallback: &str) -> String {
+    let cleaned: String = {
+        let base = if value.is_empty() { fallback } else { value };
+        base.chars()
+            .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'..='\u{1f}' | '\u{7f}') { '_' } else { c })
+            .collect::<String>()
+            .trim_end_matches(['.', ' '])
+            .trim()
+            .to_owned()
+    };
+    let cleaned = if cleaned.is_empty() { fallback.to_owned() } else { cleaned };
+    let stem = cleaned.split('.').next().unwrap_or("").to_owned();
+    let reserved: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if reserved.contains(&stem.to_uppercase().as_str()) {
+        format!("_{cleaned}")
+    } else {
+        cleaned
+    }
+}
+
+/// frontmatter 值序列化（对齐 frontmatterValue）：数组 JSON、字符串去控制字符。
+fn frontmatter_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(frontmatter_value).collect();
+            format!("[{}]", inner.join(","))
+        }
+        other => other
+            .as_str()
+            .unwrap_or(&other.to_string())
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .trim()
+            .to_owned(),
+    }
+}
+
+/// 属性序列化（对齐 serializeProperties）：保留字段之外的合法键按名排序。
+const RESERVED_FIELDS: &[&str] = &["id", "title", "pinned", "created_at", "updated_at", "tags"];
+
+/// Markdown 文档序列化（对齐 serializeMarkdownDocument）：
+/// frontmatter（id/title/pinned/created_at/updated_at + 排序后的自定义属性）+ 正文。
+pub struct MarkdownDocument<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub is_pinned: bool,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+    pub properties: &'a serde_json::Map<String, serde_json::Value>,
+}
+
+pub fn serialize_markdown_document(note: &MarkdownDocument<'_>) -> String {
+    let mut frontmatter = vec![
+        "---".to_owned(),
+        format!("id: {}", frontmatter_value(&serde_json::Value::String(note.id.to_owned()))),
+        format!("title: {}", frontmatter_value(&serde_json::Value::String(note.title.to_owned()))),
+        format!("pinned: {}", if note.is_pinned { "true" } else { "false" }),
+        format!("created_at: {}", frontmatter_value(&serde_json::Value::String(note.created_at.to_owned()))),
+        format!("updated_at: {}", frontmatter_value(&serde_json::Value::String(note.updated_at.to_owned()))),
+    ];
+    let mut keys: Vec<&String> = note
+        .properties
+        .keys()
+        .filter(|key| {
+            key.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && key.len() <= 81
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && !RESERVED_FIELDS.contains(&key.as_str())
+        })
+        .collect();
+    keys.sort();
+    for key in keys {
+        frontmatter.push(format!("{}: {}", key, frontmatter_value(&note.properties[key])));
+    }
+    frontmatter.push("---".to_owned());
+    frontmatter.push(String::new());
+    format!("{}\n{}", frontmatter.join("\n"), note.content)
+}
+
+/// 标题归一化（对齐 normalizeTitle）：去控制字符、trim、空回退推断、截断 200。
+pub fn normalize_title(raw_title: &str, fallback_content: &str) -> String {
+    let cleaned: String = raw_title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    let title = if cleaned.is_empty() {
+        crate::vault::title_from_markdown(fallback_content, "")
+    } else {
+        cleaned
+    };
+    title.chars().take(MAX_TITLE_LENGTH).collect()
 }
 
 #[cfg(test)]

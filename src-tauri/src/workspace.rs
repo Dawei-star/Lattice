@@ -8,10 +8,12 @@
 //! - 单实例锁：第二实例明确报"已被占用"，禁止静默共写（风险 R12）；
 //! - 统一错误模型：`ServiceError { code, message }`，命令面在 P1-04 切换。
 
-use crate::index::Index;
+use crate::index::{Index, NoteDetail};
 use crate::jobs::JobsQueue;
-use crate::markdown::parse_frontmatter;
+use crate::markdown::{normalize_title, parse_frontmatter, sanitize_file_part, serialize_markdown_document, MarkdownDocument};
+use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteContents, Vault};
+use uuid::Uuid;
 use fs2::FileExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -284,6 +286,74 @@ impl WorkspaceService {
 
     pub fn jobs(&self) -> &JobsQueue {
         &self.jobs
+    }
+
+    /// 创建笔记（契约 POST /api/notes → note_create）：
+    /// confirmed 必需；client id 已存在时幂等返回详情；标题归一化 + 路径占用
+    /// 递增分配；frontmatter 序列化后经统一写边界落盘（审计/快照/索引一并生效）。
+    pub fn create_note(
+        &self,
+        id: Option<String>,
+        title: Option<String>,
+        content: &str,
+        properties: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<NoteDetail, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "创建笔记需要 confirmed=true",
+            ));
+        }
+        if let Some(id) = id.as_deref()
+            && let Some(existing) = self
+                .index
+                .find_note_detail(Some(id), None)
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+        {
+            return Ok(existing); // 幂等：同 id 重复创建直接返回
+        }
+        let note_id = match id {
+            Some(id) => id,
+            None => Uuid::new_v4().to_string(),
+        };
+        let final_title = normalize_title(title.as_deref().unwrap_or(""), content);
+        let file_path = self.allocate_file_path(&final_title)?;
+        let timestamp = iso8601_utc(now_millis());
+        let raw = serialize_markdown_document(&MarkdownDocument {
+            id: &note_id,
+            title: &final_title,
+            content,
+            is_pinned: false,
+            created_at: &timestamp,
+            updated_at: &timestamp,
+            properties,
+        });
+        self.write(&file_path, &raw, None, "ui")?;
+        self.index
+            .find_note_detail(None, Some(&file_path))
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "创建后索引未同步，请重试"))
+    }
+
+    /// 路径分配（对齐 allocateFilePath）：重名时追加 " (2)" 递增后缀。
+    fn allocate_file_path(&self, title: &str) -> Result<String, ServiceError> {
+        let base = format!("{}.md", sanitize_file_part(title, "未命名笔记"));
+        let stem = base.trim_end_matches(".md").to_owned();
+        let mut candidate = base.clone();
+        let mut suffix = 2;
+        loop {
+            let taken_in_index = self
+                .index
+                .is_path_taken(&candidate)
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+            let taken_on_disk = self.vault.root().join(&candidate).exists();
+            if !taken_in_index && !taken_on_disk {
+                return Ok(candidate);
+            }
+            candidate = format!("{stem} ({suffix}).md");
+            suffix += 1;
+        }
     }
 }
 

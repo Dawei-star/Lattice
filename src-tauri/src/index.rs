@@ -7,10 +7,10 @@
 //!   短于 3 字符的查询以及 FTS 未命中时走 `LIKE` 兜底 —— 与原项目两条路径一致。
 
 use crate::db;
-use crate::markdown::{compute_word_count, extract_note_tags, parse_frontmatter};
+use crate::markdown::{compute_word_count, extract_note_tags, parse_frontmatter, strip_frontmatter};
 use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteFile, Vault, title_from_markdown};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -301,6 +301,69 @@ impl Index {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法读取笔记索引行：{error}"))
     }
+
+    /// 笔记详情（对齐 Express mapNote 形状）。
+    pub fn find_note_detail(&self, by_id: Option<&str>, by_path: Option<&str>) -> Result<Option<NoteDetail>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let (column, value) = match (by_id, by_path) {
+            (Some(id), _) => ("note_id", id.to_owned()),
+            (None, Some(path)) => ("path", path.to_owned()),
+            _ => return Ok(None),
+        };
+        let sql = format!(
+            "SELECT COALESCE(note_id, path), title, content, is_pinned, path, word_count,
+             content_hash, properties_json, created_at, updated_at FROM notes WHERE {column} = ?1"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("无法查询笔记详情：{error}"))?;
+        let detail = statement
+            .query_row(params![value], |row| {
+                Ok(NoteDetail {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    folder_id: None,
+                    file_path: Some(row.get(3)?),
+                    is_pinned: row.get::<_, i64>(4)? != 0,
+                    word_count: row.get::<_, i64>(5)? as u64,
+                    content_hash: row.get(6)?,
+                    properties_json: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            })
+            .optional()
+            .map_err(|error| format!("无法读取笔记详情：{error}"))?;
+        Ok(detail)
+    }
+
+    /// 文件路径占用检查（create 分配路径用）：投影 file_path 是否已被其它行占用。
+    pub fn is_path_taken(&self, path: &str) -> Result<bool, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let taken: Option<String> = connection
+            .query_row("SELECT path FROM notes WHERE path = ?1", params![path], |row| row.get(0))
+            .optional()
+            .map_err(|error| format!("无法检查路径占用：{error}"))?;
+        Ok(taken.is_some())
+    }
+}
+
+/// 笔记详情（对齐 Express mapNote，camelCase 序列化）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDetail {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub folder_id: Option<String>,
+    pub file_path: Option<String>,
+    pub is_pinned: bool,
+    pub word_count: u64,
+    pub content_hash: Option<String>,
+    pub properties_json: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 /// 轻量索引条目（对齐 Express listIndex，camelCase 序列化）。
@@ -339,7 +402,9 @@ fn write_row(
 ) -> Result<(), String> {
     let title = title_from_markdown(raw, path);
     let frontmatter = parse_frontmatter(raw);
-    let word_count = compute_word_count(raw) as i64;
+    // 正文口径（不含 frontmatter）：与 Express 的 note.content / computeWordCount 一致
+    let body = strip_frontmatter(raw);
+    let word_count = compute_word_count(body) as i64;
     let properties_json = frontmatter
         .as_ref()
         .filter(|meta| !meta.properties.is_empty())
@@ -364,7 +429,7 @@ fn write_row(
             params![
                 path,
                 title,
-                raw,
+                body,
                 hash,
                 size as i64,
                 modified_at,
@@ -377,6 +442,17 @@ fn write_row(
             ],
         )
         .map_err(|error| format!("无法写入索引：{error}"))?;
+    // updated_at：frontmatter 业务时间戳优先，否则磁盘修改时间
+    let business_updated_at = frontmatter.as_ref().and_then(|meta| meta.updated_at.clone());
+    connection
+        .execute(
+            "UPDATE notes SET updated_at = ?2 WHERE path = ?1",
+            params![
+                path,
+                business_updated_at.or_else(|| modified_at.map(iso8601_utc))
+            ],
+        )
+        .map_err(|error| format!("无法写入更新时间：{error}"))?;
     sync_tags(connection, path, raw, indexed_at)
 }
 
