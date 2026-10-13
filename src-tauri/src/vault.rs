@@ -42,7 +42,7 @@ pub(crate) struct FileMeta {
     pub(crate) modified_at: Option<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteContents {
     pub(crate) path: String,

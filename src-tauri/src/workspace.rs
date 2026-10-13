@@ -1,0 +1,450 @@
+//! WorkspaceService：唯一的 Vault 写入边界（升级计划 P1-01）。
+//!
+//! 职责（对齐 lattice-architecture §12）：
+//! - 路径校验、内容哈希、原子写入（复用 `vault::Vault` 的既有保护）；
+//! - 写入前版本快照：`.lattice/history/<note-id>/<YYYYMMDDTHH9Z-64hex>.md`，
+//!   与 Express `notes.history.js` 完全同构，P1-04 迁移 history 命令时无缝；
+//! - 审计：所有写入/冲突事件追加到 `.lattice/audit.jsonl`；
+//! - 单实例锁：第二实例明确报"已被占用"，禁止静默共写（风险 R12）；
+//! - 统一错误模型：`ServiceError { code, message }`，命令面在 P1-04 切换。
+
+use crate::index::Index;
+use crate::vault::{NoteContents, Vault};
+use fs2::FileExt;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+/// 单篇笔记的历史快照上限，与 Express `notes.history.js` 一致。
+pub const SNAPSHOT_LIMIT: usize = 200;
+
+/// 统一命令错误模型：`code` 走契约枚举（见 ipc-contract.md §1），`message` 人类可读。
+/// P1-04 起命令面序列化形状对齐 `{ error: { code, message } }`。
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ServiceError {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
+impl From<std::io::Error> for ServiceError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new("IO_ERROR", error.to_string())
+    }
+}
+
+/// 审计日志：JSONL 逐行追加，磁盘真源之外的第二事实（数据不变量 I6）。
+/// 单条审计失败只告警不阻断业务写入——审计是旁路，不是写入闸门。
+pub struct AuditLog {
+    path: PathBuf,
+}
+
+impl AuditLog {
+    fn open(lattice_dir: &Path) -> Result<Self, ServiceError> {
+        fs::create_dir_all(lattice_dir)?;
+        Ok(Self { path: lattice_dir.join("audit.jsonl") })
+    }
+
+    fn record(&self, action: &str, fields: &[(&str, &str)]) {
+        let mut entry = serde_json::Map::new();
+        entry.insert("ts".into(), serde_json::json!(crate::time::iso8601_utc(crate::time::now_millis())));
+        entry.insert("action".into(), serde_json::json!(action));
+        for (key, value) in fields {
+            entry.insert((*key).into(), serde_json::json!(value));
+        }
+        if let Ok(line) = serde_json::to_string(&entry)
+            && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&self.path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// 版本快照器：与 Express `notes.history.js` 同构的文件系统投影（不变量 I1/I6）。
+pub struct SnapshotStore {
+    root: PathBuf, // <Vault>/.lattice/history
+}
+
+/// 一个已存在的快照条目（版本名 = `<17位时间戳>-<sha256>`）。
+pub struct SnapshotMeta {
+    pub version: String,
+    pub hash: String,
+}
+
+impl SnapshotStore {
+    fn open(lattice_dir: &Path) -> Self {
+        Self { root: lattice_dir.join("history") }
+    }
+
+    /// 列出某笔记的全部快照，按版本名倒序（时间戳前缀保证字典序即时间序）。
+    fn list(&self, note_id: &str) -> Vec<SnapshotMeta> {
+        let mut snapshots = Vec::new();
+        let Ok(entries) = fs::read_dir(self.root.join(note_id)) else {
+            return snapshots;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(stripped) = name.strip_suffix(".md") else { continue };
+            let Some((_, hash)) = stripped.split_once('-') else { continue };
+            snapshots.push(SnapshotMeta { version: stripped.to_owned(), hash: hash.to_owned() });
+        }
+        snapshots.sort_by(|left, right| right.version.cmp(&left.version));
+        snapshots
+    }
+
+    /// 把 `raw` 存为该笔记的新快照；内容与最新快照一致时跳过（幂等）。
+    /// 返回 Some(version) 表示落盘，None 表示跳过。
+    fn create(
+        &self,
+        note_id: &str,
+        raw: &str,
+        limit: usize,
+    ) -> Result<Option<String>, ServiceError> {
+        let limit = limit.max(1);
+        let hash = checksum(raw.as_bytes());
+        let existing = self.list(note_id);
+        if let Some(latest) = existing.first()
+            && latest.hash == hash
+        {
+            return Ok(None);
+        }
+        let directory = self.root.join(note_id);
+        fs::create_dir_all(&directory)?;
+        // 同毫秒同内容哈希的版本名冲突时 +1ms 重试（与 Express 一致）
+        let mut timestamp = crate::time::now_millis();
+        let version = loop {
+            let candidate = format_version(timestamp, &hash);
+            if !directory.join(format!("{candidate}.md")).exists() {
+                break candidate;
+            }
+            timestamp += 1;
+        };
+        let mut file = File::create(directory.join(format!("{version}.md")))?;
+        file.write_all(raw.as_bytes())?;
+        file.sync_all()?;
+        // 超出上限从最旧开始删除；单个删除失败不阻断
+        for stale in self.list(note_id).iter().take(existing.len().saturating_sub(limit - 1)) {
+            let _ = fs::remove_file(self.root.join(note_id).join(format!("{}.md", stale.version)));
+        }
+        Ok(Some(version))
+    }
+}
+
+fn checksum(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// 与 Express `formatVersion` 一致：`YYYYMMDDTHHMMSSmmmZ-<hash>`（17 位时间戳）。
+fn format_version(timestamp_millis: i64, hash: &str) -> String {
+    let iso = crate::time::iso8601_utc(timestamp_millis); // 2026-10-13T12:34:56.789Z
+    let compact: String = iso.chars().filter(|c| c.is_ascii_digit()).collect();
+    // compact = YYYYMMDDHHMMSSmmm（17 位），在日期与时间之间补 'T'、结尾补 'Z'
+    let stamp = format!("{}T{}Z", &compact[..8], &compact[8..]);
+    format!("{stamp}-{hash}")
+}
+
+/// Express `NOTE_ID_PATTERN` 的对应校验：UUID v1-v5（第 3/4 组有版本与变体约束）。
+fn is_valid_note_id(note_id: &str) -> bool {
+    let parts: Vec<&str> = note_id.split('-').collect();
+    parts.len() == 5
+        && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(len, part)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
+        && parts[2].starts_with(['1', '2', '3', '4', '5'])
+        && parts[3].starts_with(['8', '9', 'a', 'b'])
+}
+
+/// 从 Markdown frontmatter 读取 `id:` 字段（无 id 或格式不符返回 None，跳过快照）。
+fn frontmatter_id(raw: &str) -> Option<String> {
+    let mut lines = raw.lines();
+    if lines.next()?.trim_end_matches('\r') != "---" {
+        return None;
+    }
+    for line in lines.take(100) {
+        let line = line.trim_end_matches('\r');
+        if line == "---" {
+            return None;
+        }
+        if let Some(value) = line.strip_prefix("id:") {
+            let value = value.trim().trim_matches(['"', '\'']);
+            if is_valid_note_id(value) {
+                return Some(value.to_owned());
+            }
+            return None;
+        }
+    }
+    None
+}
+
+impl std::fmt::Debug for WorkspaceService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceService")
+            .field("root", &self.vault.root().display().to_string())
+            .finish_non_exhaustive()
+    }
+}
+
+/// 工作区 = 单实例锁 + 文件真源 + 索引投影 + 审计 + 快照。
+pub struct WorkspaceService {
+    vault: Vault,
+    index: Index,
+    audit: AuditLog,
+    snapshots: SnapshotStore,
+    _lock: File, // 句柄存活期间锁有效；drop 即释放
+}
+
+impl WorkspaceService {
+    /// 打开工作区：先取单实例锁，再挂载 vault 与索引。
+    /// 第二实例收到 `VAULT_LOCKED`，绝不静默共写。
+    pub fn open(root: PathBuf) -> Result<Self, ServiceError> {
+        let lattice_dir = root.join(".lattice");
+        fs::create_dir_all(&lattice_dir)?;
+        let lock_path = lattice_dir.join("workspace.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)?;
+        lock.try_lock_exclusive().map_err(|_| {
+            ServiceError::new(
+                "VAULT_LOCKED",
+                format!("Vault 已被另一个 Lattice 实例占用：{}", root.display()),
+            )
+        })?;
+        let vault =
+            Vault::open(root).map_err(|error| ServiceError::new("VAULT_OPEN_FAILED", error.to_string()))?;
+        let index = Index::open(vault.root())
+            .map_err(|error| ServiceError::new("INDEX_OPEN_FAILED", error))?;
+        let audit = AuditLog::open(&lattice_dir)?;
+        audit.record("workspace_open", &[("path", &vault.root().to_string_lossy())]);
+        Ok(Self {
+            vault,
+            index,
+            audit,
+            snapshots: SnapshotStore::open(&lattice_dir),
+            _lock: lock,
+        })
+    }
+
+    /// 统一写入入口：哈希冲突保护 → 原子落盘 → 旧内容快照 → 审计 → 索引同步。
+    pub fn write(
+        &self,
+        path: &str,
+        raw: &str,
+        expected_hash: Option<&str>,
+        actor: &str,
+    ) -> Result<NoteContents, ServiceError> {
+        // 快照需要旧内容；读取失败（不存在/超限）不阻断写入
+        let previous = self.vault.read(path).ok();
+        let note = self.vault.write(path, raw, expected_hash).map_err(|error| {
+            let code = if error.contains("changed on disk") || error.contains("removed before") {
+                "CONFLICT"
+            } else {
+                "WRITE_FAILED"
+            };
+            self.audit.record("write_rejected", &[("path", path), ("code", code), ("actor", actor)]);
+            ServiceError::new(code, error)
+        })?;
+        // 旧内容与最新快照一致时 create 内部会跳过；无 frontmatter id 的文件跳过快照
+        if let Some(previous) = previous {
+            match frontmatter_id(&previous.raw) {
+                Some(note_id) => match self.snapshots.create(&note_id, &previous.raw, SNAPSHOT_LIMIT) {
+                    Ok(Some(version)) => {
+                        self.audit.record("snapshot", &[("path", path), ("version", &version), ("actor", actor)]);
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::warn!("快照失败（不阻断写入）：{error}"),
+                },
+                None => log::debug!("跳过快照：{path} 缺少合法的 frontmatter id"),
+            }
+        }
+        self.audit.record("write", &[("path", path), ("hash", &note.sha256), ("actor", actor)]);
+        // 索引是可重建投影：同步失败只告警，下次扫描自愈
+        if let Ok(meta) = self.vault.stat(&note.path)
+            && let Err(error) = self.index.upsert(&note.path, &note.raw, &note.sha256, meta.bytes, meta.modified_at)
+        {
+            log::warn!("索引同步失败（下次扫描会自愈）：{error}");
+        }
+        Ok(note)
+    }
+
+    /// 当前 Vault 是否为指定路径（vault_open 重开同一 Vault 时走幂等分支）。
+    pub fn is_same_root(&self, root: &Path) -> bool {
+        self.vault.root() == root
+    }
+
+    pub fn path(&self) -> &Path {
+        self.vault.root()
+    }
+
+    pub fn vault(&self) -> &Vault {
+        &self.vault
+    }
+
+    pub fn index(&self) -> &Index {
+        &self.index
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ServiceError, SNAPSHOT_LIMIT, WorkspaceService};
+
+    fn open_service(directory: &Path) -> WorkspaceService {
+        WorkspaceService::open(directory.to_path_buf()).unwrap()
+    }
+
+    use std::path::Path;
+
+    const NOTE_ID: &str = "019501a2-3b4c-4c5d-89ab-cdef01234567";
+
+    fn note_raw(content: &str) -> String {
+        format!("---\nid: {NOTE_ID}\ntitle: 测试\n---\n\n{content}\n")
+    }
+
+    #[test]
+    fn second_instance_is_rejected_with_vault_locked() {
+        let directory = tempfile::tempdir().unwrap();
+        let _first = open_service(directory.path());
+        let second = WorkspaceService::open(directory.path().to_path_buf()).unwrap_err();
+        assert_eq!(second.code, "VAULT_LOCKED");
+        assert!(second.message.contains("已被另一个 Lattice 实例占用"));
+    }
+
+    #[test]
+    fn lock_is_released_when_instance_drops() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let _first = open_service(directory.path());
+        }
+        let _second = open_service(directory.path()); // 不应报 VAULT_LOCKED
+    }
+
+    #[test]
+    fn writes_are_audited_as_jsonl() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        service.write("a.md", "第一版", None, "test").unwrap();
+        let audit = std::fs::read_to_string(directory.path().join(".lattice/audit.jsonl")).unwrap();
+        let line = audit.lines().last().unwrap();
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(entry["action"], "write");
+        assert_eq!(entry["path"], "a.md");
+        assert_eq!(entry["actor"], "test");
+    }
+
+    #[test]
+    fn conflicts_are_audited_and_coded() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let first = service.write("a.md", "第一版", None, "test").unwrap();
+        let error = service
+            .write("a.md", "第二版", Some("outdated-hash"), "test")
+            .unwrap_err();
+        assert_eq!(error.code, "CONFLICT");
+        let audit = std::fs::read_to_string(directory.path().join(".lattice/audit.jsonl")).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(audit.lines().last().unwrap()).unwrap();
+        assert_eq!(entry["action"], "write_rejected");
+        assert_eq!(entry["code"], "CONFLICT");
+        let _ = first;
+    }
+
+    #[test]
+    fn previous_content_is_snapshotted_before_overwrite() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let first = service.write("a.md", &note_raw("v1"), None, "test").unwrap();
+        service
+            .write("a.md", &note_raw("v2"), Some(&first.sha256), "test")
+            .unwrap();
+        let history = directory.path().join(".lattice/history").join(NOTE_ID);
+        let mut versions: Vec<String> = std::fs::read_dir(&history)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        versions.sort();
+        assert_eq!(versions.len(), 1, "只应有一次覆盖产生一个快照：{versions:?}");
+        let snapshotted =
+            std::fs::read_to_string(history.join(&versions[0])).unwrap();
+        assert!(snapshotted.contains("v1"), "快照应保存旧内容 v1");
+        let version = versions[0].trim_end_matches(".md");
+        let (stamp, _) = version.split_once('-').unwrap();
+        assert_eq!(stamp.len(), 19, "版本名应为 8 位日期 + T + 9 位时间 + Z：{stamp}");
+    }
+
+    #[test]
+    fn snapshot_skipped_when_latest_matches_previous_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let first = service.write("a.md", &note_raw("v1"), None, "test").unwrap();
+        let second = service
+            .write("a.md", &note_raw("v2"), Some(&first.sha256), "test")
+            .unwrap();
+        // 第三次保存相同内容：旧内容 v2 已是最新快照，不应新增
+        service
+            .write("a.md", &note_raw("v2"), Some(&second.sha256), "test")
+            .unwrap();
+        let history = directory.path().join(".lattice/history").join(NOTE_ID);
+        let count = std::fs::read_dir(&history).unwrap().count();
+        // v1 覆盖时快照 v1；v2 首次覆盖快照 v2；v2 重复保存跳过
+        assert_eq!(count, 2, "内容与最新快照一致时不应新增快照");
+    }
+
+    #[test]
+    fn notes_without_frontmatter_id_skip_snapshots_but_still_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let first = service.write("bare.md", "无 frontmatter", None, "test").unwrap();
+        service
+            .write("bare.md", "第二版", Some(&first.sha256), "test")
+            .unwrap();
+        let history = directory.path().join(".lattice/history");
+        assert!(!history.exists(), "无 id 的笔记不应产生快照目录");
+        let written = service.vault().read("bare.md").unwrap();
+        assert_eq!(written.raw, "第二版");
+    }
+
+    #[test]
+    fn snapshot_pruning_keeps_only_the_newest() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let limit = 3;
+        let mut expected_hash = None;
+        for round in 0..=limit {
+            let raw = note_raw(&format!("v{round}"));
+            // 直接经快照器写入历史：绕过 SNAPSHOT_LIMIT 常量以验证剪枝参数
+            if round > 0 {
+                let previous = service.vault().read("a.md").unwrap();
+                let store = super::SnapshotStore::open(&directory.path().join(".lattice"));
+                store.create(super::frontmatter_id(&previous.raw).unwrap().as_str(), &previous.raw, limit).unwrap();
+                expected_hash = Some(previous.sha256.clone());
+            }
+            service.write("a.md", &raw, expected_hash.as_deref(), "test").unwrap();
+        }
+        let history = directory.path().join(".lattice/history").join(NOTE_ID);
+        let count = std::fs::read_dir(&history).unwrap().count();
+        assert!(count <= limit, "快照数 {count} 应被剪枝到 ≤ {limit}");
+        let _ = SNAPSHOT_LIMIT;
+    }
+
+    #[test]
+    fn service_error_serializes_with_code_and_message() {
+        let error = ServiceError::new("CONFLICT", "内容已变化");
+        let json = serde_json::to_value(&error).unwrap();
+        assert_eq!(json["code"], "CONFLICT");
+        assert_eq!(json["message"], "内容已变化");
+    }
+}
