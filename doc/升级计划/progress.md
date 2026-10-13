@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-13 ｜ note_update/note_delete 完成并验证绿（test 45/45 + clippy + 契约）
+> **最后更新**：2026-10-13 ｜ search_query 完成并验证绿（strategy 枚举对齐 Express）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -27,7 +27,8 @@
   - [x] `note_create`（confirmed 闸门/id 幂等/路径递增分配）
   - [x] `note_update`（乐观锁 409/标题重命名原子 rename/无变化短路）
   - [x] `note_delete`（双确认闸门/文件+投影清理/历史快照保留）
-  - [ ] `search_query` 完整形状 / folders / graph / meta
+  - [x] `search_query`（strategy 枚举 fts/like/like-fallback + mapRow 形状）
+  - [ ] folders / graph / meta
   - [ ] canvas / files / experts / review / vault attachments
 - [ ] P1-05~07 前端 TS 化
 - [ ] P1-08 功能对齐验证（契约快照对照）
@@ -36,8 +37,8 @@
 
 ## IPC 命令核销（契约清单 96 端点）
 
-**已迁移 17 个**（9 vault 既有 + job_list/job_get/job_cancel + tag_list + note_index + note_create + note_update + note_delete）
-**剩余 79 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
+**已迁移 18 个**（9 vault 既有 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query）
+**剩余 78 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
 
 ## 关键问题点（活跃）
 
@@ -47,6 +48,6 @@
 
 ## 下一步
 
-1. `search_query` 完整形状（notes 模型已就位，含 strategy 枚举与 excerpt）
-2. folders 表模型迁移 → graph/meta 核销
-3. note_history 三命令（快照器已就位，直接接线）
+1. folders 表模型迁移 → graph/meta 核销
+2. note_history 三命令（快照器已就位，直接接线）
+3. canvas/folders 写命令批

@@ -233,6 +233,72 @@ impl Index {
         Ok(IndexStats { notes, db_bytes })
     }
 
+    /// 契约 GET /api/search 的对应命令 search_query：
+    /// `{strategy, items}`，strategy ∈ fts/like/like-fallback（对齐 Express 语义），
+    /// items 为 mapRow 形状。与既有 vault_search（NativeWorkspace 契约）互不影响。
+    pub fn search_query(&self, query: &str, limit: usize) -> Result<SearchOutcome, String> {
+        let query = query.trim();
+        if query.is_empty() || query.chars().count() > 200 {
+            return Err("Search query must contain 1-200 characters".into());
+        }
+        let limit = limit.clamp(1, 200) as i64;
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+
+        let mut strategy = "like";
+        let mut matches: Vec<NoteMatch> = Vec::new();
+        let mut fts_attempted = false;
+        if query.chars().count() >= TRIGRAM_MIN_CHARS {
+            fts_attempted = true;
+            match full_text_search(&connection, query, limit) {
+                Ok(found) => matches = found,
+                Err(error) => log::warn!("FTS5 检索失败，回退 LIKE 兜底：{error}"),
+            }
+        }
+        if matches.is_empty() {
+            matches = like_search(&connection, query, limit)?;
+            if fts_attempted {
+                strategy = "like-fallback";
+            }
+        } else {
+            strategy = "fts";
+        }
+
+        let mut items = Vec::with_capacity(matches.len());
+        for note_match in matches {
+            let detail = connection
+                .query_row(
+                    "SELECT COALESCE(note_id, path), is_pinned, content_hash, properties_json, updated_at
+                     FROM notes WHERE path = ?1",
+                    params![note_match.path],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)? != 0,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| format!("无法读取检索行：{error}"))?;
+            if let Some((id, is_pinned, content_hash, properties_json, updated_at)) = detail {
+                items.push(SearchItem {
+                    id,
+                    title: note_match.title,
+                    folder_id: None, // folders 表随第三批迁移（Δ2）
+                    file_path: note_match.path,
+                    is_pinned,
+                    content_hash,
+                    properties_json,
+                    updated_at,
+                    excerpt: note_match.excerpt,
+                });
+            }
+        }
+        Ok(SearchOutcome { strategy, items })
+    }
+
     #[allow(dead_code)] // P1-04 删除/移动命令迁移接线前暂未使用
     pub fn remove(&self, path: &str) -> Result<(), String> {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
@@ -389,6 +455,29 @@ pub struct TagEntry {
     pub name: String,
     pub created_at: String,
     pub note_count: u64,
+}
+
+/// 检索结果（对齐 Express search.service：strategy + mapRow items）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOutcome {
+    pub strategy: &'static str,
+    pub items: Vec<SearchItem>,
+}
+
+/// 检索条目（对齐 Express mapRow，camelCase 序列化）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchItem {
+    pub id: String,
+    pub title: String,
+    pub folder_id: Option<String>,
+    pub file_path: String,
+    pub is_pinned: bool,
+    pub content_hash: Option<String>,
+    pub properties_json: Option<String>,
+    pub updated_at: Option<String>,
+    pub excerpt: String,
 }
 
 fn write_row(

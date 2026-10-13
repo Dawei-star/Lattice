@@ -20,7 +20,7 @@ mod vault;
 mod watcher;
 mod workspace;
 
-use index::{IndexStats, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, TagEntry};
+use index::{IndexStats, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, SearchOutcome, TagEntry};
 use jobs::Job;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -85,7 +85,8 @@ pub fn run() {
             note_index,
             note_create,
             note_update,
-            note_delete
+            note_delete,
+            search_query
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -291,6 +292,20 @@ fn note_delete(
             confirmed.unwrap_or(false),
             second_confirmed.unwrap_or(false),
         )
+    })
+}
+
+#[tauri::command]
+fn search_query(
+    state: State<'_, WorkspaceState>,
+    q: String,
+    limit: Option<usize>,
+) -> Result<SearchOutcome, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .index()
+            .search_query(&q, limit.unwrap_or(20))
+            .map_err(|error| ServiceError::new("SEARCH_ERROR", error))
     })
 }
 
