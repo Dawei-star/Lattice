@@ -15,6 +15,10 @@ crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.2", features = [] }
+# 把含 Common-Controls v6 依赖的清单补链进 cargo test 测试二进制
+# （tauri-build 只链接进 bins，测试二进制缺失 v6 激活上下文会在加载阶段
+# 因 comctl32!TaskDialogIndirect 解析失败而 0xC0000139 启动即崩）
+embed-resource = "3"
 
 [dependencies]
 serde_json = "1.0"

@@ -1104,6 +1104,277 @@ impl WorkspaceService {
         })
     }
 
+    /// 全库文件列表（契约 GET /api/vault/files → vault_files_list）：
+    /// 遍历整个 Vault，排除笔记扩展名（.md/.markdown/.canvas）、点开头目录/文件、
+    /// .tmp 文件与 node_modules（对齐 Express walkVaultFiles / isVisibleVaultPath）。
+    /// 排序用码点序（Express 为 zh-CN locale 序，差异仅影响中文混排次序，见执行日志）。
+    pub fn vault_files_list(&self) -> Result<Vec<VaultFileEntry>, ServiceError> {
+        let mut entries = Vec::new();
+        let root = self.vault.root().to_path_buf();
+        walk_vault_files(&root, &root, &mut entries);
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(entries)
+    }
+
+    /// 附件引用校验（契约 POST /api/vault/attachments/validate → vault_attachment_validate）：
+    /// 从给定正文中抽取附件引用，并标出磁盘上不存在的附件（missing）。
+    pub fn attachment_validate(
+        &self,
+        content: &str,
+        file_path: &str,
+    ) -> Result<AttachmentValidation, ServiceError> {
+        if content.chars().count() > 2_000_000 {
+            return Err(ServiceError::new("VALIDATION", "正文长度超过 200 万字符上限"));
+        }
+        if file_path.chars().count() > 1024 {
+            return Err(ServiceError::new("VALIDATION", "文件路径超过 1024 字符上限"));
+        }
+        let references = self.extract_attachment_references(content, file_path);
+        let existing: std::collections::HashSet<String> = self
+            .list_attachment_files()
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        let missing = references
+            .iter()
+            .filter(|reference| !existing.contains(*reference))
+            .cloned()
+            .collect();
+        Ok(AttachmentValidation { references, missing })
+    }
+
+    /// 孤儿附件清理（契约 POST /api/vault/attachments/cleanup → vault_attachment_cleanup）：
+    /// dryRun=true 只列出候选；真删需要 confirmed+secondConfirmed 双确认（destructive）。
+    /// 单个文件删除失败不中断整批（记录进 skipped），对齐 Express cleanupOrphans。
+    pub fn attachment_cleanup(
+        &self,
+        dry_run: bool,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<AttachmentCleanup, ServiceError> {
+        if !dry_run && !(confirmed && second_confirmed) {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "清理附件需要 confirmed=true 且 secondConfirmed=true",
+            ));
+        }
+        let files = self.list_attachment_files();
+        let references = self
+            .collect_reference_map()
+            .map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        let candidates: Vec<VaultFileEntry> = files
+            .into_iter()
+            .filter(|file| !references.contains_key(&file.path))
+            .collect();
+        if dry_run {
+            return Ok(AttachmentCleanup {
+                dry_run: true,
+                candidates,
+                deleted: Vec::new(),
+                skipped: Vec::new(),
+            });
+        }
+        let mut deleted = Vec::new();
+        let mut skipped = Vec::new();
+        for candidate in candidates {
+            let referenced_by = references.get(&candidate.path).cloned().unwrap_or_default();
+            if !referenced_by.is_empty() {
+                skipped.push(CleanupSkipped {
+                    file: candidate,
+                    error: None,
+                    referenced_by: Some(referenced_by),
+                });
+                continue;
+            }
+            let target = self.vault.root().join(&candidate.path);
+            match remove_file_with_retry(&target) {
+                Ok(()) => {
+                    if let Some(index) = candidate.path.rfind('/') {
+                        self.remove_empty_parents(&candidate.path[..index]);
+                    }
+                    deleted.push(candidate.path.clone());
+                }
+                Err(error) => skipped.push(CleanupSkipped {
+                    file: candidate,
+                    error: Some(error.to_string()),
+                    referenced_by: None,
+                }),
+            }
+        }
+        self.audit.record(
+            "attachment_cleanup",
+            &[("deleted", &deleted.len().to_string()), ("skipped", &skipped.len().to_string())],
+        );
+        Ok(AttachmentCleanup {
+            dry_run: false,
+            candidates: Vec::new(),
+            deleted,
+            skipped,
+        })
+    }
+
+    /// 任意 Vault 文件下载（契约 GET /api/vault/download → vault_download）：
+    /// 评估结论：既有 vault_read_asset 只覆盖 attachments/ 下 4 种图片的 data-URL，
+    /// 无法承载「任意可见非笔记文件」的下载语义，故新增本命令（见执行日志批次6）。
+    /// 返回 base64 负载，前端在 P1-05~07 迁移时组装 Blob 落地。
+    pub fn vault_download(&self, path: &str) -> Result<VaultDownload, ServiceError> {
+        let safe_path = path.trim().replace('\\', "/");
+        if safe_path.is_empty() || safe_path.chars().count() > 1024 {
+            return Err(ServiceError::new("VALIDATION", "文件路径必须是 Vault 内的相对路径"));
+        }
+        if safe_path.starts_with('/')
+            || safe_path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(ServiceError::new("VALIDATION", "文件路径必须是 Vault 内的相对路径"));
+        }
+        if !is_visible_vault_path(&safe_path) {
+            return Err(ServiceError::new("VALIDATION", "只能下载显示列表中的附件文件"));
+        }
+        let target = self.vault.root().join(&safe_path);
+        let metadata = std::fs::metadata(&target)
+            .map_err(|_| ServiceError::new("NOT_FOUND", "文件不存在"))?;
+        if !metadata.is_file() {
+            return Err(ServiceError::new("NOT_FOUND", "文件不存在"));
+        }
+        let bytes = std::fs::read(&target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法读取文件：{error}")))?;
+        let extension = posix_extname(&safe_path).trim_start_matches('.').to_ascii_lowercase();
+        Ok(VaultDownload {
+            path: safe_path.clone(),
+            name: safe_path.rsplit('/').next().unwrap_or(&safe_path).to_owned(),
+            mime_type: vault_file_mime(&extension).map(str::to_owned),
+            size: metadata.len(),
+            base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+        })
+    }
+
+    /// 附件目录内「受支持格式」的文件清单（对齐 Express listAttachmentFiles：
+    /// 只含 MIME_BY_EXTENSION 白名单内的扩展名，校验/清理共用）。
+    fn list_attachment_files(&self) -> Vec<VaultFileEntry> {
+        let mut files = Vec::new();
+        for path in self.walk_attachments() {
+            let extension = posix_extname(&path).trim_start_matches('.').to_ascii_lowercase();
+            let Some(mime) = vault_file_mime(&extension) else { continue };
+            let Ok(metadata) = std::fs::metadata(self.vault.root().join(&path)) else { continue };
+            files.push(VaultFileEntry {
+                name: path.rsplit('/').next().unwrap_or(&path).to_owned(),
+                path,
+                mime_type: Some(mime.to_owned()),
+                size: metadata.len(),
+                modified_at: modified_iso(&metadata),
+            });
+        }
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        files
+    }
+
+    /// 附件引用抽取（对齐 Express extractAttachmentReferences）：
+    /// 先剔除代码块/行内代码，再匹配 markdown 链接、wiki 链接、HTML src/href 与 wiki 嵌入，
+    /// 逐条解析为 attachments/ 下的相对路径并按解析结果去重（保序）。
+    fn extract_attachment_references(&self, content: &str, file_path: &str) -> Vec<String> {
+        let source = strip_code_spans(content);
+        let reference_pattern = regex::Regex::new(
+            r#"(?i)!?(?:\[[^\]]*\]\((?:<([^>]+)>|([^)\s]+))[^)]*\)|\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]|(?:src|href)\s*=\s*["']([^"']+)["'])"#,
+        );
+        let embed_pattern = regex::Regex::new(r#"(?i)!\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]"#);
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut collect = |raw: &str| {
+            if let Some(reference) = self.resolve_attachment_reference(raw, file_path)
+                && seen.insert(reference.clone())
+            {
+                result.push(reference);
+            }
+        };
+        if let Ok(pattern) = reference_pattern {
+            for capture in pattern.captures_iter(&source) {
+                let raw = (1..=4).find_map(|index| capture.get(index));
+                if let Some(raw) = raw {
+                    collect(raw.as_str());
+                }
+            }
+        }
+        if let Ok(pattern) = embed_pattern {
+            for capture in pattern.captures_iter(&source) {
+                if let Some(raw) = capture.get(1) {
+                    collect(raw.as_str());
+                }
+            }
+        }
+        result
+    }
+
+    /// 单条引用 → attachments/ 相对路径（对齐 Express resolveAttachmentReference）：
+    /// 拒绝外部协议/锚点，百分号解码，去掉 #/? 后缀，按「相对笔记目录优先或根目录优先」
+    /// 的顺序尝试两个候选，存在的优先；都不存在时返回首个 attachments/ 候选。
+    fn resolve_attachment_reference(&self, raw: &str, note_path: &str) -> Option<String> {
+        let scheme = regex::Regex::new(r"(?i)^(?:[a-z][a-z\d+.-]*:|//|#)").ok()?;
+        let reference = raw.trim();
+        if reference.is_empty() || scheme.is_match(reference) {
+            return None;
+        }
+        let decoded = percent_decode(reference)?;
+        let reference = decoded
+            .replace('\\', "/")
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        if reference.is_empty() || posix_extname(&reference).is_empty() {
+            return None;
+        }
+        let note_dir = if note_path.is_empty() { "" } else { posix_dirname(note_path) };
+        let joined = if note_dir.is_empty() || note_dir == "." {
+            reference.clone()
+        } else {
+            format!("{note_dir}/{reference}")
+        };
+        let root_reference = normalize_reference(&reference);
+        let relative_reference = normalize_reference(&joined);
+        let root_first =
+            reference.starts_with("attachments/") || reference.starts_with('/');
+        let candidates: Vec<Option<String>> = if root_first {
+            vec![root_reference, relative_reference]
+        } else {
+            vec![relative_reference, root_reference]
+        };
+        for candidate in candidates.iter().flatten() {
+            if !candidate.starts_with("attachments/") {
+                continue;
+            }
+            if self.vault.root().join(candidate).exists() {
+                return Some(candidate.clone());
+            }
+        }
+        candidates
+            .into_iter()
+            .flatten()
+            .find(|candidate| candidate.starts_with("attachments/"))
+    }
+
+    /// 清理 attachments/ 下的空父目录（对齐 Express removeEmptyParents，
+    /// 从被删文件的父目录逐级向上，止于 attachments/ 根本身）。
+    fn remove_empty_parents(&self, relative_dir: &str) {
+        let stop = self.vault.root().join(Self::ATTACHMENT_ROOT);
+        let mut current = self.vault.root().join(relative_dir);
+        while current != stop && current.starts_with(&stop) {
+            let is_empty = std::fs::read_dir(&current)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false);
+            if !is_empty || std::fs::remove_dir(&current).is_err() {
+                break;
+            }
+            let Some(parent) = current.parent().map(|path| path.to_path_buf()) else { break };
+            current = parent;
+        }
+    }
+
     /// 全库扫描笔记正文，构建 附件路径 → 引用来源 的映射。
     /// 引用语法：markdown `![alt](attachments/…)`、链接 `(attachments/…)`、
     /// wiki 嵌入 `![[…]]`（对齐 ATTACHMENT_REFERENCE_RE / WIKI_EMBED_RE 的常见形态）。
@@ -1154,7 +1425,7 @@ pub struct AttachmentEntry {
 }
 
 /// 引用来源（引用附件的笔记）。
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ReferenceSource {
     pub file_path: String,
@@ -1168,6 +1439,259 @@ pub struct AttachmentReferences {
     pub path: String,
     pub referenced: bool,
     pub referenced_by: Vec<ReferenceSource>,
+}
+
+/// 全库文件条目（对齐 Express getVaultFileInfo；mimeType 不在白名单时为 null）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultFileEntry {
+    pub path: String,
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub size: u64,
+    pub modified_at: Option<String>,
+}
+
+/// 引用校验结果（对齐 Express validateReferences）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentValidation {
+    pub references: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// 清理结果（对齐 Express cleanupOrphans）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentCleanup {
+    pub dry_run: bool,
+    pub candidates: Vec<VaultFileEntry>,
+    pub deleted: Vec<String>,
+    pub skipped: Vec<CleanupSkipped>,
+}
+
+/// 清理跳过项：文件信息 + 原因（error 或 referencedBy，对齐 Express skipped 形状）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupSkipped {
+    #[serde(flatten)]
+    pub file: VaultFileEntry,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub referenced_by: Option<Vec<ReferenceSource>>,
+}
+
+/// 下载负载（Express 为文件流；命令面以 base64 承载二进制）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultDownload {
+    pub path: String,
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub size: u64,
+    pub base64: String,
+}
+
+/// Express MIME_BY_EXTENSION 全量白名单（vault_files_list / validate / cleanup 共用口径）。
+fn vault_file_mime(extension: &str) -> Option<&'static str> {
+    match extension {
+        "avif" => Some("image/avif"),
+        "csv" => Some("text/csv"),
+        "doc" => Some("application/msword"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "gif" => Some("image/gif"),
+        "jpeg" | "jpg" => Some("image/jpeg"),
+        "json" => Some("application/json"),
+        "mp3" => Some("audio/mpeg"),
+        "mp4" => Some("video/mp4"),
+        "pdf" => Some("application/pdf"),
+        "png" => Some("image/png"),
+        "svg" => Some("image/svg+xml"),
+        "txt" => Some("text/plain"),
+        "wav" => Some("audio/wav"),
+        "webm" => Some("video/webm"),
+        "webp" => Some("image/webp"),
+        "xls" => Some("application/vnd.ms-excel"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        _ => None,
+    }
+}
+
+/// 笔记类扩展名（不参与全库文件列表/下载），对齐 Express NOTE_FILE_EXTENSIONS。
+fn is_note_extension(extension: &str) -> bool {
+    matches!(extension, "md" | "markdown" | "canvas")
+}
+
+/// 可见性判定（对齐 Express isVisibleVaultPath）：无点开头段、无 node_modules、
+/// 无 .tmp 结尾段，且不是笔记类文件。
+fn is_visible_vault_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    if normalized.is_empty() {
+        return false;
+    }
+    if normalized.split('/').any(|part| {
+        part.starts_with('.') || part.eq_ignore_ascii_case("node_modules") || part.ends_with(".tmp")
+    }) {
+        return false;
+    }
+    !is_note_extension(
+        posix_extname(&normalized)
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str(),
+    )
+}
+
+/// 递归收集全库非笔记文件（对齐 Express walkVaultFiles）：跳过点开头条目、
+/// .tmp 文件与 node_modules 目录；stat 瞬时失败的单项跳过而非整体失败。
+fn walk_vault_files(root: &Path, directory: &Path, entries: &mut Vec<VaultFileEntry>) {
+    let Ok(children) = std::fs::read_dir(directory) else { return };
+    for child in children.flatten() {
+        let name = child.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name.ends_with(".tmp") || name.eq_ignore_ascii_case("node_modules") {
+            continue;
+        }
+        let Ok(file_type) = child.file_type() else { continue };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            walk_vault_files(root, &child.path(), entries);
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let extension = posix_extname(&name).trim_start_matches('.').to_ascii_lowercase();
+        if is_note_extension(&extension) {
+            continue;
+        }
+        let absolute = child.path();
+        let Ok(relative) = absolute.strip_prefix(root) else { continue };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let Ok(metadata) = child.metadata() else { continue };
+        entries.push(VaultFileEntry {
+            name,
+            path: relative,
+            mime_type: vault_file_mime(&extension).map(str::to_owned),
+            size: metadata.len(),
+            modified_at: modified_iso(&metadata),
+        });
+    }
+}
+
+/// stat.mtime → ISO-8601 UTC（对齐 Express stat.mtime.toISOString()）。
+fn modified_iso(metadata: &std::fs::Metadata) -> Option<String> {
+    let millis = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    Some(crate::time::iso8601_utc(millis))
+}
+
+/// posix.extname 等价物：取最后一段 basename 的最后一个 '.' 起子串；
+/// 前导点（.gitignore）与无点（README）都返回空串。
+fn posix_extname(path: &str) -> &str {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    match base.rfind('.') {
+        Some(index) if index > 0 => &base[index..],
+        _ => "",
+    }
+}
+
+/// posix.dirname 等价物（仅用于引用解析的笔记目录拼接）。
+fn posix_dirname(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(index) => &path[..index],
+        None => ".",
+    }
+}
+
+/// 引用路径规范化（对齐 Express normalizeReference）：剥前导 '/'，
+/// 折叠 '.'/重复斜杠，'..' 逃逸出根的一律拒绝。
+fn normalize_reference(value: &str) -> Option<String> {
+    let normalized = value.trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() || normalized.starts_with("../") || normalized.contains("/../") {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+/// 严格百分号解码（对齐 decodeURIComponent）：非法 % 序列或非 UTF-8 返回 None；'+' 不变空格。
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            let hi = (hex[0] as char).to_digit(16)?;
+            let lo = (hex[1] as char).to_digit(16)?;
+            output.push((hi * 16 + lo) as u8);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(output).ok()
+}
+
+/// 剔除代码区段（对齐 Express vault.attachments.js 的 stripCode）：
+/// 围栏代码块（```/~~~）与行内代码整体移除，避免把示例当引用。
+fn strip_code_spans(source: &str) -> String {
+    let fenced = regex::Regex::new(r"```[\s\S]*?```|~~~[\s\S]*?~~~");
+    let inline = regex::Regex::new(r"`[^`\n]*`");
+    let source = match fenced {
+        Ok(pattern) => pattern.replace_all(source, "").into_owned(),
+        Err(_) => source.to_owned(),
+    };
+    match inline {
+        Ok(pattern) => pattern.replace_all(&source, "").into_owned(),
+        Err(_) => source,
+    }
+}
+
+/// Windows 上附件常被预览窗格/杀软短暂占用：最多 3 次尝试、间隔 120ms；
+/// ENOENT 视为已删除（对齐 Express unlinkWithRetry）。
+fn remove_file_with_retry(path: &Path) -> Result<(), std::io::Error> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                if attempt >= 3 {
+                    return Err(if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        std::io::Error::new(
+                            error.kind(),
+                            "文件正被其他程序占用，无法删除，请稍后重试",
+                        )
+                    } else {
+                        error
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+        }
+    }
 }
 
 /// raw 全文哈希（与 Vault::write 的内容哈希同口径）。
@@ -1351,5 +1875,106 @@ mod tests {
         let json = serde_json::to_value(&error).unwrap();
         assert_eq!(json["code"], "CONFLICT");
         assert_eq!(json["message"], "内容已变化");
+    }
+
+    fn write_file(root: &Path, relative: &str, bytes: &[u8]) {
+        let target = root.join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, bytes).unwrap();
+    }
+
+    #[test]
+    fn vault_files_list_excludes_notes_hidden_tmp_and_node_modules() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "note.md", b"md");
+        write_file(directory.path(), "board.canvas", b"{}");
+        write_file(directory.path(), "docs/paper.pdf", b"pdf");
+        write_file(directory.path(), "node_modules/pkg/index.js", b"js");
+        write_file(directory.path(), ".hidden/secret.txt", b"txt");
+        write_file(directory.path(), "scratch.tmp", b"tmp");
+        write_file(directory.path(), "attachments/pic.png", b"png");
+        write_file(directory.path(), "data.bin", b"bin");
+        let paths: Vec<String> = service
+            .vault_files_list()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert_eq!(paths, vec!["attachments/pic.png", "data.bin", "docs/paper.pdf"]);
+        let entries = service.vault_files_list().unwrap();
+        assert_eq!(entries[0].mime_type.as_deref(), Some("image/png"));
+        assert_eq!(entries[1].mime_type, None, "未知扩展名 mimeType 应为 null");
+        assert!(entries[2].modified_at.is_some(), "modifiedAt 应为 ISO 时间");
+    }
+
+    #[test]
+    fn attachment_validate_reports_references_and_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "attachments/exists.png", b"png");
+        let content = "[link](attachments/exists.png)\n\
+            ![img](attachments/missing.png)\n\
+            [ext](https://example.com/x.png)\n\
+            ![[attachments/exists.png]]\n\
+            `(attachments/fake.png)`\n";
+        let outcome = service.attachment_validate(content, "").unwrap();
+        assert_eq!(
+            outcome.references,
+            vec!["attachments/exists.png", "attachments/missing.png"],
+            "外部协议与行内代码不应计入，重复引用应去重"
+        );
+        assert_eq!(outcome.missing, vec!["attachments/missing.png"]);
+    }
+
+    #[test]
+    fn attachment_cleanup_respects_confirmation_and_keeps_referenced() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "attachments/orphan.png", b"orphan");
+        write_file(directory.path(), "attachments/used.png", b"used");
+        write_file(directory.path(), "attachments/note.txt", b"txt");
+        service
+            .write("a.md", &note_raw("![used](attachments/used.png)"), None, "test")
+            .unwrap();
+
+        let preview = service.attachment_cleanup(true, false, false).unwrap();
+        assert!(preview.dry_run);
+        let candidates: Vec<&str> = preview.candidates.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(candidates, vec!["attachments/note.txt", "attachments/orphan.png"]);
+
+        let rejected = service.attachment_cleanup(false, true, false).unwrap_err();
+        assert_eq!(rejected.code, "CONFIRMATION_REQUIRED");
+
+        let outcome = service.attachment_cleanup(false, true, true).unwrap();
+        assert!(!outcome.dry_run);
+        assert_eq!(outcome.deleted, vec!["attachments/note.txt", "attachments/orphan.png"]);
+        assert!(outcome.skipped.is_empty());
+        assert!(!directory.path().join("attachments/orphan.png").exists());
+        assert!(!directory.path().join("attachments/note.txt").exists());
+        assert!(directory.path().join("attachments/used.png").exists(), "被引用附件必须保留");
+    }
+
+    #[test]
+    fn vault_download_reads_visible_files_and_rejects_others() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "docs/report.pdf", b"%PDF-fake");
+        let download = service.vault_download("docs/report.pdf").unwrap();
+        assert_eq!(download.name, "report.pdf");
+        assert_eq!(download.mime_type.as_deref(), Some("application/pdf"));
+        assert_eq!(download.size, 9);
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&download.base64)
+            .unwrap();
+        assert_eq!(bytes, b"%PDF-fake");
+
+        let note = service.vault_download("note.md").unwrap_err();
+        assert_eq!(note.code, "VALIDATION");
+        let traversal = service.vault_download("../outside.png").unwrap_err();
+        assert_eq!(traversal.code, "VALIDATION");
+        let missing = service.vault_download("attachments/missing.png").unwrap_err();
+        assert_eq!(missing.code, "NOT_FOUND");
     }
 }

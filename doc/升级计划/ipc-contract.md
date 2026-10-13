@@ -48,14 +48,14 @@
 |---|---|---|---|---|---|---|
 | GET | `/api/vault/info` | — | `{data:{vaultDir,mode,profile,profilePath,profileStatus,profileWarning}}` | vault/profile | `vault_info`（已实现，需补 profile 字段） | ✅/⬜ |
 | PUT | `/api/vault/profile` | body: `paths{inbox,daily,journal}, confirmed, secondConfirmed` | 同上 | vault/profile | `vault_profile_set` | ⬜ |
-| GET | `/api/vault/attachments` | — | `{data:[附件]}` | vault.attachments | `vault_attachments_list` | ⬜ |
-| GET | `/api/vault/files` | — | `{data:[文件]}` | vault.attachments | `vault_files_list` | ⬜ |
-| GET | `/api/vault/download` | query: `path` | **二进制下载** | vault.attachments | `vault_read_asset`（已实现） | ✅ |
-| POST | `/api/vault/attachments` | **raw body**≤25MB；query: `name, folder?, confirmed…` | 201 | vault.attachments | `vault_attachment_upload`（参数改字节数组） | ⬜ |
-| GET | `/api/vault/attachments/references` | query: `path` | `{data:[引用]}` | vault.attachments | `vault_attachment_references` | ⬜ |
-| POST | `/api/vault/attachments/validate` | body: `content≤200万, filePath?` | 校验结果 | vault.attachments | `vault_attachment_validate` | ⬜ |
-| POST | `/api/vault/attachments/cleanup` | body: `dryRun, confirmed, secondConfirmed` | 清理结果 | vault.attachments | `vault_attachment_cleanup` | ⬜ |
-| DELETE | `/api/vault/attachments` | query: `path, confirmed, secondConfirmed` | 删除结果 | vault.attachments | `vault_attachment_delete` | ⬜ |
+| GET | `/api/vault/attachments` | — | `{data:[附件]}` | vault.attachments | `vault_attachments_list` | ✅ |
+| GET | `/api/vault/files` | — | `{data:[文件]}` | vault.attachments | `vault_files_list` | ✅ |
+| GET | `/api/vault/download` | query: `path` | **二进制下载** | vault.attachments | `vault_download`（批次6 新增，原记 vault_read_asset 有误） | ✅ |
+| POST | `/api/vault/attachments` | **raw body**≤25MB；query: `name, folder?, confirmed…` | 201 | vault.attachments | `vault_attachment_upload`（参数改字节数组） | ✅ |
+| GET | `/api/vault/attachments/references` | query: `path` | `{data:[引用]}` | vault.attachments | `vault_attachment_references` | ✅ |
+| POST | `/api/vault/attachments/validate` | body: `content≤200万, filePath?` | 校验结果 | vault.attachments | `vault_attachment_validate` | ✅ |
+| POST | `/api/vault/attachments/cleanup` | body: `dryRun, confirmed, secondConfirmed` | 清理结果 | vault.attachments | `vault_attachment_cleanup` | ✅ |
+| DELETE | `/api/vault/attachments` | query: `path, confirmed, secondConfirmed` | 删除结果 | vault.attachments | `vault_attachment_delete` | ✅ |
 | GET | `/api/vault/attachment` | query: `path` | **二进制**（SVG 强制 attachment 防 XSS） | vault.attachments | `vault_read_asset`（已实现） | ✅ |
 | GET | `/api/vault/assets` | — | `{data:[资产]}` | vault.service | `vault_assets_list` | ⬜ |
 | GET | `/api/vault/asset` | query: `path` | **二进制图片** | vault.service | `vault_read_asset`（已实现） | ✅ |

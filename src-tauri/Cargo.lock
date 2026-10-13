@@ -1789,6 +1789,7 @@ name = "lattice"
 version = "0.1.5"
 dependencies = [
  "base64 0.22.1",
+ "embed-resource",
  "fs2",
  "log",
  "notify",

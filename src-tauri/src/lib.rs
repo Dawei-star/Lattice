@@ -28,8 +28,9 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 use vault::{NoteContents, NoteFile, VaultInfo};
 use workspace::{
-    AttachmentEntry, AttachmentReferences, CanvasDocument, HistoryEntry, HistorySnapshot,
-    ServiceError, WorkspaceService,
+    AttachmentCleanup, AttachmentEntry, AttachmentReferences, AttachmentValidation,
+    CanvasDocument, HistoryEntry, HistorySnapshot, ServiceError, VaultDownload, VaultFileEntry,
+    WorkspaceService,
 };
 
 pub struct WorkspaceState(pub RwLock<WorkspaceService>);
@@ -107,7 +108,11 @@ pub fn run() {
             vault_attachments_list,
             vault_attachment_upload,
             vault_attachment_delete,
-            vault_attachment_references
+            vault_attachment_references,
+            vault_files_list,
+            vault_attachment_validate,
+            vault_attachment_cleanup,
+            vault_download
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -525,6 +530,46 @@ fn vault_attachment_references(
     path: String,
 ) -> Result<AttachmentReferences, String> {
     with_workspace(state, |workspace| workspace.attachment_references(&path))
+}
+
+#[tauri::command]
+fn vault_files_list(state: State<'_, WorkspaceState>) -> Result<Vec<VaultFileEntry>, String> {
+    with_workspace(state, |workspace| workspace.vault_files_list())
+}
+
+#[tauri::command]
+fn vault_attachment_validate(
+    state: State<'_, WorkspaceState>,
+    content: String,
+    file_path: Option<String>,
+) -> Result<AttachmentValidation, String> {
+    with_workspace(state, |workspace| {
+        workspace.attachment_validate(&content, file_path.as_deref().unwrap_or(""))
+    })
+}
+
+#[tauri::command]
+fn vault_attachment_cleanup(
+    state: State<'_, WorkspaceState>,
+    dry_run: Option<bool>,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<AttachmentCleanup, String> {
+    with_workspace(state, |workspace| {
+        workspace.attachment_cleanup(
+            dry_run.unwrap_or(true),
+            confirmed.unwrap_or(false),
+            second_confirmed.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn vault_download(
+    state: State<'_, WorkspaceState>,
+    path: String,
+) -> Result<VaultDownload, String> {
+    with_workspace(state, |workspace| workspace.vault_download(&path))
 }
 
 /// 后台扫描执行器：领取 `vault-scan` 任务 → 取消检查 → 增量 reconcile →

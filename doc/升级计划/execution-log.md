@@ -28,7 +28,7 @@
 | P1-01 WorkspaceService | ✅ 完成 | 统一写入边界：单实例锁（VAULT_LOCKED/幂等重开）、JSONL 审计、Express 同构版本快照、ServiceError{code,message} 错误模型；9 个 vault 命令全部经 Service；前端契约文本逐字保持 | `38fad24` |
 | P1-02 SQLite 恢复与迁移 | ✅ 完成 | WAL 自恢复/事务迁移/失败诊断（P0-6 完成）+ 迁移前备份 `.bak-pre-migration`（P1-02 补齐） | `8cba5ac` |
 | P1-03 单实例锁 + watcher + jobs | ✅ 完成 | 单实例锁（P1-01）；持久化 jobs 队列（迁移 002：幂等 key/重试预算/协作取消/启动恢复）；notify watcher 500ms 防抖入队 reconcile；扫描 worker + vault://changed/scanned 事件；新命令 job_list/job_get/job_cancel | `f1100e1` |
-| P1-04 非 AI 命令面迁移 | 🔄 进行中 | **第一批 tags ✅**（`ad945df`：标签提取对齐 Express、迁移 003、`tag_list`）。**第二批 notes 模型 ✅**（`0480386`：frontmatter 解析/字数口径/迁移 004-005/`note_index`；随后 `note_create`：confirmed 闸门、id 幂等、路径递增分配、content 列改为正文口径）。**待办**：note_update/delete、search_query 完整形状、folders/graph/meta、canvas/files/experts/review/attachments | `0480386` 及后续 |
+| P1-04 非 AI 命令面迁移 | 🔄 进行中 | 批次1 tags ✅（`ad945df`）；批次2 notes 模型+`note_create` ✅（`0480386`/`9622709`）；批次3 `note_update`/`note_delete`/`search_query`/links 投影/`graph_build`/`folder_tree`+folders 写命令 ✅（`d2095cc`/`723c60a`/`bb54c1e` 等）；批次4 canvas 5 命令 ✅（`97cc2b6`）；批次5 attachments 核心 4 ✅（`fa76534`）；**批次6 attachments 剩余 4 ✅（本次：`vault_files_list`/`vault_attachment_validate`/`vault_attachment_cleanup`/`vault_download`，50 项 cargo 测试 + clippy -D warnings + 前端契约全绿）**。批次6 偏差与修复：① files 排序按码点（Express 为 zh-CN locale），P1-08 契约对齐时校准；② cleanup 在非 dryRun 删除后补空目录清理（Express 无此行为，属增强）；③ `vault_download` 为新增命令（契约原记 `vault_read_asset` 已更正）；④ 顺带修复批次2 潜伏 bug——`find_note_detail` 列序映射 path/is_pinned 错位导致 found-row 必报错（此前无测试覆盖该路径），新增回归测试常驻；⑤ 根治测试环境 0xC0000139（见 Δ8）。**待办**：files 批 7 命令（read/find/grep/preview/execute/undo/log）、experts 11、review 3 | 见各批次提交 |
 | P1-05~07 前端 TS 化 | ⬜ 未开始 | api→store/lib→组件，strict 渐进开启 | — |
 | P1-08 功能对齐验证 | ⬜ 未开始 | 契约快照对照（fixtures + Rust 集成测试 + 前端 mock invoke） | — |
 | P1-09 删除 Express | ⬜ 未开始 | 依赖 P1-08 全绿 | — |
@@ -45,6 +45,7 @@
 | Δ5 | 契约清单"第二人抽查 10 项"单人执行环境无法满足 | ⚠️ 待补 | 已用逐模块计数自检替代；建议 Gate Review 时由第二人补抽 |
 | Δ6 | 远端 main 落后 v0.1.5（发布线未同步 v0.1.5 提交） | ⚠️ 待决策 | 按 §10.2 Gate Review 后合回；不影响升级执行 |
 | Δ7 | gh CLI 不可用（workflow_dispatch 无法手动触发） | 已绕过 | CI 由 push 触发 |
+| Δ8 | Windows 测试二进制启动即崩 0xC0000139（STATUS_ENTRYPOINT_NOT_FOUND）：tauri 对话框链静态导入 `comctl32!TaskDialogIndirect`，该符号仅由 Common-Controls v6（WinSxS 程序集）导出；tauri-build 只把含 v6 依赖的清单链接进 bins（`cargo:rustc-link-arg-bins`），测试目标仍用 Rust 默认清单（无 v6 依赖），进程加载阶段解析导入失败 | 已解决 | build.rs 以 `WindowsAttributes::new_without_app_manifest()` 接管清单生成，自建 manifest.rc（与 tauri 默认清单同内容）经 `embed_resource::compile_for_everything` 链接进所有目标（bins/tests/examples/benches）；最小 C 复现 + cargo test 双重验证。CI rust-test 在 windows-latest 跑 `cargo test --release`，合并时必遇同问题，此修复为前置保护。TaskDialogIndirect 静态导入的出现时机未完全定论（System32 comctl32.dll 自 2026/5 未变，疑似 10/13 工具链更新后 mingw 导入库/链接行为变化引入，记录为关联性观察） |
 
 ## 回滚与数据安全（要求 #4 核验）
 

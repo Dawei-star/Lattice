@@ -486,8 +486,8 @@ impl Index {
                     title: row.get(1)?,
                     content: row.get(2)?,
                     folder_id: row.get(3)?,
-                    file_path: Some(row.get(4)?),
-                    is_pinned: row.get::<_, i64>(5)? != 0,
+                    file_path: Some(row.get(5)?),
+                    is_pinned: row.get::<_, i64>(4)? != 0,
                     word_count: row.get::<_, i64>(6)? as u64,
                     content_hash: row.get(7)?,
                     properties_json: row.get(8)?,
@@ -1204,6 +1204,35 @@ mod tests {
         assert_eq!(index.search("改写后", 20).unwrap().len(), 1);
         // 正文已整体替换：FTS 里不能再出现旧正文片段
         assert!(index.search("改写前不存在", 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn note_detail_reads_found_row_columns_correctly() {
+        // 回归：found-row 的列序映射（path/is_pinned 相邻易错位，
+        // 批次2~5 无测试覆盖该路径，批次6 由附件引用收集暴露）。
+        let (_directory, vault, index) = workspace();
+        vault
+            .write(
+                "p.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234567\ntitle: 置顶笔记\npinned: true\n---\n\n正文\n",
+                None,
+            )
+            .unwrap();
+        index.scan(&vault).unwrap();
+
+        let detail = index
+            .find_note_detail(Some("019501a2-3b4c-4c5d-89ab-cdef01234567"), None)
+            .unwrap()
+            .expect("按 id 应找到");
+        assert_eq!(detail.file_path.as_deref(), Some("p.md"));
+        assert!(detail.is_pinned);
+        assert!(detail.content.contains("正文"));
+
+        let by_path = index
+            .find_note_detail(None, Some("p.md"))
+            .unwrap()
+            .expect("按路径应找到");
+        assert_eq!(by_path.id, "019501a2-3b4c-4c5d-89ab-cdef01234567");
     }
 
     #[test]
