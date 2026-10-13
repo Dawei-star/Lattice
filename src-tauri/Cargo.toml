@@ -1,0 +1,32 @@
+[package]
+name = "lattice"
+version = "0.1.5"
+description = "Local-first knowledge workspace"
+license = "MulanPSL-2.0"
+repository = "https://github.com/Dawei-star/Lattice"
+edition = "2024"
+rust-version = "1.90"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "lattice_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.12.3", features = [] }
+tauri-plugin-log = "2"
+sha2 = "0.10"
+tempfile = "3"
+walkdir = "2"
+tauri-plugin-dialog = "2"
+base64 = "0.22"
+# bundled：把 SQLite 源码一起编进来，自带 FTS5 + trigram 分词器，
+# 不依赖系统 sqlite3.dll，符合「零外部依赖」的本地优先目标。
+rusqlite = { version = "0.40", features = ["bundled"] }

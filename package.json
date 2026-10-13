@@ -14,6 +14,9 @@
     "dev": "node scripts/dev.mjs",
     "dev:server": "npm --prefix server run dev",
     "dev:web": "npm --prefix web run dev",
+    "dev:desktop": "tauri dev",
+    "build:desktop": "tauri build",
+    "test:desktop": "cargo test --manifest-path src-tauri/Cargo.toml --release",
     "build": "npm --prefix web run build",
     "start": "npm --prefix server run start",
     "test": "npm --prefix server test",
@@ -26,6 +29,9 @@
     "test:fc": "node --test scripts/fc.test.mjs",
     "test:fc:cli": "node scripts/fc-cli-smoke.mjs",
     "test:web": "npm --prefix web run test",
-    "verify": "npm run test:fc && npm --prefix server test && npm --prefix web run test && npm run test:mcp && npm --prefix desktop test"
+    "verify": "npm run test:fc && npm --prefix server test && npm --prefix web run typecheck && npm --prefix web run test && npm run test:mcp && npm run test:desktop"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.2"
   }
 }

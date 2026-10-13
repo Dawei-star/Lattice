@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>格物 Lattice · 单机版顶级架构说明书 v1.1</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f0883e;
+    --accent4: #bc8cff;
+    --accent5: #f778ba;
+    --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.7; }
+
+  /* ===== Hero ===== */
+  .hero {
+    text-align: center;
+    padding: 80px 20px 60px;
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1a2332 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .hero h1 { font-size: 2.4rem; letter-spacing: 2px; }
+  .hero .subtitle { color: var(--text-dim); font-size: 1.1rem; margin-top: 10px; }
+  .hero .badges { display: flex; gap: 12px; justify-content: center; margin-top: 24px; flex-wrap: wrap; }
+  .badge { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 5px 14px; font-size: 0.8rem; font-family: var(--mono); }
+  .badge.green { border-color: var(--accent2); color: var(--accent2); }
+  .badge.blue { border-color: var(--accent); color: var(--accent); }
+  .badge.orange { border-color: var(--accent3); color: var(--accent3); }
+
+  /* ===== Layout ===== */
+  .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+  .container-narrow { max-width: 760px; margin: 0 auto; padding: 40px 20px; }
+
+  /* ===== Section ===== */
+  section { margin-bottom: 64px; }
+  section > h2 {
+    font-size: 1.5rem;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-num {
+    background: var(--accent);
+    color: var(--bg);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.9rem;
+    font-family: var(--mono);
+  }
+  section > h3 { font-size: 1.15rem; color: var(--accent); margin: 24px 0 12px; }
+  section > p, section li { color: var(--text); margin-bottom: 8px; }
+  section ul, section ol { padding-left: 24px; margin-bottom: 12px; }
+
+  /* ===== Table ===== */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9rem; }
+  th { background: var(--card); color: var(--accent); text-align: left; padding: 10px 14px; border: 1px solid var(--border); }
+  td { padding: 8px 14px; border: 1px solid var(--border); }
+  tr:nth-child(even) td { background: rgba(22,27,34,0.5); }
+  .tag { display: inline-block; border-radius: 4px; padding: 1px 6px; font-size: 0.75rem; font-family: var(--mono); }
+  .tag-yes { background: rgba(63,185,80,0.15); color: var(--accent2); border: 1px solid var(--accent2); }
+  .tag-no { background: rgba(248,81,73,0.15); color: #f85149; border: 1px solid #f85149; }
+  .tag-warn { background: rgba(240,136,62,0.15); color: var(--accent3); border: 1px solid var(--accent3); }
+
+  /* ===== Code ===== */
+  pre { background: #010409; border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; overflow-x: auto; margin: 16px 0; }
+  code { font-family: var(--mono); font-size: 0.85rem; line-height: 1.5; }
+  pre code { color: var(--text); }
+  :not(pre) > code { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.85rem; }
+
+  /* ===== Diagram Cards ===== */
+  .diagram-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .diagram-title { text-align: center; font-size: 1.1rem; color: var(--text-dim); margin-bottom: 20px; }
+
+  /* ===== Callout ===== */
+  .callout {
+    background: rgba(88,166,255,0.08);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .callout-warn {
+    background: rgba(240,136,62,0.08);
+    border-left-color: var(--accent3);
+  }
+  .callout p { margin: 0; }
+  .callout-title { font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+  .callout-warn .callout-title { color: var(--accent3); }
+
+  /* ===== Grid ===== */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+  .info-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+  .info-card h4 { color: var(--accent); font-size: 0.95rem; margin-bottom: 8px; }
+
+  /* ===== Footer ===== */
+  footer { text-align: center; padding: 40px 20px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.85rem; }
+
+  /* ===== SVG common ===== */
+  svg text { font-family: var(--sans); }
+</style>
+</head>
+<body>
+
+<!-- ===== HERO ===== -->
+<div class="hero">
+  <h1>格物 Lattice</h1>
+  <div class="subtitle">单机版顶级架构说明书 v1.1</div>
+  <div class="badges">
+    <span class="badge green">Tauri 2</span>
+    <span class="badge blue">BlockSuite</span>
+    <span class="badge orange">Local-First</span>
+    <span class="badge">Mulan PSL v2</span>
+    <span class="badge green">2026.10</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ===== 0. 目录 ===== -->
+<section>
+  <h2><span class="section-num">00</span> 目录</h2>
+  <ol>
+    <li>设计哲学与核心原则</li>
+    <li>架构契约与不变量</li>
+    <li>架构总览图</li>
+    <li>技术选型一览</li>
+    <li>五层架构详解（L1-L5）</li>
+    <li>核心模块设计：编辑器引擎</li>
+    <li>核心模块设计：AI 引擎</li>
+    <li>核心模块设计：插件系统</li>
+    <li>核心模块设计：MCP 双向集成</li>
+    <li>数据架构与存储设计</li>
+    <li>安全设计</li>
+    <li>启动流程</li>
+    <li>项目结构</li>
+    <li>迁移路径</li>
+    <li>与原项目对比</li>
+  </ol>
+</section>
+
+<!-- ===== 1. 设计哲学 ===== -->
+<section>
+  <h2><span class="section-num">01</span> 设计哲学与核心原则</h2>
+  <table>
+    <tr><th width="25%">原则</th><th>含义</th></tr>
+    <tr><td><strong>本地优先</strong></td><td>所有数据存储在用户本地磁盘，断网完全可用，不依赖任何云端服务</td></tr>
+    <tr><td><strong>数据归用户</strong></td><td>笔记以 Markdown 文件直接存于 Vault 目录，可用任意编辑器打开，不锁定在数据库黑盒里</td></tr>
+    <tr><td><strong>核心零服务器</strong></td><td>桌面核心后端运行在 Tauri Rust 进程内；MCP sidecar 和 Ollama 是可选外部运行时</td></tr>
+    <tr><td><strong>AI 可离线</strong></td><td>配置并运行本地 Ollama 后，断网也能用 AI 问答和写作助手；云端模型可选</td></tr>
+    <tr><td><strong>插件受控执行</strong></td><td>QuickJS 只负责脚本运行；权限桥接、签名和高风险进程隔离共同构成安全边界</td></tr>
+    <tr><td><strong>零厂商锁定</strong></td><td>全栈开源，数据格式开放，用户可随时迁移到其他工具</td></tr>
+    <tr><td><strong>不做过度设计</strong></td><td>单机模式不引入协作、同步、移动端，保持架构精简</td></tr>
+  </table>
+</section>
+
+<!-- ===== 1A. 架构契约 ===== -->
+<section>
+  <h2><span class="section-num">01A</span> 架构契约与不变量</h2>
+  <p>以下约束优先于具体实现。实现偏离时，必须先更新本节和对应 ADR。</p>
+  <table>
+    <tr><th width="25%">契约</th><th>定义</th></tr>
+    <tr><td><strong>持久化真源</strong></td><td>Vault 中的 <code>.md</code>、<code>.canvas</code> 和附件是唯一持久化真源；BlockSuite 文档和 SQLite 都是可重建的派生状态。</td></tr>
+    <tr><td><strong>单写入入口</strong></td><td>UI、AI、MCP、插件和外部文件变更最终都经过 Rust <code>WorkspaceService</code>；外部进程不得直接修改 <code>lattice.db</code>。</td></tr>
+    <tr><td><strong>投影一致性</strong></td><td>文件写入成功不等于索引已完成；索引、链接、向量和图谱更新必须有状态、重试和可观测的后台任务。</td></tr>
+    <tr><td><strong>编辑器保真</strong></td><td>Markdown 不支持的语法以原文块或扩展节点保留，禁止静默丢失；互转由固定语料库验证。</td></tr>
+    <tr><td><strong>并发策略</strong></td><td>同一 Vault 默认单实例写入；第二实例和独立 MCP 进程只能通过受控 API 访问，冲突使用内容哈希检测。</td></tr>
+    <tr><td><strong>派生索引</strong></td><td>全文索引、链接、标签、向量和健康检查结果带来源哈希/版本，必要时可删除并从 Vault 重建。</td></tr>
+    <tr><td><strong>隐私边界</strong></td><td>“本地优先”不等于“内容已加密”。启用内容保密时，必须同时覆盖 Markdown、版本快照、附件和索引。</td></tr>
+  </table>
+  <div class="callout">
+    <div class="callout-title">推荐的写入边界</div>
+    <p>桌面 UI、AI、MCP sidecar、插件桥接层和 watcher 都调用 <code>WorkspaceService</code>；它负责 Vault 原子写入、哈希冲突、快照、审计和派生任务排队。sidecar 不直接打开 Vault 或 SQLite。</p>
+  </div>
+</section>
+
+<!-- ===== 2. 架构总览图 ===== -->
+<section>
+  <h2><span class="section-num">02</span> 架构总览图</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">五层正交 + 两面横切</div>
+    <svg viewBox="0 0 900 680" style="width:100%; max-width:900px;">
+      <defs>
+        <linearGradient id="g-l5" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#58a6ff" stop-opacity="0.25"/><stop offset="1" stop-color="#58a6ff" stop-opacity="0.05"/></linearGradient>
+        <linearGradient id="g-l4" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3fb950" stop-opacity="0.25"/><stop offset="1" stop-color="#3fb950" stop-opacity="0.05"/></linearGradient>
+        <linearGradient id="g-l3" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#f0883e" stop-opacity="0.25"/><stop offset="1" stop-color="#f0883e" stop-opacity="0.05"/></linearGradient>
+        <linearGradient id="g-l2" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#bc8cff" stop-opacity="0.25"/><stop offset="1" stop-color="#bc8cff" stop-opacity="0.05"/></linearGradient>
+        <linearGradient id="g-l1" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#f778ba" stop-opacity="0.25"/><stop offset="1" stop-color="#f778ba" stop-opacity="0.05"/></linearGradient>
+      </defs>
+
+      <!-- L5 -->
+      <rect x="0" y="0" width="700" height="100" rx="8" fill="url(#g-l5)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="20" y="28" fill="#58a6ff" font-size="14" font-weight="bold">L5 表现层 Presentation</text>
+      <rect x="20" y="40" width="150" height="44" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="95" y="58" text-anchor="middle" fill="#e6edf3" font-size="12">Tauri 桌面</text>
+      <text x="95" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Win/Mac/Linux</text>
+      <rect x="185" y="40" width="150" height="44" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="260" y="58" text-anchor="middle" fill="#e6edf3" font-size="12">React + TS</text>
+      <text x="260" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Vite 5 / Zustand</text>
+      <rect x="350" y="40" width="150" height="44" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="425" y="58" text-anchor="middle" fill="#e6edf3" font-size="12">静态导出</text>
+      <text x="425" y="74" text-anchor="middle" fill="#8b949e" font-size="10">HTML/PDF/站点</text>
+      <rect x="515" y="40" width="165" height="44" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="597" y="58" text-anchor="middle" fill="#e6edf3" font-size="12">主题系统</text>
+      <text x="597" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Tailwind + CSS Var</text>
+
+      <!-- IPC arrow -->
+      <line x1="350" y1="100" x2="350" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="360" y="112" fill="#8b949e" font-size="9">IPC</text>
+
+      <!-- L4 -->
+      <rect x="0" y="118" width="700" height="100" rx="8" fill="url(#g-l4)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="20" y="146" fill="#3fb950" font-size="14" font-weight="bold">L4 应用层 Applications</text>
+      <rect x="20" y="158" width="100" height="44" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="70" y="184" text-anchor="middle" fill="#e6edf3" font-size="12">笔记</text>
+      <rect x="135" y="158" width="100" height="44" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="185" y="184" text-anchor="middle" fill="#e6edf3" font-size="12">白板 Canvas</text>
+      <rect x="250" y="158" width="100" height="44" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="300" y="184" text-anchor="middle" fill="#e6edf3" font-size="12">图谱 Graph</text>
+      <rect x="365" y="158" width="100" height="44" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="415" y="184" text-anchor="middle" fill="#e6edf3" font-size="12">Inbox</text>
+      <rect x="480" y="158" width="100" height="44" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="530" y="184" text-anchor="middle" fill="#e6edf3" font-size="12">AI 助手</text>
+      <rect x="595" y="158" width="85" height="44" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="637" y="184" text-anchor="middle" fill="#e6edf3" font-size="12">设置</text>
+
+      <!-- L3 -->
+      <rect x="0" y="236" width="700" height="120" rx="8" fill="url(#g-l3)" stroke="#f0883e" stroke-width="1.5"/>
+      <text x="20" y="264" fill="#f0883e" font-size="14" font-weight="bold">L3 能力层 Capabilities</text>
+      <rect x="20" y="276" width="130" height="68" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="85" y="300" text-anchor="middle" fill="#e6edf3" font-size="12">AI 引擎</text>
+      <text x="85" y="316" text-anchor="middle" fill="#8b949e" font-size="9">混合检索 RAG</text>
+      <text x="85" y="330" text-anchor="middle" fill="#8b949e" font-size="9">写作助手 Agent</text>
+      <rect x="165" y="276" width="110" height="68" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="220" y="300" text-anchor="middle" fill="#e6edf3" font-size="12">MCP 双向</text>
+      <text x="220" y="316" text-anchor="middle" fill="#8b949e" font-size="9">Server + Client</text>
+      <text x="220" y="330" text-anchor="middle" fill="#8b949e" font-size="9">12+ 插件</text>
+      <rect x="290" y="276" width="110" height="68" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="345" y="300" text-anchor="middle" fill="#e6edf3" font-size="12">全文搜索</text>
+      <text x="345" y="316" text-anchor="middle" fill="#8b949e" font-size="9">FTS5 trigram</text>
+      <text x="345" y="330" text-anchor="middle" fill="#8b949e" font-size="9">中文子串</text>
+      <rect x="415" y="276" width="110" height="68" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="470" y="300" text-anchor="middle" fill="#e6edf3" font-size="12">插件运行时</text>
+      <text x="470" y="316" text-anchor="middle" fill="#8b949e" font-size="9">QuickJS 沙箱</text>
+      <text x="470" y="330" text-anchor="middle" fill="#8b949e" font-size="9">权限模型</text>
+      <rect x="540" y="276" width="140" height="68" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="610" y="300" text-anchor="middle" fill="#e6edf3" font-size="12">知识健康</text>
+      <text x="610" y="316" text-anchor="middle" fill="#8b949e" font-size="9">悬空链接/孤立</text>
+      <text x="610" y="330" text-anchor="middle" fill="#8b949e" font-size="9">Review</text>
+
+      <!-- L2 -->
+      <rect x="0" y="374" width="700" height="100" rx="8" fill="url(#g-l2)" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="20" y="402" fill="#bc8cff" font-size="14" font-weight="bold">L2 引擎层 Engine</text>
+      <rect x="20" y="414" width="160" height="50" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="100" y="435" text-anchor="middle" fill="#e6edf3" font-size="12">BlockSuite</text>
+      <text x="100" y="452" text-anchor="middle" fill="#8b949e" font-size="9">块编辑器 + 白板统一</text>
+      <rect x="195" y="414" width="150" height="50" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="270" y="435" text-anchor="middle" fill="#e6edf3" font-size="12">双链引擎</text>
+      <text x="270" y="452" text-anchor="middle" fill="#8b949e" font-size="9">[[]] / ![[]]</text>
+      <rect x="360" y="414" width="150" height="50" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="435" y="435" text-anchor="middle" fill="#e6edf3" font-size="12">事件总线</text>
+      <text x="435" y="452" text-anchor="middle" fill="#8b949e" font-size="9">发布订阅</text>
+      <rect x="525" y="414" width="155" height="50" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="602" y="435" text-anchor="middle" fill="#e6edf3" font-size="12">Markdown 互转</text>
+      <text x="602" y="452" text-anchor="middle" fill="#8b949e" font-size="9">Block <-> .md</text>
+
+      <!-- L1 -->
+      <rect x="0" y="492" width="700" height="100" rx="8" fill="url(#g-l1)" stroke="#f778ba" stroke-width="1.5"/>
+      <text x="20" y="520" fill="#f778ba" font-size="14" font-weight="bold">L1 数据层 Storage</text>
+      <rect x="20" y="532" width="130" height="50" rx="6" fill="#161b22" stroke="#f778ba" stroke-width="1"/>
+      <text x="85" y="553" text-anchor="middle" fill="#e6edf3" font-size="12">SQLite</text>
+      <text x="85" y="570" text-anchor="middle" fill="#8b949e" font-size="9">FTS5 + sqlite-vec</text>
+      <rect x="165" y="532" width="130" height="50" rx="6" fill="#161b22" stroke="#f778ba" stroke-width="1"/>
+      <text x="230" y="553" text-anchor="middle" fill="#e6edf3" font-size="12">文件系统</text>
+      <text x="230" y="570" text-anchor="middle" fill="#8b949e" font-size="9">Vault .md/.canvas</text>
+      <rect x="310" y="532" width="120" height="50" rx="6" fill="#161b22" stroke="#f778ba" stroke-width="1"/>
+      <text x="370" y="553" text-anchor="middle" fill="#e6edf3" font-size="12">加密</text>
+      <text x="370" y="570" text-anchor="middle" fill="#8b949e" font-size="9">AES-256-GCM</text>
+      <rect x="445" y="532" width="120" height="50" rx="6" fill="#161b22" stroke="#f778ba" stroke-width="1"/>
+      <text x="505" y="553" text-anchor="middle" fill="#e6edf3" font-size="12">版本快照</text>
+      <text x="505" y="570" text-anchor="middle" fill="#8b949e" font-size="9">增量备份</text>
+      <rect x="580" y="532" width="100" height="50" rx="6" fill="#161b22" stroke="#f778ba" stroke-width="1"/>
+      <text x="630" y="553" text-anchor="middle" fill="#e6edf3" font-size="12">Keychain</text>
+      <text x="630" y="570" text-anchor="middle" fill="#8b949e" font-size="9">凭证存储</text>
+
+      <!-- Cross-cutting: Security -->
+      <rect x="710" y="0" width="180" height="296" rx="8" fill="rgba(248,81,73,0.08)" stroke="#f85149" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="800" y="25" text-anchor="middle" fill="#f85149" font-size="13" font-weight="bold">横切面 A</text>
+      <text x="800" y="42" text-anchor="middle" fill="#f85149" font-size="11">安全治理</text>
+      <text x="730" y="65" fill="#e6edf3" font-size="10">- Markdown 消毒器 (XSS)</text>
+      <text x="730" y="85" fill="#e6edf3" font-size="10">- MCP 默认只读</text>
+      <text x="730" y="105" fill="#e6edf3" font-size="10">- AI 写入审计 + 撤销</text>
+      <text x="730" y="125" fill="#e6edf3" font-size="10">- 插件权限沙箱</text>
+      <text x="730" y="145" fill="#e6edf3" font-size="10">- 凭证系统 Keychain</text>
+      <text x="730" y="165" fill="#e6edf3" font-size="10">- 非回环地址强制 Token</text>
+      <text x="730" y="185" fill="#e6edf3" font-size="10">- SQL 白名单只读</text>
+      <text x="730" y="205" fill="#e6edf3" font-size="10">- viewer 禁止 MCP 写入</text>
+      <text x="730" y="225" fill="#e6edf3" font-size="10">- AI 路由二次认证</text>
+      <text x="730" y="245" fill="#e6edf3" font-size="10">- 不可信内容隔离</text>
+      <text x="730" y="265" fill="#e6edf3" font-size="10">- 操作审计日志</text>
+      <text x="730" y="285" fill="#e6edf3" font-size="10">- IP 私网检测</text>
+
+      <!-- Cross-cutting: Observability -->
+      <rect x="710" y="310" width="180" height="282" rx="8" fill="rgba(139,148,158,0.08)" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="800" y="335" text-anchor="middle" fill="#8b949e" font-size="13" font-weight="bold">横切面 B</text>
+      <text x="800" y="352" text-anchor="middle" fill="#8b949e" font-size="11">可观测 + i18n</text>
+      <text x="730" y="375" fill="#e6edf3" font-size="10">- 结构化日志</text>
+      <text x="730" y="395" fill="#e6edf3" font-size="10">- 性能埋点</text>
+      <text x="730" y="415" fill="#e6edf3" font-size="10">- 错误收集 + 崩溃报告</text>
+      <text x="730" y="435" fill="#e6edf3" font-size="10">- 健康检查端点</text>
+      <text x="730" y="455" fill="#e6edf3" font-size="10">- 自动更新检查</text>
+      <text x="730" y="475" fill="#e6edf3" font-size="10">- 多语言 (zh/en)</text>
+      <text x="730" y="495" fill="#e6edf3" font-size="10">- 无障碍 (A11y)</text>
+      <text x="730" y="515" fill="#e6edf3" font-size="10">- 遥测 (可关闭)</text>
+      <text x="730" y="535" fill="#e6edf3" font-size="10">- 数据库迁移</text>
+      <text x="730" y="555" fill="#e6edf3" font-size="10">- 索引一致性检查</text>
+      <text x="730" y="575" fill="#e6edf3" font-size="10">- SQLite checkpoint 与恢复诊断</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ===== 3. 技术选型 ===== -->
+<section>
+  <h2><span class="section-num">03</span> 技术选型一览</h2>
+  <table>
+    <tr><th>层</th><th>组件</th><th>选型</th><th>替代原项目</th><th>选型理由</th></tr>
+    <tr><td rowspan="3">L5 表现层</td><td>桌面壳</td><td><strong>Tauri 2</strong></td><td>Electron</td><td>包体 15MB vs 150MB，内存降 60%，原生性能，一套代码出三平台</td></tr>
+    <tr><td>前端框架</td><td>React 18 + TypeScript</td><td>React + JS</td><td>类型安全，可维护性大幅提升</td></tr>
+    <tr><td>状态管理</td><td>Zustand</td><td>Preact Signals</td><td>主流生态，TS 友好，调试工具丰富</td></tr>
+    <tr><td rowspan="2">L4 应用层</td><td>路由</td><td>无（两视图内嵌）</td><td>同</td><td>笔记+图谱两视图，不需要路由库</td></tr>
+    <tr><td>样式</td><td>Tailwind + CSS Variables</td><td>散落 styles.css</td><td>主题系统统一，暗色/亮色切换</td></tr>
+    <tr><td rowspan="4">L3 能力层</td><td>AI Provider</td><td>OpenAI 兼容 + Ollama</td><td>仅云端 OpenAI</td><td>本地模型可离线，隐私优先</td></tr>
+    <tr><td>向量检索</td><td>sqlite-vec（集成 spike 后定同库/分库）</td><td>外部服务</td><td>带模型/来源版本；全文检索始终可用</td></tr>
+    <tr><td>插件沙箱</td><td>QuickJS + 最小权限桥接</td><td>无</td><td>高风险插件可独立进程，需签名和资源限制</td></tr>
+    <tr><td>MCP</td><td>lattice-mcp sidecar + 本地 RPC</td><td>Node stdio</td><td>sidecar 不直接打开 Vault 或 SQLite</td></tr>
+    <tr><td rowspan="2">L2 引擎层</td><td>编辑器</td><td><strong>BlockSuite</strong></td><td>自研 marked</td><td>开源块编辑器天花板，统一笔记+白板数据模型</td></tr>
+    <tr><td>双链引擎</td><td>BlockSuite 扩展</td><td>自研</td><td>[[双链]] ![[嵌入]] 作为自定义 Block</td></tr>
+    <tr><td rowspan="4">L1 数据层</td><td>主数据库</td><td>SQLite (rusqlite bundled)</td><td>node:sqlite</td><td>FTS5 全文检索保留，Rust 侧原生驱动</td></tr>
+    <tr><td>文件存储</td><td>Vault 文件系统</td><td>同（保留）</td><td>Markdown 直接存磁盘，用户可控</td></tr>
+    <tr><td>加密</td><td>AES-256-GCM</td><td>safeStorage</td><td>可选整库加密，密钥存系统 Keychain</td></tr>
+    <tr><td>版本控制</td><td>增量快照</td><td>时间戳备份</td><td>省空间，可回溯任意版本</td></tr>
+  </table>
+</section>
+
+<!-- ===== 4. 五层详解 ===== -->
+<section>
+  <h2><span class="section-num">04</span> 五层架构详解</h2>
+
+  <h3>L1 数据层 Storage</h3>
+  <p>Vault 文件是用户数据的持久化真源；SQLite、向量和图谱都是可删除重建的派生投影。所有读写都由受控服务访问，不直接暴露给前端或插件。</p>
+  <table>
+    <tr><th>组件</th><th>职责</th><th>关键设计</th></tr>
+    <tr><td>SQLite</td><td>索引、标签、AI 配置、MCP 审计、笔记元数据</td><td>FTS5 trigram 分词（中文子串匹配）+ sqlite-vec 向量索引同库</td></tr>
+    <tr><td>文件系统</td><td>Markdown 原文、Canvas 白板、图片附件</td><td>用户可直接用其他编辑器打开，不锁定在数据库</td></tr>
+    <tr><td>加密</td><td>API Key 密文存储；可选内容加密</td><td>密钥用系统 Keychain；内容加密需覆盖 Markdown、附件、快照和索引</td></tr>
+    <tr><td>版本快照</td><td>笔记历史版本与恢复</td><td>增量 diff + 完整快照、来源哈希和保留策略</td></tr>
+  </table>
+
+  <h3>L2 引擎层 Engine</h3>
+  <p>核心引擎，提供编辑器、双链、事件分发等基础能力。</p>
+  <table>
+    <tr><th>组件</th><th>职责</th><th>关键设计</th></tr>
+    <tr><td>BlockSuite</td><td>块编辑器运行时投影</td><td>Page/Edgeless；不取代 Markdown/.canvas 真源</td></tr>
+    <tr><td>双链引擎</td><td><code>[[标题]]</code> 双向链接 / <code>![[标题]]</code> 嵌入引用</td><td>作为 BlockSuite 自定义 Block 实现，支持嵌套+循环检测</td></tr>
+    <tr><td>事件总线</td><td>模块间解耦通信</td><td>发布订阅模式，笔记变更→索引更新→图谱刷新→AI 增量</td></tr>
+    <tr><td>Markdown 互转</td><td>BlockSuite 投影 ↔ .md 文件</td><td>未知块保留原文，以语义往返测试作为门禁</td></tr>
+  </table>
+
+  <h3>L3 能力层 Capabilities</h3>
+  <p>具体业务能力，调用 L2 引擎和 L1 数据。</p>
+  <table>
+    <tr><th>组件</th><th>职责</th><th>关键设计</th></tr>
+    <tr><td>AI 引擎</td><td>混合检索 RAG、写作助手、Agent 任务模式</td><td>FTS5 + 向量 + 可版本化 RRF 参数，来源引用</td></tr>
+    <tr><td>MCP 双向</td><td>sidecar Server（暴露笔记能力）+ Client（调用外部工具）</td><td>默认只读；按客户端/工具/路径授权并审计</td></tr>
+    <tr><td>全文搜索</td><td>中文全文检索</td><td>FTS5 trigram + LIKE 兜底；AI 分块参数版本化</td></tr>
+    <tr><td>插件运行时</td><td>第三方插件加载与隔离</td><td>QuickJS + 最小权限桥接；高风险能力独立进程</td></tr>
+    <tr><td>知识健康</td><td>悬空链接、孤立笔记、重复检测</td><td>Review 中心，定期扫描，可修复</td></tr>
+  </table>
+
+  <h3>L4 应用层 Applications</h3>
+  <p>面向用户的功能模块，组合 L3 能力。</p>
+  <table>
+    <tr><th>模块</th><th>功能</th></tr>
+    <tr><td>笔记</td><td>编辑/预览/分栏三模式，900ms 静默自动保存，多标签页</td></tr>
+    <tr><td>白板</td><td>Canvas 画布，兼容 Obsidian .canvas 格式</td></tr>
+    <tr><td>图谱</td><td>力导向布局，按度数缩放，双链可视化</td></tr>
+    <tr><td>Inbox</td><td>待整理/整理中/已处理，AI 整理建议</td></tr>
+    <tr><td>AI 助手</td><td>流式对话、知识库问答、写作助手、每日摘要</td></tr>
+    <tr><td>设置</td><td>AI 模型配置、MCP 插件市场、主题、导入导出</td></tr>
+  </table>
+
+  <h3>L5 表现层 Presentation</h3>
+  <table>
+    <tr><th>平台</th><th>技术</th><th>说明</th></tr>
+    <tr><td>桌面</td><td>Tauri 2</td><td>Windows/macOS/Linux 原生窗口，系统托盘，自动更新</td></tr>
+    <tr><td>静态导出</td><td>TypeScript 前端能力</td><td>导出 HTML/PDF/静态站点，不提供浏览器编辑 Vault</td></tr>
+    <tr><td>主题</td><td>CSS Variables</td><td>暗色/亮色/自定义主题包</td></tr>
+  </table>
+</section>
+
+<!-- ===== 5. 编辑器引擎 ===== -->
+<section>
+  <h2><span class="section-num">05</span> 核心模块设计：编辑器引擎</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">BlockSuite 数据模型与双链扩展</div>
+    <svg viewBox="0 0 800 360" style="width:100%; max-width:800px;">
+      <!-- Doc -->
+      <rect x="300" y="10" width="200" height="50" rx="8" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
+      <text x="400" y="40" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="bold">BlockSuite Doc</text>
+
+      <!-- Lines to modes -->
+      <line x1="350" y1="60" x2="150" y2="95" stroke="#8b949e" stroke-width="1.5"/>
+      <line x1="450" y1="60" x2="650" y2="95" stroke="#8b949e" stroke-width="1.5"/>
+
+      <!-- Page mode -->
+      <rect x="40" y="95" width="220" height="55" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="150" y="118" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="bold">Page 模式（笔记）</text>
+      <text x="150" y="138" text-anchor="middle" fill="#8b949e" font-size="10">段落/标题/列表/代码/表格/图片</text>
+
+      <!-- Edgeless mode -->
+      <rect x="540" y="95" width="220" height="55" rx="6" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="650" y="118" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="bold">Edgeless 模式（白板）</text>
+      <text x="650" y="138" text-anchor="middle" fill="#8b949e" font-size="10">卡片/便签/连接线/嵌入笔记</text>
+
+      <!-- Custom Blocks -->
+      <rect x="40" y="175" width="720" height="165" rx="8" fill="rgba(188,140,255,0.05)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="5,3"/>
+      <text x="400" y="197" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="bold">自定义 Block 扩展</text>
+
+      <rect x="70" y="210" width="200" height="115" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="170" y="230" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="bold">双链 Block</text>
+      <text x="80" y="248" fill="#8b949e" font-size="9">语法: [[笔记标题]]</text>
+      <text x="80" y="262" fill="#8b949e" font-size="9">→ 自动创建反向链接</text>
+      <text x="80" y="276" fill="#8b949e" font-size="9">→ 悬空链接一键补全</text>
+      <text x="80" y="290" fill="#8b949e" font-size="9">→ 支持 #小节 锚点</text>
+      <text x="80" y="304" fill="#8b949e" font-size="9">→ 循环引用检测</text>
+      <text x="80" y="318" fill="#8b949e" font-size="9">→ 反向链接面板</text>
+
+      <rect x="290" y="210" width="200" height="115" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="390" y="230" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="bold">嵌入 Block</text>
+      <text x="300" y="248" fill="#8b949e" font-size="9">语法: ![[笔记标题]]</text>
+      <text x="300" y="262" fill="#8b949e" font-size="9">→ 嵌入引用另一篇笔记</text>
+      <text x="300" y="276" fill="#8b949e" font-size="9">→ 支持两级嵌套</text>
+      <text x="300" y="290" fill="#8b949e" font-size="9">→ 原文修改同步刷新</text>
+      <text x="300" y="304" fill="#8b949e" font-size="9">→ 循环嵌入检测</text>
+      <text x="300" y="318" fill="#8b949e" font-size="9">→ 渲染为内嵌视图</text>
+
+      <rect x="510" y="210" width="220" height="115" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="620" y="230" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="bold">Markdown 互转</text>
+      <text x="520" y="248" fill="#8b949e" font-size="9">BlockSuite Doc → .md</text>
+      <text x="520" y="262" fill="#8b949e" font-size="9">.md → BlockSuite Doc</text>
+      <text x="520" y="276" fill="#8b949e" font-size="9">→ 兼容原 Vault 文件</text>
+      <text x="520" y="290" fill="#8b949e" font-size="9">→ 用户迁移零成本</text>
+      <text x="520" y="304" fill="#8b949e" font-size="9">→ 可用其他编辑器打开</text>
+      <text x="520" y="318" fill="#8b949e" font-size="9">→ 不锁定在数据库</text>
+    </svg>
+  </div>
+  <p><strong>设计要点</strong>：双链和嵌入不是独立渲染逻辑，而是 BlockSuite 的自定义 Block 类型。这样编辑、搜索、AI 索引、图谱可视化都基于统一的 Block 模型，不会出现数据不一致。</p>
+</section>
+
+<!-- ===== 6. AI 引擎 ===== -->
+<section>
+  <h2><span class="section-num">06</span> 核心模块设计：AI 引擎</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">AI 混合检索 + RAG 管线</div>
+    <svg viewBox="0 0 800 460" style="width:100%; max-width:800px;">
+      <!-- Indexing pipeline -->
+      <text x="20" y="25" fill="#f0883e" font-size="13" font-weight="bold">索引管线（写入时触发）</text>
+      <rect x="20" y="35" width="120" height="40" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="80" y="60" text-anchor="middle" fill="#e6edf3" font-size="11">笔记内容</text>
+      <line x1="140" y1="55" x2="165" y2="55" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="170" y="35" width="120" height="40" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="230" y="53" text-anchor="middle" fill="#e6edf3" font-size="11">按版本配置分块</text>
+      <text x="230" y="67" text-anchor="middle" fill="#8b949e" font-size="9">参数可版本化</text>
+      <line x1="290" y1="55" x2="315" y2="55" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="320" y="35" width="120" height="40" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="380" y="53" text-anchor="middle" fill="#e6edf3" font-size="11">Embedding</text>
+      <text x="380" y="67" text-anchor="middle" fill="#8b949e" font-size="9">本地 bge-small</text>
+      <line x1="440" y1="55" x2="465" y2="55" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="470" y="35" width="140" height="40" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="540" y="53" text-anchor="middle" fill="#e6edf3" font-size="11">FTS5 + sqlite-vec</text>
+      <text x="540" y="67" text-anchor="middle" fill="#8b949e" font-size="9">双索引写入</text>
+      <line x1="610" y1="55" x2="635" y2="55" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="640" y="35" width="140" height="40" rx="6" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="710" y="60" text-anchor="middle" fill="#3fb950" font-size="11">索引就绪 ✓</text>
+
+      <!-- Divider -->
+      <line x1="20" y1="100" x2="780" y2="100" stroke="#30363d" stroke-width="1" stroke-dasharray="4,4"/>
+
+      <!-- Query pipeline -->
+      <text x="20" y="130" fill="#58a6ff" font-size="13" font-weight="bold">查询管线（用户提问时）</text>
+      <rect x="20" y="140" width="120" height="40" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="80" y="165" text-anchor="middle" fill="#e6edf3" font-size="11">用户提问</text>
+      <line x1="140" y1="160" x2="165" y2="160" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- Parallel search -->
+      <rect x="170" y="135" width="130" height="30" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="235" y="155" text-anchor="middle" fill="#e6edf3" font-size="11">FTS5 关键词检索</text>
+      <rect x="170" y="175" width="130" height="30" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="235" y="195" text-anchor="middle" fill="#e6edf3" font-size="11">向量语义检索</text>
+      <line x1="300" y1="150" x2="325" y2="165" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="300" y1="190" x2="325" y2="165" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- RRF -->
+      <rect x="330" y="140" width="130" height="50" rx="6" fill="rgba(247,120,186,0.1)" stroke="#f778ba" stroke-width="1.5"/>
+      <text x="395" y="160" text-anchor="middle" fill="#f778ba" font-size="11" font-weight="bold">RRF 融合</text>
+      <text x="395" y="178" text-anchor="middle" fill="#8b949e" font-size="9">RRF 参数可版本化</text>
+      <line x1="460" y1="165" x2="485" y2="165" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- Rerank -->
+      <rect x="490" y="140" width="120" height="50" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="550" y="160" text-anchor="middle" fill="#e6edf3" font-size="11">Rerank</text>
+      <text x="550" y="178" text-anchor="middle" fill="#8b949e" font-size="9">可选</text>
+      <line x1="610" y1="165" x2="635" y2="165" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- Context -->
+      <rect x="640" y="140" width="140" height="50" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="710" y="160" text-anchor="middle" fill="#e6edf3" font-size="11">组装 Context</text>
+      <text x="710" y="178" text-anchor="middle" fill="#8b949e" font-size="9">笔记内容+引用</text>
+
+      <!-- LLM call -->
+      <line x1="710" y1="190" x2="710" y2="215" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="590" y="220" width="240" height="50" rx="6" fill="rgba(240,136,62,0.1)" stroke="#f0883e" stroke-width="1.5"/>
+      <text x="710" y="240" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="bold">LLM 生成回答</text>
+      <text x="710" y="258" text-anchor="middle" fill="#8b949e" font-size="9">流式输出 + 来源引用标注</text>
+
+      <!-- Safety -->
+      <line x1="590" y1="245" x2="565" y2="245" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <rect x="350" y="220" width="210" height="50" rx="6" fill="rgba(248,81,73,0.08)" stroke="#f85149" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="455" y="240" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">安全边界</text>
+      <text x="455" y="258" text-anchor="middle" fill="#8b949e" font-size="9">写入→预览→确认→审计→撤销</text>
+
+      <!-- Provider -->
+      <line x1="710" y1="270" x2="710" y2="295" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="590" y="300" width="240" height="60" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+      <text x="710" y="320" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="bold">Provider 层</text>
+      <rect x="610" y="330" width="100" height="24" rx="4" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1"/>
+      <text x="660" y="346" text-anchor="middle" fill="#3fb950" font-size="10">Ollama 本地</text>
+      <rect x="720" y="330" width="100" height="24" rx="4" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="770" y="346" text-anchor="middle" fill="#58a6ff" font-size="10">OpenAI 兼容</text>
+
+      <!-- AI capabilities list -->
+      <line x1="590" y1="330" x2="400" y2="330" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="20" y="320" fill="#8b949e" font-size="11" font-weight="bold">AI 能力清单</text>
+      <text x="20" y="340" fill="#e6edf3" font-size="10">1. 知识库问答（带来源引用）</text>
+      <text x="20" y="355" fill="#e6edf3" font-size="10">2. 写作助手（润色/摘要/翻译/续写）</text>
+      <text x="20" y="370" fill="#e6edf3" font-size="10">3. Agent 任务模式（多轮+审计+撤销）</text>
+      <text x="20" y="385" fill="#e6edf3" font-size="10">4. Inbox 整理建议</text>
+      <text x="20" y="400" fill="#e6edf3" font-size="10">5. 每日摘要（定时生成）</text>
+      <text x="20" y="415" fill="#e6edf3" font-size="10">6. 知识健康分析</text>
+      <text x="20" y="430" fill="#e6edf3" font-size="10">7. 检索调试视图</text>
+      <text x="20" y="445" fill="#8b949e" font-size="10">→ 默认本地模型，可切换云端</text>
+    </svg>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">保留的核心设计</div>
+    <p>原项目的 FTS5 + 向量混合检索思路继续保留，但 RRF、分块和 top_n 都作为可版本化参数，通过 golden set 和性能基准调优。新增本地模型支持（Ollama）和 sqlite-vec 集成，使 AI 在满足本地运行时条件时可以离线工作。</p>
+  </div>
+</section>
+
+<!-- ===== 7. 插件系统 ===== -->
+<section>
+  <h2><span class="section-num">07</span> 核心模块设计：插件系统</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">插件沙箱架构与权限模型</div>
+    <svg viewBox="0 0 800 480" style="width:100%; max-width:800px;">
+      <!-- Host -->
+      <rect x="10" y="10" width="780" height="460" rx="10" fill="rgba(22,27,34,0.5)" stroke="#30363d" stroke-width="1"/>
+      <text x="400" y="35" text-anchor="middle" fill="#8b949e" font-size="12">Lattice 主进程（Tauri Rust 侧）</text>
+
+      <!-- Sandbox boundary -->
+      <rect x="30" y="50" width="740" height="280" rx="8" fill="rgba(188,140,255,0.05)" stroke="#bc8cff" stroke-width="2" stroke-dasharray="8,4"/>
+      <text x="400" y="72" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="bold">QuickJS 沙箱边界（隔离 VM）</text>
+
+      <!-- Plugin instances -->
+      <rect x="50" y="85" width="220" height="230" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="160" y="105" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">插件 A · 文件管理</text>
+      <line x1="60" y1="112" x2="260" y2="112" stroke="#30363d" stroke-width="1"/>
+      <text x="60" y="128" fill="#e6edf3" font-size="9">权限: read:notes, write:notes</text>
+      <text x="60" y="142" fill="#e6edf3" font-size="9">      read:file:vault</text>
+      <text x="60" y="156" fill="#f85149" font-size="9">禁止: network</text>
+      <line x1="60" y1="163" x2="260" y2="163" stroke="#30363d" stroke-width="1"/>
+      <text x="60" y="178" fill="#8b949e" font-size="9">调用 API:</text>
+      <text x="60" y="192" fill="#e6edf3" font-size="9">vault.search("关键词")</text>
+      <text x="60" y="206" fill="#e6edf3" font-size="9">vault.create(title, body)</text>
+      <text x="60" y="220" fill="#e6edf3" font-size="9">vault.update(id, patch)</text>
+      <text x="60" y="234" fill="#e6edf3" font-size="9">ui.addCommand("排序")</text>
+      <text x="60" y="248" fill="#8b949e" font-size="9">资源: 64MB / 5s 超时</text>
+      <text x="60" y="262" fill="#8b949e" font-size="9">状态: running</text>
+      <text x="60" y="278" fill="#8b949e" font-size="9">版本: 1.2.0</text>
+      <text x="60" y="298" fill="#8b949e" font-size="9">签名: ✓ verified</text>
+
+      <rect x="290" y="85" width="220" height="230" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="400" y="105" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">插件 B · AI 增强</text>
+      <line x1="300" y1="112" x2="500" y2="112" stroke="#30363d" stroke-width="1"/>
+      <text x="300" y="128" fill="#e6edf3" font-size="9">权限: read:notes, ai:invoke</text>
+      <text x="300" y="142" fill="#e6edf3" font-size="9">      ui:inject</text>
+      <text x="300" y="156" fill="#f85149" font-size="9">禁止: write:notes, network</text>
+      <line x1="300" y1="163" x2="500" y2="163" stroke="#30363d" stroke-width="1"/>
+      <text x="300" y="178" fill="#8b949e" font-size="9">调用 API:</text>
+      <text x="300" y="192" fill="#e6edf3" font-size="9">ai.embed(text)</text>
+      <text x="300" y="206" fill="#e6edf3" font-size="9">ai.chat(prompt, ctx)</text>
+      <text x="300" y="220" fill="#e6edf3" font-size="9">ui.addPanel("AI 洞察")</text>
+      <text x="300" y="234" fill="#e6edf3" font-size="9">vault.read(id)</text>
+      <text x="300" y="248" fill="#8b949e" font-size="9">资源: 128MB / 30s 超时</text>
+      <text x="300" y="262" fill="#8b949e" font-size="9">状态: running</text>
+      <text x="300" y="278" fill="#8b949e" font-size="9">版本: 0.3.1</text>
+      <text x="300" y="298" fill="#8b949e" font-size="9">签名: ✓ verified</text>
+
+      <rect x="530" y="85" width="220" height="230" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="1"/>
+      <text x="640" y="105" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">插件 C · 导出增强</text>
+      <line x1="540" y1="112" x2="740" y2="112" stroke="#30363d" stroke-width="1"/>
+      <text x="540" y="128" fill="#e6edf3" font-size="9">权限: read:notes, read:file</text>
+      <text x="540" y="142" fill="#e6edf3" font-size="9">      network（已授权）</text>
+      <line x1="540" y1="163" x2="740" y2="163" stroke="#30363d" stroke-width="1"/>
+      <text x="540" y="178" fill="#8b949e" font-size="9">调用 API:</text>
+      <text x="540" y="192" fill="#e6edf3" font-size="9">vault.list(folder)</text>
+      <text x="540" y="206" fill="#e6edf3" font-size="9">vault.read(id)</text>
+      <text x="540" y="220" fill="#e6edf3" font-size="9">fetch("api.example.com")</text>
+      <text x="540" y="234" fill="#e6edf3" font-size="9">fs.write(output, data)</text>
+      <text x="540" y="248" fill="#8b949e" font-size="9">资源: 64MB / 60s 超时</text>
+      <text x="540" y="262" fill="#8b949e" font-size="9">状态: running</text>
+      <text x="540" y="278" fill="#8b949e" font-size="9">版本: 2.0.0</text>
+      <text x="540" y="298" fill="#8b949e" font-size="9">签名: ✓ verified</text>
+
+      <!-- API Bridge -->
+      <rect x="30" y="345" width="740" height="55" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="400" y="365" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">插件 API 桥接层（权限检查 → 调用 Rust 命令）</text>
+      <text x="60" y="385" fill="#e6edf3" font-size="9">vault.*</text>
+      <text x="180" y="385" fill="#e6edf3" font-size="9">editor.*</text>
+      <text x="300" y="385" fill="#e6edf3" font-size="9">ui.*</text>
+      <text x="400" y="385" fill="#e6edf3" font-size="9">ai.*</text>
+      <text x="480" y="385" fill="#e6edf3" font-size="9">mcp.*</text>
+      <text x="580" y="385" fill="#e6edf3" font-size="9">settings.*</text>
+      <text x="680" y="385" fill="#e6edf3" font-size="9">fs.*</text>
+
+      <!-- Native layer -->
+      <rect x="30" y="415" width="740" height="45" rx="6" fill="rgba(247,120,186,0.08)" stroke="#f778ba" stroke-width="1.5"/>
+      <text x="400" y="435" text-anchor="middle" fill="#f778ba" font-size="11" font-weight="bold">Rust 原生层（SQLite · 文件系统 · AI Provider · MCP · 加密）</text>
+      <text x="400" y="452" text-anchor="middle" fill="#8b949e" font-size="9">所有原生操作经权限检查后执行，插件无法直接访问</text>
+    </svg>
+  </div>
+
+  <h3>权限模型</h3>
+  <table>
+    <tr><th>权限</th><th>说明</th><th>默认</th></tr>
+    <tr><td><code>read:notes</code></td><td>读取笔记内容</td><td><span class="tag tag-warn">需确认</span></td></tr>
+    <tr><td><code>write:notes</code></td><td>创建/修改/删除笔记</td><td><span class="tag tag-warn">需确认</span></td></tr>
+    <tr><td><code>read:file:vault</code></td><td>读取 Vault 目录文件</td><td><span class="tag tag-warn">需确认</span></td></tr>
+    <tr><td><code>write:file:vault</code></td><td>写入 Vault 目录文件</td><td><span class="tag tag-no">禁止</span></td></tr>
+    <tr><td><code>network</code></td><td>网络请求</td><td><span class="tag tag-no">禁止</span></td></tr>
+    <tr><td><code>ai:invoke</code></td><td>调用 AI 引擎</td><td><span class="tag tag-warn">需确认</span></td></tr>
+    <tr><td><code>ui:inject</code></td><td>注入 UI 面板/命令</td><td><span class="tag tag-warn">需确认</span></td></tr>
+    <tr><td><code>mcp:call</code></td><td>调用 MCP 工具</td><td><span class="tag tag-no">禁止</span></td></tr>
+  </table>
+</section>
+
+<!-- ===== 8. MCP 双向 ===== -->
+<section>
+  <h2><span class="section-num">08</span> 核心模块设计：MCP 双向集成</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">MCP Server + Client 双向数据流</div>
+    <svg viewBox="0 0 800 420" style="width:100%; max-width:800px;">
+      <!-- Center: Lattice -->
+      <rect x="300" y="160" width="200" height="100" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="2"/>
+      <text x="400" y="190" text-anchor="middle" fill="#f0883e" font-size="14" font-weight="bold">格物 Lattice</text>
+      <text x="400" y="210" text-anchor="middle" fill="#8b949e" font-size="10">笔记知识库</text>
+      <text x="400" y="225" text-anchor="middle" fill="#8b949e" font-size="10">SQLite + 文件系统</text>
+      <text x="400" y="245" text-anchor="middle" fill="#8b949e" font-size="10">AI 引擎 + 插件</text>
+
+      <!-- MCP Server (left) -->
+      <text x="20" y="30" fill="#3fb950" font-size="13" font-weight="bold">MCP Server（Lattice → 外部）</text>
+      <rect x="20" y="45" width="250" height="100" rx="8" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="145" y="65" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">lattice-mcp sidecar</text>
+      <text x="35" y="82" fill="#e6edf3" font-size="9">读取工具（默认）:</text>
+      <text x="35" y="96" fill="#8b949e" font-size="9">search_notes, get_note</text>
+      <text x="35" y="110" fill="#8b949e" font-size="9">list_tags, get_graph</text>
+      <text x="35" y="124" fill="#8b949e" font-size="9">get_stats, get_history</text>
+      <text x="35" y="138" fill="#f85149" font-size="9">写入工具(需 ALLOW_WRITES):</text>
+      <text x="35" y="152" fill="#8b949e" font-size="9">create/update/restore_note</text>
+
+      <!-- Arrow Server -> Lattice -->
+      <line x1="270" y1="95" x2="300" y2="180" stroke="#3fb950" stroke-width="2" marker-end="url(#arr5)"/>
+      <text x="265" y="140" fill="#3fb950" font-size="9" transform="rotate(-30,265,140)">暴露笔记</text>
+
+      <!-- Arrow Lattice -> Server (reverse) -->
+      <line x1="300" y1="200" x2="270" y2="120" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr5)"/>
+      <text x="248" y="175" fill="#3fb950" font-size="9" transform="rotate(-30,248,175)">写入审计</text>
+
+      <!-- External MCP clients -->
+      <text x="20" y="175" fill="#8b949e" font-size="10">被谁调用：</text>
+      <rect x="20" y="185" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="75" y="203" text-anchor="middle" fill="#e6edf3" font-size="10">Claude Desktop</text>
+      <rect x="140" y="185" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="195" y="203" text-anchor="middle" fill="#e6edf3" font-size="10">Cursor IDE</text>
+      <rect x="20" y="220" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="75" y="238" text-anchor="middle" fill="#e6edf3" font-size="10">Trae Code</text>
+      <rect x="140" y="220" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="195" y="238" text-anchor="middle" fill="#e6edf3" font-size="10">其他 Agent</text>
+
+      <!-- MCP Client (right) -->
+      <text x="530" y="30" fill="#58a6ff" font-size="13" font-weight="bold">MCP Client（外部 → Lattice）</text>
+      <rect x="530" y="45" width="250" height="100" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="655" y="65" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">AI 助手调用外部工具</text>
+      <text x="545" y="82" fill="#e6edf3" font-size="9">内置市场 12+ 插件:</text>
+      <text x="545" y="96" fill="#8b949e" font-size="9">Filesystem, SQLite</text>
+      <text x="545" y="110" fill="#8b949e" font-size="9">Obsidian, 联网搜索</text>
+      <text x="545" y="124" fill="#8b949e" font-size="9">Git, GitHub, 时间</text>
+      <text x="545" y="138" fill="#8b949e" font-size="9">记忆, 自定义添加</text>
+
+      <!-- Arrow Lattice -> Client -->
+      <line x1="500" y1="180" x2="530" y2="95" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr6)"/>
+      <text x="530" y="140" fill="#58a6ff" font-size="9" transform="rotate(30,530,140)">调用工具</text>
+
+      <!-- Arrow Client -> Lattice -->
+      <line x1="530" y1="120" x2="500" y2="200" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr6)"/>
+      <text x="515" y="175" fill="#58a6ff" font-size="9" transform="rotate(30,515,175)">返回结果</text>
+
+      <!-- External MCP servers -->
+      <text x="530" y="175" fill="#8b949e" font-size="10">连接谁：</text>
+      <rect x="530" y="185" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="585" y="203" text-anchor="middle" fill="#e6edf3" font-size="10">本地文件</text>
+      <rect x="650" y="185" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="705" y="203" text-anchor="middle" fill="#e6edf3" font-size="10">SQLite DB</text>
+      <rect x="530" y="220" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="585" y="238" text-anchor="middle" fill="#e6edf3" font-size="10">联网搜索</text>
+      <rect x="650" y="220" width="110" height="28" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+      <text x="705" y="238" text-anchor="middle" fill="#e6edf3" font-size="10">Git 仓库</text>
+
+      <!-- Safety boundary -->
+      <rect x="20" y="290" width="760" height="55" rx="8" fill="rgba(248,81,73,0.06)" stroke="#f85149" stroke-width="1" stroke-dasharray="5,3"/>
+      <text x="400" y="310" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">安全边界</text>
+      <text x="400" y="328" text-anchor="middle" fill="#8b949e" font-size="9">MCP Server 默认只读 · 写入需 LATTICE_MCP_ALLOW_WRITES=true · 所有写入记审计日志 · viewer 角色禁止 MCP 写入</text>
+
+      <!-- Configuration -->
+      <rect x="20" y="360" width="760" height="45" rx="8" fill="rgba(22,27,34,0.5)" stroke="#30363d" stroke-width="1"/>
+      <text x="400" y="380" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">配置存储</text>
+      <text x="400" y="397" text-anchor="middle" fill="#8b949e" font-size="9">MCP Server 列表 + API Key → SQLite 加密存储 · 密钥 → 系统 Keychain · Filesystem/SQLite 自动绑定当前 Vault</text>
+    </svg>
+  </div>
+  <div class="callout">
+    <div class="callout-title">为什么 MCP 是生态关键</div>
+    <p>MCP 让 Lattice 既是<strong>知识提供者</strong>（Claude/Cursor 可以搜你的笔记），又是<strong>工具消费者</strong>（AI 助手可以操作文件、搜索网络、查 Git）。这是笔记软件成为 AI Agent 知识库的核心协议，也是单机生态的基石。</p>
+  </div>
+</section>
+
+<!-- ===== 9. 数据架构 ===== -->
+<section>
+  <h2><span class="section-num">09</span> 数据架构与存储设计</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">Vault 目录结构</div>
+    <pre><code>Vault/                           ← 用户可选的任意目录
+├── 项目笔记/
+│   ├── 重构计划.md              ← Markdown 原文，可直接用其他编辑器打开
+│   └── 架构设计.md
+├── 日常记录/
+│   └── 2026-10-13.md
+├── 画板/
+│   └── 系统设计.canvas          ← 白板，兼容 Obsidian .canvas 格式
+├── attachments/                 ← 图片附件
+│   └── screenshot.png
+├── templates/                   ← 笔记模板
+│   └── 读书笔记.md
+└── .lattice/                    ← 隐藏目录，Lattice 内部数据
+    ├── lattice.db               ← SQLite 主库（索引/标签/AI配置/MCP审计）
+    ├── lattice.db-wal          ← WAL 日志（运行时生成；异常退出由 SQLite 自恢复）
+    ├── lattice.db-shm          ← 共享内存（运行时生成；禁止启动时手工删除）
+    ├── lock                    ← Vault 单实例写入锁
+    ├── jobs/                   ← 可恢复任务状态
+    ├── versions/               ← 笔记历史快照（增量 diff）
+    │   └── 2026/
+    │       └── 10/
+    │           └── 13/
+    │               └── 重构计划/
+    │                   ├── v001.diff
+    │                   └── v002.diff
+    ├── plugins/                ← 已安装插件
+    │   ├── file-manager/
+    │   │   ├── manifest.json
+    │   │   ├── main.js
+    │   │   └── permissions.json
+    │   └── ai-enhance/
+    ├── themes/                 ← 自定义主题
+    │   └── midnight.css
+    ├── mcp-config.json         ← MCP Server 配置（密钥引用，不明文）
+    └── profile.json            ← 非敏感配置（inbox/daily/journal 路径）</code></pre>
+  </div>
+
+  <h3>SQLite 表结构（核心表）</h3>
+  <pre><code>-- 笔记元数据（原文在文件系统）
+CREATE TABLE notes (
+  path        TEXT NOT NULL,           -- Vault 内相对路径
+  title       TEXT,
+  content_hash TEXT NOT NULL,
+  parser_version TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  word_count  INTEGER DEFAULT 0,
+  is_archived INTEGER DEFAULT 0,
+  index_state TEXT NOT NULL DEFAULT 'pending',
+  PRIMARY KEY (path)
+);
+
+-- 每个连接都必须开启；迁移和测试均验证外键约束生效。
+PRAGMA foreign_keys = ON;
+
+-- 全文检索（FTS5 trigram 分词）
+CREATE VIRTUAL TABLE notes_fts USING fts5(
+  path, title, content,
+  tokenize = 'trigram'               -- 中文子串匹配
+);
+
+-- 向量索引（sqlite-vec）
+CREATE TABLE note_chunks (
+  note_path TEXT NOT NULL,
+  chunk_id INTEGER NOT NULL,
+  source_hash TEXT NOT NULL,
+  chunker_version TEXT NOT NULL,
+  content TEXT NOT NULL,
+  PRIMARY KEY (note_path, chunk_id),
+  FOREIGN KEY (note_path) REFERENCES notes(path) ON DELETE CASCADE
+);
+
+CREATE VIRTUAL TABLE note_embeddings USING vec0(
+  note_path TEXT,
+  chunk_id INTEGER,
+  embedding FLOAT[384]               -- 维度按模型版本配置
+);
+
+-- 双链关系
+CREATE TABLE links (
+  source_path TEXT NOT NULL,
+  target_path TEXT,
+  anchor      TEXT,                  -- [[标题#锚点]]
+  type        TEXT DEFAULT 'link',   -- link | embed
+  is_dangling  INTEGER DEFAULT 0,   -- 悬空链接
+  UNIQUE (source_path, target_path, anchor, type),
+  FOREIGN KEY (source_path) REFERENCES notes(path) ON DELETE CASCADE
+);
+CREATE INDEX ix_links_target ON links(target_path);
+
+-- 标签
+CREATE TABLE tags (
+  name       TEXT PRIMARY KEY,      -- 支持 嵌套/路径
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE note_tags (
+  note_path TEXT NOT NULL,
+  tag_name TEXT NOT NULL,
+  PRIMARY KEY (note_path, tag_name),
+  FOREIGN KEY (note_path) REFERENCES notes(path) ON DELETE CASCADE,
+  FOREIGN KEY (tag_name) REFERENCES tags(name) ON DELETE CASCADE
+);
+
+-- AI 会话
+CREATE TABLE ai_sessions (
+  id         TEXT PRIMARY KEY,
+  title      TEXT,
+  messages   TEXT NOT NULL,         -- JSON
+  created_at TEXT NOT NULL
+);
+
+-- AI 配置（密文存储）
+CREATE TABLE ai_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL                -- AES-256-GCM 加密
+);
+
+-- MCP 审计日志
+CREATE TABLE mcp_audit (
+  id         INTEGER PRIMARY KEY,
+  tool       TEXT NOT NULL,
+  params     TEXT,
+  result     TEXT,
+  principal  TEXT,                  -- 调用者身份
+  decision   TEXT NOT NULL,         -- allowed | denied | confirmed
+  redacted   INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+-- 笔记版本快照索引
+CREATE TABLE note_versions (
+  id         INTEGER PRIMARY KEY,
+  note_path  TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  diff_path  TEXT NOT NULL,          -- .lattice/versions/ 下的路径
+  created_at TEXT NOT NULL
+);
+
+-- 可恢复的派生任务：索引、embedding、快照和健康扫描不能只靠内存事件。
+CREATE TABLE jobs (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  subject     TEXT NOT NULL,
+  source_hash TEXT,
+  state       TEXT NOT NULL,         -- pending | running | done | failed | cancelled
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  error       TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);</code></pre>
+</section>
+
+<!-- ===== 10. 安全设计 ===== -->
+<section>
+  <h2><span class="section-num">10</span> 安全设计</h2>
+  <table>
+    <tr><th>威胁</th><th>防御措施</th><th>实现层</th></tr>
+    <tr><td>XSS 注入</td><td>自研白名单 Markdown 消毒器，过滤危险 HTML/JS</td><td>L2 引擎</td></tr>
+    <tr><td>MCP 越权写入</td><td>sidecar 默认只读；按客户端/工具/路径授权，确认、审计和撤销</td><td>L3 能力</td></tr>
+    <tr><td>MCP/AI prompt injection</td><td>外部内容与系统指令分层，工具结果大小/域名/路径受限</td><td>L3 能力</td></tr>
+    <tr><td>AI 篡改笔记</td><td>写入流程：预览→确认→事务→审计→可撤销</td><td>L3 能力</td></tr>
+    <tr><td>插件越权</td><td>QuickJS + 最小权限桥接 + 签名；高风险能力独立进程</td><td>L3 能力</td></tr>
+    <tr><td>凭证泄露</td><td>API Key 只存系统 Keychain；SQLite 只存引用或密文</td><td>L1 数据</td></tr>
+    <tr><td>网络/SSRF</td><td>默认仅允许回环；外连使用域名白名单、确认和超时</td><td>L3 能力</td></tr>
+    <tr><td>SQL 注入</td><td>SQL 白名单只读，参数化查询</td><td>L1 数据</td></tr>
+    <tr><td>不可信内容</td><td>AI 生成的 Markdown 经消毒器处理后才写入</td><td>L3 能力</td></tr>
+    <tr><td>权限提升</td><td><code>viewer</code> 角色禁止 MCP 写入和 AI 写入</td><td>L3 能力</td></tr>
+  </table>
+</section>
+
+<!-- ===== 11. 启动流程 ===== -->
+<section>
+  <h2><span class="section-num">11</span> 启动流程</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">单机启动序列（开箱即用）</div>
+    <svg viewBox="0 0 800 400" style="width:100%; max-width:800px;">
+      <rect x="20" y="10" width="760" height="380" rx="8" fill="rgba(22,27,34,0.3)" stroke="#30363d" stroke-width="1"/>
+
+      <!-- Step 1 -->
+      <circle cx="50" cy="40" r="15" fill="#58a6ff"/>
+      <text x="50" y="45" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">1</text>
+      <text x="75" y="45" fill="#e6edf3" font-size="12">Tauri 启动，读取 profile.json（首次用默认路径）</text>
+
+      <!-- Step 2 -->
+      <circle cx="50" cy="80" r="15" fill="#58a6ff"/>
+      <text x="50" y="85" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">2</text>
+      <text x="75" y="85" fill="#e6edf3" font-size="12">获取 Vault 单实例写入锁</text>
+
+      <!-- Step 3 -->
+      <circle cx="50" cy="120" r="15" fill="#3fb950"/>
+      <text x="50" y="125" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">3</text>
+      <text x="75" y="125" fill="#e6edf3" font-size="12">打开 SQLite，让 SQLite 自行恢复 WAL</text>
+
+      <!-- Step 4 -->
+      <circle cx="50" cy="160" r="15" fill="#f0883e"/>
+      <text x="50" y="165" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">4</text>
+      <text x="75" y="165" fill="#e6edf3" font-size="12">迁移前备份，事务执行 Schema 迁移</text>
+
+      <!-- Step 5 -->
+      <circle cx="50" cy="200" r="15" fill="#f0883e"/>
+      <text x="50" y="205" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">5</text>
+      <text x="75" y="205" fill="#e6edf3" font-size="12">初始化 WorkspaceService 和持久化任务队列</text>
+
+      <!-- Step 6 -->
+      <circle cx="50" cy="240" r="15" fill="#bc8cff"/>
+      <text x="50" y="245" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">6</text>
+      <text x="75" y="245" fill="#e6edf3" font-size="12">显示主窗口，先提供基础读写能力</text>
+
+      <!-- Step 7 -->
+      <circle cx="50" cy="280" r="15" fill="#bc8cff"/>
+      <text x="50" y="285" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">7</text>
+      <text x="75" y="285" fill="#e6edf3" font-size="12">后台扫描 Vault，增量更新索引和链接</text>
+
+      <!-- Step 8 -->
+      <circle cx="50" cy="320" r="15" fill="#f778ba"/>
+      <text x="50" y="325" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">8</text>
+      <text x="75" y="325" fill="#e6edf3" font-size="12">后台执行 embedding、快照和健康扫描任务</text>
+
+      <!-- Step 9 -->
+      <circle cx="50" cy="360" r="15" fill="#3fb950"/>
+      <text x="50" y="365" text-anchor="middle" fill="#0d1117" font-size="11" font-weight="bold">9</text>
+      <text x="75" y="365" fill="#3fb950" font-size="12" font-weight="bold">按设置启动 MCP sidecar 和插件 ✓</text>
+
+      <!-- Side notes -->
+      <rect x="420" y="25" width="340" height="350" rx="6" fill="rgba(22,27,34,0.5)" stroke="#30363d" stroke-width="1"/>
+      <text x="590" y="45" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">启动保障</text>
+      <text x="435" y="65" fill="#e6edf3" font-size="10">✓ 零配置：首次启动自动初始化一切</text>
+      <text x="435" y="85" fill="#e6edf3" font-size="10">✓ 零端口：无 Express，无端口冲突</text>
+      <text x="435" y="105" fill="#e6edf3" font-size="10">✓ 核心零 Node；Ollama/MCP 为可选运行时</text>
+      <text x="435" y="125" fill="#e6edf3" font-size="10">✓ 首屏优先；完整索引按 Vault 规模验收</text>
+      <text x="435" y="145" fill="#e6edf3" font-size="10">✓ 数据安全：Markdown 在磁盘，索引可重建</text>
+      <text x="435" y="165" fill="#e6edf3" font-size="10">✓ 状态恢复：SQLite 自恢复 WAL，迁移有备份</text>
+      <text x="435" y="185" fill="#e6edf3" font-size="10">✓ 插件隔离：沙箱加载失败不影响主程序</text>
+      <text x="435" y="205" fill="#e6edf3" font-size="10">✓ MCP 可选：不需要时不启动 stdio</text>
+      <text x="435" y="225" fill="#e6edf3" font-size="10">✓ 迁移函数化：事务迁移 + 失败回滚</text>
+      <text x="435" y="245" fill="#e6edf3" font-size="10">✓ 所有写入经 WorkspaceService</text>
+      <text x="435" y="265" fill="#e6edf3" font-size="10">✓ 环境变量优先：DB_PATH/VAULT_PATH</text>
+      <text x="435" y="285" fill="#e6edf3" font-size="10">  在模块加载前设置</text>
+      <text x="435" y="305" fill="#e6edf3" font-size="10">✓ 存在性检测：DB 文件大小阈值</text>
+      <text x="435" y="325" fill="#e6edf3" font-size="10">  判断是否需要初始化</text>
+      <text x="435" y="350" fill="#f0883e" font-size="10" font-weight="bold">目标：双击即用，无需任何配置</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ===== 12. 项目结构 ===== -->
+<section>
+  <h2><span class="section-num">12</span> 项目结构</h2>
+  <pre><code>lattice/
+├── src-tauri/                       # Rust 后端（替代 Express）
+│   ├── src/
+│   │   ├── main.rs                  # Tauri 入口，注册所有 IPC 命令
+│   │   ├── db/
+│   │   │   ├── mod.rs               # SQLite 连接池
+│   │   │   ├── migrations/          # SQL 迁移文件
+│   │   │   └── repository.rs        # 数据访问层
+│   │   ├── vault/                   # 文件系统操作
+│   │   │   ├── mod.rs               # Markdown 读写
+│   │   │   ├── watcher.rs           # 文件变更监听
+│   │   │   └── markdown.rs          # 解析/序列化
+│   │   ├── workspace/               # 单写入协调器
+│   │   │   ├── service.rs           # UI/AI/MCP/插件统一入口
+│   │   │   ├── lock.rs              # Vault 单实例锁
+│   │   │   └── reconcile.rs         # watcher 收敛与冲突检测
+│   │   ├── jobs/                    # 持久化后台任务
+│   │   │   ├── queue.rs             # 索引/embedding/快照队列
+│   │   │   └── recovery.rs          # 崩溃恢复与重试
+│   │   ├── ai/                      # AI 引擎
+│   │   │   ├── provider.rs          # OpenAI 兼容 + Ollama
+│   │   │   ├── embeddings.rs        # 本地/云端 embedding
+│   │   │   ├── retrieval.rs         # FTS5 + 向量 + RRF
+│   │   │   ├── sessions.rs          # 会话管理
+│   │   │   └── agent.rs             # 任务模式 Agent 循环
+│   │   ├── mcp/                     # MCP 双向
+│   │   │   ├── sidecar.rs           # lattice-mcp sidecar 生命周期
+│   │   │   └── client.rs            # MCP Client（调用外部）
+│   │   ├── plugins/                 # 插件系统
+│   │   │   ├── sandbox.rs           # QuickJS 沙箱宿主
+│   │   │   ├── permissions.rs       # 权限检查
+│   │   │   └── api.rs               # 插件 API 桥接
+│   │   ├── crypto.rs                # AES-256-GCM 加密
+│   │   └── config.rs               # 配置管理
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+│
+├── web/                             # React 前端
+│   ├── src/
+│   │   ├── main.tsx                 # React 入口
+│   │   ├── App.tsx                  # 根组件
+│   │   ├── editor/                  # BlockSuite 封装
+│   │   │   ├── Editor.tsx           # 编辑器容器
+│   │   │   ├── blocks/              # 自定义 Block（双链/嵌入）
+│   │   │   └── markdown-bridge.ts   # BlockSuite 投影 ↔ .md 保真桥
+│   │   ├── app/                     # 应用模块
+│   │   │   ├── notes/               # 笔记
+│   │   │   ├── canvas/              # 白板
+│   │   │   ├── graph/               # 图谱
+│   │   │   ├── inbox/               # 收件箱
+│   │   │   └── settings/            # 设置
+│   │   ├── ai/                      # AI UI
+│   │   │   ├── Chat.tsx             # 对话面板
+│   │   │   ├── WritingAssistant.tsx # 写作助手
+│   │   │   └── DebugView.tsx        # 检索调试
+│   │   ├── plugins/                 # 插件加载器
+│   │   ├── mcp/                     # MCP 市场/配置
+│   │   ├── store/                   # Zustand stores
+│   │   ├── hooks/                   # 自定义 hooks
+│   │   ├── styles/                  # Tailwind + 主题
+│   │   └── lib/                     # 工具函数
+│   ├── vite.config.ts
+│   └── package.json
+│
+├── plugins/                         # 内置插件
+│   ├── file-manager/
+│   ├── ai-enhance/
+│   └── export-pro/
+│
+├── specs/                           # 架构/需求文档
+└── package.json                     # workspace 根配置</code></pre>
+</section>
+
+<!-- ===== 13. 迁移路径 ===== -->
+<section>
+  <h2><span class="section-num">13</span> 迁移路径（渐进式）</h2>
+  <div class="diagram-card">
+    <div class="diagram-title">四阶段迁移计划</div>
+    <svg viewBox="0 0 800 340" style="width:100%; max-width:800px;">
+      <!-- Phase 1 -->
+      <rect x="20" y="20" width="180" height="300" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="110" y="45" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="bold">Phase 1</text>
+      <text x="110" y="62" text-anchor="middle" fill="#e6edf3" font-size="11">原生核心与写入边界</text>
+      <line x1="30" y1="72" x2="190" y2="72" stroke="#30363d" stroke-width="1"/>
+      <text x="30" y="90" fill="#e6edf3" font-size="10">• Electron → Tauri 2</text>
+      <text x="30" y="108" fill="#e6edf3" font-size="10">• JS → TypeScript</text>
+      <text x="30" y="126" fill="#e6edf3" font-size="10">• Express → Rust 命令</text>
+      <text x="30" y="144" fill="#e6edf3" font-size="10">• WorkspaceService + 单实例锁</text>
+      <text x="30" y="162" fill="#e6edf3" font-size="10">• SQLite 恢复/迁移/FTS5</text>
+      <text x="30" y="180" fill="#e6edf3" font-size="10">• watcher + 持久化任务队列</text>
+      <line x1="30" y1="195" x2="190" y2="195" stroke="#30363d" stroke-width="1"/>
+      <text x="30" y="215" fill="#8b949e" font-size="10">产出：</text>
+      <text x="30" y="233" fill="#e6edf3" font-size="10">桌面端基础能力完整</text>
+      <text x="30" y="251" fill="#e6edf3" font-size="10">文件/搜索/IPC 契约稳定</text>
+      <text x="30" y="269" fill="#e6edf3" font-size="10">外部修改与冲突可恢复</text>
+      <text x="30" y="290" fill="#3fb950" font-size="10" font-weight="bold">验证项：</text>
+      <text x="30" y="308" fill="#8b949e" font-size="9">写入边界与恢复测试</text>
+
+      <!-- Arrow -->
+      <line x1="200" y1="170" x2="220" y2="170" stroke="#8b949e" stroke-width="2" marker-end="url(#arr7)"/>
+
+      <!-- Phase 2 -->
+      <rect x="225" y="20" width="180" height="300" rx="8" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="315" y="45" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="bold">Phase 2</text>
+      <text x="315" y="62" text-anchor="middle" fill="#e6edf3" font-size="11">编辑器投影</text>
+      <line x1="235" y1="72" x2="395" y2="72" stroke="#30363d" stroke-width="1"/>
+      <text x="235" y="90" fill="#e6edf3" font-size="10">• marked → BlockSuite</text>
+      <text x="235" y="108" fill="#e6edf3" font-size="10">• 自定义双链 Block</text>
+      <text x="235" y="126" fill="#e6edf3" font-size="10">• 自定义嵌入 Block</text>
+      <text x="235" y="144" fill="#e6edf3" font-size="10">• Block ↔ .md 互转</text>
+      <text x="235" y="162" fill="#e6edf3" font-size="10">• 白板 → Edgeless</text>
+      <text x="235" y="180" fill="#e6edf3" font-size="10">• 数据迁移工具</text>
+      <line x1="235" y1="195" x2="395" y2="195" stroke="#30363d" stroke-width="1"/>
+      <text x="235" y="215" fill="#8b949e" font-size="10">产出：</text>
+      <text x="235" y="233" fill="#e6edf3" font-size="10">块编辑器 + 白板统一</text>
+      <text x="235" y="251" fill="#e6edf3" font-size="10">Markdown 真源不变、可回退</text>
+      <text x="235" y="269" fill="#e6edf3" font-size="10">双链/嵌入功能完整</text>
+      <text x="235" y="290" fill="#3fb950" font-size="10" font-weight="bold">验证项：</text>
+      <text x="235" y="308" fill="#8b949e" font-size="9">双链语法兼容确认</text>
+
+      <!-- Arrow -->
+      <line x1="405" y1="170" x2="425" y2="170" stroke="#8b949e" stroke-width="2" marker-end="url(#arr7)"/>
+
+      <!-- Phase 3 -->
+      <rect x="430" y="20" width="170" height="300" rx="8" fill="rgba(240,136,62,0.08)" stroke="#f0883e" stroke-width="1.5"/>
+      <text x="515" y="45" text-anchor="middle" fill="#f0883e" font-size="13" font-weight="bold">Phase 3</text>
+      <text x="515" y="62" text-anchor="middle" fill="#e6edf3" font-size="11">AI 本地化与向量</text>
+      <line x1="440" y1="72" x2="590" y2="72" stroke="#30363d" stroke-width="1"/>
+      <text x="440" y="90" fill="#e6edf3" font-size="10">• embedding 任务队列</text>
+      <text x="440" y="108" fill="#e6edf3" font-size="10">• sqlite-vec 集成方案</text>
+      <text x="440" y="126" fill="#e6edf3" font-size="10">• source_hash/model 版本</text>
+      <text x="440" y="144" fill="#e6edf3" font-size="10">• Ollama provider</text>
+      <text x="440" y="162" fill="#e6edf3" font-size="10">• 检索质量/延迟基准</text>
+      <text x="440" y="180" fill="#e6edf3" font-size="10">• 索引重建与回退</text>
+      <line x1="440" y1="195" x2="590" y2="195" stroke="#30363d" stroke-width="1"/>
+      <text x="440" y="215" fill="#8b949e" font-size="10">产出：</text>
+      <text x="440" y="233" fill="#e6edf3" font-size="10">可解释的离线 AI</text>
+      <text x="440" y="251" fill="#e6edf3" font-size="10">向量可切换/可重建</text>
+      <text x="440" y="269" fill="#e6edf3" font-size="10">全文检索始终可用</text>
+      <text x="440" y="290" fill="#3fb950" font-size="10" font-weight="bold">验证项：</text>
+      <text x="440" y="308" fill="#8b949e" font-size="9">质量/资源基准</text>
+
+      <!-- Arrow -->
+      <line x1="600" y1="170" x2="620" y2="170" stroke="#8b949e" stroke-width="2" marker-end="url(#arr7)"/>
+
+      <!-- Phase 4 -->
+      <rect x="625" y="20" width="155" height="300" rx="8" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="702" y="45" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="bold">Phase 4</text>
+      <text x="702" y="62" text-anchor="middle" fill="#e6edf3" font-size="11">MCP/插件与发布</text>
+      <line x1="635" y1="72" x2="770" y2="72" stroke="#30363d" stroke-width="1"/>
+      <text x="635" y="90" fill="#e6edf3" font-size="10">• lattice-mcp sidecar</text>
+      <text x="635" y="108" fill="#e6edf3" font-size="10">• 插件权限/签名</text>
+      <text x="635" y="126" fill="#e6edf3" font-size="10">• 高风险进程隔离</text>
+      <text x="635" y="144" fill="#e6edf3" font-size="10">• 自动更新/主题/导出</text>
+      <text x="635" y="162" fill="#e6edf3" font-size="10">• 性能与 A11y</text>
+      <text x="635" y="180" fill="#e6edf3" font-size="10">• i18n 与三平台签名</text>
+      <line x1="635" y1="195" x2="770" y2="195" stroke="#30363d" stroke-width="1"/>
+      <text x="635" y="215" fill="#8b949e" font-size="10">产出：</text>
+      <text x="635" y="233" fill="#e6edf3" font-size="10">正式发布版</text>
+      <text x="635" y="251" fill="#e6edf3" font-size="10">安全门禁通过</text>
+      <text x="635" y="269" fill="#e6edf3" font-size="10">三平台安装包</text>
+      <text x="635" y="290" fill="#3fb950" font-size="10" font-weight="bold">验证项：</text>
+      <text x="635" y="308" fill="#8b949e" font-size="9">全量 verify 通过</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ===== 14. 对比 ===== -->
+<section>
+  <h2><span class="section-num">14</span> 与原项目对比</h2>
+  <table>
+    <tr><th>维度</th><th>原 Lattice</th><th>重构后</th><th>提升</th></tr>
+    <tr><td>桌面壳</td><td>Electron（仅 Win）</td><td>Tauri 2（Win/Mac/Linux）</td><td><span class="tag tag-yes">三平台</span></td></tr>
+    <tr><td>编辑器</td><td>自研 marked</td><td>BlockSuite 块编辑器</td><td><span class="tag tag-yes">统一数据模型</span></td></tr>
+    <tr><td>语言</td><td>JavaScript</td><td>TypeScript + Rust</td><td><span class="tag tag-yes">类型安全</span></td></tr>
+    <tr><td>后端</td><td>Express (Node 进程)</td><td>Tauri Rust（无独立进程）</td><td><span class="tag tag-yes">无端口冲突</span></td></tr>
+    <tr><td>状态管理</td><td>Preact Signals</td><td>Zustand</td><td><span class="tag tag-yes">主流生态</span></td></tr>
+    <tr><td>向量检索</td><td>外部服务</td><td>sqlite-vec 内嵌</td><td><span class="tag tag-yes">零依赖</span></td></tr>
+    <tr><td>AI 模型</td><td>仅云端 OpenAI</td><td>本地 Ollama + 云端</td><td><span class="tag tag-yes">可离线</span></td></tr>
+    <tr><td>插件系统</td><td>无</td><td>QuickJS 沙箱 + 权限</td><td><span class="tag tag-yes">开放生态</span></td></tr>
+    <tr><td>包体积</td><td>~150MB</td><td>按平台实测</td><td>不含 Ollama 模型/WebView 运行时</td></tr>
+    <tr><td>内存占用</td><td>~300MB+</td><td>按 Vault/插件状态实测</td><td>以分层基线验收</td></tr>
+    <tr><td>启动速度</td><td>~2s（等 Node）</td><td>首屏优先，索引后台执行</td><td>按冷/热启动基线验收</td></tr>
+    <tr><td>协作</td><td>无</td><td>无（单机保持）</td><td><span class="tag tag-warn">同</span></td></tr>
+    <tr><td>MCP 双向</td><td>有</td><td>有（保留+增强）</td><td><span class="tag tag-warn">保留</span></td></tr>
+    <tr><td>安全边界</td><td>有</td><td>有（保留+插件沙箱）</td><td><span class="tag tag-warn">增强</span></td></tr>
+  </table>
+
+  <div class="callout">
+    <div class="callout-title">保留的精华</div>
+    <p>原项目做得好的部分<strong>完整保留</strong>：FTS5 trigram 中文检索、混合检索 RRF 融合、MCP 双向集成、安全边界设计（AI 写入审计/撤销、MCP 默认只读、凭证加密）、Markdown 白名单消毒器、Vault 文件系统设计。重构不是推倒重来，是换掉天花板、保留好底子。</p>
+  </div>
+</section>
+
+</div>
+
+<footer>
+  格物 Lattice 单机版顶级架构说明书 · v1.1 · 2026-10-13<br>
+  技术栈：Tauri 2 · BlockSuite · React 18 · TypeScript · SQLite · sqlite-vec · QuickJS · MCP<br>
+  License: Mulan PSL v2
+</footer>
+
+</body>
+</html>

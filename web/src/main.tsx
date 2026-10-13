@@ -1,6 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
+import NativeWorkspace from './NativeWorkspace';
+import { isTauri } from '@tauri-apps/api/core';
 import AppErrorBoundary from './components/AppErrorBoundary.jsx';
 import { ToastProvider } from './hooks/useToast.jsx';
 import './styles.css';
@@ -12,7 +14,7 @@ if (container) {
     <StrictMode>
       <ToastProvider>
         <AppErrorBoundary>
-          <App />
+          {isTauri() ? <NativeWorkspace /> : <App />}
         </AppErrorBoundary>
       </ToastProvider>
     </StrictMode>,

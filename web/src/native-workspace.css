@@ -1,0 +1,42 @@
+.native-workspace { display: flex; flex-direction: column; height: 100vh; min-height: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+.native-workspace button { cursor: pointer; }
+.native-header { display: flex; align-items: center; gap: 8px; height: 48px; min-height: 48px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
+.native-brand { min-width: max-content; font-family: var(--font-display); font-size: 16px; }
+.native-vault-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+.native-header button, .native-sidebar-tools > button, .native-editor-bar > button { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-secondary); }
+.native-header button:hover, .native-sidebar-tools > button:hover, .native-editor-bar > button:hover { background: var(--bg-hover); color: var(--text); }
+.native-body { display: flex; min-height: 0; flex: 1; }
+.native-sidebar { display: flex; flex-direction: column; width: clamp(220px, 24vw, 320px); min-width: 220px; border-right: 1px solid var(--border); background: var(--bg-panel); }
+.native-sidebar-tools { display: flex; align-items: center; gap: 5px; padding: 10px; }
+.native-search { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; height: 32px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); background: var(--bg-subtle); }
+.native-search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; }
+.native-create { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 10px; }
+.native-create input { min-width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-panel); color: var(--text); }
+.native-create button { min-height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-subtle); color: var(--text); }
+.native-list-count { padding: 5px 14px 8px; color: var(--text-tertiary); font-size: 11px; }
+.native-list { min-height: 0; flex: 1; overflow: auto; }
+.native-list button { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-height: 56px; padding: 8px 14px; border: 0; border-left: 3px solid transparent; background: transparent; color: var(--text); text-align: left; }
+.native-list button:hover { background: var(--bg-hover); }
+.native-list button.is-active { border-left-color: var(--accent); background: var(--bg-active); }
+.native-item-title, .native-item-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.native-item-title { font-size: 13px; font-weight: 600; }
+.native-item-path { color: var(--text-tertiary); font-size: 11px; }
+/* 搜索命中的上下文摘要：最多两行，避免长正文把列表撑开 */
+.native-item-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.native-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.native-editor-bar { display: flex; align-items: center; gap: 10px; min-height: 49px; padding: 6px 14px; border-bottom: 1px solid var(--border); }
+.native-heading { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.native-heading strong, .native-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.native-heading strong { font-size: 14px; }
+.native-heading span { color: var(--text-tertiary); font-size: 11px; }
+.native-modes { display: flex; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-subtle); }
+.native-modes button { min-width: 43px; height: 26px; padding: 0 5px; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); font-size: 11px; }
+.native-modes button.is-active { background: var(--bg-panel); color: var(--text); font-weight: 600; }
+.native-editor { display: flex; min-height: 0; flex: 1; }
+.native-editor textarea, .native-preview { min-width: 0; height: 100%; overflow: auto; }
+.native-editor textarea { flex: 1; resize: none; padding: 24px 30px; border: 0; outline: 0; background: transparent; color: var(--text); font: 14px/1.75 var(--font-mono); }
+.native-editor--split textarea { border-right: 1px solid var(--border); }
+.native-preview { flex: 1; padding: 24px 30px; }
+.native-empty { display: grid; place-items: center; height: 100%; color: var(--text-secondary); font-size: 14px; }
+.native-status { display: flex; justify-content: space-between; gap: 12px; min-height: 26px; padding: 4px 12px; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: 11px; }
+@media (max-width: 700px) { .native-body { flex-direction: column; } .native-sidebar { width: 100%; min-width: 0; height: 34vh; border-right: 0; border-bottom: 1px solid var(--border); } .native-editor textarea, .native-preview { padding: 14px; } .native-modes button { min-width: 38px; } }

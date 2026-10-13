@@ -6,21 +6,32 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test:native": "node test/native-document.test.mjs",
     "preview": "vite preview --port 5173",
-    "test": "node test/theme.test.mjs && node test/ai-motion.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/static-site.test.mjs && node test/pwa.test.mjs && node test/ai-settings.test.mjs && node test/mcp-settings.test.mjs && node test/mcp-marketplace.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/note-list-state.test.mjs && node test/review.test.mjs && node test/update.test.mjs && node test/run-integration.mjs",
+    "test": "node test/native-vault-contract.test.mjs && node test/native-document.test.mjs && node test/theme.test.mjs && node test/settings-store.test.mjs && node test/ai-motion.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/static-site.test.mjs && node test/pwa.test.mjs && node test/ai-settings.test.mjs && node test/mcp-settings.test.mjs && node test/mcp-marketplace.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/note-list-state.test.mjs && node test/review.test.mjs && node test/update.test.mjs && node test/run-integration.mjs",
     "test:e2e": "node test/canvas-navigation.test.mjs && node test/run-smoke.mjs"
   },
   "dependencies": {
+    "@blocksuite/blocks": "^0.19.5",
+    "@blocksuite/presets": "^0.19.5",
+    "@blocksuite/store": "^0.19.5",
     "@gsap/react": "^2.1.2",
+    "@tauri-apps/api": "^2.12.3",
+    "@tauri-apps/plugin-dialog": "^2.8.2",
     "gsap": "^3.15.0",
     "lucide-react": "^1.49.0",
     "marked": "^14.1.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^30.1.1",
+    "typescript": "^5.9.3",
     "vite": "^5.4.11"
   },
   "optionalDependencies": {

@@ -11,6 +11,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { config } from '../../config/index.js';
 import { getDb } from '../../db/index.js';
 import { nowIso } from '../../lib/time.js';
+import { isLocalOllamaEndpoint } from './ai.provider.js';
 
 const SETTINGS_KEY = 'model-config';
 const ENCRYPTED_PREFIX = 'enc:v1:';
@@ -209,17 +210,17 @@ export function isMaskedApiKey(apiKey) {
 
 /** 供聊天/索引使用的对话模型配置：显式 provider 优先，否则取服务端激活项 */
 export function resolveChatProvider(explicit) {
-  if (explicit?.endpoint && explicit?.apiKey && !isMaskedApiKey(explicit.apiKey)) return explicit;
+  if (explicit?.endpoint && (explicit?.apiKey || isLocalOllamaEndpoint(explicit.endpoint)) && !isMaskedApiKey(explicit.apiKey)) return explicit;
   const settings = loadServerSettings();
   const active = settings.providers.find((provider) => provider.id === settings.activeProviderId)
     ?? settings.providers[0]
     ?? null;
-  return active?.enabled !== false && active?.endpoint && active?.apiKey ? active : null;
+  return active?.enabled !== false && active?.endpoint && (active?.apiKey || isLocalOllamaEndpoint(active.endpoint)) ? active : null;
 }
 
 /** 供索引管道使用的 embedding 配置；未配置时返回 null（索引器据此跳过） */
 export function resolveEmbeddingProvider() {
   const settings = loadServerSettings();
   const embedding = settings.embedding;
-  return embedding?.endpoint && embedding?.apiKey && embedding?.model ? embedding : null;
+  return embedding?.endpoint && (embedding?.apiKey || isLocalOllamaEndpoint(embedding.endpoint)) && embedding?.model ? embedding : null;
 }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAiProvider, getActiveAiProvider, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.js';
+import { createAiProvider, getActiveAiProvider, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.js';
+import { isLocalOllamaEndpoint } from '../src/settings/aiProviders.js';
 
 const values = new Map();
 globalThis.localStorage = {
@@ -41,4 +42,18 @@ test('stores multiple providers and switches the active provider', () => {
   assert.equal(getActiveAiProvider(settings).apiKey, 'masked:cret');
   assert.doesNotMatch(values.get('lattice-ai-settings-v1'), /secret/);
   assert.equal(hasExternalAi(settings), true);
+});
+
+test('local Ollama works without storing a placeholder key', () => {
+  const provider = createAiProvider({ service: 'Ollama', endpoint: 'http://127.0.0.1:11434/v1', model: 'qwen3:8b', apiKey: '' });
+  const settings = saveAiSettings({
+    ...loadAiSettings(),
+    providers: [provider],
+    activeProviderId: provider.id,
+    embedding: { endpoint: 'http://127.0.0.1:11434/v1', model: 'bge-m3', apiKey: '', enabled: true },
+  });
+  assert.equal(isLocalOllamaEndpoint(provider.endpoint), true);
+  assert.equal(hasExternalAi(settings), true);
+  assert.equal(hasEmbeddingAi(settings), true);
+  assert.equal(getActiveAiProvider(settings).apiKey, '');
 });

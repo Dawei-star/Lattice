@@ -4,14 +4,17 @@ import { validate } from '../../middleware/validate.js';
 import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import { authenticateAi } from './ai.auth.js';
 import * as controller from './ai.controller.js';
+import { isLocalOllamaEndpoint } from './ai.provider.js';
 
 const role = z.enum(['viewer', 'editor', 'admin']).default('editor');
 const provider = z.object({
   endpoint: z.string().url().max(500),
-  apiKey: z.string().min(1).max(500),
+  apiKey: z.string().max(500).default(''),
   model: z.string().trim().max(120).optional(),
   authHeader: z.enum(['bearer', 'x-api-key']).default('bearer'),
   contextWindowTokens: z.coerce.number().int().min(8_000).max(1_000_000).optional(),
+}).refine((value) => value.apiKey || isLocalOllamaEndpoint(value.endpoint), {
+  path: ['apiKey'], message: 'API Key 不能为空',
 }).nullable().optional();
 const context = z.object({
   // 上下文范围选择（当前笔记/项目/收件箱/全部）：restrictContextForExpert 按它
@@ -103,9 +106,11 @@ aiRouter.post('/mcp/warmup', validate({ body: z.object({
 aiRouter.post('/test', validate({ body: z.object({
   provider: z.object({
     endpoint: z.string().url().max(500),
-    apiKey: z.string().min(1).max(500),
+    apiKey: z.string().max(500).default(''),
     model: z.string().trim().max(120).optional(),
     authHeader: z.enum(['bearer', 'x-api-key']).default('bearer'),
+  }).refine((value) => value.apiKey || isLocalOllamaEndpoint(value.endpoint), {
+    path: ['apiKey'], message: 'API Key 不能为空',
   }),
   kind: z.enum(['chat', 'embedding']).default('chat'),
 }) }), controller.test);

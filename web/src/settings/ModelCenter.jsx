@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Modal from '../ui/Modal.jsx';
 import { aiApi } from '../api/ai.js';
 import { createAiProvider, isMaskedApiKey, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
-import { CUSTOM_SERVICE, PROVIDERS, findProviderByService } from './aiProviders.js';
+import { CUSTOM_SERVICE, PROVIDERS, findProviderByService, isLocalOllamaEndpoint } from './aiProviders.js';
 export default function ModelCenter() {
   const [settings, setSettings] = useState(() => loadAiSettings());
   const [addStep, setAddStep] = useState(null);
@@ -81,6 +81,7 @@ export default function ModelCenter() {
       service: provider.key === 'custom' ? CUSTOM_SERVICE : provider.label,
       endpoint: provider.endpoint ?? '',
       model: '',
+      apiKey: provider.key === 'ollama' ? '' : current.apiKey,
     }));
   };
 
@@ -111,7 +112,7 @@ export default function ModelCenter() {
     const endpoint = draft.endpoint.trim();
     const model = draft.model.trim();
     const apiKey = draft.apiKey.trim();
-    if (!endpoint || !model || !apiKey) {
+    if (!endpoint || !model || (!apiKey && !isLocalOllamaEndpoint(endpoint))) {
       const result = { ok: false, error: '请先填写完整的 Endpoint、模型 ID 和 API Key 再测试。' };
       setTestResult(result);
       return result;
@@ -138,7 +139,7 @@ export default function ModelCenter() {
     };
     const existing = editingId ? settings.providers.find((provider) => provider.id === editingId) : null;
     const hasStoredKey = Boolean(existing?.apiKey || draft.hasStoredKey);
-    if (!next.endpoint || !next.model || (!next.apiKey && !hasStoredKey)) {
+    if (!next.endpoint || !next.model || (!next.apiKey && !hasStoredKey && !isLocalOllamaEndpoint(next.endpoint))) {
       setFormError('请填写完整的 Endpoint、模型 ID 和 API Key。');
       return;
     }
@@ -239,7 +240,7 @@ function EmbeddingSection({ settings }) {
 
   const runTest = async () => {
     const apiKey = keyDraft.trim();
-    if (!embedding.endpoint?.trim() || !embedding.model?.trim() || !apiKey) {
+    if (!embedding.endpoint?.trim() || !embedding.model?.trim() || (!apiKey && !isLocalOllamaEndpoint(embedding.endpoint))) {
       setResult({ ok: false, error: '请输入新的 API Key 后再测试；已保存的密钥可直接保留使用。' });
       return;
     }
@@ -275,7 +276,7 @@ function EmbeddingSection({ settings }) {
       <div className="model-center__embedding-fields">
         <label>Endpoint<input value={embedding.endpoint} onChange={(event) => update({ endpoint: event.target.value })} placeholder="https://api.siliconflow.cn/v1/embeddings" /></label>
         <label>模型 ID<input value={embedding.model} onChange={(event) => update({ model: event.target.value })} placeholder="BAAI/bge-m3" /></label>
-        <label>API Key<span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={keyDraft} placeholder={hasStoredKey ? '已配置，留空保持不变' : ''} onChange={(event) => { setKeyDraft(event.target.value); update({ apiKey: event.target.value }); }} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)}>{showKey ? '隐藏' : '显示'}</button></span></label>
+        {!isLocalOllamaEndpoint(embedding.endpoint) ? <label>API Key<span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={keyDraft} placeholder={hasStoredKey ? '已配置，留空保持不变' : ''} onChange={(event) => { setKeyDraft(event.target.value); update({ apiKey: event.target.value }); }} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)}>{showKey ? '隐藏' : '显示'}</button></span></label> : null}
       </div>
       <div className="model-center__embedding-side">
         <p className="model-center__embedding-hint">启用后笔记会按标题分块并计算向量，用于语义搜索、相关笔记推荐与知识库问答。云端 embedding 会把笔记分块内容发往该服务商；不开启则仅使用关键词检索。</p>
@@ -427,7 +428,7 @@ function TrashIcon() {
 
 function CustomModelRow({ provider, active, onUse, onEdit, onRemove, onToggle }) {
   const match = findProviderByService(provider.service);
-  const ready = Boolean(provider.endpoint && provider.apiKey && provider.model);
+  const ready = Boolean(provider.endpoint && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint)) && provider.model);
   return <div
     className={`model-center__row ${provider.enabled === false ? 'is-disabled' : ''} ${active ? 'is-active' : ''}`}
     onClick={onUse}
@@ -487,7 +488,7 @@ function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, on
 
   const nameField = <label>模型展示名称<span className="model-center__label-hint">在模型列表中展示的名称，未设置时默认显示 Model ID。</span><input value={draft.name} onChange={(event) => onChange({ name: event.target.value })} placeholder="请输入模型展示名称" maxLength={64} /></label>;
 
-  const keyField = <label><span className="model-center__label-row"><span><em>*</em> API 密钥</span>{draft.providerKeyUrl ? <a className="model-center__key-link" href={draft.providerKeyUrl} target="_blank" rel="noreferrer">获取 API 密钥</a> : null}</span><span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={draft.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} placeholder={draft.hasStoredKey ? '已配置，留空保持不变' : '请输入 API Key'} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)} aria-label={showKey ? '隐藏 API Key' : '显示 API Key'} title={showKey ? '隐藏' : '显示'}>{showKey ? <EyeOffIcon /> : <EyeIcon />}</button></span></label>;
+  const keyField = isLocalOllamaEndpoint(draft.endpoint) ? null : <label><span className="model-center__label-row"><span><em>*</em> API 密钥</span>{draft.providerKeyUrl ? <a className="model-center__key-link" href={draft.providerKeyUrl} target="_blank" rel="noreferrer">获取 API 密钥</a> : null}</span><span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={draft.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} placeholder={draft.hasStoredKey ? '已配置，留空保持不变' : '请输入 API Key'} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)} aria-label={showKey ? '隐藏 API Key' : '显示 API Key'} title={showKey ? '隐藏' : '显示'}>{showKey ? <EyeOffIcon /> : <EyeIcon />}</button></span></label>;
 
   return <form className="model-center__form" onSubmit={onSubmit}>
     <header><button type="button" className="model-center__back" onClick={onBack} aria-label="返回">‹</button><h3>{editing ? '编辑模型' : isCustom ? '自定义模型' : '通过服务商添加'}</h3><button type="button" className="model-center__close" onClick={onBack} aria-label="关闭">×</button></header>

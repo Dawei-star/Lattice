@@ -3,8 +3,23 @@ const LOGO = (name) => `/provider-logos/${name}.svg`;
 
 export const CUSTOM_SERVICE = '自定义 (OpenAI Compatible)';
 
+export function isLocalOllamaEndpoint(value) {
+  try {
+    const endpoint = new URL(value);
+    const host = endpoint.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return endpoint.protocol === 'http:'
+      && ['127.0.0.1', '::1'].includes(host)
+      && endpoint.port === '11434'
+      && /^\/v1(?:\/(?:chat\/completions|embeddings))?\/?$/i.test(endpoint.pathname)
+      && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash;
+  } catch {
+    return false;
+  }
+}
+
 export const PROVIDERS = [
   { key: 'custom', label: '自定义模型', description: 'OpenAI Compatible', logo: LOGO('custom'), endpoint: '', models: [] },
+  { key: 'ollama', label: 'Ollama', description: '本机离线模型', logo: LOGO('custom'), endpoint: 'http://127.0.0.1:11434/v1', models: [], hint: '先在 Ollama 中下载模型，再填写本机模型 ID；无需 API Key。' },
   { key: 'deepseek', label: 'DeepSeek', description: 'DeepSeek API', logo: LOGO('deepseek'), endpoint: 'https://api.deepseek.com/chat/completions', models: ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Flash', 'DeepSeek-V4-Pro'], keyUrl: 'https://platform.deepseek.com/api_keys' },
   { key: 'volcengine', label: '火山引擎', description: '火山方舟', logo: LOGO('volcengine'), endpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions', models: ['doubao-seed-2-1-pro-260915', 'doubao-seed-2-1-turbo-260915'], keyUrl: 'https://console.volcengine.com/ark' },
   { key: 'minimax-cn', label: 'MiniMax CN', description: 'MiniMax 国内', logo: LOGO('minimax'), endpoint: 'https://api.minimax.cn/v1/chat/completions', models: ['MiniMax-M3'], keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key' },
@@ -26,6 +41,7 @@ export const PROVIDERS = [
 
 // 模型列表按已保存的 service 名称就近匹配品牌 Logo；匹配不到时回退为自定义图标。
 const SERVICE_MATCHERS = [
+  ['ollama', 'ollama'],
   ['deepseek', 'deepseek'],
   ['火山', 'volcengine'],
   ['minimax', 'minimax-cn'],

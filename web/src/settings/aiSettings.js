@@ -1,4 +1,5 @@
 import { aiApi } from '../api/ai.js';
+import { isLocalOllamaEndpoint } from './aiProviders.js';
 
 const STORAGE_KEY = 'lattice-ai-settings-v1';
 const SESSION_STORAGE_KEY = 'lattice-ai-session-v1';
@@ -102,12 +103,12 @@ export function getActiveAiProvider(settings) {
 
 export function hasExternalAi(settings) {
   const provider = getActiveAiProvider(settings);
-  return Boolean(provider?.enabled !== false && provider?.endpoint?.trim() && provider?.apiKey?.trim() && provider?.model?.trim());
+  return Boolean(provider?.enabled !== false && provider?.endpoint?.trim() && (provider?.apiKey?.trim() || isLocalOllamaEndpoint(provider?.endpoint)) && provider?.model?.trim());
 }
 
 export function hasEmbeddingAi(settings) {
   const embedding = settings?.embedding;
-  return Boolean(embedding?.enabled && embedding?.endpoint?.trim() && embedding?.apiKey?.trim() && embedding?.model?.trim());
+  return Boolean(embedding?.enabled && embedding?.endpoint?.trim() && (embedding?.apiKey?.trim() || isLocalOllamaEndpoint(embedding?.endpoint)) && embedding?.model?.trim());
 }
 
 // ── 服务端同步 ───────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ function pushToServer(settings) {
     try {
       await aiApi.putSettings({
         providers: (settings.providers ?? [])
-          .filter((provider) => provider.endpoint && provider.apiKey)
+          .filter((provider) => provider.endpoint && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint)))
           .map((provider) => ({
             id: provider.id,
             name: provider.name,
@@ -139,7 +140,7 @@ function pushToServer(settings) {
             ...(provider.contextWindowTokens !== undefined ? { contextWindowTokens: provider.contextWindowTokens } : {}),
           })),
         activeProviderId: settings.activeProviderId,
-        embedding: settings.embedding?.endpoint && settings.embedding?.apiKey && settings.embedding?.model
+        embedding: settings.embedding?.endpoint && (settings.embedding?.apiKey || isLocalOllamaEndpoint(settings.embedding?.endpoint)) && settings.embedding?.model
           ? {
               endpoint: settings.embedding.endpoint,
               model: settings.embedding.model,
@@ -167,8 +168,8 @@ export async function hydrateAiSettingsFromServer() {
     const server = response?.data ?? response;
     if (!server || typeof server !== 'object') return loadAiSettings();
     const local = loadAiSettings();
-    const localConfigured = (local.providers ?? []).some((provider) => provider.endpoint && provider.apiKey);
-    const serverProviders = Array.isArray(server.providers) ? server.providers.filter((provider) => provider.endpoint && provider.apiKey) : [];
+    const localConfigured = (local.providers ?? []).some((provider) => provider.endpoint && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint)));
+    const serverProviders = Array.isArray(server.providers) ? server.providers.filter((provider) => provider.endpoint && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint))) : [];
     const patch = {};
     if (serverProviders.length && !localConfigured) {
       patch.providers = serverProviders.map((provider) => normalizeProvider({ ...provider, verified: true }));
@@ -268,6 +269,7 @@ function rememberSecrets(settings) {
 }
 
 function serializedApiKey(provider, volatileKey) {
+  if (isLocalOllamaEndpoint(provider.endpoint) && !provider.apiKey) return { apiKey: '' };
   if (isActualApiKey(provider.apiKey)) return { apiKey: provider.apiKey };
   if (volatileKey) return { apiKey: volatileKey };
   // masked: 值故意省略，服务端会保留原有密钥。

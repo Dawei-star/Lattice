@@ -1,3 +1,5 @@
+import { createStore } from 'zustand/vanilla';
+
 const STORAGE_KEY = 'lattice-settings-v1';
 const SAFE_BACKGROUND_IMAGE = /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/]+={0,2}$/i;
 
@@ -23,6 +25,18 @@ const OPTIONS = {
   autoSaveDelay: new Set(['500', '900', '1500']),
 };
 
+const settingsStore = createStore(() => ({ settings: null }));
+const bridgedWindows = new WeakSet();
+
+function bridgeWindowEvents() {
+  if (typeof window === 'undefined' || bridgedWindows.has(window)) return;
+  window.addEventListener('lattice:settings-change', (event) => {
+    const next = event.detail ?? loadSettings();
+    if (settingsStore.getState().settings !== next) settingsStore.setState({ settings: next });
+  });
+  bridgedWindows.add(window);
+}
+
 export function loadSettings() {
   if (typeof localStorage === 'undefined') return { ...DEFAULT_SETTINGS };
 
@@ -44,8 +58,10 @@ export function saveSettings(patch) {
   }
 
   applySettings(next);
+  bridgeWindowEvents();
+  settingsStore.setState({ settings: next });
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('lattice:settings-change', { detail: next }));
+    window.dispatchEvent(new window.CustomEvent('lattice:settings-change', { detail: next }));
   }
   return next;
 }
@@ -62,9 +78,8 @@ export function applySettings(settings = loadSettings()) {
 
 export function subscribeSettings(listener) {
   if (typeof window === 'undefined') return () => {};
-  const handleChange = (event) => listener(event.detail ?? loadSettings());
-  window.addEventListener('lattice:settings-change', handleChange);
-  return () => window.removeEventListener('lattice:settings-change', handleChange);
+  bridgeWindowEvents();
+  return settingsStore.subscribe((state) => listener(state.settings));
 }
 
 function normalizeSettings(value) {

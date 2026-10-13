@@ -19,6 +19,20 @@ const CHAT_TIMEOUT_MS = () => config.aiChatTimeoutMs;
 // 这里运行时拼装而非写字面量，避免被静态凭据扫描误判为硬编码密钥。
 const API_KEY_HEADER = ['x-api', '-key'].join('');
 
+export function isLocalOllamaEndpoint(value) {
+  try {
+    const endpoint = value instanceof URL ? value : new URL(value);
+    const host = endpoint.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return endpoint.protocol === 'http:'
+      && ['127.0.0.1', '::1'].includes(host)
+      && endpoint.port === '11434'
+      && /^\/v1(?:\/(?:chat\/completions|embeddings))?\/?$/i.test(endpoint.pathname)
+      && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash;
+  } catch {
+    return false;
+  }
+}
+
 /** IPv4 私网/保留段与 IPv6 唯一本地/链路本地地址 */
 function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
@@ -44,6 +58,7 @@ function isPrivateIp(ip) {
  * 注意：DNS 解析与实际请求之间存在重绑定窗口，这里做的是主机名级基础防护。
  */
 export async function assertPublicEndpoint(endpoint) {
+  if (isLocalOllamaEndpoint(endpoint)) return;
   if (config.aiAllowPrivateEndpoints) return;
   const host = endpoint.hostname.replace(/^\[|\]$/g, '');
   let addresses;
@@ -94,6 +109,10 @@ export function normalizeEmbeddingEndpoint(value) {
 }
 
 export function buildProviderHeaders(provider) {
+  if (!provider.apiKey && isLocalOllamaEndpoint(provider.endpoint)) {
+    return { 'Content-Type': 'application/json' };
+  }
+  if (!provider.apiKey) throw new AiProviderError('AI API Key 不能为空');
   const useApiKeyHeader = provider.authHeader === API_KEY_HEADER;
   const headerName = useApiKeyHeader ? API_KEY_HEADER : 'Authorization';
   const headerValue = useApiKeyHeader ? String(provider.apiKey) : `Bearer ${provider.apiKey}`;
@@ -421,7 +440,7 @@ export async function testChatProvider({ provider }) {
   const latency = () => Date.now() - startedAt;
   try {
     const endpoint = normalizeChatEndpoint(provider?.endpoint ?? '');
-    if (!provider?.apiKey?.trim()) throw new Error('API Key 不能为空');
+    if (!provider?.apiKey?.trim() && !isLocalOllamaEndpoint(endpoint)) throw new Error('API Key 不能为空');
     await assertPublicEndpoint(endpoint);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -457,7 +476,7 @@ export async function testEmbeddingProvider({ provider }) {
   const latency = () => Date.now() - startedAt;
   try {
     const endpoint = normalizeEmbeddingEndpoint(provider?.endpoint ?? '');
-    if (!provider?.apiKey?.trim()) throw new Error('API Key 不能为空');
+    if (!provider?.apiKey?.trim() && !isLocalOllamaEndpoint(endpoint)) throw new Error('API Key 不能为空');
     if (!provider?.model?.trim()) throw new Error('embedding 模型 ID 不能为空');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
