@@ -7,7 +7,7 @@
 //!   短于 3 字符的查询以及 FTS 未命中时走 `LIKE` 兜底 —— 与原项目两条路径一致。
 
 use crate::db;
-use crate::markdown::{compute_word_count, extract_note_tags, parse_frontmatter, strip_frontmatter};
+use crate::markdown::{compute_word_count, extract_note_tags, extract_wiki_links, parse_frontmatter, strip_frontmatter};
 use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteFile, Vault, title_from_markdown};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -413,6 +413,105 @@ impl Index {
             .map_err(|error| format!("无法检查路径占用：{error}"))?;
         Ok(taken.is_some())
     }
+
+    /// 契约 GET /api/graph 的对应命令 graph_build：
+    /// 节点=笔记（degree=出链+入链）、边=已解析双链（双保险过滤端点）、
+    /// 悬空链接列表与统计，形状对齐 Express graph.service buildGraph。
+    pub fn build_graph(&self) -> Result<GraphData, String> {
+        let notes = self.list_note_index()?;
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+
+        let mut outgoing: HashMap<String, u64> = HashMap::new();
+        let mut incoming: HashMap<String, u64> = HashMap::new();
+        let mut statement = connection
+            .prepare("SELECT source_note_id, COUNT(*) FROM links GROUP BY source_note_id")
+            .map_err(|error| format!("无法统计出链：{error}"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))
+            .map_err(|error| format!("无法统计出链：{error}"))?;
+        for row in rows {
+            let (id, count) = row.map_err(|error| format!("无法读取出链：{error}"))?;
+            outgoing.insert(id, count);
+        }
+        let mut statement = connection
+            .prepare(
+                "SELECT target_note_id, COUNT(*) FROM links
+                 WHERE target_note_id IS NOT NULL GROUP BY target_note_id",
+            )
+            .map_err(|error| format!("无法统计入链：{error}"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))
+            .map_err(|error| format!("无法统计入链：{error}"))?;
+        for row in rows {
+            let (id, count) = row.map_err(|error| format!("无法读取入链：{error}"))?;
+            incoming.insert(id, count);
+        }
+
+        let nodes: Vec<GraphNode> = notes
+            .iter()
+            .map(|note| GraphNode {
+                id: note.id.clone(),
+                title: note.title.clone(),
+                folder_id: note.folder_id.clone(),
+                is_pinned: note.is_pinned,
+                word_count: note.word_count,
+                degree: outgoing.get(&note.id).copied().unwrap_or(0)
+                    + incoming.get(&note.id).copied().unwrap_or(0),
+            })
+            .collect();
+        let existing: std::collections::HashSet<String> = nodes.iter().map(|node| node.id.clone()).collect();
+
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT source_note_id, target_note_id FROM links
+                 WHERE target_note_id IS NOT NULL",
+            )
+            .map_err(|error| format!("无法查询链接边：{error}"))?;
+        let edges: Vec<GraphEdge> = statement
+            .query_map([], |row| {
+                Ok(GraphEdge {
+                    source: row.get(0)?,
+                    target: row.get(1)?,
+                })
+            })
+            .map_err(|error| format!("无法查询链接边：{error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取链接边：{error}"))?
+            .into_iter()
+            .filter(|edge| existing.contains(&edge.source) && existing.contains(&edge.target))
+            .collect();
+
+        let mut statement = connection
+            .prepare(
+                "SELECT target_title, COUNT(DISTINCT source_note_id) FROM links
+                 WHERE target_note_id IS NULL
+                 GROUP BY target_title COLLATE NOCASE
+                 ORDER BY COUNT(DISTINCT source_note_id) DESC, target_title COLLATE NOCASE ASC",
+            )
+            .map_err(|error| format!("无法查询悬空链接：{error}"))?;
+        let dangling: Vec<DanglingLink> = statement
+            .query_map([], |row| {
+                Ok(DanglingLink {
+                    target_title: row.get(0)?,
+                    reference_count: row.get::<_, i64>(1)? as u64,
+                })
+            })
+            .map_err(|error| format!("无法查询悬空链接：{error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取悬空链接：{error}"))?;
+
+        let edge_count = edges.len() as u64;
+        Ok(GraphData {
+            dangling,
+            stats: GraphStats {
+                node_count: nodes.len() as u64,
+                edge_count,
+                isolated_count: nodes.iter().filter(|node| node.degree == 0).count() as u64,
+            },
+            nodes,
+            edges,
+        })
+    }
 }
 
 /// 笔记详情（对齐 Express mapNote，camelCase 序列化）。
@@ -445,6 +544,53 @@ pub struct NoteIndexEntry {
     pub content_hash: Option<String>,
     pub properties_json: Option<String>,
     pub updated_at: String,
+}
+
+/// 图谱数据（对齐 Express buildGraph）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphData {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub dangling: Vec<DanglingLink>,
+    pub stats: GraphStats,
+}
+
+/// 图谱节点（degree = 出链 + 入链，前端用于节点大小映射）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNode {
+    pub id: String,
+    pub title: String,
+    pub folder_id: Option<String>,
+    pub is_pinned: bool,
+    pub word_count: u64,
+    pub degree: u64,
+}
+
+/// 图谱边（source → target，均为已解析的笔记 id）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+}
+
+/// 悬空链接聚合（对齐 listDangling）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanglingLink {
+    pub target_title: String,
+    pub reference_count: u64,
+}
+
+/// 图谱统计。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphStats {
+    pub node_count: u64,
+    pub edge_count: u64,
+    pub isolated_count: u64,
 }
 
 /// 标签条目（对齐 Express tags 表投影，camelCase 序列化）。
@@ -542,7 +688,42 @@ fn write_row(
             ],
         )
         .map_err(|error| format!("无法写入更新时间：{error}"))?;
+    sync_links(connection, path, raw, indexed_at)?;
     sync_tags(connection, path, raw, indexed_at)
+}
+
+/// 同步一篇笔记的双向链接投影（对齐 rebuildForNote）：
+/// 目标按标题 NOCASE 解析归属（同名取最近更新），未解析即悬空。
+fn sync_links(connection: &Connection, path: &str, raw: &str, indexed_at: &str) -> Result<(), String> {
+    let source_id: String = connection
+        .query_row(
+            "SELECT COALESCE(note_id, path) FROM notes WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法读取链接源：{error}"))?;
+    connection
+        .execute("DELETE FROM links WHERE source_note_id = ?1", params![source_id])
+        .map_err(|error| format!("无法清理链接：{error}"))?;
+    for link in extract_wiki_links(raw) {
+        let target_note_id: Option<String> = connection
+            .query_row(
+                "SELECT COALESCE(note_id, path) FROM notes
+                 WHERE title = ?1 COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1",
+                params![link.target],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("无法解析链接目标：{error}"))?;
+        connection
+            .execute(
+                "INSERT INTO links (source_note_id, target_title, target_note_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![source_id, link.target, target_note_id, indexed_at],
+            )
+            .map_err(|error| format!("无法写入链接：{error}"))?;
+    }
+    Ok(())
 }
 
 /// 同步一篇笔记的标签派生（保存/扫描时调用；标签是正文的投影，可重建）。

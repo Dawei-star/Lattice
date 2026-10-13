@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-13 ｜ note_history 三命令完成（list/get/restore，快照哈希完整性校验）
+> **最后更新**：2026-10-13 ｜ graph_build 完成（links 投影落地，wiki-link 解析对齐 Express）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -29,7 +29,8 @@
   - [x] `note_delete`（双确认闸门/文件+投影清理/历史快照保留）
   - [x] `search_query`（strategy 枚举 fts/like/like-fallback + mapRow 形状）
   - [x] `note_history_list/get/restore`（快照哈希完整性校验、恢复走写边界自动快照）
-  - [ ] folders / graph / meta
+  - [x] links 投影（迁移 006 + wiki-link 解析）+ `graph_build`（nodes/edges/dangling/stats）
+  - [ ] folders / meta
   - [ ] canvas / files / experts / review / vault attachments
 - [ ] P1-05~07 前端 TS 化
 - [ ] P1-08 功能对齐验证（契约快照对照）

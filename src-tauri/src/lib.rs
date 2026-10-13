@@ -20,7 +20,7 @@ mod vault;
 mod watcher;
 mod workspace;
 
-use index::{IndexStats, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, SearchOutcome, TagEntry};
+use index::{GraphData, IndexStats, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, SearchOutcome, TagEntry};
 use jobs::Job;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -89,7 +89,8 @@ pub fn run() {
             search_query,
             note_history_list,
             note_history_get,
-            note_history_restore
+            note_history_restore,
+            graph_build
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -341,6 +342,16 @@ fn note_history_restore(
             expected_current_hash,
             confirmed.unwrap_or(false),
         )
+    })
+}
+
+#[tauri::command]
+fn graph_build(state: State<'_, WorkspaceState>) -> Result<GraphData, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .index()
+            .build_graph()
+            .map_err(|error| ServiceError::new("GRAPH_ERROR", error))
     })
 }
 

@@ -326,6 +326,47 @@ pub fn strip_frontmatter(raw: &str) -> &str {
     raw
 }
 
+/// 双向链接解析（对齐 extractWikiLinks）：`[[目标]]`、`[[目标#锚点]]`、
+/// `[[目标|别名]]`、`![[目标]]`（嵌入同样计入）；同一目标（小写）去重并计次。
+/// heading/alias/is_embed 供 P2 双链 Block 使用（P1 links 表只落 target）。
+pub struct WikiLink {
+    pub target: String,
+    #[allow(dead_code)]
+    pub heading: Option<String>,
+    #[allow(dead_code)]
+    pub alias: Option<String>,
+    #[allow(dead_code)]
+    pub is_embed: bool,
+    pub count: u64,
+}
+
+pub fn extract_wiki_links(raw_content: &str) -> Vec<WikiLink> {
+    let text = strip_code(raw_content);
+    let mut found: std::collections::HashMap<String, WikiLink> = std::collections::HashMap::new();
+    // 与 Express WIKI_LINK 同构：捕获组 1=嵌入标记 2=目标 3=锚点 4=别名
+    // （Rust regex 要求类内 ] 显式转义，JS 可省略）
+    let pattern = regex::Regex::new(
+        r"(!?)\[\[([^\[\]|#]+?)(?:#([^\[\]|]+?))?(?:\|([^\[\]]+?))?\]\]",
+    )
+    .expect("WIKI_LINK 正则编译失败");
+    for capture in pattern.captures_iter(&text) {
+        let target = capture.get(2).map(|m| m.as_str().trim().to_owned()).unwrap_or_default();
+        if target.is_empty() {
+            continue;
+        }
+        let key = target.to_lowercase();
+        let entry = found.entry(key).or_insert_with(|| WikiLink {
+            target: target.clone(),
+            heading: capture.get(3).map(|m| m.as_str().trim().to_owned()),
+            alias: capture.get(4).map(|m| m.as_str().trim().to_owned()),
+            is_embed: capture.get(1).map(|m| m.as_str() == "!").unwrap_or(false),
+            count: 0,
+        });
+        entry.count += 1;
+    }
+    found.into_values().collect()
+}
+
 /// 字数统计（对齐 computeWordCount）：CJK 字符数 + 拉丁词数。
 pub fn compute_word_count(text: &str) -> u64 {
     let mut cjk = 0u64;

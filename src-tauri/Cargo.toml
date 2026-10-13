@@ -32,6 +32,8 @@ uuid = { version = "1", features = ["v4"] }
 fs2 = "0.4"
 # Vault 文件监听（watcher reconcile，P1-03）
 notify = "8"
+# wiki-link / 标签正则解析（对齐 Express lib/markdown.js）
+regex = "1"
 # bundled：把 SQLite 源码一起编进来，自带 FTS5 + trigram 分词器，
 # 不依赖系统 sqlite3.dll，符合「零外部依赖」的本地优先目标。
 rusqlite = { version = "0.40", features = ["bundled"] }
