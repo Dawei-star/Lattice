@@ -49,7 +49,27 @@ jobs:
       - name: Install dependencies (server)
         run: npm --prefix server ci
       - name: Server test suite
-        run: npm --prefix server run test
+        id: server-test
+        run: npm --prefix server run test 2>&1 | tee server-test-output.log
+      - name: Report failing tests (匿名可读的 check annotation)
+        if: failure() && steps.server-test.outcome == 'failure'
+        shell: bash
+        run: |
+          # node --test 的失败清单在 "✖ failing tests" 之后；截取前 40 行进 annotation
+          section=$(awk '/failing tests/{flag=1} flag{print; count++} count>=40{exit}' server-test-output.log)
+          if [ -n "$section" ]; then
+            {
+              echo "SERVER-TEST FAILURES"
+              echo '```'
+              echo "$section"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            escaped=$(echo "$section" | tail -n +2 | head -c 800 | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::server-test failures: $escaped"
+          else
+            tail -n 60 server-test-output.log >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::server-test failed without a failing-tests section; see step summary"
+          fi
 
   rust-test:
     # Tauri 2 依赖 WebView2，Windows runner 无需额外系统包；
