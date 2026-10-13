@@ -1,0 +1,90 @@
+# 升级门禁（升级计划 P0-2）：四个 job 全绿才允许合并到 main / v0.1.5。
+# 依据：doc/升级计划/lattice-upgrade-plan.md 4.2 P0-2、4.5 验证标准。
+# 说明：P1 结束删除 Express 时，server-test job 随 server/ 一并移除（计划 4.2）。
+name: upgrade-gate
+
+on:
+  pull_request:
+    branches: [main, v0.1.5]
+  push:
+    branches: [main, v0.1.5]
+    tags: ['v0.1.*-baseline']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            server/package-lock.json
+      - name: Install dependencies (web + server, 集成测试需起 Express)
+        run: |
+          npm --prefix server ci
+          npm --prefix web ci
+      - name: Web test suite
+        run: npm --prefix web run test
+
+  server-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install dependencies (server)
+        run: npm --prefix server ci
+      - name: Server test suite
+        run: npm --prefix server run test
+
+  rust-test:
+    # Tauri 2 依赖 WebView2，Windows runner 无需额外系统包；
+    # Mac/Linux 三平台构建环境在 P1-10 前另备（计划 10.3）。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-gate-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --release
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy -- -D warnings
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies (web)
+        run: npm --prefix web ci
+      - name: TypeScript typecheck
+        run: npm --prefix web run typecheck
