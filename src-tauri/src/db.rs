@@ -81,6 +81,9 @@ pub fn open(path: &Path) -> Result<Connection, String> {
 }
 
 /// 按 `PRAGMA user_version` 逐步升级 Schema，可重复执行。
+///
+/// 迁移在事务内执行：任何一步失败都整体回滚、`user_version` 不提升，
+/// 下次启动会重试而不是撞上半套残留 Schema（升级计划 P0-6 / P1-02）。
 pub fn migrate(connection: &Connection) -> Result<(), String> {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -89,9 +92,22 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         return Ok(());
     }
     if version < 1 {
-        connection
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("无法开启迁移事务：{error}"))?;
+        transaction
             .execute_batch(MIGRATION_001)
-            .map_err(|error| format!("无法创建索引表：{error}"))?;
+            .map_err(|error| {
+                // 事务随 drop 回滚：半套 schema 不会落盘，便于失败诊断后重试。
+                format!("无法创建索引表（已回滚，下次启动重试）：{error}")
+            })?;
+        transaction
+            .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+            .map_err(|error| format!("无法写入索引库版本：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交迁移事务：{error}"))?;
+        return Ok(());
     }
     connection
         .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
@@ -102,6 +118,27 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{migrate, open};
+    use rusqlite::Connection;
+    use std::path::Path;
+
+    /// 在指定库文件上打开连接并写入一行可检索数据（供恢复类测试复用）。
+    fn open_and_seed(path: &Path) -> Connection {
+        let connection = open(path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO notes (path, title, content, content_hash, size, modified_at, indexed_at)
+                 VALUES ('seed.md', '种子', '恢复校验', 'hash', 12, 0, '2026-10-13T00:00:00.000Z')",
+                [],
+            )
+            .unwrap();
+        connection
+    }
+
+    fn count_notes(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT count(*) FROM notes", [], |row| row.get(0))
+            .unwrap()
+    }
 
     #[test]
     fn migration_is_idempotent_and_enables_trigram_fts() {
@@ -129,5 +166,102 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hits, 1);
+    }
+
+    /// 迁移失败必须整体回滚：user_version 不提升、半套 schema 不残留
+    /// （升级计划 P0-6：迁移失败回滚 + 失败诊断）。
+    #[test]
+    fn failed_migration_is_rolled_back_and_keeps_user_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join(".lattice/lattice.db");
+        // 用裸连接预埋冲突（open() 会自动迁移，这里必须绕开）
+        std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute("CREATE TABLE notes (path TEXT PRIMARY KEY)", [])
+            .unwrap();
+
+        let error = migrate(&connection).expect_err("迁移应因冲突而失败");
+        assert!(
+            error.contains("已回滚"),
+            "错误信息应说明已回滚以便诊断：{error}"
+        );
+
+        // user_version 不得被提升，否则下次启动会跳过迁移
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 0);
+
+        // 事务回滚后不应残留 FTS 表/触发器等半套 schema
+        let leftovers: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE name IN ('notes_fts', 'trg_notes_fts_insert', 'ix_notes_title')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftovers, 0);
+    }
+
+    /// 异常退出（进程持有连接直接消失，WAL/SHM 残留）后，
+    /// 重新打开必须由 SQLite 自恢复出完整已提交数据。
+    /// 禁止任何"清理 WAL/SHM"式启动逻辑（升级计划 P0-6 / 风险 R11）。
+    #[test]
+    fn reopen_after_abnormal_exit_recovers_committed_data_from_wal() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join(".lattice/lattice.db");
+
+        {
+            let connection = open_and_seed(&database);
+            // 确认 WAL 模式启用（恢复策略的前提）
+            let mode: String = connection
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode.to_lowercase(), "wal");
+            // 模拟异常退出：连接既不 close 也不 checkpoint，进程直接消失。
+            // mem::forget 让 Drop 不执行，WAL/SHM 原样留在磁盘上。
+            std::mem::forget(connection);
+        }
+
+        // SQLite 的 WAL 伴随文件命名为 <库文件>-wal
+        let mut wal_name = database.clone().into_os_string();
+        wal_name.push("-wal");
+        let wal_present = std::path::Path::new(&wal_name).exists();
+        assert!(
+            wal_present,
+            "异常退出后 WAL 文件应残留（open 流程不得删除 WAL/SHM）"
+        );
+
+        let recovered = open(&database).unwrap();
+        assert_eq!(count_notes(&recovered), 1);
+    }
+
+    /// 重复启动：同一库反复 open（每次启动都会重跑 PRAGMA 与迁移检查），
+    /// 数据与写入能力不受影响（升级计划 P0-6：重复启动测试）。
+    #[test]
+    fn repeated_open_cycles_keep_data_writable() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join(".lattice/lattice.db");
+
+        open_and_seed(&database);
+        for cycle in 1..=3 {
+            let connection = open(&database).unwrap();
+            // 种子 1 行 + 前 cycle-1 轮各插入 1 行
+            assert_eq!(
+                count_notes(&connection),
+                cycle,
+                "第 {cycle} 次重启后数据应完整"
+            );
+            connection
+                .execute(
+                    "INSERT INTO notes (path, title, content, content_hash, size, modified_at, indexed_at)
+                     VALUES (?1, 'n', 'c', 'h', 1, 0, '2026-10-13T00:00:00.000Z')",
+                    [format!("cycle-{cycle}.md")],
+                )
+                .unwrap();
+            assert_eq!(count_notes(&connection), 1 + cycle);
+        }
     }
 }
