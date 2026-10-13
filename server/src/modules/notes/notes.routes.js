@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import * as controller from './notes.controller.js';
 
 const idParam = z.object({ id: z.string().uuid('笔记 ID 必须是合法 UUID') });
@@ -90,16 +91,16 @@ const deleteBody = z.object(confirmationFields).default({});
 export const notesRouter = Router();
 
 notesRouter.get('/', validate({ query: listQuery }), controller.listNotes);
-notesRouter.post('/', validate({ body: createBody }), controller.createNote);
+notesRouter.post('/', forbidViewerWrite, validate({ body: createBody }), controller.createNote);
 notesRouter.get('/templates', controller.listTemplates);
-notesRouter.post('/from-template', validate({ body: templateBody }), controller.createFromTemplate);
-notesRouter.post('/daily', validate({ body: dailyBody }), controller.createDailyNote);
+notesRouter.post('/from-template', forbidViewerWrite, validate({ body: templateBody }), controller.createFromTemplate);
+notesRouter.post('/daily', forbidViewerWrite, validate({ body: dailyBody }), controller.createDailyNote);
 // 必须注册在 /:id 之前，否则 "index" 会被当成 id 处理
 notesRouter.get('/index', controller.getNoteIndex);
-notesRouter.post('/:id/duplicate', validate({ params: idParam, body: duplicateBody }), controller.duplicateNote);
+notesRouter.post('/:id/duplicate', forbidViewerWrite, validate({ params: idParam, body: duplicateBody }), controller.duplicateNote);
 notesRouter.get('/:id/history', validate({ params: idParam }), controller.listHistory);
 notesRouter.get('/:id/history/:version', validate({ params: versionParam }), controller.getHistoryVersion);
-notesRouter.post('/:id/history/:version/restore', validate({ params: versionParam, body: restoreBody }), controller.restoreHistory);
+notesRouter.post('/:id/history/:version/restore', forbidViewerWrite, validate({ params: versionParam, body: restoreBody }), controller.restoreHistory);
 notesRouter.get('/:id', validate({ params: idParam }), controller.getNote);
-notesRouter.patch('/:id', validate({ params: idParam, body: updateBody }), controller.updateNote);
-notesRouter.delete('/:id', validate({ params: idParam, body: deleteBody }), controller.deleteNote);
+notesRouter.patch('/:id', forbidViewerWrite, validate({ params: idParam, body: updateBody }), controller.updateNote);
+notesRouter.delete('/:id', forbidViewerWrite, validate({ params: idParam, body: deleteBody }), controller.deleteNote);

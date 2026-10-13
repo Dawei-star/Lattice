@@ -94,6 +94,8 @@ export const notesApi = {
       content: input.content ?? '',
       folderId: input.folderId ?? null,
       properties: input.properties ?? {},
+      confirmed: input.confirmed === true,
+      secondConfirmed: input.secondConfirmed === true,
     }, options),
 
   // 非幂等接口：超时重试会在服务端产生重复副本，必须关闭自动重试

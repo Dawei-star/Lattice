@@ -208,6 +208,7 @@ async function main() {
   const folderTreeFixture = await seedFolderTreeFixture();
   const canvasFixture = await seedCanvasFixture();
   let renamedCanvasPath = null;
+  let contextCreatedNoteId = null;
   check('后端可用并写入嵌入样例', typeof fixtureId === 'string', cleaned > 0 ? `（清理了 ${cleaned} 篇历史残留）` : '');
 
   const { triggerResize } = installDom(BASE_URL);
@@ -242,7 +243,7 @@ async function main() {
   check('目录树渲染出「开始使用」', folderButtons.some((button) => button.textContent.includes('开始使用')));
   check('目录树渲染出「工程笔记」', folderButtons.some((button) => button.textContent.includes('工程笔记')));
   const rootNoteTrigger = await waitFor(
-    () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === folderTreeFixture.rootNoteTitle),
+    () => [...container.querySelectorAll('.tree__note')].find((button) => button.getAttribute('aria-label') === `笔记：${folderTreeFixture.rootNoteTitle}`),
     { label: '根目录笔记加载' },
   );
   check('目录树渲染出根目录 Markdown 笔记', Boolean(rootNoteTrigger));
@@ -295,8 +296,6 @@ async function main() {
 
   section('目录创建');
   container.querySelector('button[aria-label="新建目录"]')?.click();
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '顶部新建目录确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   let toolbarFolderNode = null;
   try {
     toolbarFolderNode = await waitFor(
@@ -307,6 +306,7 @@ async function main() {
     // Keep the assertion below focused on the user's visible symptom.
   }
   check('点击顶部新建目录立即出现「未命名」', Boolean(toolbarFolderNode));
+  check('新建目录不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
   let toolbarRenameInput = null;
   try {
     toolbarRenameInput = await waitFor(
@@ -330,8 +330,6 @@ async function main() {
   [...document.querySelectorAll('.context-menu .menu__item')]
     .find((button) => button.textContent.includes('新建文件夹'))
     ?.click();
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '父目录内新建文件夹确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   let childCreatedButton = null;
   try {
     childCreatedButton = await waitFor(
@@ -342,6 +340,7 @@ async function main() {
     // Keep the assertion below focused on the user's visible symptom.
   }
   check('在父目录中新建文件夹后出现子目录', Boolean(childCreatedButton));
+  check('新建子目录不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
 
   section('AI 知识库助手');
   const aiButton = container.querySelector('.ribbon__button[aria-label="AI 文件助手"]');
@@ -350,6 +349,17 @@ async function main() {
   await waitFor(() => container.querySelector('.ai-assistant'), { label: 'AI 面板打开' });
   check('AI 面板提供自然语言输入', Boolean(container.querySelector('textarea[aria-label="输入 AI 指令"]')));
   check('AI 面板不重复渲染连接设置', !container.querySelector('.ai-assistant__settings') && !container.querySelector('button[aria-label="AI 连接设置"]'));
+  const unsentAiDraft = '关闭助手后仍应保留的未发送内容';
+  const draftInputBeforeClose = container.querySelector('textarea[aria-label="输入 AI 指令"]');
+  setFieldValue(draftInputBeforeClose, unsentAiDraft);
+  container.querySelector('.ai-assistant__header-actions button[aria-label="关闭 AI 知识库助手"]')?.click();
+  await waitFor(() => !container.querySelector('.ai-assistant'), { label: 'AI 面板关闭并保留草稿' });
+  aiButton?.click();
+  await waitFor(() => container.querySelector('.ai-assistant'), { label: 'AI 面板重新打开' });
+  check(
+    '关闭并重新打开 AI 面板后保留未发送内容',
+    container.querySelector('textarea[aria-label="输入 AI 指令"]')?.value === unsentAiDraft,
+  );
   const organizeQuickAction = [...container.querySelectorAll('.ai-assistant__quick-actions button')]
     .find((button) => button.textContent.includes('整理建议'));
   check('AI 提供整理快捷操作', Boolean(organizeQuickAction));
@@ -643,7 +653,7 @@ async function main() {
 
   section('目录右键菜单');
   const folderTrigger = folderButtons
-    .find((button) => button.textContent.includes('工程笔记'));
+    .find((button) => button.dataset.folderPath === folderTreeFixture.parentName);
   folderTrigger?.dispatchEvent(new window.MouseEvent('contextmenu', {
     bubbles: true,
     cancelable: true,
@@ -654,6 +664,31 @@ async function main() {
   const folderMenuText = document.querySelector('.context-menu')?.textContent ?? '';
   check('目录菜单包含 Obsidian 常用动作', ['新建笔记', '新建文件夹', '新建白板', '创建副本', '将文件夹移动到', '在文件夹中查找', '收藏', '复制路径', '重命名', '删除'].every((label) => folderMenuText.includes(label)));
   check('目录菜单不再显示数据库入口', !folderMenuText.includes('新建数据库'));
+  [...document.querySelectorAll('.context-menu .menu__item')]
+    .find((button) => button.textContent.includes('新建笔记'))
+    ?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  check('目录右键新建笔记不被确认队列阻塞', !document.querySelector('.file-confirmation-card'));
+  if (document.querySelector('.file-confirmation-card')) {
+    document.querySelector('.file-confirmation-card button:not(.btn--danger)')?.click();
+  }
+  let contextCreatedNote = null;
+  try {
+    contextCreatedNote = await waitFor(
+      () => container.querySelector(`[role="treeitem"][data-folder-path="${folderTreeFixture.parentName}"] .tree__note[aria-label="笔记：未命名笔记"]`),
+      { label: '目录右键新建笔记后出现在目录树', timeout: 2500 },
+    );
+  } catch {
+    // Keep the assertion below focused on the user's visible symptom.
+  }
+  check('目录右键新建笔记后出现笔记', Boolean(contextCreatedNote));
+  if (contextCreatedNote) {
+    const createdIndexResponse = await fetch(`${BASE_URL}/api/notes/index`);
+    const createdIndexPayload = await createdIndexResponse.json();
+    contextCreatedNoteId = (createdIndexPayload?.data ?? []).find(
+      (note) => note.title === '未命名笔记' && note.folderId === folderTreeFixture.parent?.id,
+    )?.id ?? null;
+  }
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await waitFor(() => !document.querySelector('.context-menu'), { label: '目录右键菜单关闭' });
 
@@ -784,14 +819,14 @@ async function main() {
 
   check('画布提供新建笔记入口', Boolean([...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('新建笔记'))));
   const canvasTrigger = await waitFor(
-    () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.title === canvasFixture.path),
+    () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.getAttribute('aria-label') === `画布：${canvasFixture.path}`),
     { label: '画布文件加载' },
   );
   check('画布文件右键菜单存在', Boolean(canvasTrigger));
   canvasTrigger.click();
   await waitFor(() => container.querySelector('.canvas-view'), { label: '打开样例画布' });
   const activeCanvasTrigger = [...container.querySelectorAll('.tree__canvas-file')]
-    .find((button) => button.title === canvasFixture.path);
+    .find((button) => button.getAttribute('aria-label') === `画布：${canvasFixture.path}`);
   activeCanvasTrigger?.dispatchEvent(new window.MouseEvent('contextmenu', {
     bubbles: true,
     cancelable: true,
@@ -832,14 +867,13 @@ async function main() {
   renamedCanvasPath = `${renamedCanvasBase}.canvas`;
   setFieldValue(canvasRenameInput, renamedCanvasBase);
   canvasRenameInput.closest('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '画布重命名确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
+  check('画布重命名不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
   const renamedCanvasTrigger = await waitFor(
-    () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.title === renamedCanvasPath),
+    () => [...container.querySelectorAll('.tree__canvas-file')].find((button) => button.getAttribute('aria-label') === `画布：${renamedCanvasPath}`),
     { label: '画布重命名完成' },
   );
   check('画布重命名后扩展名保留', Boolean(renamedCanvasTrigger));
-  check('画布重命名后旧名称消失', ![...container.querySelectorAll('.tree__canvas-file')].some((button) => button.title === canvasFixture.path));
+  check('画布重命名后旧名称消失', ![...container.querySelectorAll('.tree__canvas-file')].some((button) => button.getAttribute('aria-label') === `画布：${canvasFixture.path}`));
 
   const addCanvasNoteButton = [...container.querySelectorAll('.canvas-toolbar button')].find((button) => button.textContent.includes('添加笔记'));
   addCanvasNoteButton.click();
@@ -893,13 +927,12 @@ async function main() {
     () => !container.querySelector('.savestate--saved'),
     { label: '进入待保存状态' },
   );
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '自动保存确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   await waitFor(
     () => container.querySelector('.savestate--saved'),
     { label: '自动保存完成', timeout: 6000 },
   );
   check('修改标题后自动保存成功', Boolean(container.querySelector('.savestate--saved')));
+  check('标题自动保存不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
 
   // 还原标题，避免污染示例数据
   setFieldValue(editorTitle, beforeTitle);
@@ -907,9 +940,8 @@ async function main() {
     () => !container.querySelector('.savestate--saved'),
     { label: '进入还原保存状态' },
   );
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '还原标题确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   await waitFor(() => container.querySelector('.savestate--saved'), { label: '还原标题', timeout: 6000 });
+  check('还原标题不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
 
   const editorContent = container.querySelector('.editor__textarea');
   const beforeContent = editorContent.value;
@@ -939,11 +971,10 @@ async function main() {
   const pendingRenameTitle = `smoke-pending-title-${Date.now()}`;
   const renamedNoteTitle = `smoke-context-renamed-${Date.now()}`;
   setFieldValue(editorTitle, pendingRenameTitle);
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '待重命名标题自动保存确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
   await waitFor(() => container.querySelector('.savestate--saved'), { label: '待重命名标题已保存', timeout: 6000 });
+  check('待重命名标题保存不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
   const renameTarget = await waitFor(
-    () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === beforeTitle),
+    () => [...container.querySelectorAll('.tree__note')].find((button) => button.getAttribute('aria-label') === `笔记：${beforeTitle}`),
     { label: 'find opened note in tree' },
   );
   renameTarget.dispatchEvent(new window.MouseEvent('contextmenu', {
@@ -959,10 +990,9 @@ async function main() {
   const renameInput = await waitFor(() => container.querySelector('#rename-file-name'), { label: 'open note rename dialog' });
   setFieldValue(renameInput, renamedNoteTitle);
   renameInput.closest('form')?.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-  await waitFor(() => document.querySelector('.file-confirmation-card'), { label: '笔记重命名确认卡片' });
-  document.querySelector('.file-confirmation-card button.btn--primary')?.click();
+  check('笔记重命名不弹文件确认卡片', !document.querySelector('.file-confirmation-card'));
   await waitFor(
-    () => [...container.querySelectorAll('.tree__note')].find((button) => button.title === renamedNoteTitle),
+    () => [...container.querySelectorAll('.tree__note')].find((button) => button.getAttribute('aria-label') === `笔记：${renamedNoteTitle}`),
     { label: 'rename note in tree' },
   );
   await new Promise((resolve) => setTimeout(resolve, 1800));
@@ -986,6 +1016,13 @@ async function main() {
   }
   if (folderTreeFixture.rootNote?.id) {
     await fetch(`${BASE_URL}/api/notes/${folderTreeFixture.rootNote.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed: true, secondConfirmed: true }),
+    });
+  }
+  if (contextCreatedNoteId) {
+    await fetch(`${BASE_URL}/api/notes/${contextCreatedNoteId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirmed: true, secondConfirmed: true }),

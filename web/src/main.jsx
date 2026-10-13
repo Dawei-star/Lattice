@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
+import AppErrorBoundary from './components/AppErrorBoundary.jsx';
 import { ToastProvider } from './hooks/useToast.jsx';
 import './styles.css';
 
@@ -10,7 +11,9 @@ if (container) {
   createRoot(container).render(
     <StrictMode>
       <ToastProvider>
-        <App />
+        <AppErrorBoundary>
+          <App />
+        </AppErrorBoundary>
       </ToastProvider>
     </StrictMode>,
   );

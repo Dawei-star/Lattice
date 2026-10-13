@@ -22,6 +22,7 @@ export const MARKET_ID_PREFIX = 'mcp-market-';
 
 export const MCP_MARKET_CATEGORIES = Object.freeze([
   '知识库',
+  '日程与计划',
   '文件与系统',
   '网络与搜索',
   'AI 增强',
@@ -97,6 +98,32 @@ export const MCP_MARKET_CATALOG = Object.freeze([
       { name: 'append_content', description: '向笔记追加内容' },
     ],
     docs: 'https://github.com/MarkusPfundstein/mcp-obsidian',
+  },
+  {
+    key: 'notion-calendar',
+    logo: LOGO('notion'),
+    name: 'Notion Calendar',
+    category: '日程与计划',
+    runtime: 'node',
+    featured: true,
+    tagline: '在 Notion Calendar 可见的数据库中管理日程',
+    description: '本地 MCP Server，使用官方 Notion API 读写一个由 Notion Calendar 展示的日历数据库。它不依赖 Notion Calendar 的私有接口；安装时自动绑定本地脚本路径，需填写 Integration Token 和数据库 ID。',
+    command: 'node',
+    args: ['{notionCalendarServerPath}'],
+    requiresArgs: [{ token: 'notionCalendarServerPath', label: 'MCP 脚本路径', hint: '由 Lattice 自动填入；手动配置时填写 scripts/notion-calendar-mcp/server.mjs 的绝对路径' }],
+    env: { NOTION_CALENDAR_ALLOW_WRITES: 'false' },
+    requiresEnv: [
+      { name: 'NOTION_API_KEY', hint: 'Notion Developer → Internal Integration 创建的 Token' },
+      { name: 'NOTION_DATABASE_ID', hint: '打开日历数据库后，从 URL 或分享菜单获取数据库 ID' },
+    ],
+    tools: [
+      { name: 'list_calendar_events', description: '按日期或标题列出日历事件' },
+      { name: 'get_calendar_event', description: '读取单个日历事件' },
+      { name: 'create_calendar_event', description: '创建日历事件（需开启写入）' },
+      { name: 'update_calendar_event', description: '更新日历事件（需开启写入）' },
+      { name: 'archive_calendar_event', description: '归档日历事件（需开启写入）' },
+    ],
+    docs: 'https://developers.notion.com/guides/data-apis/create-pages-in-a-data-source',
   },
   {
     key: 'fetch',

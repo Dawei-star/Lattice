@@ -1,11 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notesApi } from './api/resources.js';
 import EditorPane from './components/EditorPane.jsx';
-import GraphView from './components/GraphView.jsx';
-import CanvasView from './components/CanvasView.jsx';
-import AIAssistantPanel from './components/AIAssistantPanel.jsx';
-import ExpertsCenter from './components/ExpertsCenter.jsx';
-import KnowledgeHealthCenter from './components/KnowledgeHealthCenter.jsx';
 import InboxCaptureModal from './components/InboxCaptureModal.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
 import NoteListPane from './components/NoteListPane.jsx';
@@ -19,7 +14,6 @@ import Ribbon from './shell/Ribbon.jsx';
 import TabBar from './shell/TabBar.jsx';
 import StatusBar from './shell/StatusBar.jsx';
 import StartupSplash from './components/StartupSplash.jsx';
-import SettingsModal from './settings/SettingsModal.jsx';
 import Modal from './ui/Modal.jsx';
 import Resizer from './ui/Resizer.jsx';
 import { loadImportedTheme } from './lib/theme.js';
@@ -32,6 +26,17 @@ import { registerPwa } from './lib/pwa.js';
 const THEME_STORAGE_KEY = 'lattice-theme';
 const FAVORITE_FOLDERS_STORAGE_KEY = 'lattice-favorite-folders';
 const ACTIVE_EXPERT_STORAGE_KEY = 'lattice-active-expert';
+
+const GraphView = lazy(() => import('./components/GraphView.jsx'));
+const CanvasView = lazy(() => import('./components/CanvasView.jsx'));
+const AIAssistantPanel = lazy(() => import('./components/AIAssistantPanel.jsx'));
+const ExpertsCenter = lazy(() => import('./components/ExpertsCenter.jsx'));
+const KnowledgeHealthCenter = lazy(() => import('./components/KnowledgeHealthCenter.jsx'));
+const SettingsModal = lazy(() => import('./settings/SettingsModal.jsx'));
+
+function DeferredModuleFallback() {
+  return <div className="deferred-module-fallback" role="status" aria-live="polite">正在加载模块…</div>;
+}
 
 function folderPathParts(value) {
   return String(value ?? 'Inbox')
@@ -1410,6 +1415,7 @@ export default function App() {
          /> : null}
 
         <main className="workspace">
+          <Suspense fallback={<DeferredModuleFallback />}>
           {view === 'review' ? (
             <KnowledgeHealthCenter
               onOpenNote={handleOpenNote}
@@ -1481,6 +1487,7 @@ export default function App() {
               ) : null}
             </div>
           )}
+          </Suspense>
         </main>
 
         {sidebarOpen ? (
@@ -1527,45 +1534,47 @@ export default function App() {
         onClose={() => setInboxOpen(false)}
         onSubmit={handleCaptureInbox}
       />
-      <SettingsModal
-        open={settingsOpen}
-        initialSection={settingsInitialSection}
-        onClose={() => setSettingsOpen(false)}
-        theme={theme}
-        onThemeChange={setTheme}
-        onVaultProfileSaved={handleVaultProfileSaved}
-        onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
-      />
-      <ExpertsCenter
-        open={expertsCenterOpen}
-        initialTab={expertsCenterInitialTab}
-        onClose={() => setExpertsCenterOpen(false)}
-        onOpenConnections={() => handleOpenSettings('mcp')}
-        experts={experts}
-        skills={expertSkills}
-        activeExpertId={activeExpertId}
-        onSelectExpert={handleSelectExpert}
-        onChanged={() => refreshExperts()}
-        onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
-        vaultDir={vaultDir}
-      />
-      <AIAssistantPanel
-        open={aiOpen}
-        onClose={() => setAiOpen(false)}
-        noteIndex={noteIndex}
-        folders={folders}
-        activeNote={activeNote}
-        onOpenNote={handleOpenNote}
-        onOperationComplete={handleAiOperationComplete}
-        initialPrompt={aiInitialPrompt}
-        initialPromptPreferModel
-        onInitialPromptConsumed={() => setAiInitialPrompt('')}
-        expertId={activeExpertId}
-        expert={activeExpert}
-        experts={experts}
-        onSelectExpert={handleSelectExpert}
-        onOpenExpertsCenter={handleOpenExpertsCenter}
-      />
+      <Suspense fallback={null}>
+        {settingsOpen ? <SettingsModal
+          open
+          initialSection={settingsInitialSection}
+          onClose={() => setSettingsOpen(false)}
+          theme={theme}
+          onThemeChange={setTheme}
+          onVaultProfileSaved={handleVaultProfileSaved}
+          onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
+        /> : null}
+        {expertsCenterOpen ? <ExpertsCenter
+          open
+          initialTab={expertsCenterInitialTab}
+          onClose={() => setExpertsCenterOpen(false)}
+          onOpenConnections={() => handleOpenSettings('mcp')}
+          experts={experts}
+          skills={expertSkills}
+          activeExpertId={activeExpertId}
+          onSelectExpert={handleSelectExpert}
+          onChanged={() => refreshExperts()}
+          onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
+          vaultDir={vaultDir}
+        /> : null}
+        {aiOpen ? <AIAssistantPanel
+          open
+          onClose={() => setAiOpen(false)}
+          noteIndex={noteIndex}
+          folders={folders}
+          activeNote={activeNote}
+          onOpenNote={handleOpenNote}
+          onOperationComplete={handleAiOperationComplete}
+          initialPrompt={aiInitialPrompt}
+          initialPromptPreferModel
+          onInitialPromptConsumed={() => setAiInitialPrompt('')}
+          expertId={activeExpertId}
+          expert={activeExpert}
+          experts={experts}
+          onSelectExpert={handleSelectExpert}
+          onOpenExpertsCenter={handleOpenExpertsCenter}
+        /> : null}
+      </Suspense>
       <RenameDialog
         open={Boolean(renameDialog)}
         title={renameDialog?.title ?? ''}

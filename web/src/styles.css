@@ -1447,6 +1447,43 @@ textarea:focus-visible,
   padding: 0;
 }
 
+/* Obsidian-like guides: each child list owns a vertical rail. Keeping the
+   guide above row fills lets it remain visible while an item is highlighted. */
+.tree {
+  --tree-indent: 18px;
+  --tree-guide-color: color-mix(in srgb, var(--border-strong) 68%, var(--border) 32%);
+}
+
+.tree ul[role='group'] {
+  position: relative;
+  overflow: visible;
+}
+
+.tree ul[role='group']::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(17px + (var(--tree-depth) - 1) * var(--tree-indent));
+  z-index: 2;
+  width: 1px;
+  content: '';
+  background: var(--tree-guide-color);
+  pointer-events: none;
+}
+
+.tree .nav-item,
+.tree__note {
+  position: relative;
+}
+
+.tree .nav-item > .tree__caret,
+.tree .nav-item > .nav-item__main,
+.tree .nav-item > .nav-item__tools,
+.tree__note > * {
+  position: relative;
+  z-index: 3;
+}
+
 .tree__caret {
   display: grid;
   place-items: center;
@@ -10995,7 +11032,7 @@ body::after,
 .ai-progress__footer { display: flex; justify-content: space-between; gap: 8px; padding-top: 6px; color: var(--text-tertiary); font-size: 10px; border-top: 1px solid var(--border); }
 .ai-progress__footer.has-failures { color: var(--danger); }
 
-/* 推理模型的思维链：流式时灰色滚动区，完成后折叠 */
+/* AI 分析摘要：流式时提供上下文反馈，正式回答开始后保持低干扰 */
 .ai-message__reasoning {
   margin: 0 0 7px;
   border-left: 2px solid color-mix(in srgb, var(--text-tertiary) 40%, transparent);
@@ -11003,9 +11040,18 @@ body::after,
   color: var(--text-tertiary);
 }
 
-.ai-message__reasoning.is-streaming { padding-left: 8px; }
+.ai-message__reasoning.is-streaming {
+  padding-left: 8px;
+  background: color-mix(in srgb, var(--bg-subtle) 48%, transparent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
 
 .ai-message__reasoning summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 24px;
   cursor: pointer;
   font-size: 10.5px;
   font-weight: 600;
@@ -11013,11 +11059,26 @@ body::after,
   user-select: none;
 }
 
-.ai-message__reasoning.is-streaming .ai-message__reasoning-label {
-  display: block;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--text-secondary);
+.ai-message__reasoning summary::marker {
+  color: var(--text-tertiary);
+}
+
+.ai-message__reasoning summary:hover {
+  color: var(--text);
+}
+
+.ai-message__reasoning-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-message__reasoning-state {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .ai-message__reasoning-body {
@@ -11027,6 +11088,11 @@ body::after,
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
+}
+
+.ai-message__reasoning.is-streaming .ai-message__reasoning-body {
+  max-height: 132px;
+  padding: 0 8px 8px 0;
 }
 
 
@@ -13442,4 +13508,44 @@ body::after,
   .file-confirmation-card { padding: 18px; }
   .file-confirmation-card__summary { grid-template-columns: 1fr; }
   .file-confirmation-card__notice { justify-content: flex-start; }
+}
+/* Deferred modules and top-level recovery state stay intentionally quiet so a
+   lazy chunk never shifts the main workspace or exposes runtime diagnostics. */
+.deferred-module-fallback {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  color: var(--text-muted, #6b7280);
+  font-size: 13px;
+}
+
+.app-error {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: var(--surface-app, #f6f7fb);
+  color: var(--text-strong, #182033);
+}
+
+.app-error__content {
+  width: min(100%, 480px);
+  text-align: center;
+}
+
+.app-error__eyebrow {
+  color: var(--accent, #3157d5);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.app-error h1 {
+  margin: 12px 0 8px;
+  font-size: 24px;
+}
+
+.app-error p {
+  margin: 0 0 20px;
+  color: var(--text-muted, #6b7280);
 }

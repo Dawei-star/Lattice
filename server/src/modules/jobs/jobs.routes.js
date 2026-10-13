@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import * as controller from './jobs.controller.js';
 
 export const jobsRouter = Router();
@@ -12,4 +13,4 @@ jobsRouter.get('/', validate({ query: z.object({
 }) }), controller.list);
 
 jobsRouter.get('/:id', validate({ params: z.object({ id: z.string().trim().min(1).max(120) }) }), controller.detail);
-jobsRouter.post('/:id/cancel', validate({ params: z.object({ id: z.string().trim().min(1).max(120) }) }), controller.cancel);
+jobsRouter.post('/:id/cancel', forbidViewerWrite, validate({ params: z.object({ id: z.string().trim().min(1).max(120) }) }), controller.cancel);

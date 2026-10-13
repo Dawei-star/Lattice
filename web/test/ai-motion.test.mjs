@@ -22,9 +22,15 @@ assert.doesNotMatch(panel, /className=\{status === 'running' \? 'is-spinning' : 
 assert.match(panel, /TASK COMPLETE/);
 assert.match(panel, /className="ai-progress__toggle"/);
 assert.match(panel, /message\.meta\?\.taskMode === true && progress\.length/);
-assert.match(panel, /const taskMode = settings\.autoApprove === true/);
+assert.match(panel, /const taskMode = requestMode === 'task'/);
 assert.match(panel, /activeTaskMode \? <ProgressChecklist steps=\{progressSteps\} live \/> : null/);
 assert.match(styles, /\.ai-progress\.is-complete \.ai-progress__list/);
 assert.match(styles, /\.ai-progress__item\.is-completed \.ai-progress__copy strong \{ color: var\(--text-secondary\); text-decoration: none; \}/);
+assert.match(panel, /className="ai-message__reasoning is-streaming"/);
+assert.match(panel, /open=\{reasoningOpen\}/);
+assert.match(panel, /onToggle=\{\(event\) => setReasoningOpen\(event\.currentTarget\.open\)\}/);
+assert.match(panel, /<span className="ai-message__reasoning-label">分析摘要<\/span>/);
+assert.match(panel, /<summary>查看分析摘要<\/summary>/);
+assert.match(styles, /\.ai-message__reasoning\.is-streaming \.ai-message__reasoning-body/);
 
 console.log('AI motion tests passed');

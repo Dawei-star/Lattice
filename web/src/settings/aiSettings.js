@@ -1,6 +1,14 @@
 import { aiApi } from '../api/ai.js';
 
 const STORAGE_KEY = 'lattice-ai-settings-v1';
+const SESSION_STORAGE_KEY = 'lattice-ai-session-v1';
+const MASK_PREFIX = 'masked:';
+
+// API Keys 只在当前页面生命周期内存在。localStorage 仅保存掩码，
+// 服务端 SQLite 是跨会话的唯一密钥事实源。
+const volatileProviderKeys = new Map();
+let volatileEmbeddingKey = '';
+let needsServerMigration = false;
 
 const DEFAULT_PROVIDER = Object.freeze({
   id: 'provider-default',
@@ -28,6 +36,8 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
   accessToken: '',
   // 默认让确定性查询走本地快路径；关闭后，已配置模型会优先参与回答。
   preferModel: false,
+  // 交互模式：快速模式跳过检索和工具；任务模式允许多轮工具执行。
+  interactionMode: 'quick',
   // 任务模式：勾选后 AI 以 agent 循环检索和读取；写操作仍必须经过确认预览
   autoApprove: false,
 });
@@ -35,7 +45,18 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
 export function loadAiSettings() {
   if (typeof localStorage === 'undefined') return cloneDefaults();
   try {
-    return normalize(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}'));
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
+    const session = readSessionSettings();
+    const legacyToken = typeof stored?.accessToken === 'string' ? stored.accessToken.trim().slice(0, 500) : '';
+    if (legacyToken && !session.accessToken) {
+      writeSessionSettings({ accessToken: legacyToken });
+    }
+    const normalized = normalize({ ...stored, accessToken: session.accessToken || legacyToken });
+    rememberSecrets(normalized);
+    const safe = redactSettings(normalized);
+    if (hasPersistedSecrets(stored)) needsServerMigration = true;
+    if (hasPersistedSecrets(stored) || legacyToken) persistLocalSettings(stripForStorage(safe));
+    return safe;
   } catch {
     return cloneDefaults();
   }
@@ -43,16 +64,16 @@ export function loadAiSettings() {
 
 export function saveAiSettings(patch) {
   const next = normalize({ ...loadAiSettings(), ...patch });
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Local-only settings may be unavailable in private browser contexts.
-  }
+  rememberSecrets(next);
+  const safe = redactSettings(next);
+  persistLocalSettings(stripForStorage(safe));
+  if (next.accessToken) writeSessionSettings({ accessToken: next.accessToken });
+  else removeSessionSettings();
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('lattice:ai-settings-change', { detail: next }));
+    window.dispatchEvent(new CustomEvent('lattice:ai-settings-change', { detail: safe }));
   }
   pushToServer(next);
-  return next;
+  return safe;
 }
 
 export function subscribeAiSettings(listener) {
@@ -110,9 +131,9 @@ function pushToServer(settings) {
             service: provider.service,
             endpoint: provider.endpoint,
             model: provider.model,
-            apiKey: provider.apiKey,
             authHeader: provider.authHeader,
             enabled: provider.enabled !== false,
+            ...serializedApiKey(provider, volatileProviderKeys.get(provider.id)),
             ...(provider.temperature !== undefined ? { temperature: provider.temperature } : {}),
             ...(provider.maxTokens !== undefined ? { maxTokens: provider.maxTokens } : {}),
             ...(provider.contextWindowTokens !== undefined ? { contextWindowTokens: provider.contextWindowTokens } : {}),
@@ -122,9 +143,9 @@ function pushToServer(settings) {
           ? {
               endpoint: settings.embedding.endpoint,
               model: settings.embedding.model,
-              apiKey: settings.embedding.apiKey,
               authHeader: settings.embedding.authHeader,
               name: settings.embedding.name ?? 'Embedding',
+              ...serializedApiKey(settings.embedding, volatileEmbeddingKey),
             }
           : null,
       });
@@ -157,6 +178,10 @@ export async function hydrateAiSettingsFromServer() {
       patch.embedding = normalizeEmbedding({ ...server.embedding, enabled: true });
     }
     if ('providers' in patch || 'embedding' in patch) return saveAiSettings({ ...local, ...patch });
+    if (needsServerMigration) {
+      needsServerMigration = false;
+      pushToServer(local);
+    }
     return local;
   } catch {
     return loadAiSettings();
@@ -165,6 +190,88 @@ export async function hydrateAiSettingsFromServer() {
 
 function cloneDefaults() {
   return normalize(DEFAULT_AI_SETTINGS);
+}
+
+function readSessionSettings() {
+  try {
+    const value = typeof sessionStorage === 'undefined' ? null : JSON.parse(sessionStorage.getItem(SESSION_STORAGE_KEY) ?? '{}');
+    return { accessToken: typeof value?.accessToken === 'string' ? value.accessToken.trim().slice(0, 500) : '' };
+  } catch {
+    return { accessToken: '' };
+  }
+}
+
+function writeSessionSettings(value) {
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Session storage may be unavailable in private browser contexts.
+  }
+}
+
+function removeSessionSettings() {
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Session storage may be unavailable in private browser contexts.
+  }
+}
+
+function persistLocalSettings(settings) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Local-only settings may be unavailable in private browser contexts.
+  }
+}
+
+function stripForStorage(settings) {
+  return { ...settings, accessToken: '' };
+}
+
+function hasPersistedSecrets(value) {
+  return Boolean(
+    isActualApiKey(value?.apiKey)
+      || isActualApiKey(value?.accessToken)
+      || value?.providers?.some?.((provider) => isActualApiKey(provider?.apiKey))
+      || isActualApiKey(value?.embedding?.apiKey),
+  );
+}
+
+function isActualApiKey(value) {
+  return typeof value === 'string' && value.length > 0 && !value.startsWith(MASK_PREFIX);
+}
+
+export function isMaskedApiKey(value) {
+  return typeof value === 'string' && value.startsWith(MASK_PREFIX);
+}
+
+function maskApiKey(value) {
+  return isActualApiKey(value) ? `${MASK_PREFIX}${value.slice(-4)}` : value ?? '';
+}
+
+function redactSettings(settings) {
+  return {
+    ...settings,
+    providers: (settings.providers ?? []).map((provider) => ({ ...provider, apiKey: maskApiKey(provider.apiKey) })),
+    embedding: settings.embedding ? { ...settings.embedding, apiKey: maskApiKey(settings.embedding.apiKey) } : settings.embedding,
+  };
+}
+
+function rememberSecrets(settings) {
+  for (const provider of settings.providers ?? []) {
+    if (isActualApiKey(provider.apiKey)) volatileProviderKeys.set(provider.id, provider.apiKey);
+    else if (provider.apiKey === '') volatileProviderKeys.delete(provider.id);
+  }
+  if (isActualApiKey(settings.embedding?.apiKey)) volatileEmbeddingKey = settings.embedding.apiKey;
+  else if (settings.embedding?.apiKey === '') volatileEmbeddingKey = '';
+}
+
+function serializedApiKey(provider, volatileKey) {
+  if (isActualApiKey(provider.apiKey)) return { apiKey: provider.apiKey };
+  if (volatileKey) return { apiKey: volatileKey };
+  // masked: 值故意省略，服务端会保留原有密钥。
+  return {};
 }
 
 function normalize(value) {
@@ -188,6 +295,7 @@ function normalize(value) {
     embedding: normalizeEmbedding(value?.embedding),
     accessToken: typeof value?.accessToken === 'string' ? value.accessToken.slice(0, 500) : '',
     preferModel: value?.preferModel === true,
+    interactionMode: value?.interactionMode === 'task' || value?.autoApprove === true ? 'task' : 'quick',
     autoApprove: value?.autoApprove === true,
   };
 }

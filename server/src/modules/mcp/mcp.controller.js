@@ -44,6 +44,7 @@ export function getInfo(_req, res) {
       transport: 'stdio',
       command: process.execPath,
       serverPath: path.resolve(serverRoot, '..', 'scripts', 'mcp-server', 'server.mjs'),
+      notionCalendarServerPath: path.resolve(serverRoot, '..', 'scripts', 'notion-calendar-mcp', 'server.mjs'),
       // 桌面版把 Node 后端内嵌进 Electron 主进程，process.execPath 是 lattice.exe：
       // 外部客户端直接拉起它会开一个新窗口而不是跑 MCP Server，
       // 需要在导出配置的 env 里带 ELECTRON_RUN_AS_NODE=1（纯 node 运行时此标志为 false）。

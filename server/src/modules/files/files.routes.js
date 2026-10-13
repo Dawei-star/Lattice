@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { createRateLimiter } from '../../middleware/rateLimit.js';
 import * as controller from './files.controller.js';
 
 const relativePath = z.string().trim().min(1).max(2048);
@@ -46,7 +47,7 @@ filesRouter.get('/find', validate({ query: z.object({
   type: fileType,
 }) }), controller.find);
 
-filesRouter.get('/grep', validate({ query: z.object({
+filesRouter.get('/grep', createRateLimiter({ windowMs: 60_000, max: 60, key: 'grep' }), validate({ query: z.object({
   query: z.string().min(1).max(2000),
   dir: z.string().trim().max(2048).default(''),
   regex: regexFlag,

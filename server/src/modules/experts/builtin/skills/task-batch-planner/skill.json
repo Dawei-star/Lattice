@@ -1,0 +1,11 @@
+{
+  "id": "task-batch-planner",
+  "version": "1.0.0",
+  "name": "批量任务拆解",
+  "description": "把一句模糊的批量指令拆成边界明确、可核对、可中断的执行批次。",
+  "triggers": ["批量整理", "批量重命名", "批量移动", "全库迁移", "一次性处理", "分批处理", "统一改格式"],
+  "tools": ["read", "search"],
+  "permissions": ["read"],
+  "inputSchema": { "type": "object", "required": ["goal", "scope"] },
+  "outputSchema": { "type": "object", "required": ["batches", "excluded", "verification"] }
+}

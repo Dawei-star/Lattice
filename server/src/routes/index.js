@@ -19,10 +19,12 @@ import { updateRouter } from '../modules/update/update.routes.js';
 import { vaultRouter } from '../modules/vault/vault.routes.js';
 import { workspaceRouter } from '../modules/workspace/workspace.routes.js';
 import { reviewRouter } from '../modules/review/review.routes.js';
+import { createRateLimiter } from '../middleware/rateLimit.js';
 
 export const apiRouter = Router();
 
-apiRouter.use('/ai', aiRouter);
+// AI、MCP 预热和会话接口会触发外部网络或后台任务，先在 API 层做本地限流。
+apiRouter.use('/ai', createRateLimiter({ windowMs: 60_000, max: 30, key: 'ai' }), aiRouter);
 apiRouter.use('/experts', expertsRouter);
 apiRouter.use('/jobs', jobsRouter);
 apiRouter.use('/notes', notesRouter);
@@ -36,5 +38,5 @@ apiRouter.use('/meta', metaRouter);
 apiRouter.use('/update', updateRouter);
 apiRouter.use('/mcp', mcpRouter);
 apiRouter.use('/vault', vaultRouter);
-apiRouter.use('/workspace', workspaceRouter);
+apiRouter.use('/workspace', createRateLimiter({ windowMs: 60_000, max: 30, key: 'sse-ticket' }), workspaceRouter);
 apiRouter.use('/review', reviewRouter);

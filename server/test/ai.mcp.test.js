@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -82,6 +83,65 @@ test('sanitizeMcpServers keeps valid entries and drops broken ones', () => {
   assert.equal(sanitized[0].command, process.execPath);
   assert.deepEqual(sanitizeMcpServers(undefined), []);
 });
+
+test('MCP and AI endpoint policy rejects loopback, private IPs, and DNS-to-loopback hosts', async () => {
+  const providerModule = new URL('../src/modules/ai/ai.provider.js', import.meta.url).href;
+  const script = `
+    import { assertPublicEndpoint } from ${JSON.stringify(providerModule)};
+    for (const value of ['http://127.0.0.1:5177', 'http://192.168.1.10:5177', 'http://localhost:5177']) {
+      try { await assertPublicEndpoint(new URL(value)); process.exitCode = 1; }
+      catch (error) { if (!String(error?.message).includes('不允许指向内网或回环地址')) process.exitCode = 2; }
+    }
+  `;
+  const result = await runNodeModule(script, { NODE_ENV: 'production', AI_ALLOW_PRIVATE_ENDPOINTS: 'false' });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('MCP HTTP transport does not follow a redirect to a loopback endpoint', async () => {
+  let internalHits = 0;
+  const internal = http.createServer((_req, res) => {
+    internalHits += 1;
+    res.end('unexpected');
+  });
+  await new Promise((resolve) => internal.listen(0, '127.0.0.1', resolve));
+  const target = `http://127.0.0.1:${internal.address().port}/internal`;
+  const redirect = http.createServer((_req, res) => {
+    res.statusCode = 302;
+    res.setHeader('Location', target);
+    res.end();
+  });
+  await new Promise((resolve) => redirect.listen(0, '127.0.0.1', resolve));
+  try {
+    const mcpModule = new URL('../src/modules/ai/ai.mcp.js', import.meta.url).href;
+    const script = `
+      import { createMcpRegistry, closeAllMcpConnections } from ${JSON.stringify(mcpModule)};
+      const registry = await createMcpRegistry([{ key: 'redirecting', name: 'Redirecting MCP', transport: 'sse', url: process.env.MCP_URL }]);
+      if (registry.status[0]?.ok !== false) process.exitCode = 1;
+      registry.release();
+      await closeAllMcpConnections();
+    `;
+    const result = await runNodeModule(script, {
+      NODE_ENV: 'production',
+      AI_ALLOW_PRIVATE_ENDPOINTS: 'true',
+      MCP_URL: `http://127.0.0.1:${redirect.address().port}/mcp`,
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.equal(internalHits, 0);
+  } finally {
+    await new Promise((resolve) => redirect.close(resolve));
+    await new Promise((resolve) => internal.close(resolve));
+  }
+});
+
+function runNodeModule(script, extraEnv = {}) {
+  return new Promise((resolve) => {
+    const { NODE_TEST_CONTEXT: _nodeTestContext, ...parentEnv } = process.env;
+    execFile(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...parentEnv, ...extraEnv },
+      maxBuffer: 2 * 1024 * 1024,
+    }, (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }));
+  });
+}
 
 test('buildMcpPromptSection lists tools and connection failures honestly', () => {
   const section = buildMcpPromptSection(

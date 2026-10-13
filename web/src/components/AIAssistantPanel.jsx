@@ -14,6 +14,7 @@ import Modal from '../ui/Modal.jsx';
 const { execute: submitAiActions } = aiApi;
 
 const LAST_SESSION_KEY = 'lattice-ai-active-session-v2';
+const LAST_DRAFT_KEY = 'lattice-ai-draft-v1';
 const SYSTEM_ROOT_FOLDERS = new Set(['inbox', 'daily', 'journal']);
 const FILE_KERNEL_ACTIONS = new Set(['create', 'update', 'delete', 'move', 'copy']);
 const CONTEXT_SCOPE_META = {
@@ -77,6 +78,23 @@ const WELCOME_MESSAGE = {
 
 function newSessionId() {
   return `sess-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+}
+
+function readStoredDraft(key) {
+  try {
+    return localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredDraft(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch {
+    // 隐私模式或存储配额不足时，草稿仍保留在当前组件状态中。
+  }
 }
 
 // 会话下拉选项：标题 + 消息条数 + 更新日期，隔几天回来能分清哪个是哪个
@@ -179,8 +197,9 @@ function failProgress(steps, detail) {
 
 export default function AIAssistantPanel({ open, onClose, noteIndex = [], folders = [], activeNote, onOpenNote, onOperationComplete, initialPrompt = '', initialPromptPreferModel = false, onInitialPromptConsumed, expertId = 'general', expert = null, experts = [], onSelectExpert, onOpenExpertsCenter }) {
   const sessionStorageKey = `${LAST_SESSION_KEY}:${expertId}`;
+  const draftStorageKey = `${LAST_DRAFT_KEY}:${expertId}`;
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(() => readStoredDraft(draftStorageKey));
   const [sending, setSending] = useState(false);
   const [digesting, setDigesting] = useState(false);
   const [streamText, setStreamText] = useState('');
@@ -189,6 +208,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const [activeTaskMode, setActiveTaskMode] = useState(false);
   // 推理模型的思维链（delta.reasoning_content）：流式滚动展示，完成后折叠进消息
   const [reasoningText, setReasoningText] = useState('');
+  const [reasoningOpen, setReasoningOpen] = useState(true);
   const [settings, setSettings] = useState(() => loadAiSettings());
   const [tab, setTab] = useState('chat');
   const [sessions, setSessions] = useState([]);
@@ -255,6 +275,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   const activeProvider = getActiveAiProvider(settings);
   const connectionState = !hasExternalAi(settings) ? 'local' : activeProvider?.verified ? 'connected' : 'configured';
   const composerBusy = sending || digesting;
+  const taskModeEnabled = settings.interactionMode === 'task' || settings.autoApprove === true;
 
   const flushStream = () => {
     streamFrameRef.current = 0;
@@ -279,6 +300,10 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   useEffect(() => {
     setExpertSuggestion(null);
   }, [expertId]);
+
+  useEffect(() => {
+    setDraft(readStoredDraft(draftStorageKey));
+  }, [draftStorageKey]);
 
   useEffect(() => {
     loadedSessionRef.current = null;
@@ -698,10 +723,11 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     return servers;
   };
 
-  // 面板打开即预热 MCP 连接：spawn 进程 + listTools 的冷启动（秒级）移出第一条消息。
-  // 发后即忘：预热失败静默，正式对话仍按原路径自行连接。
+  // 只在任务模式预热 MCP；快速模式和知识问答不应为普通消息拉起外部进程。
+  // 发后即忘：预热失败静默，正式任务仍按原路径自行连接。
   useEffect(() => {
-    if (!open) return undefined;
+    const taskMode = taskModeEnabled;
+    if (!open || !taskMode) return undefined;
     let cancelled = false;
     (async () => {
       const servers = await resolveMcpServers();
@@ -710,21 +736,23 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     return () => {
       cancelled = true;
     };
-    // 仅在面板打开时预热一次；resolveMcpServers 读取的是 ref 与本地配置，无需进依赖
+    // 仅在进入任务模式时预热；resolveMcpServers 读取的是 ref 与本地配置，无需进依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, taskModeEnabled]);
 
   const send = async (value = draft, options = {}) => {
     const message = String(value).trim();
     if (!message || composerBusy) return;
     const preferModel = options.preferModel ?? (forceModelRef.current || settings.preferModel === true);
-    const taskMode = settings.autoApprove === true;
+    const requestMode = options.mode ?? (taskModeEnabled ? 'task' : (settings.interactionMode || 'quick'));
+    const taskMode = requestMode === 'task';
     forceModelRef.current = false;
     const requestSessionId = sessionId;
     const stale = () => sessionIdRef.current !== requestSessionId;
     // 发送时取一次当前配置：设置页改动对下一条消息生效，不打断进行中的对话
-    const mcpServers = await resolveMcpServers();
+    const mcpServers = requestMode === 'task' ? await resolveMcpServers() : [];
     setDraft('');
+    writeStoredDraft(draftStorageKey, '');
     setError('');
     setRetryMessage('');
     setExecution(null);
@@ -738,6 +766,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     setStreamText('');
     setStreamStatus('');
     setReasoningText('');
+    setReasoningOpen(true);
     // 重新生成时上一条 user 消息已在列表里（仅移除了旧回答），不再重复追加
     if (options.skipUserMessage !== true) {
       appendMessage({ id: `user-${Date.now()}`, role: 'user', content: message });
@@ -762,7 +791,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
         context,
         sessionId,
         expertId,
-         mode: taskMode ? 'agent' : 'assist',
+         mode: requestMode,
          preferModel,
          autoApprove: taskMode,
         actor: 'local-user',
@@ -782,6 +811,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
           }
           else if (event.type === 'delta') {
             streamTextRef.current += String(event.text ?? '');
+            setReasoningOpen(false);
             queueStreamFlush();
           }
           else if (event.type === 'reasoning') {
@@ -791,6 +821,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
           else if (event.type === 'round') {
             streamTextRef.current = '';
             reasoningRef.current = '';
+            setReasoningOpen(true);
             streamStatusRef.current = `第 ${event.round} 轮 · 继续执行任务…`;
             queueStreamFlush();
           } else if (event.type === 'status') {
@@ -892,7 +923,9 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
   useEffect(() => {
     if (!open || !initialPrompt.trim()) return;
     setTab('chat');
-    setDraft(initialPrompt.trim());
+    const nextDraft = initialPrompt.trim();
+    setDraft(nextDraft);
+    writeStoredDraft(draftStorageKey, nextDraft);
     forceModelRef.current = initialPromptPreferModel === true;
     setError('');
     setRetryMessage('');
@@ -1231,7 +1264,10 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
     }
   };
 
-  const toggleAutoApprove = () => setSettings((current) => saveAiSettings({ ...current, autoApprove: current.autoApprove !== true }));
+  const toggleAutoApprove = () => setSettings((current) => {
+    const next = !(current.interactionMode === 'task' || current.autoApprove === true);
+    return saveAiSettings({ ...current, autoApprove: next, interactionMode: next ? 'task' : 'quick' });
+  });
   const togglePreferModel = () => setSettings((current) => saveAiSettings({ ...current, preferModel: current.preferModel !== true }));
 
   return (
@@ -1428,10 +1464,17 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                   <div className="ai-message__body">
                     {activeTaskMode ? <ProgressChecklist steps={progressSteps} live /> : null}
                     {reasoningText ? (
-                      <div className="ai-message__reasoning is-streaming" aria-live="off">
-                        <span className="ai-message__reasoning-label">思考中…</span>
-                        <div className="ai-message__reasoning-body">{reasoningText}</div>
-                      </div>
+                      <details
+                        className="ai-message__reasoning is-streaming"
+                        open={reasoningOpen}
+                        onToggle={(event) => setReasoningOpen(event.currentTarget.open)}
+                      >
+                        <summary>
+                          <span className="ai-message__reasoning-label">分析摘要</span>
+                          <span className="ai-message__reasoning-state">{streamText ? '已收起' : '实时更新'}</span>
+                        </summary>
+                        <div className="ai-message__reasoning-body" aria-live="off">{reasoningText}</div>
+                      </details>
                     ) : null}
                     {streamText ? <div className="ai-message__content markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(displayStreamText(streamText)) }} /> : !reasoningText ? (
                       <div className="ai-message__typing" role="status" aria-label="AI 正在处理请求">
@@ -1478,11 +1521,11 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
               <div className="ai-assistant__quick-actions">
                 <button type="button" disabled={composerBusy} onClick={() => send('总结当前笔记的核心内容，并给出相关笔记')}><span className="ai-assistant__quick-icon">✦</span>理解笔记</button>
                 <button type="button" disabled={composerBusy} onClick={() => send('搜索最近修改的项目笔记')}><span className="ai-assistant__quick-icon">⌕</span>搜索知识库</button>
-                <button type="button" disabled={composerBusy} onClick={() => send(settings.autoApprove
+                <button type="button" disabled={composerBusy} onClick={() => send(taskModeEnabled
                   ? '把我的文件整理分类好：先检索全库了解每篇笔记的主题，再把它们移动到按主题命名的目录里，最后汇报整理结果'
                   : '整理当前 Vault 的文件')}
-                ><span className="ai-assistant__quick-icon">↗</span>{settings.autoApprove ? '智能整理' : '整理建议'}</button>
-                <button type="button" disabled={composerBusy || pendingInboxItems.length === 0} onClick={() => send('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。', { preferModel: true })}><span className="ai-assistant__quick-icon">✦</span>整理 Inbox{pendingInboxItems.length ? <em>{pendingInboxItems.length}</em> : null}</button>
+                ><span className="ai-assistant__quick-icon">↗</span>{taskModeEnabled ? '智能整理' : '整理建议'}</button>
+                <button type="button" disabled={composerBusy || pendingInboxItems.length === 0} onClick={() => send('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。', { mode: 'task', preferModel: true })}><span className="ai-assistant__quick-icon">✦</span>整理 Inbox{pendingInboxItems.length ? <em>{pendingInboxItems.length}</em> : null}</button>
                 <button type="button" disabled={composerBusy} onClick={() => send('检查当前笔记的 Markdown 问题')}><span className="ai-assistant__quick-icon">✓</span>检查内容</button>
                 <button type="button" disabled={composerBusy} onClick={runDigest}><span className="ai-assistant__quick-icon">☰</span>{digesting ? '生成中…' : '每日摘要'}</button>
               </div>
@@ -1490,7 +1533,11 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                 <textarea
                   ref={draftRef}
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => {
+                    const nextDraft = event.target.value;
+                    setDraft(nextDraft);
+                    writeStoredDraft(draftStorageKey, nextDraft);
+                  }}
                   onKeyDown={(event) => {
                     // Enter 发送、Shift+Enter 换行；中文输入法组词期间的回车不发送
                     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -1498,7 +1545,7 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                       send();
                     }
                   }}
-                  placeholder={settings.autoApprove
+                  placeholder={taskModeEnabled
                     ? '下达任务指令，AI 会自主检索和读取，写入前先等待确认…'
                     : '向知识库提问，或描述要完成的文件操作…'}
                   rows={1}
@@ -1512,10 +1559,10 @@ export default function AIAssistantPanel({ open, onClose, noteIndex = [], folder
                       <span className="ai-assistant__mode-switch" aria-hidden="true" />
                       <span className="ai-assistant__mode-copy"><strong>模型优先</strong></span>
                     </label>
-                    <label className={`ai-assistant__mode-toggle ${settings.autoApprove ? 'is-on' : ''}`} title="开启后 AI 自主多轮检索和读取；所有文件写入都先显示预览，等待你的明确确认">
-                      <input type="checkbox" id="ai-auto-approve" checked={settings.autoApprove === true} onChange={toggleAutoApprove} />
+                    <label className={`ai-assistant__mode-toggle ${taskModeEnabled ? 'is-on' : ''}`} title={taskModeEnabled ? 'AI 会自主多轮检索和读取；所有文件写入都先显示预览，等待你的明确确认' : '快速回答优先使用本地快路径；需要知识检索时会进入只读问答'}>
+                      <input type="checkbox" id="ai-auto-approve" checked={taskModeEnabled} onChange={toggleAutoApprove} />
                       <span className="ai-assistant__mode-switch" aria-hidden="true" />
-                      <span className="ai-assistant__mode-copy"><strong>任务模式</strong></span>
+                      <span className="ai-assistant__mode-copy"><strong>{taskModeEnabled ? '任务模式' : '快速模式'}</strong></span>
                     </label>
                   </div>
                   <span className="ai-assistant__composer-hint">Enter 发送 · Shift+Enter 换行</span>
@@ -1764,7 +1811,7 @@ function Message({ message, onSuggestion, onOpenNote, isLastAssistant = false, o
       <div className="ai-message__body">
         {message.reasoning ? (
           <details className="ai-message__reasoning">
-            <summary>思考过程</summary>
+            <summary>查看分析摘要</summary>
             <div className="ai-message__reasoning-body">{message.reasoning}</div>
           </details>
         ) : null}

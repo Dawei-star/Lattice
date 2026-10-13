@@ -452,7 +452,13 @@ function FolderNode({
   ];
 
   return (
-    <li role="treeitem" aria-expanded={hasItems ? expanded : undefined} data-folder-depth={depth} data-folder-path={path}>
+    <li
+      className={`tree__folder-node ${hasItems ? 'tree__folder-node--expandable' : ''}`}
+      role="treeitem"
+      aria-expanded={hasItems ? expanded : undefined}
+      data-folder-depth={depth}
+      data-folder-path={path}
+    >
       {renaming ? (
         <form
           className="inline-form inline-form--inline"
@@ -479,8 +485,8 @@ function FolderNode({
       ) : (
         <ContextMenu getItems={getMenuItems} label={`目录「${node.name}」操作`}>
           <div
-            className={`nav-item ${isActive ? 'is-active' : ''} ${treeDrag.draggingItem?.id === node.id ? 'is-dragging' : ''} ${treeDrag.dropTargetId === node.id ? 'is-drop-target' : ''}`}
-            style={{ paddingLeft: 8 + depth * 14 }}
+            className={`nav-item ${hasItems ? 'nav-item--expandable' : ''} ${isActive ? 'is-active' : ''} ${treeDrag.draggingItem?.id === node.id ? 'is-dragging' : ''} ${treeDrag.dropTargetId === node.id ? 'is-drop-target' : ''}`}
+            style={{ paddingLeft: 8 + depth * 18, '--tree-depth': depth }}
             draggable
             aria-grabbed={treeDrag.draggingItem?.id === node.id}
             onDragStart={(event) => treeDrag.handleDragStart?.(event, { type: 'folder', id: node.id, parentId: node.parentId })}
@@ -502,12 +508,11 @@ function FolderNode({
             type="button"
             className="nav-item__main"
             aria-label={`目录：${path}`}
-            title={path}
             data-folder-path={path}
             onClick={() => onSelectFolder(node.id)}
           >
             <span className="tree__folder-icon" aria-hidden="true" />
-            <span className="nav-item__label" title={path}>{node.name}</span>
+            <span className="nav-item__label">{node.name}</span>
             {node.noteCount > 0 ? <span className="nav-item__badge">{node.noteCount}</span> : null}
             {isFavorite ? <span className="nav-item__favorite" title="已收藏" aria-label="已收藏">★</span> : null}
           </button>
@@ -525,7 +530,7 @@ function FolderNode({
       )}
 
       {hasItems && expanded ? (
-        <ul role="group">
+        <ul role="group" style={{ '--tree-depth': depth + 1 }}>
           {folderNotes.map((note) => (
             <NoteFile
               key={note.id}
@@ -666,13 +671,13 @@ function NoteFile({
         <button
           type="button"
           className={`tree__note ${note.id === activeNoteId ? 'is-active' : ''} ${treeDrag.draggingItem?.id === note.id ? 'is-dragging' : ''}`}
-          style={{ paddingLeft: 8 + depth * 14 }}
+          style={{ paddingLeft: 8 + depth * 18, '--tree-depth': depth }}
           draggable
           aria-grabbed={treeDrag.draggingItem?.id === note.id}
           onDragStart={(event) => treeDrag.handleDragStart?.(event, { type: 'note', id: note.id, folderId: note.folderId ?? null })}
           onDragEnd={treeDrag.handleDragEnd}
           onClick={() => onOpenNote?.(note.id)}
-          title={note.title}
+          aria-label={`笔记：${note.title}`}
         >
           <span className="tree__note-icon" aria-hidden="true">·</span>
           <span className="nav-item__label">{note.title}</span>
@@ -742,7 +747,7 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onCreate
       <li role="treeitem">
         <form
           className="inline-form inline-form--inline canvas-file-rename"
-          style={{ paddingLeft: 8 + depth * 14 }}
+          style={{ paddingLeft: 8 + depth * 18, '--tree-depth': depth }}
           onSubmit={(event) => {
             event.preventDefault();
             commitRename();
@@ -823,16 +828,16 @@ function CanvasFile({ file, depth, active, folderOptions, onOpenCanvas, onCreate
         <button
           type="button"
           className={`tree__note tree__canvas-file ${active ? 'is-active' : ''} ${treeDrag.draggingItem?.path === file.path ? 'is-dragging' : ''}`}
-          style={{ paddingLeft: 8 + depth * 14 }}
+          style={{ paddingLeft: 8 + depth * 18, '--tree-depth': depth }}
           draggable={file.exists !== false}
           aria-grabbed={treeDrag.draggingItem?.path === file.path}
           onDragStart={(event) => treeDrag.handleDragStart?.(event, { type: 'canvas', path: file.path, folderPath: file.folderPath ?? '' })}
           onDragEnd={treeDrag.handleDragEnd}
           onClick={() => onOpenCanvas?.(file.path)}
-          title={file.path}
+          aria-label={`画布：${file.path}`}
         >
           <span className="tree__note-icon tree__canvas-file-icon" aria-hidden="true">▦</span>
-          <span className="nav-item__label" title={file.path}>{displayName}</span>
+          <span className="nav-item__label">{displayName}</span>
           <span className="tree__file-type tree__file-type--canvas">CANVAS</span>
         </button>
       </ContextMenu>
@@ -865,12 +870,12 @@ function AttachmentFile({ file, depth, folderOptions, onOpenAttachment, onDownlo
         <button
           type="button"
           className="tree__note tree__attachment-file"
-          style={{ paddingLeft: 8 + depth * 14 }}
+          style={{ paddingLeft: 8 + depth * 18, '--tree-depth': depth }}
           onClick={() => onOpenAttachment?.(file.path)}
-          title={file.path}
+          aria-label={`附件：${file.path}`}
         >
           <span className="tree__note-icon" aria-hidden="true">▪</span>
-          <span className="nav-item__label" title={file.path}>{name}</span>
+          <span className="nav-item__label">{name}</span>
           <span className={`tree__file-type tree__file-type--${fileTypeClass(name)}`} title={fileTypeLabel(name)}>
             {fileTypeLabel(name)}
           </span>

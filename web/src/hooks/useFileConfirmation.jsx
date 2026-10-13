@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { AlertTriangle, Check, FilePenLine, FolderOpen, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, FolderOpen, ShieldCheck, X } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 
 const OPERATION_LABELS = {
@@ -16,8 +16,8 @@ const OPERATION_LABELS = {
 };
 
 /**
- * 文件写操作的唯一 UI 闸门。调用方只拿到确认结果，不能绕过卡片直接提交。
- * 队列保证多个并发请求会逐项展示，而不是静默丢弃。
+ * 文件写操作的统一确认闸门。服务端仍要求 confirmed，前端只对删除展示
+ * 阻断式确认卡片，其他写操作保持即时反馈；队列保证删除请求不会互相覆盖。
  */
 export function useFileConfirmation() {
   const [pending, setPending] = useState(null);
@@ -28,6 +28,12 @@ export function useFileConfirmation() {
     if (resolverRef.current || !queueRef.current.length) return;
     const next = queueRef.current.shift();
     resolverRef.current = next.resolve;
+    if (!next.operation.isDelete) {
+      resolverRef.current = null;
+      next.resolve({ confirmed: true, secondConfirmed: false });
+      window.setTimeout(pump, 0);
+      return;
+    }
     setPending(next.operation);
   }, []);
 
@@ -63,22 +69,25 @@ function normalizeOperation(operation = {}) {
   const withAbsolutePath = (pathValue) => vaultDir && pathValue
     ? `${vaultDir}\\${pathValue.replaceAll('/', '\\')}`
     : undefined;
+  const normalizedActions = actions.map((action) => ({
+    ...action,
+    type: String(action.type ?? 'write').toLowerCase(),
+    path: String(action.path ?? action.targetPath ?? '').replaceAll('\\', '/'),
+    targetPath: action.targetPath ? String(action.targetPath).replaceAll('\\', '/') : undefined,
+    fullPath: action.fullPath ?? withAbsolutePath(String(action.path ?? action.targetPath ?? '').replaceAll('\\', '/')),
+    directory: action.directory ?? withAbsolutePath(String(action.path ?? action.targetPath ?? '').replaceAll('\\', '/').split('/').slice(0, -1).join('/')),
+  }));
+  const isDelete = normalizedActions.some((action) => action.type === 'delete');
   return {
     ...operation,
-    actions: actions.map((action) => ({
-      ...action,
-      type: String(action.type ?? 'write').toLowerCase(),
-      path: String(action.path ?? action.targetPath ?? '').replaceAll('\\', '/'),
-      targetPath: action.targetPath ? String(action.targetPath).replaceAll('\\', '/') : undefined,
-      fullPath: action.fullPath ?? withAbsolutePath(String(action.path ?? action.targetPath ?? '').replaceAll('\\', '/')),
-      directory: action.directory ?? withAbsolutePath(String(action.path ?? action.targetPath ?? '').replaceAll('\\', '/').split('/').slice(0, -1).join('/')),
-    })),
-    type: operation.type ?? actions[0]?.type ?? 'write',
-    summary: operation.summary ?? `${actions.length} 项文件变更`,
+    actions: normalizedActions,
+    type: operation.type ?? normalizedActions[0]?.type ?? 'write',
+    summary: operation.summary ?? `${normalizedActions.length} 项文件变更`,
     impact: operation.impact ?? '将按确认内容写入知识库',
     reversible: operation.reversible !== false,
+    isDelete,
     requiresSecondConfirmation: operation.requiresSecondConfirmation === true
-      || actions.some((action) => action.type === 'delete'),
+      || isDelete,
     fullPath: operation.fullPath ?? withAbsolutePath(String(operation.path ?? actions[0]?.path ?? '').replaceAll('\\', '/')),
     directory: operation.directory ?? withAbsolutePath(String(operation.path ?? actions[0]?.path ?? '').replaceAll('\\', '/').split('/').slice(0, -1).join('/')),
   };
@@ -86,21 +95,20 @@ function normalizeOperation(operation = {}) {
 
 function FileOperationConfirmationCard({ operation, onConfirm, onCancel }) {
   const [deleteStep, setDeleteStep] = useState(0);
-  const deleteRequired = operation.requiresSecondConfirmation;
   const actions = operation.actions ?? [];
-  const title = deleteStep === 1 ? '再次确认删除' : deleteRequired ? '确认文件操作' : '确认文件操作';
+  const title = deleteStep === 1 ? '再次确认删除' : '确认删除文件';
 
   return (
     <Modal open title={title} ariaLabel={title} onClose={onCancel} className="file-confirmation-modal">
-      <section className="file-confirmation-card" aria-label="文件操作确认">
+      <section className="file-confirmation-card" aria-label="删除文件确认">
         <header className="file-confirmation-card__header">
-          <div className={`file-confirmation-card__icon ${deleteRequired ? 'is-danger' : ''}`} aria-hidden="true">
-            {deleteRequired ? <AlertTriangle size={20} /> : <FilePenLine size={20} />}
+          <div className="file-confirmation-card__icon is-danger" aria-hidden="true">
+            <AlertTriangle size={20} />
           </div>
           <div>
-            <span className="file-confirmation-card__eyebrow">FILE OPERATION / CONFIRMATION</span>
-            <h2>{deleteStep === 1 ? '删除不可逆，请再次确认' : '执行前确认文件变更'}</h2>
-            <p>{deleteStep === 1 ? '确认后将立即执行删除；取消不会产生任何写入。' : '未确认前不会写入、移动、覆盖或删除任何文件。'}</p>
+            <span className="file-confirmation-card__eyebrow">FILE DELETION / CONFIRMATION</span>
+            <h2>{deleteStep === 1 ? '删除不可逆，请再次确认' : '确认要删除这些文件吗？'}</h2>
+            <p>{deleteStep === 1 ? '确认后将立即执行删除；取消不会产生任何写入。' : '删除后文件会进入快照，可从操作历史中撤销。'}</p>
           </div>
         </header>
 
@@ -130,12 +138,12 @@ function FileOperationConfirmationCard({ operation, onConfirm, onCancel }) {
 
         <footer className="file-confirmation-card__actions">
           <button type="button" className="btn" onClick={onCancel}><X size={15} aria-hidden="true" />取消</button>
-          {deleteStep === 0 && deleteRequired ? (
+          {deleteStep === 0 ? (
             <button type="button" className="btn btn--danger" onClick={() => setDeleteStep(1)}><AlertTriangle size={15} aria-hidden="true" />继续删除</button>
           ) : (
-            <button type="button" className={`btn ${deleteRequired ? 'btn--danger' : 'btn--primary'}`} onClick={() => onConfirm({ secondConfirmed: deleteRequired })}>
-              {deleteRequired ? <AlertTriangle size={15} aria-hidden="true" /> : <Check size={15} aria-hidden="true" />}
-              {deleteRequired ? '确认删除' : '确认执行'}
+            <button type="button" className="btn btn--danger" onClick={() => onConfirm({ secondConfirmed: true })}>
+              <AlertTriangle size={15} aria-hidden="true" />
+              确认删除
             </button>
           )}
         </footer>

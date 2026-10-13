@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import * as controller from './folders.controller.js';
 
 const idParam = z.object({ id: z.string().uuid('目录 ID 必须是合法 UUID') });
@@ -29,6 +30,6 @@ const updateBody = z
 export const foldersRouter = Router();
 
 foldersRouter.get('/', controller.listFolders);
-foldersRouter.post('/', validate({ body: createBody }), controller.createFolder);
-foldersRouter.patch('/:id', validate({ params: idParam, body: updateBody }), controller.updateFolder);
-foldersRouter.delete('/:id', validate({ params: idParam, body: confirmationBody }), controller.deleteFolder);
+foldersRouter.post('/', forbidViewerWrite, validate({ body: createBody }), controller.createFolder);
+foldersRouter.patch('/:id', forbidViewerWrite, validate({ params: idParam, body: updateBody }), controller.updateFolder);
+foldersRouter.delete('/:id', forbidViewerWrite, validate({ params: idParam, body: confirmationBody }), controller.deleteFolder);

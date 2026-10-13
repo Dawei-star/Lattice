@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Modal from '../ui/Modal.jsx';
 import { aiApi } from '../api/ai.js';
-import { createAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
+import { createAiProvider, isMaskedApiKey, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
 import { CUSTOM_SERVICE, PROVIDERS, findProviderByService } from './aiProviders.js';
 export default function ModelCenter() {
   const [settings, setSettings] = useState(() => loadAiSettings());
@@ -54,6 +54,8 @@ export default function ModelCenter() {
     const match = findProviderByService(provider.service);
     setDraft({
       ...provider,
+      apiKey: '',
+      hasStoredKey: Boolean(provider.apiKey),
       providerKey: match.key,
       providerLabel: match.label,
       providerLogo: match.logo,
@@ -134,8 +136,21 @@ export default function ModelCenter() {
       endpoint: draft.endpoint.trim(),
       apiKey: draft.apiKey.trim(),
     };
-    if (!next.endpoint || !next.model || !next.apiKey) {
+    const existing = editingId ? settings.providers.find((provider) => provider.id === editingId) : null;
+    const hasStoredKey = Boolean(existing?.apiKey || draft.hasStoredKey);
+    if (!next.endpoint || !next.model || (!next.apiKey && !hasStoredKey)) {
       setFormError('请填写完整的 Endpoint、模型 ID 和 API Key。');
+      return;
+    }
+    // 服务端只回显掩码。编辑其它字段时留空表示沿用已保存的密钥。
+    if (!next.apiKey && hasStoredKey && existing) {
+      saveAiSettings({
+        ...settings,
+        providers: settings.providers.map((provider) => provider.id === editingId
+          ? { ...provider, ...next, apiKey: provider.apiKey, verified: true }
+          : provider),
+      });
+      closeModal();
       return;
     }
     // 保存前强制连通性测试：Key 或模型 ID 不匹配时直接拦截，避免无效配置进入列表
@@ -179,7 +194,7 @@ export default function ModelCenter() {
 
   return <div className="model-center">
     <section className="model-center__intro">
-      <div><span className="settings-kicker">MODEL MANAGEMENT</span><h3>模型管理</h3><p>选择服务商并配置 API Key 即可在聊天中使用，密钥只保存在本机。</p></div>
+      <div><span className="settings-kicker">MODEL MANAGEMENT</span><h3>模型管理</h3><p>选择服务商并配置 API Key 即可在聊天中使用，浏览器只保留密钥掩码。</p></div>
       <button type="button" className="btn btn--primary" onClick={openProviderChooser}>＋ 添加模型</button>
     </section>
     <section className="model-center__table" aria-label="模型列表">
@@ -206,9 +221,16 @@ export default function ModelCenter() {
  */
 function EmbeddingSection({ settings }) {
   const embedding = settings.embedding ?? { endpoint: '', model: '', apiKey: '', authHeader: 'bearer', enabled: false };
+  const hasStoredKey = Boolean(embedding.apiKey);
   const [showKey, setShowKey] = useState(false);
+  const [keyDraft, setKeyDraft] = useState(() => (isMaskedApiKey(embedding.apiKey) ? '' : embedding.apiKey));
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    // 脱敏后的 settings 事件不应覆盖用户正在输入的页面内草稿。
+    if (!isMaskedApiKey(embedding.apiKey)) setKeyDraft(embedding.apiKey ?? '');
+  }, [embedding.apiKey]);
 
   const update = (patch) => {
     setResult(null);
@@ -216,8 +238,9 @@ function EmbeddingSection({ settings }) {
   };
 
   const runTest = async () => {
-    if (!embedding.endpoint?.trim() || !embedding.model?.trim() || !embedding.apiKey?.trim()) {
-      setResult({ ok: false, error: '请先填写完整的 Endpoint、模型 ID 和 API Key。' });
+    const apiKey = keyDraft.trim();
+    if (!embedding.endpoint?.trim() || !embedding.model?.trim() || !apiKey) {
+      setResult({ ok: false, error: '请输入新的 API Key 后再测试；已保存的密钥可直接保留使用。' });
       return;
     }
     setTesting(true);
@@ -227,7 +250,7 @@ function EmbeddingSection({ settings }) {
         provider: {
           endpoint: embedding.endpoint,
           model: embedding.model,
-          apiKey: embedding.apiKey,
+          apiKey,
           authHeader: embedding.authHeader,
         },
       }, {});
@@ -252,7 +275,7 @@ function EmbeddingSection({ settings }) {
       <div className="model-center__embedding-fields">
         <label>Endpoint<input value={embedding.endpoint} onChange={(event) => update({ endpoint: event.target.value })} placeholder="https://api.siliconflow.cn/v1/embeddings" /></label>
         <label>模型 ID<input value={embedding.model} onChange={(event) => update({ model: event.target.value })} placeholder="BAAI/bge-m3" /></label>
-        <label>API Key<span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={embedding.apiKey} onChange={(event) => update({ apiKey: event.target.value })} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)}>{showKey ? '隐藏' : '显示'}</button></span></label>
+        <label>API Key<span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={keyDraft} placeholder={hasStoredKey ? '已配置，留空保持不变' : ''} onChange={(event) => { setKeyDraft(event.target.value); update({ apiKey: event.target.value }); }} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)}>{showKey ? '隐藏' : '显示'}</button></span></label>
       </div>
       <div className="model-center__embedding-side">
         <p className="model-center__embedding-hint">启用后笔记会按标题分块并计算向量，用于语义搜索、相关笔记推荐与知识库问答。云端 embedding 会把笔记分块内容发往该服务商；不开启则仅使用关键词检索。</p>
@@ -464,7 +487,7 @@ function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, on
 
   const nameField = <label>模型展示名称<span className="model-center__label-hint">在模型列表中展示的名称，未设置时默认显示 Model ID。</span><input value={draft.name} onChange={(event) => onChange({ name: event.target.value })} placeholder="请输入模型展示名称" maxLength={64} /></label>;
 
-  const keyField = <label><span className="model-center__label-row"><span><em>*</em> API 密钥</span>{draft.providerKeyUrl ? <a className="model-center__key-link" href={draft.providerKeyUrl} target="_blank" rel="noreferrer">获取 API 密钥</a> : null}</span><span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={draft.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} placeholder="请输入 API Key" autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)} aria-label={showKey ? '隐藏 API Key' : '显示 API Key'} title={showKey ? '隐藏' : '显示'}>{showKey ? <EyeOffIcon /> : <EyeIcon />}</button></span></label>;
+  const keyField = <label><span className="model-center__label-row"><span><em>*</em> API 密钥</span>{draft.providerKeyUrl ? <a className="model-center__key-link" href={draft.providerKeyUrl} target="_blank" rel="noreferrer">获取 API 密钥</a> : null}</span><span className="model-center__key-wrap"><input type={showKey ? 'text' : 'password'} value={draft.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} placeholder={draft.hasStoredKey ? '已配置，留空保持不变' : '请输入 API Key'} autoComplete="off" /><button type="button" className="model-center__eye" onClick={() => setShowKey((visible) => !visible)} aria-label={showKey ? '隐藏 API Key' : '显示 API Key'} title={showKey ? '隐藏' : '显示'}>{showKey ? <EyeOffIcon /> : <EyeIcon />}</button></span></label>;
 
   return <form className="model-center__form" onSubmit={onSubmit}>
     <header><button type="button" className="model-center__back" onClick={onBack} aria-label="返回">‹</button><h3>{editing ? '编辑模型' : isCustom ? '自定义模型' : '通过服务商添加'}</h3><button type="button" className="model-center__close" onClick={onBack} aria-label="关闭">×</button></header>

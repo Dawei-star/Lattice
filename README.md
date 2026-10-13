@@ -108,7 +108,7 @@ Lattice is a local-first Windows desktop knowledge base for Markdown notes, with
 | AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、Inbox 整理建议与安全归档、自然语言文件操作（任务模式可自主多轮执行并自动审计，失败动作回填模型自纠，操作可一键撤销）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
 | 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成，并对同一天幂等更新 |
 | MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露笔记搜索、标签筛选、关系分析、统计与历史版本；默认只读，显式开启 `LATTICE_MCP_ALLOW_WRITES` 后才提供 `create_note`、`update_note`、`restore_note_version`，写入统一记录 MCP 审计；设置页按读取 / 写入分组列出全部工具并标明当前可用状态 |
-| MCP 插件市场 | 设置 → 集成 → MCP Server 内置 12 款精选 Server（文件、SQLite、Obsidian、联网搜索、记忆、Git、GitHub、时间等，六类可筛选可搜索，每款带真实品牌 logo——`web/public/mcp-logos/*.svg`，离线可用）；一键写入本机配置，Filesystem / SQLite 自动绑定当前 Vault 与 `lattice.db`，需要 API Key 的条目给出**按变量名拆分的密钥表单**、需要路径的条目（Git 仓库 / 允许访问的目录 / 数据库文件）给出**路径输入框与「填入知识库目录」预设**，两者未补齐前保持停用且不会被导出（配置里不残留 `{占位符}`）；卡片「详情」展示完整说明、全部工具、密钥获取途径与官方文档链接；已配置列表可编辑、启停与移除 |
+| MCP 插件市场 | 设置 → 集成 → MCP Server 内置 13 款精选 Server（含 Notion Calendar、文件、SQLite、Obsidian、联网搜索、记忆、Git、GitHub、时间等，七类可筛选可搜索，每款带真实品牌 logo——`web/public/mcp-logos/*.svg`，离线可用）；一键写入本机配置，Filesystem / SQLite 自动绑定当前 Vault 与 `lattice.db`，需要 API Key 的条目给出**按变量名拆分的密钥表单**、需要路径的条目（Git 仓库 / 允许访问的目录 / 数据库文件 / Notion MCP 脚本）给出**路径输入框**，两者未补齐前保持停用且不会被导出（配置里不残留 `{占位符}`）；卡片「详情」展示完整说明、全部工具、密钥获取途径与官方文档链接；已配置列表可编辑、启停与移除 |
 | 单篇 HTML 导出 | 从编辑区导出带 Lattice 品牌页眉、页脚、图片内联、双链可点击和嵌入展开的独立 HTML 文件 |
 | 静态站点导出 | 从设置中批量生成可部署的 `index.html`、按 Vault 路径组织的笔记页面、双链导航和 `assets/` 资源目录 |
 | PWA | Web 版提供 manifest、应用壳缓存、安装提示和更新提示；离线不写入知识库 |
@@ -217,12 +217,26 @@ npm run ai -- history --limit 40
 ```bash
 npm run setup       # 首次安装也会安装 MCP 依赖
 npm run mcp         # 以 stdio 启动 MCP Server
+npm run mcp:notion-calendar  # 直接启动 Notion Calendar MCP（需先配置环境变量）
 npm run test:mcp    # 运行 MCP 协议与读写 e2e
 ```
 
 Claude Desktop 等客户端需要把 `scripts/mcp-server/server.mjs` 配置为 stdio command，并通过 `DB_FILE` / `VAULT_DIR` 指向与 Lattice 相同的数据目录。MCP 默认只读；如需允许外部 Agent 修改 Vault，在配置的 `env` 中显式加入 `LATTICE_MCP_ALLOW_WRITES: "true"`。写入工具只在该开关开启时注册，并统一记录 MCP 审计。
 
-服务端 `GET /api/mcp/info` 返回同一份**完整**工具清单（每条带 `write` / `enabled`，另附 `writesEnabled`、`writesEnvVar`、`enabledToolCount`），设置页据此把「现在可用」与「开启后可用」同时讲清楚，而不是把未启用的写入工具直接藏掉；它同时给出 `serverPath` / `dbFile` / `vaultDir`，用于生成可复制的客户端配置。「MCP 插件市场」是纯前端的内置静态目录（`web/src/settings/mcpMarketplace.js`），添加条目只会写本机设置，不会自行拉起任何进程。Catalog 完整性与密钥清单由 `web/test/mcp-marketplace.test.mjs` 兜底，配置读写、`requiresEnv` 持久化与密钥字段辅助函数由 `web/test/mcp-settings.test.mjs` 覆盖，市场与设置页的交互链路由 `web/test/run-smoke.mjs` 在真实后端上端到端断言（安装 / 详情 / 密钥补齐自动启用 / 移除）。
+#### Notion Calendar MCP
+
+Notion Calendar MCP 操作的是一个已经被 Notion Calendar 展示的 Notion 数据库，不调用 Notion Calendar 的私有接口。先在 Notion 创建一个 Internal Integration，把日历数据库通过「Add connections」分享给它，并准备数据库 ID。数据库至少需要一个标题属性和一个日期属性；服务会自动识别，也可以通过 `NOTION_TITLE_PROPERTY` / `NOTION_DATE_PROPERTY` 指定。
+
+```powershell
+$env:NOTION_API_KEY = "secret_xxx"
+$env:NOTION_DATABASE_ID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+$env:NOTION_CALENDAR_ALLOW_WRITES = "true" # 可选；默认 false，只读
+npm run mcp:notion-calendar
+```
+
+工具包括 `list_calendar_events`、`get_calendar_event`、`create_calendar_event`、`update_calendar_event` 和 `archive_calendar_event`。也可以在「设置 → 集成 → MCP Server → MCP 插件市场」添加 Notion Calendar，补齐 `NOTION_API_KEY` / `NOTION_DATABASE_ID` 后导出给 Claude Desktop 等客户端。`NOTION_DATA_SOURCE_ID` 是可选项：只有一个数据库包含多个 data source 且需要指定其中一个时才需要配置。
+
+服务端 `GET /api/mcp/info` 返回同一份**完整**工具清单（每条带 `write` / `enabled`，另附 `writesEnabled`、`writesEnvVar`、`enabledToolCount`），设置页据此把「现在可用」与「开启后可用」同时讲清楚，而不是把未启用的写入工具直接藏掉；它同时给出 `serverPath` / `notionCalendarServerPath` / `dbFile` / `vaultDir`，用于生成可复制的客户端配置。「MCP 插件市场」是纯前端的内置静态目录（`web/src/settings/mcpMarketplace.js`），添加条目只会写本机设置，不会自行拉起任何进程。Catalog 完整性与密钥清单由 `web/test/mcp-marketplace.test.mjs` 兜底，配置读写、`requiresEnv` 持久化与密钥字段辅助函数由 `web/test/mcp-settings.test.mjs` 覆盖，市场与设置页的交互链路由 `web/test/run-smoke.mjs` 在真实后端上端到端断言（安装 / 详情 / 密钥补齐自动启用 / 移除）。
 
 ---
 

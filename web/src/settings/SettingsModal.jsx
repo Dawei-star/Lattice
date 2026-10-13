@@ -648,7 +648,17 @@ function McpServerSettings() {
       setNotice({ tone: 'warning', text: `${entry.name} 已在列表中，已为你打开配置。` });
       return;
     }
-    const server = createServerFromMarketEntry(entry, { vaultDir: info?.vaultDir, dbFile: info?.dbFile });
+    const server = createServerFromMarketEntry(entry, {
+      vaultDir: info?.vaultDir,
+      dbFile: info?.dbFile,
+      notionCalendarServerPath: info?.notionCalendarServerPath,
+    });
+    // 桌面版的 Node 运行时是 Electron 本身；沿用内置 Lattice MCP 的启动方式，
+    // 避免要求用户另外安装一份 Node.js 才能使用本地 Notion Calendar MCP。
+    if (entry.key === 'notion-calendar' && info?.command) {
+      server.command = info.command;
+      if (info.electronRuntime) server.env = { ...server.env, ELECTRON_RUN_AS_NODE: '1' };
+    }
     // settings.servers 为空时列表展示的是回退出来的内置 Lattice Server（尚未落盘），
     // 以“当前可见列表”为基线追加，避免内置条目在下一次保存后消失。
     updateSettings((current) => ({

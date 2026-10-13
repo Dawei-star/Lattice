@@ -60,6 +60,17 @@ export class ForbiddenError extends AppError {
   }
 }
 
+/** 429 —— 高成本或高频请求被限流 */
+export class RateLimitError extends AppError {
+  constructor(retryAfterSeconds = 60) {
+    super('请求过于频繁，请稍后重试', {
+      status: 429,
+      code: 'RATE_LIMITED',
+      details: { retryAfterSeconds },
+    });
+  }
+}
+
 /** 502 —— 外部 AI 服务拒绝请求、返回异常或不可达 */
 export class AiProviderError extends AppError {
   constructor(message = '外部模型服务调用失败', options = {}) {

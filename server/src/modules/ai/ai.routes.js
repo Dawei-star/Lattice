@@ -69,9 +69,10 @@ const chatBody = z.object({
   history: z.array(historyEntry).max(2_000).optional(),
   provider,
   sessionId: z.string().trim().max(120).optional(),
-  // assist：默认助手模式（读自动、写需确认）；agent：任务循环模式，模型可多轮自主执行工具
-  mode: z.enum(['assist', 'agent']).default('assist'),
-  // 默认会对确定性查询走本地秒答；开启后即使是搜索/检查等请求也优先调用外部模型
+  // quick：低延迟回答；assist：只读知识问答；task/agent：多轮任务执行。
+  // agent 保留给旧版 CLI 与前端兼容，服务端统一映射到 task。
+  mode: z.enum(['quick', 'assist', 'task', 'agent']).optional(),
+  // 兼容旧版：开启后即使是确定性查询也优先调用外部模型
   preferModel: z.boolean().default(false),
   // 保留旧字段兼容客户端；服务端不会根据该字段自动批准写操作
   autoApprove: z.boolean().default(false),
@@ -144,18 +145,18 @@ aiRouter.get('/sessions', validate({ query: z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).max(100000).default(0),
 }) }), controller.listSessions);
-aiRouter.post('/sessions', validate({ body: z.object({
+aiRouter.post('/sessions', forbidViewerWrite, validate({ body: z.object({
   title: z.string().max(120).optional(),
   id: z.string().max(120).optional(),
   expertId: z.string().trim().regex(/^[a-z0-9][a-z0-9-_]{1,79}$/).default('general'),
 }).optional() }), controller.createSession);
 aiRouter.get('/sessions/:id/messages', validate({ params: z.object({ id: z.string().max(120) }) }), controller.sessionMessages);
-aiRouter.patch('/sessions/:id', validate({ params: z.object({ id: z.string().max(120) }), body: z.object({ title: z.string().max(120) }) }), controller.renameSession);
-aiRouter.delete('/sessions/:id', validate({ params: z.object({ id: z.string().max(120) }) }), controller.deleteSession);
+aiRouter.patch('/sessions/:id', forbidViewerWrite, validate({ params: z.object({ id: z.string().max(120) }), body: z.object({ title: z.string().max(120) }) }), controller.renameSession);
+aiRouter.delete('/sessions/:id', forbidViewerWrite, validate({ params: z.object({ id: z.string().max(120) }) }), controller.deleteSession);
 
 // ── 语义索引 ─────────────────────────────────────────────────────────
 aiRouter.get('/index/status', controller.indexStatus);
-aiRouter.post('/index/reindex', controller.reindexAll);
+aiRouter.post('/index/reindex', forbidViewerWrite, controller.reindexAll);
 aiRouter.get('/related', validate({ query: z.object({
   noteId: z.string().min(1).max(120),
   limit: z.coerce.number().int().min(1).max(12).default(6),
@@ -186,7 +187,7 @@ aiRouter.get('/suggestions', validate({ query: z.object({
 }) }), controller.suggestions);
 
 // ── 每日摘要 ─────────────────────────────────────────────────────────
-aiRouter.post('/digest', controller.generateDigest);
+aiRouter.post('/digest', forbidViewerWrite, controller.generateDigest);
 
 // ── 文件操作（保留自 v0.1）───────────────────────────────────────────
 aiRouter.post('/operations/preview', validate({ body: z.object({

@@ -49,7 +49,7 @@ test('branded servers get their own logo and reference servers share the MCP mar
   assert.equal(logoOf('filesystem'), logoOf('time'));
   assert.equal(logoOf('fetch'), '/mcp-logos/mcp.svg');
   // 有品牌的条目不共用同一个 logo
-  const branded = ['sqlite', 'obsidian', 'brave-search', 'puppeteer', 'git', 'github'].map(logoOf);
+  const branded = ['sqlite', 'obsidian', 'notion-calendar', 'brave-search', 'puppeteer', 'git', 'github'].map(logoOf);
   assert.equal(new Set(branded).size, branded.length, `branded logos must differ: ${branded.join(', ')}`);
   assert.ok(!branded.includes('/mcp-logos/mcp.svg'), 'branded servers must not fall back to the MCP mark');
 });
@@ -131,6 +131,19 @@ test('entries that need secrets or required arguments install disabled', () => {
   assert.deepEqual(git.requiresArgs.map((item) => item.token), ['repository']);
   assert.equal(git.args[2], '{repository}', '未填的占位符要保留，不能退化成相对路径');
   assert.deepEqual(unresolvedMarketArgs(byKey('git')), ['repository']);
+
+  const notion = createServerFromMarketEntry(byKey('notion-calendar'));
+  assert.equal(notion.enabled, false);
+  assert.deepEqual(notion.requiresEnv.map((item) => item.name), ['NOTION_API_KEY', 'NOTION_DATABASE_ID']);
+  assert.deepEqual(notion.requiresArgs.map((item) => item.token), ['notionCalendarServerPath']);
+  assert.equal(notion.env.NOTION_CALENDAR_ALLOW_WRITES, 'false');
+  assert.equal(notion.args[0], '{notionCalendarServerPath}');
+
+  const readyNotion = createServerFromMarketEntry(byKey('notion-calendar'), {
+    notionCalendarServerPath: 'D:/Lattice/scripts/notion-calendar-mcp/server.mjs',
+  });
+  assert.equal(readyNotion.enabled, false, 'Notion Calendar still needs its API credentials');
+  assert.deepEqual(readyNotion.argValues, { notionCalendarServerPath: 'D:/Lattice/scripts/notion-calendar-mcp/server.mjs' });
 
   // 上下文能给出路径的条目（filesystem / sqlite）开箱即可用
   const filesystem = createServerFromMarketEntry(byKey('filesystem'), { vaultDir: 'D:/notes' });

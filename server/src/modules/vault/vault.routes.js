@@ -1,6 +1,8 @@
 import express, { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
+import { createRateLimiter } from '../../middleware/rateLimit.js';
 import { normalizeVaultRelativePath } from '../../vault/path.js';
 import * as controller from './vault.controller.js';
 
@@ -79,18 +81,18 @@ const confirmationBody = z.object({ confirmed: z.boolean().default(false), secon
 const rawAttachmentBody = express.raw({ type: '*/*', limit: '25mb' });
 
 vaultRouter.get('/info', controller.getInfo);
-vaultRouter.put('/profile', validate({ body: profileBody }), controller.updateProfile);
+vaultRouter.put('/profile', forbidViewerWrite, validate({ body: profileBody }), controller.updateProfile);
 // GET /events 已迁至 vault.events.routes.js：EventSource 无法带请求头，
 // 事件流的「令牌或一次性票据」校验需要注册在全局鉴权链之前
 vaultRouter.get('/attachments', controller.listAttachments);
 vaultRouter.get('/files', controller.listVaultFiles);
 vaultRouter.get('/download', validate({ query: vaultFileQuery }), controller.downloadFile);
-vaultRouter.post('/attachments', rawAttachmentBody, validate({ query: uploadQuery }), controller.uploadAttachment);
+vaultRouter.post('/attachments', createRateLimiter({ windowMs: 60_000, max: 20, key: 'attachment-upload' }), forbidViewerWrite, rawAttachmentBody, validate({ query: uploadQuery }), controller.uploadAttachment);
 vaultRouter.get('/attachments/references', validate({ query: attachmentPathQuery }), controller.attachmentReferences);
 vaultRouter.post('/attachments/validate', validate({ body: validateReferencesBody }), controller.validateAttachmentReferences);
-vaultRouter.post('/attachments/cleanup', validate({ body: cleanupBody }), controller.cleanupAttachments);
-vaultRouter.delete('/attachments', validate({ query: deleteAttachmentQuery }), controller.deleteAttachment);
+vaultRouter.post('/attachments/cleanup', forbidViewerWrite, validate({ body: cleanupBody }), controller.cleanupAttachments);
+vaultRouter.delete('/attachments', forbidViewerWrite, validate({ query: deleteAttachmentQuery }), controller.deleteAttachment);
 vaultRouter.get('/attachment', validate({ query: attachmentPathQuery }), controller.readAttachment);
 vaultRouter.get('/assets', controller.listAssets);
 vaultRouter.get('/asset', validate({ query: assetQuery }), controller.readAsset);
-vaultRouter.post('/migrate', validate({ body: confirmationBody }), controller.migrate);
+vaultRouter.post('/migrate', forbidViewerWrite, validate({ body: confirmationBody }), controller.migrate);

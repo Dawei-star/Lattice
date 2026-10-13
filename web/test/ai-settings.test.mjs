@@ -22,6 +22,8 @@ test('migrates the legacy single-model settings into an active provider', () => 
   assert.equal(provider.endpoint, 'https://example.com/v1/chat/completions');
   assert.equal(provider.model, 'legacy-model');
   assert.equal(provider.authHeader, 'x-api-key');
+  assert.equal(provider.apiKey, 'masked:cret');
+  assert.doesNotMatch(values.get('lattice-ai-settings-v1'), /secret/);
   assert.equal(hasExternalAi(settings), true);
 });
 
@@ -36,5 +38,7 @@ test('stores multiple providers and switches the active provider', () => {
 
   assert.equal(settings.providers.length, 2);
   assert.equal(getActiveAiProvider(settings).name, '智谱');
+  assert.equal(getActiveAiProvider(settings).apiKey, 'masked:cret');
+  assert.doesNotMatch(values.get('lattice-ai-settings-v1'), /secret/);
   assert.equal(hasExternalAi(settings), true);
 });

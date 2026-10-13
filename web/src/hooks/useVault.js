@@ -14,6 +14,7 @@ import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles } fro
 import { createSseTicket, getWorkspaceAccessToken } from '../api/workspace-auth.js';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
+import { mergeSavedNoteIntoCollection } from '../lib/note-state.js';
 
 const DEFAULT_FILTER = { kind: 'all', folderId: null, tagId: null, inboxStatus: null };
 const DEFAULT_VAULT_PROFILE = Object.freeze({
@@ -525,11 +526,8 @@ export function useVault({ requestFileConfirmation } = {}) {
   /** 保存后即时更新列表中的对应行；与服务器/磁盘的完整同步交给 SSE 驱动的刷新 */
   const patchNoteListItem = useCallback((saved) => {
     if (!saved?.id) return;
-    setNotes((current) => current.map((item) => (
-      item.id === saved.id
-        ? { ...item, title: saved.title ?? item.title, filePath: saved.filePath ?? item.filePath, updatedAt: saved.updatedAt ?? item.updatedAt }
-        : item
-    )));
+    setNotes((current) => mergeSavedNoteIntoCollection(current, saved));
+    setNoteIndex((current) => mergeSavedNoteIntoCollection(current, saved));
   }, []);
 
   // Keep mutations for one note ordered so a rename cannot be followed by an
@@ -597,8 +595,8 @@ export function useVault({ requestFileConfirmation } = {}) {
         const nextPath = pathChanged
           ? uniqueNoteFilePath(saved, folders, noteIndex)
           : current.filePath ?? noteFilePath(saved, folders);
-        // 普通覆盖是编辑器的正常保存，不需要阻塞式确认；改变标题或目录会改变
-        // 磁盘路径，仍作为高风险的移动/重命名操作单独确认。
+        // 普通覆盖是编辑器的正常保存；改变标题或目录会改变磁盘路径，
+        // 仍走文件操作安全契约，但不再用阻塞式卡片打断编辑流。
         const confirmation = pathChanged
           ? await confirmFileOperation({
             type: 'move',

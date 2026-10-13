@@ -27,7 +27,8 @@ healthRouter.get('/ready', (_req, res) => {
     res.json({ data: { status: 'ready', database: 'up' } });
   } catch (error) {
     res.status(503).json({
-      error: { code: 'NOT_READY', message: '数据库不可用', details: error.message },
+      // 就绪探针通常未经过鉴权；数据库路径、驱动错误和文件系统信息只能进入服务端日志。
+      error: { code: 'NOT_READY', message: '数据库不可用' },
     });
   }
 });

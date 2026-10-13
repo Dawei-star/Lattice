@@ -46,6 +46,62 @@ async function listenOnce(onBody) {
   };
 }
 
+test('builtin experts keep a conflict-free routing keyword set', () => {
+  // 上一次扩充内置专家时，routing 关键词靠人工交叉去重。这次把它固化成测试：
+  // 同一个关键词被两个专家声明，会让一条消息同时命中两个专家、路由建议随机摇摆。
+  const owners = new Map();
+  const conflicts = [];
+  for (const expert of registry.listExperts().filter((item) => item.source === 'builtin')) {
+    for (const keyword of expert.routing?.keywords ?? []) {
+      const key = String(keyword).trim().toLowerCase();
+      if (!key) continue;
+      if (owners.has(key) && owners.get(key) !== expert.id) {
+        conflicts.push(`「${key}」同时属于 ${owners.get(key)} 与 ${expert.id}`);
+      }
+      owners.set(key, expert.id);
+    }
+  }
+  assert.deepEqual(conflicts, [], `内置专家路由关键词必须互斥：${conflicts.join('；')}`);
+
+  // 专家的写入策略必须与它声明的工具自洽：disabled 不该带写工具，
+  // 而 auto / confirm 至少要有一个写工具，否则写入策略形同虚设。
+  const mutating = new Set(['create', 'update', 'delete', 'move', 'copy', 'archive']);
+  for (const expert of registry.listExperts()) {
+    const tools = new Set(expert.capabilities.tools ?? []);
+    const declared = [...tools].filter((tool) => mutating.has(tool));
+    if (expert.capabilities.writePolicy === 'disabled') {
+      assert.deepEqual(declared, [], `${expert.id} 写入已禁用，不应声明写工具`);
+    } else {
+      assert.ok(declared.length > 0, `${expert.id} 允许写入，至少要声明一个写工具`);
+    }
+  }
+});
+
+test('task-executor is built for task mode and withholds delete', () => {
+  const expert = registry.getExpert('task-executor');
+  assert.equal(expert.source, 'builtin');
+
+  const tools = new Set(expert.capabilities.tools);
+  assert.ok(tools.has('read') && tools.has('search'), '任务模式专家必须能读与检索');
+  assert.ok(tools.has('move') && tools.has('create') && tools.has('update'), '批量任务需要移动 / 新建 / 改写能力');
+  assert.ok(!tools.has('delete'), '任务执行专家不应持有删除能力——批量场景下误删代价最高');
+  assert.equal(expert.capabilities.writePolicy, 'confirm', '写操作必须走确认，与全局写闸门一致');
+
+  // 绑定的 Skill 必须全部可解析，否则该方法论不会注入提示词（且界面只显示一个 available=false）
+  assert.deepEqual(registry.loadRuntimeExpert('task-executor').missingSkills, []);
+
+  // 任务模式专用的多轮纪律应排在 vault-search 之前：它是本专家的差异化价值
+  const runtime = registry.loadRuntimeExpert('task-executor');
+  assert.deepEqual(runtime.skills.map(({ definition }) => definition.id), [
+    'task-batch-planner',
+    'task-round-discipline',
+    'vault-search',
+  ]);
+  const prompt = registry.buildExpertPromptSection(runtime);
+  assert.match(prompt, /<skill id="task-batch-planner"/);
+  assert.match(prompt, /<skill id="task-round-discipline"/);
+});
+
 test('expert and skill registry supports builtins, workspace resources, and builtin overrides', () => {
   const experts = registry.listExperts();
   const skills = registry.listSkills();

@@ -17,6 +17,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { assertPublicEndpoint } from './ai.provider.js';
 
 const MAX_SERVERS = 8;
 const MAX_TOOL_SCHEMA_CHARS = 600;
@@ -50,11 +51,20 @@ async function openConnection(server) {
   try {
     if (server.transport === 'sse') {
       const url = new URL(server.url);
+      // MCP Server 可能来自项目配置或客户端请求，不能因为是工具连接就绕过
+      // AI Provider 已有的 DNS/IP 私网校验。显式开启本地 endpoint 时由配置承担风险。
+      await assertPublicEndpoint(url);
       // 优先 Streamable HTTP（当前主流），404/协议不识别时回退旧 SSE 端点
       try {
-        await client.connect(new StreamableHTTPClientTransport(url));
+        await client.connect(new StreamableHTTPClientTransport(url, {
+          redirectPolicy: 'same-origin',
+          requestInit: { redirect: 'error' },
+        }));
       } catch (streamableError) {
-        await client.connect(new SSEClientTransport(url)).catch(() => {
+        await client.connect(new SSEClientTransport(url, {
+          redirectPolicy: 'same-origin',
+          requestInit: { redirect: 'error' },
+        })).catch(() => {
           throw streamableError;
         });
       }

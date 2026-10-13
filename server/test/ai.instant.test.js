@@ -7,11 +7,13 @@ const { chat } = await import('../src/modules/ai/ai.service.js');
 /** 会计数的 mock 上游：如果快路径失效、请求落到模型，这里能立刻发现 */
 async function listenCountingUpstream() {
   let calls = 0;
+  let lastBody = null;
   const server = http.createServer((req, res) => {
     calls += 1;
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
+      try { lastBody = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { lastBody = null; }
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: '模型回答', actions: [] }) } }] }));
     });
@@ -19,11 +21,58 @@ async function listenCountingUpstream() {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     get calls() { return calls; },
+    get lastBody() { return lastBody; },
     endpoint: 'http://127.0.0.1:' + server.address().port + '/v1/chat/completions',
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
 
+test('greetings answer locally without calling the model', async () => {
+  const upstream = await listenCountingUpstream();
+  try {
+    const result = await chat({
+      message: '你好',
+      mode: 'quick',
+      context: { files: [], folders: [] },
+      provider: providerFor(upstream),
+    });
+
+    assert.equal(upstream.calls, 0, '简单问候不应调用模型');
+    assert.equal(result.meta.provider, 'local-instant');
+    assert.equal(result.meta.mode, 'quick');
+    assert.match(result.reply, /你好/);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('quick mode keeps the provider request small and tool-free', async () => {
+  const upstream = await listenCountingUpstream();
+  try {
+    const result = await chat({
+      message: '用一句话介绍 Lattice',
+      mode: 'quick',
+      history: [{ role: 'user', content: '很长的历史内容' }, { role: 'assistant', content: '之前的回答' }],
+      mcpServers: [{ key: 'unused', name: 'unused', command: 'definitely-not-started' }],
+      context: {
+        activeFile: 'notes/demo.md',
+        activeFileContent: 'x'.repeat(20_000),
+        files: Array.from({ length: 100 }, (_, index) => ({ id: String(index), title: `note-${index}`, path: `note-${index}.md` })),
+        folders: [],
+      },
+      provider: providerFor(upstream),
+    });
+
+    assert.equal(upstream.calls, 1);
+    assert.equal(result.meta.mode, 'quick');
+    assert.equal(result.meta.taskMode, false);
+    assert.equal(upstream.lastBody.messages.length, 2, '快速模式不应携带会话历史');
+    assert.doesNotMatch(upstream.lastBody.messages[0].content, /<mcp-tools>/);
+    assert.doesNotMatch(upstream.lastBody.messages[0].content, /以下是与本次问题相关的笔记检索结果/);
+  } finally {
+    await upstream.close();
+  }
+});
 const providerFor = (upstream) => ({
   endpoint: upstream.endpoint,
   apiKey: ['instant', 'mock', 'key'].join('-'),

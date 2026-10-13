@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import * as controller from './review.controller.js';
 
 const healthQuery = z.object({
@@ -25,4 +26,4 @@ export const reviewRouter = Router();
 
 reviewRouter.get('/health', validate({ query: healthQuery }), controller.getHealth);
 reviewRouter.post('/health/plan', validate({ body: planBody }), controller.createPlan);
-reviewRouter.post('/health/execute', validate({ body: executeBody }), controller.executePlan);
+reviewRouter.post('/health/execute', forbidViewerWrite, validate({ body: executeBody }), controller.executePlan);

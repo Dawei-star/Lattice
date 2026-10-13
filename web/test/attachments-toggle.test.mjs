@@ -97,7 +97,7 @@ async function main() {
     detail: { autoSave: true, quickSwitcher: true, showAttachments: true },
   }));
   const attachmentNode = await waitFor(
-    () => [...container.querySelectorAll('.tree__attachment-file')].find((node) => node.title === attachmentPath) ?? null,
+    () => [...container.querySelectorAll('.tree__attachment-file')].find((node) => node.getAttribute('aria-label') === `附件：${attachmentPath}`) ?? null,
     { label: '附件条目出现在文件树' },
   );
   check('文件树出现附件条目', Boolean(attachmentNode));

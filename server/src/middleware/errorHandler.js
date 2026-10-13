@@ -54,7 +54,7 @@ export function errorHandler(err, req, res, next) {
   } else {
     log.warn('request_rejected', {
       method: req.method,
-      path: req.originalUrl,
+      path: sanitizeRequestUrl(req.originalUrl),
       status,
       code,
       reason: message,

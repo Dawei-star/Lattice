@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
+import { forbidViewerWrite } from '../../middleware/roleGuard.js';
 import { normalizeVaultRelativePath } from '../../vault/path.js';
 import * as controller from './canvas.controller.js';
 
@@ -50,7 +51,7 @@ const deleteBody = z.object({ confirmed: z.boolean().default(false), secondConfi
 
 export const canvasRouter = Router();
 canvasRouter.get('/files', controller.listCanvasFiles);
-canvasRouter.patch('/file', validate({ body: moveBody }), controller.moveCanvas);
-canvasRouter.delete('/file', validate({ query: deleteQuery, body: deleteBody }), controller.deleteCanvas);
+canvasRouter.patch('/file', forbidViewerWrite, validate({ body: moveBody }), controller.moveCanvas);
+canvasRouter.delete('/file', forbidViewerWrite, validate({ query: deleteQuery, body: deleteBody }), controller.deleteCanvas);
 canvasRouter.get('/', validate({ query: canvasPathQuery }), controller.readCanvas);
-canvasRouter.put('/', validate({ query: canvasPathQuery, body: documentBody }), controller.writeCanvas);
+canvasRouter.put('/', forbidViewerWrite, validate({ query: canvasPathQuery, body: documentBody }), controller.writeCanvas);
