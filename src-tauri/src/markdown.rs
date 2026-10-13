@@ -225,9 +225,115 @@ pub fn extract_note_tags(content: &str) -> Vec<String> {
     merged.into_iter().collect()
 }
 
+/// frontmatter 解析结果：保留字段 + 自定义属性（对齐 Express serializeMarkdownDocument）。
+#[derive(Debug, Default, Clone)]
+pub struct Frontmatter {
+    pub id: Option<String>,
+    pub title: Option<String>,
+    pub pinned: bool,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    /// 其余自定义属性（保留字段之外），键名需符合 Express 的写入约束。
+    pub properties: serde_json::Map<String, serde_json::Value>,
+}
+
+/// UUID v1-v5 形状校验（对齐 Express NOTE_ID_PATTERN）。
+pub fn is_valid_note_id(note_id: &str) -> bool {
+    let parts: Vec<&str> = note_id.split('-').collect();
+    parts.len() == 5
+        && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(len, part)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
+        && parts[2].starts_with(['1', '2', '3', '4', '5'])
+        && parts[3].starts_with(['8', '9', 'a', 'b'])
+}
+
+/// 属性值解析（对齐 parsePropertyValue）：布尔字面量、数字、JSON 数组、其余为字符串。
+fn parse_property_value(value: &str) -> serde_json::Value {
+    let source = value.trim();
+    match source {
+        "true" => serde_json::Value::Bool(true),
+        "false" => serde_json::Value::Bool(false),
+        "" => serde_json::Value::Null,
+        _ => {
+            if let Ok(number) = source.parse::<f64>() {
+                return serde_json::json!(number);
+            }
+            if source.starts_with('[')
+                && let Ok(array) = serde_json::from_str::<serde_json::Value>(source)
+            {
+                return array;
+            }
+            serde_json::Value::String(source.to_owned())
+        }
+    }
+}
+
+/// 解析 frontmatter（对齐 serializeMarkdownDocument 的字段布局）。
+/// 保留字段 id/title/pinned/created_at/updated_at；其余键进 properties。
+pub fn parse_frontmatter(raw: &str) -> Option<Frontmatter> {
+    let mut lines = raw.lines();
+    let first = lines.next()?.trim_end_matches('\r').to_owned();
+    if first != "---" {
+        return None;
+    }
+    let mut frontmatter = Frontmatter::default();
+    for line in lines.take(200) {
+        let line = line.trim_end_matches('\r');
+        if line == "---" {
+            return Some(frontmatter);
+        }
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "id" => {
+                let trimmed = value.trim_matches(['"', '\'']);
+                if is_valid_note_id(trimmed) {
+                    frontmatter.id = Some(trimmed.to_owned());
+                }
+            }
+            "title" if !value.is_empty() => frontmatter.title = Some(value.to_owned()),
+            "pinned" => frontmatter.pinned = value == "true",
+            "created_at" if !value.is_empty() => frontmatter.created_at = Some(value.to_owned()),
+            "updated_at" if !value.is_empty() => frontmatter.updated_at = Some(value.to_owned()),
+            _ => {
+                if key.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && key.len() <= 81
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    frontmatter.properties.insert(key.to_owned(), parse_property_value(value));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 字数统计（对齐 computeWordCount）：CJK 字符数 + 拉丁词数。
+pub fn compute_word_count(text: &str) -> u64 {
+    let mut cjk = 0u64;
+    let mut latin_words = 0u64;
+    let mut in_latin_word = false;
+    for ch in text.chars() {
+        let is_cjk = matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF);
+        if is_cjk {
+            cjk += 1;
+        }
+        let is_latin = ch.is_ascii_alphanumeric() || ch == '\'' || ch == '’' || ch == '-';
+        if ch.is_ascii_alphanumeric() {
+            if !in_latin_word {
+                latin_words += 1;
+                in_latin_word = true;
+            }
+        } else if !is_latin {
+            in_latin_word = false;
+        }
+    }
+    cjk + latin_words
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{extract_frontmatter_tags, extract_note_tags, extract_tags};
+    use super::{compute_word_count, extract_frontmatter_tags, extract_note_tags, extract_tags, parse_frontmatter};
 
     #[test]
     fn inline_tags_support_chinese_and_nested() {
@@ -275,5 +381,35 @@ mod tests {
     fn note_tags_merge_body_and_frontmatter_deduped() {
         let raw = "---\ntags: [读书]\n---\n#读书笔记 #读书";
         assert_eq!(extract_note_tags(raw), vec!["读书", "读书笔记"]);
+    }
+
+    #[test]
+    fn frontmatter_parses_identity_and_custom_properties() {
+        let raw = "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234567\ntitle: 测试\npinned: true\ncreated_at: 2026-10-13T00:00:00.000Z\nupdated_at: 2026-10-13T01:00:00.000Z\ntype: inbox\nstatus: pending\nrating: 3\nflags: [\"a\", \"b\"]\n---\n正文";
+        let meta = parse_frontmatter(raw).unwrap();
+        assert_eq!(meta.id.as_deref(), Some("019501a2-3b4c-4c5d-89ab-cdef01234567"));
+        assert_eq!(meta.title.as_deref(), Some("测试"));
+        assert!(meta.pinned);
+        assert!(meta.created_at.is_some());
+        assert_eq!(meta.properties["type"], "inbox");
+        assert_eq!(meta.properties["status"], "pending");
+        assert_eq!(meta.properties["rating"], 3.0);
+        assert_eq!(meta.properties["flags"][0], "a");
+        assert!(meta.properties.get("id").is_none(), "保留字段不进 properties");
+    }
+
+    #[test]
+    fn frontmatter_rejects_non_markdown_and_bad_ids() {
+        assert!(parse_frontmatter("普通文本").is_none());
+        assert!(parse_frontmatter("---\nid: not-a-uuid\n---").unwrap().id.is_none());
+        assert!(parse_frontmatter("---\ntitle: t\n").is_none(), "未闭合 frontmatter");
+    }
+
+    #[test]
+    fn word_count_follows_express_semantics() {
+        assert_eq!(compute_word_count("深度学习笔记"), 6, "CJK 按字符计");
+        assert_eq!(compute_word_count("hello world"), 2, "拉丁按词计");
+        assert_eq!(compute_word_count("混合 text 文本 42"), 6, "4 CJK + 2 拉丁词");
+        assert_eq!(compute_word_count(""), 0);
     }
 }

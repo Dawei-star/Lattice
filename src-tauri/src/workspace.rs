@@ -10,6 +10,7 @@
 
 use crate::index::Index;
 use crate::jobs::JobsQueue;
+use crate::markdown::parse_frontmatter;
 use crate::vault::{NoteContents, Vault};
 use fs2::FileExt;
 use serde::Serialize;
@@ -159,35 +160,9 @@ fn format_version(timestamp_millis: i64, hash: &str) -> String {
     format!("{stamp}-{hash}")
 }
 
-/// Express `NOTE_ID_PATTERN` 的对应校验：UUID v1-v5（第 3/4 组有版本与变体约束）。
-fn is_valid_note_id(note_id: &str) -> bool {
-    let parts: Vec<&str> = note_id.split('-').collect();
-    parts.len() == 5
-        && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(len, part)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
-        && parts[2].starts_with(['1', '2', '3', '4', '5'])
-        && parts[3].starts_with(['8', '9', 'a', 'b'])
-}
-
-/// 从 Markdown frontmatter 读取 `id:` 字段（无 id 或格式不符返回 None，跳过快照）。
+/// 从 Markdown frontmatter 读取笔记 id（对齐 Express NOTE_ID_PATTERN；无 id 返回 None）。
 fn frontmatter_id(raw: &str) -> Option<String> {
-    let mut lines = raw.lines();
-    if lines.next()?.trim_end_matches('\r') != "---" {
-        return None;
-    }
-    for line in lines.take(100) {
-        let line = line.trim_end_matches('\r');
-        if line == "---" {
-            return None;
-        }
-        if let Some(value) = line.strip_prefix("id:") {
-            let value = value.trim().trim_matches(['"', '\'']);
-            if is_valid_note_id(value) {
-                return Some(value.to_owned());
-            }
-            return None;
-        }
-    }
-    None
+    parse_frontmatter(raw).and_then(|meta| meta.id)
 }
 
 impl std::fmt::Debug for WorkspaceService {

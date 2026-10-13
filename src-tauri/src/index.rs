@@ -7,7 +7,7 @@
 //!   短于 3 字符的查询以及 FTS 未命中时走 `LIKE` 兜底 —— 与原项目两条路径一致。
 
 use crate::db;
-use crate::markdown::extract_note_tags;
+use crate::markdown::{compute_word_count, extract_note_tags, parse_frontmatter};
 use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteFile, Vault, title_from_markdown};
 use rusqlite::{Connection, params};
@@ -270,6 +270,52 @@ impl Index {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法读取标签行：{error}"))
     }
+
+    /// 轻量笔记索引（契约 GET /api/notes/index 对应命令 note_index）：
+    /// 图谱、快速切换器、双链解析与嵌入预览共用，不含正文。
+    /// folderId 返回 null：folders 表模型随第三批迁移（Δ2）。
+    pub fn list_note_index(&self) -> Result<Vec<NoteIndexEntry>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT COALESCE(note_id, path), title, is_pinned, path, word_count,
+                 content_hash, properties_json, COALESCE(created_at, indexed_at)
+                 FROM notes ORDER BY modified_at DESC",
+            )
+            .map_err(|error| format!("无法查询笔记索引：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(NoteIndexEntry {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    folder_id: None,
+                    is_pinned: row.get::<_, i64>(2)? != 0,
+                    file_path: row.get(3)?,
+                    word_count: row.get::<_, i64>(4)? as u64,
+                    content_hash: row.get(5)?,
+                    properties_json: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .map_err(|error| format!("无法查询笔记索引：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取笔记索引行：{error}"))
+    }
+}
+
+/// 轻量索引条目（对齐 Express listIndex，camelCase 序列化）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteIndexEntry {
+    pub id: String,
+    pub title: String,
+    pub folder_id: Option<String>,
+    pub is_pinned: bool,
+    pub file_path: String,
+    pub word_count: u64,
+    pub content_hash: Option<String>,
+    pub properties_json: Option<String>,
+    pub updated_at: String,
 }
 
 /// 标签条目（对齐 Express tags 表投影，camelCase 序列化）。
@@ -292,18 +338,43 @@ fn write_row(
     indexed_at: &str,
 ) -> Result<(), String> {
     let title = title_from_markdown(raw, path);
+    let frontmatter = parse_frontmatter(raw);
+    let word_count = compute_word_count(raw) as i64;
+    let properties_json = frontmatter
+        .as_ref()
+        .filter(|meta| !meta.properties.is_empty())
+        .map(|meta| serde_json::Value::Object(meta.properties.clone()).to_string());
     connection
         .execute(
-            "INSERT INTO notes (path, title, content, content_hash, size, modified_at, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO notes (path, title, content, content_hash, size, modified_at, indexed_at,
+             note_id, is_pinned, word_count, created_at, properties_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(path) DO UPDATE SET
                title = excluded.title,
                content = excluded.content,
                content_hash = excluded.content_hash,
                size = excluded.size,
                modified_at = excluded.modified_at,
-               indexed_at = excluded.indexed_at",
-            params![path, title, raw, hash, size as i64, modified_at, indexed_at],
+               indexed_at = excluded.indexed_at,
+               note_id = excluded.note_id,
+               is_pinned = excluded.is_pinned,
+               word_count = excluded.word_count,
+               created_at = excluded.created_at,
+               properties_json = excluded.properties_json",
+            params![
+                path,
+                title,
+                raw,
+                hash,
+                size as i64,
+                modified_at,
+                indexed_at,
+                frontmatter.as_ref().and_then(|meta| meta.id.clone()),
+                frontmatter.as_ref().map_or(0, |meta| i64::from(meta.pinned)),
+                word_count,
+                frontmatter.as_ref().and_then(|meta| meta.created_at.clone()),
+                properties_json,
+            ],
         )
         .map_err(|error| format!("无法写入索引：{error}"))?;
     sync_tags(connection, path, raw, indexed_at)

@@ -28,7 +28,7 @@
 | P1-01 WorkspaceService | ✅ 完成 | 统一写入边界：单实例锁（VAULT_LOCKED/幂等重开）、JSONL 审计、Express 同构版本快照、ServiceError{code,message} 错误模型；9 个 vault 命令全部经 Service；前端契约文本逐字保持 | `38fad24` |
 | P1-02 SQLite 恢复与迁移 | ✅ 完成 | WAL 自恢复/事务迁移/失败诊断（P0-6 完成）+ 迁移前备份 `.bak-pre-migration`（P1-02 补齐） | `8cba5ac` |
 | P1-03 单实例锁 + watcher + jobs | ✅ 完成 | 单实例锁（P1-01）；持久化 jobs 队列（迁移 002：幂等 key/重试预算/协作取消/启动恢复）；notify watcher 500ms 防抖入队 reconcile；扫描 worker + vault://changed/scanned 事件；新命令 job_list/job_get/job_cancel | `f1100e1` |
-| P1-04 非 AI 命令面迁移 | 🔄 进行中 | **第一批（tags 投影）完成**：markdown.rs 标签提取语义对齐 Express（代码块/标题/色值排除 + frontmatter tags）、迁移 003 tags/note_tags 派生表、索引同步、`tag_list` 命令。**范围调整**：`graph_build`/`meta_overview`/`folder_tree`/`search_query` 依赖 SQLite 特有模型（links/notes 统计/folders 表/notes 模型字段），移入第二批（notes 模型迁移：frontmatter id/properties）后核销，避免语义失真 | 待提交 |
+| P1-04 非 AI 命令面迁移 | 🔄 进行中 | **第一批 tags ✅**（markdown.rs 标签提取对齐 Express、迁移 003 tags 派生表、`tag_list`）。**第二批 notes 模型地基 ✅**（`ad945df` 之后）：frontmatter 解析（id/title/pinned/时间/自定义属性，对齐 serializeMarkdownDocument）、字数口径对齐（CJK+拉丁词）、迁移 004 notes 投影扩展列、`note_index` 命令（形状对齐 Express listIndex，folderId=null 标注 Δ2）。**待办**：note CRUD（create/update/delete 含 UUID 生成与 frontmatter 重写）、`search_query` 完整形状、folders/graph/meta 随后核销 | 本轮提交 |
 | P1-05~07 前端 TS 化 | ⬜ 未开始 | api→store/lib→组件，strict 渐进开启 | — |
 | P1-08 功能对齐验证 | ⬜ 未开始 | 契约快照对照（fixtures + Rust 集成测试 + 前端 mock invoke） | — |
 | P1-09 删除 Express | ⬜ 未开始 | 依赖 P1-08 全绿 | — |

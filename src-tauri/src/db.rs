@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// 001：索引投影初版。
 ///
@@ -98,6 +98,18 @@ CREATE TABLE note_tags (
 CREATE INDEX ix_note_tags_tag ON note_tags (tag_id);
 "#;
 
+/// 004：notes 投影扩展（升级计划 P1-04 第二批）。
+/// 笔记身份/属性来自 Markdown frontmatter 真源（id/pinned/字数/时间/自定义属性），
+/// 可随时由磁盘重建；folder_id 预留（folders 表随第三批迁移）。
+const MIGRATION_004: &str = r#"
+ALTER TABLE notes ADD COLUMN note_id TEXT;
+ALTER TABLE notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE notes ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE notes ADD COLUMN created_at TEXT;
+ALTER TABLE notes ADD COLUMN properties_json TEXT;
+CREATE INDEX ix_notes_note_id ON notes (note_id);
+"#;
+
 /// 打开索引库并把 Schema 迁移到最新版本。
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -166,7 +178,7 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         return Ok(());
     }
     // 每个迁移步骤一个事务：失败只回滚当前步，已完成的低版本保留。
-    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
+    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003), (4, MIGRATION_004)];
     for &(target, script) in steps {
         if version < target {
             let transaction = connection
