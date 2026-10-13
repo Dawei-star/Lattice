@@ -144,6 +144,29 @@ impl Vault {
         &self.root
     }
 
+    /// 遍历 Vault 内的目录（跳过符号链接与内部目录），返回相对路径（/ 分隔）。
+    /// folder_tree 投影用：目录结构以磁盘为准（含空目录）。
+    pub(crate) fn walk_directories(&self) -> Result<Vec<String>, String> {
+        let walker = WalkDir::new(&self.root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !excluded(entry));
+        let mut directories = Vec::new();
+        for entry in walker {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if entry.depth() == 0 || !entry.file_type().is_dir() {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&self.root)
+                .map_err(|error| error.to_string())?;
+            directories.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+        directories.sort();
+        Ok(directories)
+    }
+
     /// 遍历 Vault 内的 Markdown 笔记（跳过符号链接与内部目录），返回按路径排序的元数据。
     fn walk_note_files(&self) -> Result<Vec<FileMeta>, String> {
         let mut files = Vec::new();

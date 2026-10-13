@@ -267,26 +267,27 @@ impl Index {
         for note_match in matches {
             let detail = connection
                 .query_row(
-                    "SELECT COALESCE(note_id, path), is_pinned, content_hash, properties_json, updated_at
+                    "SELECT COALESCE(note_id, path), folder_id, is_pinned, content_hash, properties_json, updated_at
                      FROM notes WHERE path = ?1",
                     params![note_match.path],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)? != 0,
-                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)? != 0,
                             row.get::<_, Option<String>>(3)?,
                             row.get::<_, Option<String>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
                         ))
                     },
                 )
                 .optional()
                 .map_err(|error| format!("无法读取检索行：{error}"))?;
-            if let Some((id, is_pinned, content_hash, properties_json, updated_at)) = detail {
+            if let Some((id, folder_id, is_pinned, content_hash, properties_json, updated_at)) = detail {
                 items.push(SearchItem {
                     id,
                     title: note_match.title,
-                    folder_id: None, // folders 表随第三批迁移（Δ2）
+                    folder_id,
                     file_path: note_match.path,
                     is_pinned,
                     content_hash,
@@ -344,7 +345,7 @@ impl Index {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         let mut statement = connection
             .prepare(
-                "SELECT COALESCE(note_id, path), title, is_pinned, path, word_count,
+                "SELECT COALESCE(note_id, path), title, folder_id, is_pinned, path, word_count,
                  content_hash, properties_json, COALESCE(created_at, indexed_at)
                  FROM notes ORDER BY modified_at DESC",
             )
@@ -354,18 +355,113 @@ impl Index {
                 Ok(NoteIndexEntry {
                     id: row.get(0)?,
                     title: row.get(1)?,
-                    folder_id: None,
-                    is_pinned: row.get::<_, i64>(2)? != 0,
-                    file_path: row.get(3)?,
-                    word_count: row.get::<_, i64>(4)? as u64,
-                    content_hash: row.get(5)?,
-                    properties_json: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    folder_id: row.get(2)?,
+                    is_pinned: row.get::<_, i64>(3)? != 0,
+                    file_path: row.get(4)?,
+                    word_count: row.get::<_, i64>(5)? as u64,
+                    content_hash: row.get(6)?,
+                    properties_json: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             })
             .map_err(|error| format!("无法查询笔记索引：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法读取笔记索引行：{error}"))
+    }
+
+    /// 目录树（契约 GET /api/folders 对应命令 folder_tree）：
+    /// 以磁盘目录为准派生（含空目录），id 为确定性投影 id，
+    /// noteCount 为直属笔记数。sortOrder 恒 0（用户排序随 folders 表批次）。
+    pub fn folder_tree(&self, vault: &Vault) -> Result<Vec<FolderNode>, String> {
+        let directories = vault.walk_directories()?;
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut nodes: HashMap<String, FolderNode> = HashMap::new();
+        for directory in &directories {
+            let name = directory.rsplit('/').next().unwrap_or(directory).to_owned();
+            let parent_path = directory.rsplit_once('/').map(|(parent, _)| parent.to_owned());
+            let direct_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes WHERE folder_id = ?1",
+                    params![stable_id(directory)],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("无法统计目录笔记：{error}"))?;
+            nodes.insert(
+                directory.clone(),
+                FolderNode {
+                    id: stable_id(directory),
+                    name,
+                    parent_id: parent_path.as_ref().map(|parent| stable_id(parent)),
+                    sort_order: 0,
+                    note_count: direct_count as u64,
+                    children: Vec::new(),
+                },
+            );
+        }
+        // 组树：父在子之前（目录列表已按路径排序，父路径必然先出现）
+        let mut ordered: Vec<String> = nodes.keys().cloned().collect();
+        ordered.sort();
+        let mut roots = Vec::new();
+        for path in ordered {
+            let node = nodes.remove(&path).expect("目录节点存在");
+            let parent_id = node.parent_id.clone();
+            match parent_id
+                .as_ref()
+                .and_then(|parent| nodes.values_mut().find(|node| node.id == *parent))
+            {
+                Some(parent) => parent.children.push(node),
+                None => roots.push(node),
+            }
+            let _ = node; // move 后占位
+        }
+        Ok(roots)
+    }
+
+    /// 契约 GET /api/meta/overview 的对应命令 meta_overview：
+    /// 知识库统计 + 悬空链接列表，形状对齐 Express meta.service overview。
+    pub fn meta_overview(&self, vault: &Vault) -> Result<MetaOverview, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let note_count = count_notes(&connection)? as u64;
+        let folder_count = vault.walk_directories()?.len() as u64;
+        let tag_count: u64 = connection
+            .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("无法统计标签：{error}"))? as u64;
+        let link_count: u64 = connection
+            .query_row("SELECT COUNT(*) FROM links WHERE target_note_id IS NOT NULL", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("无法统计链接：{error}"))? as u64;
+        let dangling_count: u64 = connection
+            .query_row("SELECT COUNT(DISTINCT target_title COLLATE NOCASE) FROM links WHERE target_note_id IS NULL", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("无法统计悬空链接：{error}"))? as u64;
+        let total_words: u64 = connection
+            .query_row("SELECT COALESCE(SUM(word_count), 0) FROM notes", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("无法统计字数：{error}"))? as u64;
+        let mut statement = connection
+            .prepare(
+                "SELECT target_title, COUNT(DISTINCT source_note_id) FROM links
+                 WHERE target_note_id IS NULL
+                 GROUP BY target_title COLLATE NOCASE
+                 ORDER BY COUNT(DISTINCT source_note_id) DESC, target_title COLLATE NOCASE ASC",
+            )
+            .map_err(|error| format!("无法查询悬空链接：{error}"))?;
+        let dangling = statement
+            .query_map([], |row| {
+                Ok(DanglingLink {
+                    target_title: row.get(0)?,
+                    reference_count: row.get::<_, i64>(1)? as u64,
+                })
+            })
+            .map_err(|error| format!("无法查询悬空链接：{error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取悬空链接：{error}"))?;
+        Ok(MetaOverview {
+            note_count,
+            folder_count,
+            tag_count,
+            link_count,
+            dangling_count,
+            total_words,
+            dangling_links: dangling,
+        })
     }
 
     /// 笔记详情（对齐 Express mapNote 形状）。
@@ -377,7 +473,7 @@ impl Index {
             _ => return Ok(None),
         };
         let sql = format!(
-            "SELECT COALESCE(note_id, path), title, content, is_pinned, path, word_count,
+            "SELECT COALESCE(note_id, path), title, content, folder_id, is_pinned, path, word_count,
              content_hash, properties_json, created_at, updated_at FROM notes WHERE {column} = ?1"
         );
         let mut statement = connection
@@ -389,14 +485,14 @@ impl Index {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     content: row.get(2)?,
-                    folder_id: None,
-                    file_path: Some(row.get(3)?),
-                    is_pinned: row.get::<_, i64>(4)? != 0,
-                    word_count: row.get::<_, i64>(5)? as u64,
-                    content_hash: row.get(6)?,
-                    properties_json: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    folder_id: row.get(3)?,
+                    file_path: Some(row.get(4)?),
+                    is_pinned: row.get::<_, i64>(5)? != 0,
+                    word_count: row.get::<_, i64>(6)? as u64,
+                    content_hash: row.get(7)?,
+                    properties_json: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             })
             .optional()
@@ -603,6 +699,31 @@ pub struct TagEntry {
     pub note_count: u64,
 }
 
+/// 目录树节点（磁盘派生投影，camelCase 序列化）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderNode {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub sort_order: u64,
+    pub note_count: u64,
+    pub children: Vec<FolderNode>,
+}
+
+/// 知识库总览（对齐 Express meta.service overview）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaOverview {
+    pub note_count: u64,
+    pub folder_count: u64,
+    pub tag_count: u64,
+    pub link_count: u64,
+    pub dangling_count: u64,
+    pub total_words: u64,
+    pub dangling_links: Vec<DanglingLink>,
+}
+
 /// 检索结果（对齐 Express search.service：strategy + mapRow items）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -647,8 +768,8 @@ fn write_row(
     connection
         .execute(
             "INSERT INTO notes (path, title, content, content_hash, size, modified_at, indexed_at,
-             note_id, is_pinned, word_count, created_at, properties_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             note_id, is_pinned, word_count, created_at, properties_json, folder_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(path) DO UPDATE SET
                title = excluded.title,
                content = excluded.content,
@@ -660,7 +781,8 @@ fn write_row(
                is_pinned = excluded.is_pinned,
                word_count = excluded.word_count,
                created_at = excluded.created_at,
-               properties_json = excluded.properties_json",
+               properties_json = excluded.properties_json,
+               folder_id = excluded.folder_id",
             params![
                 path,
                 title,
@@ -674,6 +796,7 @@ fn write_row(
                 word_count,
                 frontmatter.as_ref().and_then(|meta| meta.created_at.clone()),
                 properties_json,
+                folder_id_for(path),
             ],
         )
         .map_err(|error| format!("无法写入索引：{error}"))?;
@@ -753,7 +876,12 @@ fn sync_tags(connection: &Connection, path: &str, raw: &str, indexed_at: &str) -
 
 /// 标签 id：由名称确定性派生（UUID v4 形状），避免依赖随机 UUID 导致重建后 id 漂移。
 fn tag_id_for(name: &str) -> String {
-    let digest = format!("{:x}", Sha256::digest(name.as_bytes()));
+    stable_id(name)
+}
+
+/// 确定性投影 id（sha256 → UUID v4 形状）：标签/目录等磁盘派生实体共用。
+fn stable_id(text: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
     format!(
         "{}{}-{}-4{}-8{}-{}",
         &digest[0..8],
@@ -763,6 +891,15 @@ fn tag_id_for(name: &str) -> String {
         &digest[16..19],
         &digest[20..32]
     )
+}
+
+/// 笔记目录部分的确定性 id（顶层目录笔记返回 None，对齐 Express folderId=null）。
+fn folder_id_for(path: &str) -> Option<String> {
+    let directory = std::path::Path::new(path).parent()?.to_string_lossy().replace('\\', "/");
+    if directory.is_empty() || directory == "." {
+        return None;
+    }
+    Some(stable_id(&directory))
 }
 
 /// 已索引行的 `路径 -> (size, modified_at)`，用于增量比对。

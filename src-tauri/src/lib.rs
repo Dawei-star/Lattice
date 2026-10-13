@@ -20,7 +20,7 @@ mod vault;
 mod watcher;
 mod workspace;
 
-use index::{GraphData, IndexStats, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, SearchOutcome, TagEntry};
+use index::{FolderNode, GraphData, IndexStats, MetaOverview, NoteDetail, NoteIndexEntry, NoteMatch, ScanSummary, SearchOutcome, TagEntry};
 use jobs::Job;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -90,7 +90,9 @@ pub fn run() {
             note_history_list,
             note_history_get,
             note_history_restore,
-            graph_build
+            graph_build,
+            folder_tree,
+            meta_overview
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -352,6 +354,26 @@ fn graph_build(state: State<'_, WorkspaceState>) -> Result<GraphData, String> {
             .index()
             .build_graph()
             .map_err(|error| ServiceError::new("GRAPH_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn folder_tree(state: State<'_, WorkspaceState>) -> Result<Vec<FolderNode>, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .index()
+            .folder_tree(workspace.vault())
+            .map_err(|error| ServiceError::new("FOLDERS_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn meta_overview(state: State<'_, WorkspaceState>) -> Result<MetaOverview, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .index()
+            .meta_overview(workspace.vault())
+            .map_err(|error| ServiceError::new("META_ERROR", error))
     })
 }
 

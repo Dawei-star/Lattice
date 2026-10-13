@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-13 ｜ graph_build 完成（links 投影落地，wiki-link 解析对齐 Express）
+> **最后更新**：2026-10-13 ｜ folder_tree + meta_overview 完成（磁盘派生目录树，note.folderId 已回填，Δ2 解决）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -30,7 +30,9 @@
   - [x] `search_query`（strategy 枚举 fts/like/like-fallback + mapRow 形状）
   - [x] `note_history_list/get/restore`（快照哈希完整性校验、恢复走写边界自动快照）
   - [x] links 投影（迁移 006 + wiki-link 解析）+ `graph_build`（nodes/edges/dangling/stats）
-  - [ ] folders / meta
+  - [x] `folder_tree`（磁盘派生目录树+直属计数）+ 迁移 007 notes.folder_id 回填（**Δ2 解决**）
+  - [x] `meta_overview`（六项统计 + 悬空链接列表）
+  - [ ] folders 写命令（create/update/delete，含 sortOrder 元数据表）
   - [ ] canvas / files / experts / review / vault attachments
 - [ ] P1-05~07 前端 TS 化
 - [ ] P1-08 功能对齐验证（契约快照对照）
@@ -39,17 +41,17 @@
 
 ## IPC 命令核销（契约清单 96 端点）
 
-**已迁移 21 个**（9 vault 既有 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3）
-**剩余 75 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
+**已迁移 24 个**（9 vault 既有 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folder_tree + meta_overview）
+**剩余 72 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
 
 ## 关键问题点（活跃）
 
-- Δ2 folders/UUID 映射：note folderId 暂为 null，随 folders 批次补齐
+- ~~Δ2 folders/UUID 映射~~：已解决（迁移 007 + 确定性目录 id，note.folderId 已回填）；folders 写命令的 sortOrder 元数据表待补
 - Δ3 CI server-test 曾现 flaky（重跑即绿），已加失败 annotation 机制
 - Δ4 运行态性能指标（冷启动/内存）待人工采集
 
 ## 下一步
 
-1. folders 表模型迁移 → folder_tree/graph/meta 核销（含 links 解析落地）
+1. folders 写命令（create/update/delete + sortOrder 元数据表）
 2. canvas 读写批（canvas_list/read/write/move/delete）
-3. folders 写命令批（create/update/delete）
+3. files 批（read/find/grep/preview/execute/undo/log）

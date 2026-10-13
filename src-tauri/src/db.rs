@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// 001：索引投影初版。
 ///
@@ -130,6 +130,12 @@ CREATE INDEX ix_links_target_title ON links (target_title COLLATE NOCASE);
 CREATE INDEX ix_links_target_note ON links (target_note_id);
 "#;
 
+/// 007：notes.folder_id 投影列（目录确定性 id，随磁盘目录派生；P1-04 第三批）。
+const MIGRATION_007: &str = r#"
+ALTER TABLE notes ADD COLUMN folder_id TEXT;
+CREATE INDEX ix_notes_folder ON notes (folder_id);
+"#;
+
 /// 打开索引库并把 Schema 迁移到最新版本。
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -198,7 +204,7 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         return Ok(());
     }
     // 每个迁移步骤一个事务：失败只回滚当前步，已完成的低版本保留。
-    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003), (4, MIGRATION_004), (5, MIGRATION_005), (6, MIGRATION_006)];
+    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003), (4, MIGRATION_004), (5, MIGRATION_005), (6, MIGRATION_006), (7, MIGRATION_007)];
     for &(target, script) in steps {
         if version < target {
             let transaction = connection
