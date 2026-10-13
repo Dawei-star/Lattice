@@ -355,6 +355,163 @@ impl WorkspaceService {
             suffix += 1;
         }
     }
+
+    /// 更新笔记（契约 PATCH /api/notes/:id → note_update）：
+    /// expectedHash 乐观锁（409）；标题变更触发路径重分配与原子 rename；
+    /// 快照/审计/索引同步由统一写边界自动完成。folderId 随第三批迁移（Δ2）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_note(
+        &self,
+        id: &str,
+        title: Option<String>,
+        content: Option<String>,
+        is_pinned: Option<bool>,
+        properties: Option<serde_json::Map<String, serde_json::Value>>,
+        expected_hash: Option<String>,
+        confirmed: bool,
+    ) -> Result<NoteDetail, ServiceError> {
+        let current = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "笔记不存在"))?;
+        // 乐观锁：客户端携带 expectedHash 时校验（I2）
+        if let Some(expected) = expected_hash.as_deref()
+            && let Some(current_hash) = current.content_hash.as_deref()
+            && expected != current_hash
+        {
+            self.audit.record("update_rejected", &[("path", id), ("code", "CONFLICT"), ("actor", "ui")]);
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "笔记已在其他窗口被修改，请刷新后再保存",
+            ));
+        }
+        // 改 content/置顶免确认；会改变文件路径的（标题）需要 confirmed（契约特例）
+        let title_changed = title.as_ref().is_some_and(|next| *next != current.title);
+        if title_changed && !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "修改标题会改变文件路径，需要 confirmed=true",
+            ));
+        }
+        let old_path = current
+            .file_path
+            .clone()
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "笔记缺少文件路径"))?;
+        let next_title = title.unwrap_or_else(|| current.title.clone());
+        let next_content = content.unwrap_or_else(|| current.content.clone());
+        let next_pinned = is_pinned.unwrap_or(current.is_pinned);
+        let next_properties = properties.unwrap_or_default();
+
+        let content_changed = next_content != current.content;
+        let pinned_changed = next_pinned != current.is_pinned;
+        let properties_changed = {
+            let current_properties: serde_json::Value = current
+                .properties_json
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .unwrap_or(serde_json::Value::Null);
+            serde_json::Value::Object(next_properties.clone()) != current_properties
+        };
+        let path_changed = title_changed;
+        if !title_changed && !content_changed && !pinned_changed && !properties_changed {
+            return Ok(current); // 无变化短路
+        }
+        let next_path = if path_changed {
+            self.allocate_file_path(&next_title)?
+        } else {
+            old_path.clone()
+        };
+        let updated_at = iso8601_utc(now_millis());
+        let raw = serialize_markdown_document(&MarkdownDocument {
+            id,
+            title: &next_title,
+            content: &next_content,
+            is_pinned: next_pinned,
+            created_at: current.created_at.as_deref().unwrap_or(&updated_at),
+            updated_at: &updated_at,
+            properties: &next_properties,
+        });
+        if path_changed {
+            // 重命名：新内容写旧路径（触发旧内容快照）→ 原子 rename → 投影迁移。
+            // Windows 上文件被占用时 rename 明确失败并整体回滚（Express 同语义）。
+            self.write(&old_path, &raw, None, "ui")?;
+            let mut moved = false;
+            let mut last_error = None;
+            for _ in 0..3 {
+                match std::fs::rename(self.vault.root().join(&old_path), self.vault.root().join(&next_path)) {
+                    Ok(()) => {
+                        moved = true;
+                        break;
+                    }
+                    Err(error) => {
+                        last_error = Some(error);
+                        std::thread::sleep(std::time::Duration::from_millis(80));
+                    }
+                }
+            }
+            if !moved {
+                return Err(ServiceError::new(
+                    "CONFLICT",
+                    format!(
+                        "文件正被其他程序占用，无法重命名（{}）",
+                        last_error.map(|error| error.to_string()).unwrap_or_else(|| "未知错误".into())
+                    ),
+                ));
+            }
+            self.index
+                .remove(&old_path)
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+            let meta = self
+                .vault
+                .stat(&next_path)
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+            self.index
+                .upsert(&next_path, &raw, &meta_sha256(&raw), meta.bytes, meta.modified_at)
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+            self.audit.record("rename", &[("from", &old_path), ("to", &next_path), ("actor", "ui")]);
+        } else {
+            // 同路径内容更新：expectedHash 用 current.contentHash（乐观锁已校验）
+            self.write(&old_path, &raw, current.content_hash.as_deref(), "ui")?;
+        }
+        self.index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "更新后索引未同步，请重试"))
+    }
+
+    /// 删除笔记（契约 DELETE /api/notes/:id → note_delete）：
+    /// destructive——confirmed + secondConfirmed 双确认；删除文件与投影行，
+    /// 历史快照目录保留（版本快照是附属数据，不随删除丢失）。
+    pub fn delete_note(&self, id: &str, confirmed: bool, second_confirmed: bool) -> Result<bool, ServiceError> {
+        if !confirmed || !second_confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除笔记需要 confirmed=true 且 secondConfirmed=true",
+            ));
+        }
+        let current = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "笔记不存在"))?;
+        let path = current
+            .file_path
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "笔记缺少文件路径"))?;
+        std::fs::remove_file(self.vault.root().join(&path))
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除文件：{error}")))?;
+        self.index
+            .remove(&path)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        self.audit.record("delete", &[("path", &path), ("actor", "ui")]);
+        Ok(true)
+    }
+}
+
+/// raw 全文哈希（与 Vault::write 的内容哈希同口径）。
+fn meta_sha256(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
 
 #[cfg(test)]

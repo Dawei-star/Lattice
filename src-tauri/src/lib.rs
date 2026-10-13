@@ -83,7 +83,9 @@ pub fn run() {
             job_cancel,
             tag_list,
             note_index,
-            note_create
+            note_create,
+            note_update,
+            note_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -247,6 +249,47 @@ fn note_create(
             content.as_deref().unwrap_or(""),
             &properties.unwrap_or_default(),
             confirmed,
+        )
+    })
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // 契约参数形状对齐 PATCH /api/notes/:id
+fn note_update(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    title: Option<String>,
+    content: Option<String>,
+    is_pinned: Option<bool>,
+    properties: Option<serde_json::Map<String, serde_json::Value>>,
+    expected_hash: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<NoteDetail, String> {
+    with_workspace(state, |workspace| {
+        workspace.update_note(
+            &id,
+            title,
+            content,
+            is_pinned,
+            properties,
+            expected_hash,
+            confirmed.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn note_delete(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<bool, String> {
+    with_workspace(state, |workspace| {
+        workspace.delete_note(
+            &id,
+            confirmed.unwrap_or(false),
+            second_confirmed.unwrap_or(false),
         )
     })
 }
