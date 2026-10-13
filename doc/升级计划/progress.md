@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 ｜ canvas 批完成（list/read/write/move/delete，revision 乐观锁）
+> **最后更新**：2026-10-14 ｜ vault attachments 核心批完成（list/upload/delete/references，引用派生）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -34,7 +34,9 @@
   - [x] folders 全套（tree/create/update/delete；磁盘为真源，rename 子树移动 + scan 自愈；delete 仅限空目录双确认）
   - [x] `meta_overview`（六项统计 + 悬空链接列表）
   - [x] canvas 全套（list/read/write/move/delete；revision 乐观锁、新建确认、删除双确认、Obsidian JSON 兼容）
-  - [ ] files / experts / review / vault attachments
+  - [x] vault attachments 核心 4（list/upload/delete/references；引用由笔记正文派生、被引用拒绝删除、25MB+MIME 白名单）
+  - [ ] attachments 剩余（files 全量列表/validate/cleanup/download 二进制流）
+  - [ ] files / experts / review
 - [ ] P1-05~07 前端 TS 化
 - [ ] P1-08 功能对齐验证（契约快照对照）
 - [ ] P1-09 删除 Express 回落
@@ -42,8 +44,8 @@
 
 ## IPC 命令核销（契约清单 96 端点）
 
-**已迁移 32 个**（vault 9 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folders 4 + meta_overview + canvas 5）
-**剩余 64 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
+**已迁移 36 个**（vault 9 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folders 4 + meta_overview + canvas 5 + attachments 4）
+**剩余 60 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围；引用正则为常见形态近似，P1-08 契约对齐时校准）
 
 ## 关键问题点（活跃）
 

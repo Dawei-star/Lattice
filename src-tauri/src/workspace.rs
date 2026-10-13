@@ -17,6 +17,7 @@ use uuid::Uuid;
 use fs2::FileExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -945,6 +946,228 @@ impl WorkspaceService {
         self.audit.record("canvas_delete", &[("path", path), ("actor", "ui")]);
         Ok(true)
     }
+}
+
+/// 附件管理（契约 vault/attachments 组）。附件固定存于 `<Vault>/attachments/`，
+/// 磁盘为真源；引用关系由笔记正文派生（可重建投影，I1）。
+impl WorkspaceService {
+    const ATTACHMENT_ROOT: &'static str = "attachments";
+
+    /// 附件路径安全校验：必须位于 attachments/ 下，拒绝穿越与内部目录。
+    fn attachment_path(&self, relative: &str) -> Result<PathBuf, ServiceError> {
+        let trimmed = relative.trim().replace('\\', "/");
+        if !trimmed.starts_with("attachments/")
+            || trimmed
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(ServiceError::new("VALIDATION", "附件路径必须位于 attachments/ 下"));
+        }
+        Ok(self.vault.root().join(trimmed))
+    }
+
+    /// 附件 MIME 白名单（对齐 Express MIME_BY_EXTENSION 的常见子集）。
+    fn attachment_mime(extension: &str) -> Option<&'static str> {
+        match extension {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "svg" => Some("image/svg+xml"),
+            "pdf" => Some("application/pdf"),
+            "mp4" | "webm" | "mov" => Some("video/*"),
+            "mp3" | "wav" | "m4a" | "ogg" => Some("audio/*"),
+            "zip" => Some("application/zip"),
+            "txt" | "md" => Some("text/plain"),
+            _ => None,
+        }
+    }
+
+    /// 遍历附件目录，返回相对路径（含 attachments/ 前缀）。
+    fn walk_attachments(&self) -> Vec<String> {
+        let mut files = Vec::new();
+        fn walk(dir: &Path, prefix: &str, files: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || name.ends_with(".tmp") {
+                    continue;
+                }
+                let relative = format!("{prefix}/{name}");
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    walk(&entry.path(), &relative, files);
+                } else if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    files.push(relative);
+                }
+            }
+        }
+        walk(&self.vault.root().join(Self::ATTACHMENT_ROOT), Self::ATTACHMENT_ROOT, &mut files);
+        files.sort();
+        files
+    }
+
+    /// 附件列表（契约 GET /api/vault/attachments → vault_attachments_list）：
+    /// 文件 + 引用来源 + orphan 标记（引用派生自笔记正文）。
+    pub fn attachments_list(&self) -> Result<Vec<AttachmentEntry>, ServiceError> {
+        let references = self.collect_reference_map().map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        let mut entries = Vec::new();
+        for path in self.walk_attachments() {
+            let metadata = std::fs::metadata(self.vault.root().join(&path))
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            let extension = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            let referenced_by = references.get(&path).cloned().unwrap_or_default();
+            let orphan = referenced_by.is_empty();
+            entries.push(AttachmentEntry {
+                path: path.clone(),
+                name: path.rsplit('/').next().unwrap_or(&path).to_owned(),
+                size: metadata.len(),
+                mime: Self::attachment_mime(&extension).unwrap_or("application/octet-stream").to_owned(),
+                referenced_by,
+                orphan,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// 上传附件（契约 POST /api/vault/attachments → vault_attachment_upload）：
+    /// ≤25MB、MIME 白名单、confirmed 闸门、原子写。
+    pub fn attachment_upload(
+        &self,
+        name: &str,
+        bytes: Vec<u8>,
+        confirmed: bool,
+    ) -> Result<String, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "上传附件需要 confirmed=true"));
+        }
+        if bytes.len() as u64 > 25 * 1024 * 1024 {
+            return Err(ServiceError::new("VALIDATION", "附件超过 25MB 上传限制"));
+        }
+        let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        if Self::attachment_mime(&extension).is_none() {
+            return Err(ServiceError::new("VALIDATION", format!("不支持的附件格式：{extension}")));
+        }
+        let safe_name = sanitize_file_part(name, "attachment");
+        let relative = format!("{}/{}", Self::ATTACHMENT_ROOT, safe_name);
+        let target = self.attachment_path(&relative)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, &bytes)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法写入附件：{error}")))?;
+        self.audit.record("attachment_upload", &[("path", &relative), ("actor", "ui")]);
+        Ok(relative)
+    }
+
+    /// 删除附件（契约 DELETE /api/vault/attachments → vault_attachment_delete）：
+    /// destructive 双确认；仍被引用时明确拒绝，防止静默丢引用。
+    pub fn attachment_delete(
+        &self,
+        path: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<bool, ServiceError> {
+        if !confirmed || !second_confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除附件需要 confirmed=true 且 secondConfirmed=true",
+            ));
+        }
+        let references = self.collect_reference_map().map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        if let Some(referenced_by) = references.get(path.trim().replace('\\', "/").as_str())
+            && !referenced_by.is_empty()
+        {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                format!("附件仍被 {} 篇笔记引用，请先移除引用", referenced_by.len()),
+            ));
+        }
+        let file = self.attachment_path(path)?;
+        if !file.exists() {
+            return Err(ServiceError::new("NOT_FOUND", "附件不存在"));
+        }
+        std::fs::remove_file(&file)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除附件：{error}")))?;
+        self.audit.record("attachment_delete", &[("path", path), ("actor", "ui")]);
+        Ok(true)
+    }
+
+    /// 附件引用详情（契约 GET /api/vault/attachments/references → vault_attachment_references）。
+    pub fn attachment_references(&self, path: &str) -> Result<AttachmentReferences, ServiceError> {
+        let safe_path = path.trim().replace('\\', "/");
+        let references = self.collect_reference_map().map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        let referenced_by = references.get(&safe_path).cloned().unwrap_or_default();
+        Ok(AttachmentReferences {
+            path: safe_path,
+            referenced: !referenced_by.is_empty(),
+            referenced_by,
+        })
+    }
+
+    /// 全库扫描笔记正文，构建 附件路径 → 引用来源 的映射。
+    /// 引用语法：markdown `![alt](attachments/…)`、链接 `(attachments/…)`、
+    /// wiki 嵌入 `![[…]]`（对齐 ATTACHMENT_REFERENCE_RE / WIKI_EMBED_RE 的常见形态）。
+    fn collect_reference_map(&self) -> Result<HashMap<String, Vec<ReferenceSource>>, String> {
+        use crate::markdown::strip_frontmatter;
+        let mut map: HashMap<String, Vec<ReferenceSource>> = HashMap::new();
+        let index_entries = self.index.list_note_index()?;
+        let pattern = regex::Regex::new(r#"(?:!\[[^\]]*\]|href="|src=")?\(([^)\s]+\.(?:png|jpe?g|gif|webp|svg|pdf|mp4|webm|mov|mp3|wav|m4a|ogg|zip|txt|md))\)|!\[\[([^\]]+)\]\]"#)
+            .map_err(|error| error.to_string())?;
+        for entry in index_entries {
+            let content = match self.index.find_note_detail(Some(&entry.id), None) {
+                Ok(Some(detail)) => detail.content,
+                _ => continue,
+            };
+            let body = strip_frontmatter(&content);
+            let mut seen = std::collections::HashSet::new();
+            for capture in pattern.captures_iter(body) {
+                let raw = capture
+                    .get(1)
+                    .or_else(|| capture.get(2))
+                    .map(|m| m.as_str().trim().to_owned());
+                let Some(raw) = raw else { continue };
+                let decoded = raw.replace("%20", " ");
+                let Some(position) = decoded.find(Self::ATTACHMENT_ROOT) else { continue };
+                let relative = decoded[position..].to_owned();
+                if seen.insert(relative.clone()) {
+                    map.entry(relative).or_default().push(ReferenceSource {
+                        file_path: entry.file_path.clone(),
+                        title: entry.title.clone(),
+                    });
+                }
+            }
+        }
+        Ok(map)
+    }
+}
+
+/// 附件条目（对齐 Express listAttachments，camelCase 序列化）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentEntry {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub mime: String,
+    pub referenced_by: Vec<ReferenceSource>,
+    pub orphan: bool,
+}
+
+/// 引用来源（引用附件的笔记）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceSource {
+    pub file_path: String,
+    pub title: String,
+}
+
+/// 附件引用详情（对齐 getAttachmentReferences）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentReferences {
+    pub path: String,
+    pub referenced: bool,
+    pub referenced_by: Vec<ReferenceSource>,
 }
 
 /// raw 全文哈希（与 Vault::write 的内容哈希同口径）。

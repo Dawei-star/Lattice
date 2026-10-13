@@ -27,7 +27,10 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 use vault::{NoteContents, NoteFile, VaultInfo};
-use workspace::{CanvasDocument, HistoryEntry, HistorySnapshot, ServiceError, WorkspaceService};
+use workspace::{
+    AttachmentEntry, AttachmentReferences, CanvasDocument, HistoryEntry, HistorySnapshot,
+    ServiceError, WorkspaceService,
+};
 
 pub struct WorkspaceState(pub RwLock<WorkspaceService>);
 
@@ -100,7 +103,11 @@ pub fn run() {
             canvas_read,
             canvas_write,
             canvas_move,
-            canvas_delete
+            canvas_delete,
+            vault_attachments_list,
+            vault_attachment_upload,
+            vault_attachment_delete,
+            vault_attachment_references
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -477,6 +484,47 @@ fn canvas_delete(
             second_confirmed.unwrap_or(false),
         )
     })
+}
+
+#[tauri::command]
+fn vault_attachments_list(state: State<'_, WorkspaceState>) -> Result<Vec<AttachmentEntry>, String> {
+    with_workspace(state, |workspace| workspace.attachments_list())
+}
+
+#[tauri::command]
+fn vault_attachment_upload(
+    state: State<'_, WorkspaceState>,
+    name: String,
+    bytes: Vec<u8>,
+    confirmed: Option<bool>,
+) -> Result<String, String> {
+    with_workspace(state, |workspace| {
+        workspace.attachment_upload(&name, bytes, confirmed.unwrap_or(false))
+    })
+}
+
+#[tauri::command]
+fn vault_attachment_delete(
+    state: State<'_, WorkspaceState>,
+    path: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<bool, String> {
+    with_workspace(state, |workspace| {
+        workspace.attachment_delete(
+            &path,
+            confirmed.unwrap_or(false),
+            second_confirmed.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn vault_attachment_references(
+    state: State<'_, WorkspaceState>,
+    path: String,
+) -> Result<AttachmentReferences, String> {
+    with_workspace(state, |workspace| workspace.attachment_references(&path))
 }
 
 /// 后台扫描执行器：领取 `vault-scan` 任务 → 取消检查 → 增量 reconcile →
