@@ -7,6 +7,7 @@
 //! 因此不依赖系统 sqlite3.dll，并自带 FTS5 与 trigram 分词器。
 
 use rusqlite::Connection;
+use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
@@ -64,6 +65,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("无法创建索引目录：{error}"))?;
     }
+    backup_before_migration(path);
     let connection =
         Connection::open(path).map_err(|error| format!("无法打开索引库：{error}"))?;
     connection
@@ -78,6 +80,40 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         .map_err(|error| format!("无法设置索引库 PRAGMA：{error}"))?;
     migrate(&connection)?;
     Ok(connection)
+}
+
+/// 迁移前备份（升级计划 P1-02）：库文件已存在且尚未升到最新版本时，
+/// 把主库文件复制为 `<path>.bak-pre-migration`。
+/// 备份失败只告警——投影库可由 Markdown 真源重建，不值得阻断启动；
+/// WAL/SHM 不复制（SQLite 会用主库+日志自恢复，手工拼 WAL 反而危险）。
+fn backup_before_migration(path: &Path) {
+    let Ok(metadata) = fs::metadata(path) else { return };
+    if metadata.len() == 0 {
+        return;
+    }
+    let probe = match Connection::open(path) {
+        Ok(connection) => connection,
+        Err(error) => {
+            log::warn!("迁移前备份探测失败（跳过备份）：{error}");
+            return;
+        }
+    };
+    let version: i64 = match probe.query_row("PRAGMA user_version", [], |row| row.get(0)) {
+        Ok(version) => version,
+        Err(error) => {
+            log::warn!("迁移前备份读取版本失败（跳过备份）：{error}");
+            return;
+        }
+    };
+    drop(probe);
+    if version >= SCHEMA_VERSION {
+        return;
+    }
+    let backup = path.with_extension("db.bak-pre-migration");
+    match fs::copy(path, &backup) {
+        Ok(_) => log::info!("已备份 v{version} 索引库到 {}", backup.display()),
+        Err(error) => log::warn!("迁移前备份失败（继续迁移）：{error}"),
+    }
 }
 
 /// 按 `PRAGMA user_version` 逐步升级 Schema，可重复执行。
@@ -236,6 +272,37 @@ mod tests {
 
         let recovered = open(&database).unwrap();
         assert_eq!(count_notes(&recovered), 1);
+    }
+
+    /// 迁移前备份（升级计划 P1-02）：未迁移的非空库在 open 时
+    /// 应产生 `.bak-pre-migration` 备份，随后迁移正常完成。
+    #[test]
+    fn open_backs_up_unmigrated_database_before_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join(".lattice/lattice.db");
+        // 预置一个非空、未迁移（user_version=0）的旧库
+        std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+        {
+            let legacy = Connection::open(&database).unwrap();
+            legacy.execute("CREATE TABLE legacy_data (value TEXT)", []).unwrap();
+            legacy
+                .execute("INSERT INTO legacy_data (value) VALUES ('旧数据')", [])
+                .unwrap();
+        }
+
+        let connection = open(&database).unwrap();
+
+        let backup = database.with_extension("db.bak-pre-migration");
+        assert!(backup.exists(), "迁移前应生成备份文件");
+        let restored = Connection::open(&backup).unwrap();
+        let legacy_rows: i64 = restored
+            .query_row("SELECT count(*) FROM legacy_data", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(legacy_rows, 1, "备份应保留旧库内容");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION, "迁移照常完成");
     }
 
     /// 重复启动：同一库反复 open（每次启动都会重跑 PRAGMA 与迁移检查），
