@@ -88,6 +88,8 @@ pub struct SnapshotStore {
 pub struct SnapshotMeta {
     pub version: String,
     pub hash: String,
+    pub created_at: Option<String>,
+    pub size: u64,
 }
 
 impl SnapshotStore {
@@ -104,11 +106,31 @@ impl SnapshotStore {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let Some(stripped) = name.strip_suffix(".md") else { continue };
-            let Some((_, hash)) = stripped.split_once('-') else { continue };
-            snapshots.push(SnapshotMeta { version: stripped.to_owned(), hash: hash.to_owned() });
+            let Some((stamp, hash)) = stripped.split_once('-') else { continue };
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            snapshots.push(SnapshotMeta {
+                version: stripped.to_owned(),
+                hash: hash.to_owned(),
+                created_at: version_created_at(stamp),
+                size,
+            });
         }
         snapshots.sort_by(|left, right| right.version.cmp(&left.version));
         snapshots
+    }
+
+    /// 读取快照原文；版本名非法或文件缺失返回 None。
+    fn read(&self, note_id: &str, version: &str) -> Option<String> {
+        let (stamp, hash) = valid_version(version)?;
+        let path = self.root.join(note_id).join(format!("{version}.md"));
+        let raw = fs::read_to_string(path).ok()?;
+        // 完整性校验（对齐 assertSnapshotMatchesHash）：内容哈希必须与文件名一致
+        if checksum(raw.as_bytes()) != hash {
+            log::warn!("快照 {version} 已损坏（哈希不符）");
+            return None;
+        }
+        let _ = stamp;
+        Some(raw)
     }
 
     /// 把 `raw` 存为该笔记的新快照；内容与最新快照一致时跳过（幂等）。
@@ -160,6 +182,41 @@ fn format_version(timestamp_millis: i64, hash: &str) -> String {
     // compact = YYYYMMDDHHMMSSmmm（17 位），在日期与时间之间补 'T'、结尾补 'Z'
     let stamp = format!("{}T{}Z", &compact[..8], &compact[8..]);
     format!("{stamp}-{hash}")
+}
+
+/// Express `VERSION_PATTERN`：`<8位日期>T<9位时间>Z`。
+fn valid_version(version: &str) -> Option<(&str, &str)> {
+    let (stamp, hash) = version.split_once('-')?;
+    let bytes = stamp.as_bytes();
+    if stamp.len() != 19
+        || bytes[8] != b'T'
+        || !stamp.ends_with('Z')
+        || !stamp.chars().filter(|c| *c != 'T' && *c != 'Z').all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((stamp, hash))
+}
+
+/// 版本名 → ISO 时间（对齐 Express versionCreatedAt）：YYYY-MM-DDTHH:MM:SS.mmmZ。
+fn version_created_at(stamp: &str) -> Option<String> {
+    if stamp.len() != 19 || stamp.as_bytes()[8] != b'T' {
+        return None;
+    }
+    let digits: String = stamp.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() != 17 {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{}T{}:{}:{}.{}Z",
+        &digits[0..4],
+        &digits[4..6],
+        &digits[6..8],
+        &digits[8..10],
+        &digits[10..12],
+        &digits[12..14],
+        &digits[14..17]
+    ))
 }
 
 /// 从 Markdown frontmatter 读取笔记 id（对齐 Express NOTE_ID_PATTERN；无 id 返回 None）。
@@ -506,12 +563,125 @@ impl WorkspaceService {
         self.audit.record("delete", &[("path", &path), ("actor", "ui")]);
         Ok(true)
     }
+
+    /// 历史版本列表（契约 GET /api/notes/:id/history → note_history_list）。
+    pub fn history_list(&self, id: &str) -> Result<Vec<HistoryEntry>, ServiceError> {
+        let note_id = self.require_note_id(id)?;
+        Ok(self
+            .snapshots
+            .list(&note_id)
+            .into_iter()
+            .map(|meta| HistoryEntry {
+                version: meta.version,
+                hash: meta.hash,
+                created_at: meta.created_at,
+                size: meta.size,
+            })
+            .collect())
+    }
+
+    /// 读取历史版本内容（契约 GET /api/notes/:id/history/:version → note_history_get）。
+    pub fn history_get(&self, id: &str, version: &str) -> Result<HistorySnapshot, ServiceError> {
+        let note_id = self.require_note_id(id)?;
+        let raw = self
+            .snapshots
+            .read(&note_id, version)
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "历史版本不存在或已损坏"))?;
+        let (_, hash) = valid_version(version)
+            .ok_or_else(|| ServiceError::new("VALIDATION", "历史版本标识无效"))?;
+        Ok(HistorySnapshot {
+            version: version.to_owned(),
+            raw,
+            hash: hash.to_owned(),
+        })
+    }
+
+    /// 恢复历史版本（契约 POST /api/notes/:id/history/:version/restore →
+    /// note_history_restore）：快照原文整体重写当前文件（走统一写边界，
+    /// 恢复前的内容自动进入快照），expectedCurrentHash 提供时校验乐观锁。
+    pub fn history_restore(
+        &self,
+        id: &str,
+        version: &str,
+        expected_current_hash: Option<String>,
+        confirmed: bool,
+    ) -> Result<NoteDetail, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "恢复历史版本需要 confirmed=true",
+            ));
+        }
+        let current = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "笔记不存在"))?;
+        if let Some(expected) = expected_current_hash.as_deref()
+            && let Some(current_hash) = current.content_hash.as_deref()
+            && expected != current_hash
+        {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "笔记已在其他窗口被修改，请刷新后再保存",
+            ));
+        }
+        let snapshot = self.history_get(id, version)?;
+        let path = current
+            .file_path
+            .clone()
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "笔记缺少文件路径"))?;
+        self.write(&path, &snapshot.raw, current.content_hash.as_deref(), "ui")?;
+        self.audit.record("restore", &[("path", &path), ("version", version), ("actor", "ui")]);
+        self.index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "恢复后索引未同步，请重试"))
+    }
+
+    /// 定位笔记的 frontmatter id（历史快照按 UUID 组织；无 id 的笔记无历史）。
+    fn require_note_id(&self, id: &str) -> Result<String, ServiceError> {
+        let detail = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "笔记不存在"))?;
+        let path = detail
+            .file_path
+            .clone()
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "笔记缺少文件路径"))?;
+        let raw = self
+            .vault
+            .read(&path)
+            .map_err(|error| ServiceError::new("READ_ERROR", error))?;
+        frontmatter_id(&raw.raw)
+            .ok_or_else(|| ServiceError::new("VALIDATION", "笔记缺少 frontmatter id，无历史记录"))
+    }
 }
 
 /// raw 全文哈希（与 Vault::write 的内容哈希同口径）。
 fn meta_sha256(raw: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(raw.as_bytes()))
+}
+
+/// 历史版本条目（对齐 Express listSnapshots，camelCase 序列化）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub version: String,
+    pub hash: String,
+    pub created_at: Option<String>,
+    pub size: u64,
+}
+
+/// 历史版本内容（对齐 Express readSnapshot）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySnapshot {
+    pub version: String,
+    pub raw: String,
+    pub hash: String,
 }
 
 #[cfg(test)]

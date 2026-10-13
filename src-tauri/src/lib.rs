@@ -27,7 +27,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 use vault::{NoteContents, NoteFile, VaultInfo};
-use workspace::{ServiceError, WorkspaceService};
+use workspace::{HistoryEntry, HistorySnapshot, ServiceError, WorkspaceService};
 
 pub struct WorkspaceState(pub RwLock<WorkspaceService>);
 
@@ -86,7 +86,10 @@ pub fn run() {
             note_create,
             note_update,
             note_delete,
-            search_query
+            search_query,
+            note_history_list,
+            note_history_get,
+            note_history_restore
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -306,6 +309,38 @@ fn search_query(
             .index()
             .search_query(&q, limit.unwrap_or(20))
             .map_err(|error| ServiceError::new("SEARCH_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn note_history_list(state: State<'_, WorkspaceState>, id: String) -> Result<Vec<HistoryEntry>, String> {
+    with_workspace(state, |workspace| workspace.history_list(&id))
+}
+
+#[tauri::command]
+fn note_history_get(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    version: String,
+) -> Result<HistorySnapshot, String> {
+    with_workspace(state, |workspace| workspace.history_get(&id, &version))
+}
+
+#[tauri::command]
+fn note_history_restore(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    version: String,
+    expected_current_hash: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<NoteDetail, String> {
+    with_workspace(state, |workspace| {
+        workspace.history_restore(
+            &id,
+            &version,
+            expected_current_hash,
+            confirmed.unwrap_or(false),
+        )
     })
 }
 

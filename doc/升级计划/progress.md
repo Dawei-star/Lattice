@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-13 ｜ search_query 完成并验证绿（strategy 枚举对齐 Express）
+> **最后更新**：2026-10-13 ｜ note_history 三命令完成（list/get/restore，快照哈希完整性校验）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -28,6 +28,7 @@
   - [x] `note_update`（乐观锁 409/标题重命名原子 rename/无变化短路）
   - [x] `note_delete`（双确认闸门/文件+投影清理/历史快照保留）
   - [x] `search_query`（strategy 枚举 fts/like/like-fallback + mapRow 形状）
+  - [x] `note_history_list/get/restore`（快照哈希完整性校验、恢复走写边界自动快照）
   - [ ] folders / graph / meta
   - [ ] canvas / files / experts / review / vault attachments
 - [ ] P1-05~07 前端 TS 化
@@ -37,8 +38,8 @@
 
 ## IPC 命令核销（契约清单 96 端点）
 
-**已迁移 18 个**（9 vault 既有 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query）
-**剩余 78 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
+**已迁移 21 个**（9 vault 既有 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3）
+**剩余 75 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围）
 
 ## 关键问题点（活跃）
 
@@ -48,6 +49,6 @@
 
 ## 下一步
 
-1. folders 表模型迁移 → graph/meta 核销
-2. note_history 三命令（快照器已就位，直接接线）
-3. canvas/folders 写命令批
+1. folders 表模型迁移 → folder_tree/graph/meta 核销（含 links 解析落地）
+2. canvas 读写批（canvas_list/read/write/move/delete）
+3. folders 写命令批（create/update/delete）
