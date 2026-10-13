@@ -785,6 +785,168 @@ impl WorkspaceService {
     }
 }
 
+/// 画布安全路径校验：必须 .canvas 后缀、禁止路径穿越与内部目录。
+impl WorkspaceService {
+    fn canvas_path(&self, relative: &str) -> Result<PathBuf, ServiceError> {
+        let trimmed = relative.trim().replace('\\', "/");
+        if trimmed.is_empty()
+            || trimmed.starts_with('/')
+            || trimmed
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || trimmed
+                .split('/')
+                .next()
+                .is_some_and(|first| first.eq_ignore_ascii_case(".lattice"))
+        {
+            return Err(ServiceError::new("VALIDATION", "非法的画布路径"));
+        }
+        if !trimmed.to_ascii_lowercase().ends_with(".canvas") {
+            return Err(ServiceError::new("VALIDATION", "画布文件必须是 .canvas 后缀"));
+        }
+        Ok(self.vault.root().join(trimmed))
+    }
+
+    /// 画布文件列表（契约 GET /api/canvas/files → canvas_list）。
+    pub fn canvas_list(&self) -> Result<Vec<String>, ServiceError> {
+        let mut files = Vec::new();
+        fn walk(root: &Path, prefix: &str, files: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(root) else { return };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let relative = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if name.eq_ignore_ascii_case(".lattice") {
+                        continue;
+                    }
+                    walk(&entry.path(), &relative, files);
+                } else if name.to_ascii_lowercase().ends_with(".canvas") {
+                    files.push(relative);
+                }
+            }
+        }
+        walk(self.vault.root(), "", &mut files);
+        files.sort();
+        Ok(files)
+    }
+
+    /// 读取画布（契约 GET /api/canvas → canvas_read）：缺失返回空画布，
+    /// revision 为原文哈希（乐观锁基准），与 Express read 语义一致。
+    pub fn canvas_read(&self, path: &str) -> Result<CanvasDocument, ServiceError> {
+        let file = self.canvas_path(path)?;
+        match std::fs::read_to_string(&file) {
+            Ok(raw) => {
+                let value: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|error| ServiceError::new("VALIDATION", format!("画布 JSON 解析失败：{error}")))?;
+                Ok(CanvasDocument {
+                    nodes: value.get("nodes").cloned().unwrap_or(serde_json::Value::Array(Vec::new())),
+                    edges: value.get("edges").cloned().unwrap_or(serde_json::Value::Array(Vec::new())),
+                    revision: Some(checksum(raw.as_bytes())),
+                })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(CanvasDocument {
+                nodes: serde_json::Value::Array(Vec::new()),
+                edges: serde_json::Value::Array(Vec::new()),
+                revision: None,
+            }),
+            Err(error) => Err(ServiceError::new("IO_ERROR", error.to_string())),
+        }
+    }
+
+    /// 写入画布（契约 PUT /api/canvas → canvas_write）：
+    /// 新建需要 confirmed；已有文件走 expectedHash 乐观锁（409）。
+    pub fn canvas_write(
+        &self,
+        path: &str,
+        nodes: serde_json::Value,
+        edges: serde_json::Value,
+        expected_hash: Option<&str>,
+        confirmed: bool,
+    ) -> Result<String, ServiceError> {
+        let file = self.canvas_path(path)?;
+        let exists = file.exists();
+        if !exists && !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "新建画布需要 confirmed=true",
+            ));
+        }
+        let raw = serde_json::to_string_pretty(&serde_json::json!({ "nodes": nodes, "edges": edges }))
+            .map_err(|error| ServiceError::new("VALIDATION", format!("画布序列化失败：{error}")))?;
+        if exists {
+            let current_raw = std::fs::read_to_string(&file)
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            let current_hash = checksum(current_raw.as_bytes());
+            if let Some(expected) = expected_hash
+                && expected != current_hash
+            {
+                return Err(ServiceError::new(
+                    "CONFLICT",
+                    "画布已在其他窗口被修改，请刷新后再保存",
+                ));
+            }
+            let mut temporary = tempfile::NamedTempFile::new_in(
+                file.parent().ok_or_else(|| ServiceError::new("IO_ERROR", "无效路径"))?,
+            )
+            .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            use std::io::Write;
+            temporary
+                .write_all(raw.as_bytes())
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            temporary
+                .persist(&file)
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        } else {
+            if let Some(parent) = file.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file, &raw).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        }
+        self.audit.record("canvas_write", &[("path", path), ("actor", "ui")]);
+        Ok(checksum(raw.as_bytes()))
+    }
+
+    /// 移动/重命名画布（契约 PATCH /api/canvas/file → canvas_move）。
+    pub fn canvas_move(&self, from: &str, to: &str, confirmed: bool) -> Result<bool, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "移动画布需要 confirmed=true"));
+        }
+        let source = self.canvas_path(from)?;
+        let target = self.canvas_path(to)?;
+        if !source.exists() {
+            return Err(ServiceError::new("NOT_FOUND", "画布不存在"));
+        }
+        if target.exists() {
+            return Err(ServiceError::new("CONFLICT", "目标画布已存在"));
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&source, &target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法移动画布：{error}")))?;
+        self.audit.record("canvas_move", &[("from", from), ("to", to), ("actor", "ui")]);
+        Ok(true)
+    }
+
+    /// 删除画布（契约 DELETE /api/canvas/file → canvas_delete）：destructive 双确认。
+    pub fn canvas_delete(&self, path: &str, confirmed: bool, second_confirmed: bool) -> Result<bool, ServiceError> {
+        if !confirmed || !second_confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除画布需要 confirmed=true 且 secondConfirmed=true",
+            ));
+        }
+        let file = self.canvas_path(path)?;
+        if !file.exists() {
+            return Err(ServiceError::new("NOT_FOUND", "画布不存在"));
+        }
+        std::fs::remove_file(&file)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除画布：{error}")))?;
+        self.audit.record("canvas_delete", &[("path", path), ("actor", "ui")]);
+        Ok(true)
+    }
+}
+
 /// raw 全文哈希（与 Vault::write 的内容哈希同口径）。
 fn meta_sha256(raw: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -808,6 +970,15 @@ pub struct HistorySnapshot {
     pub version: String,
     pub raw: String,
     pub hash: String,
+}
+
+/// 画布文档（对齐 Express canvas read，nodes/edges 为 Obsidian 兼容 JSON）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasDocument {
+    pub nodes: serde_json::Value,
+    pub edges: serde_json::Value,
+    pub revision: Option<String>,
 }
 
 #[cfg(test)]

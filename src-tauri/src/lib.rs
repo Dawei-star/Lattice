@@ -27,7 +27,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 use vault::{NoteContents, NoteFile, VaultInfo};
-use workspace::{HistoryEntry, HistorySnapshot, ServiceError, WorkspaceService};
+use workspace::{CanvasDocument, HistoryEntry, HistorySnapshot, ServiceError, WorkspaceService};
 
 pub struct WorkspaceState(pub RwLock<WorkspaceService>);
 
@@ -95,7 +95,12 @@ pub fn run() {
             folder_create,
             folder_update,
             folder_delete,
-            meta_overview
+            meta_overview,
+            canvas_list,
+            canvas_read,
+            canvas_write,
+            canvas_move,
+            canvas_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -415,6 +420,59 @@ fn folder_delete(
     with_workspace(state, |workspace| {
         workspace.folder_delete(
             &id,
+            confirmed.unwrap_or(false),
+            second_confirmed.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn canvas_list(state: State<'_, WorkspaceState>) -> Result<Vec<String>, String> {
+    with_workspace(state, |workspace| workspace.canvas_list())
+}
+
+#[tauri::command]
+fn canvas_read(state: State<'_, WorkspaceState>, path: String) -> Result<CanvasDocument, String> {
+    with_workspace(state, |workspace| workspace.canvas_read(&path))
+}
+
+#[tauri::command]
+fn canvas_write(
+    state: State<'_, WorkspaceState>,
+    path: String,
+    nodes: serde_json::Value,
+    edges: serde_json::Value,
+    expected_hash: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<String, String> {
+    with_workspace(state, |workspace| {
+        workspace.canvas_write(
+            &path,
+            nodes,
+            edges,
+            expected_hash.as_deref(),
+            confirmed.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn canvas_move(state: State<'_, WorkspaceState>, from_path: String, to_path: String, confirmed: Option<bool>) -> Result<bool, String> {
+    with_workspace(state, |workspace| {
+        workspace.canvas_move(&from_path, &to_path, confirmed.unwrap_or(false))
+    })
+}
+
+#[tauri::command]
+fn canvas_delete(
+    state: State<'_, WorkspaceState>,
+    path: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<bool, String> {
+    with_workspace(state, |workspace| {
+        workspace.canvas_delete(
+            &path,
             confirmed.unwrap_or(false),
             second_confirmed.unwrap_or(false),
         )
