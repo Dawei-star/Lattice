@@ -9,6 +9,7 @@
 //! - 统一错误模型：`ServiceError { code, message }`，命令面在 P1-04 切换。
 
 use crate::index::Index;
+use crate::jobs::JobsQueue;
 use crate::vault::{NoteContents, Vault};
 use fs2::FileExt;
 use serde::Serialize;
@@ -197,12 +198,13 @@ impl std::fmt::Debug for WorkspaceService {
     }
 }
 
-/// 工作区 = 单实例锁 + 文件真源 + 索引投影 + 审计 + 快照。
+/// 工作区 = 单实例锁 + 文件真源 + 索引投影 + 审计 + 快照 + 任务队列。
 pub struct WorkspaceService {
     vault: Vault,
     index: Index,
     audit: AuditLog,
     snapshots: SnapshotStore,
+    jobs: JobsQueue,
     _lock: File, // 句柄存活期间锁有效；drop 即释放
 }
 
@@ -229,12 +231,19 @@ impl WorkspaceService {
         let index = Index::open(vault.root())
             .map_err(|error| ServiceError::new("INDEX_OPEN_FAILED", error))?;
         let audit = AuditLog::open(&lattice_dir)?;
+        let jobs = JobsQueue::open(lattice_dir.join("lattice.db").as_path())
+            .map_err(|error| ServiceError::new("JOBS_OPEN_FAILED", error))?;
+        let recovered = jobs.recover_interrupted().unwrap_or(0);
+        if recovered > 0 {
+            log::info!("启动恢复：{recovered} 个中断任务已重排回队列");
+        }
         audit.record("workspace_open", &[("path", &vault.root().to_string_lossy())]);
         Ok(Self {
             vault,
             index,
             audit,
             snapshots: SnapshotStore::open(&lattice_dir),
+            jobs,
             _lock: lock,
         })
     }
@@ -296,6 +305,10 @@ impl WorkspaceService {
 
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    pub fn jobs(&self) -> &JobsQueue {
+        &self.jobs
     }
 }
 

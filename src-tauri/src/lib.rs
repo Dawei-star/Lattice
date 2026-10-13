@@ -13,14 +13,18 @@
 
 mod db;
 mod index;
+mod jobs;
 mod time;
 mod vault;
+mod watcher;
 mod workspace;
 
 use index::{IndexStats, NoteMatch, ScanSummary};
+use jobs::Job;
 use std::path::PathBuf;
 use std::sync::RwLock;
-use tauri::{Manager, State};
+use std::time::Duration;
+use tauri::{Emitter, Manager, State};
 use vault::{NoteContents, NoteFile, VaultInfo};
 use workspace::{ServiceError, WorkspaceService};
 
@@ -52,6 +56,8 @@ pub fn run() {
                 .unwrap_or(app.path().app_data_dir()?.join("vault"));
             app.manage(WorkspaceState(RwLock::new(WorkspaceService::open(root)?)));
             app.handle().plugin(tauri_plugin_dialog::init())?;
+            spawn_scan_worker(app.handle().clone());
+            spawn_vault_watcher(app.handle().clone());
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -70,7 +76,10 @@ pub fn run() {
             vault_write,
             vault_search,
             vault_scan,
-            vault_index_stats
+            vault_index_stats,
+            job_list,
+            job_get,
+            job_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -161,6 +170,119 @@ fn vault_read_asset(state: State<'_, WorkspaceState>, path: String) -> Result<St
             .read_asset(&path)
             .map_err(|error| ServiceError::new("ASSET_ERROR", error))
     })
+}
+
+#[tauri::command]
+fn job_list(
+    state: State<'_, WorkspaceState>,
+    status: Option<String>,
+    kind: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<Job>, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .jobs()
+            .list(status.as_deref(), kind.as_deref(), limit.unwrap_or(50))
+            .map_err(|error| ServiceError::new("JOBS_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn job_get(state: State<'_, WorkspaceState>, id: String) -> Result<Option<Job>, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .jobs()
+            .get(&id)
+            .map_err(|error| ServiceError::new("JOBS_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn job_cancel(state: State<'_, WorkspaceState>, id: String) -> Result<Option<Job>, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .jobs()
+            .cancel(&id)
+            .map_err(|error| ServiceError::new("JOBS_ERROR", error))
+    })
+}
+
+/// 后台扫描执行器：领取 `vault-scan` 任务 → 取消检查 → 增量 reconcile →
+/// 完成并广播统计。空闲时每秒轮询（单机场景足够，避免复杂唤醒机制）。
+fn spawn_scan_worker(handle: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        let claimed = {
+            let state = handle.state::<WorkspaceState>();
+            let workspace = state.0.read().map_err(|error| error.to_string());
+            match workspace {
+                Ok(workspace) => workspace.jobs().claim_next("vault-scan"),
+                Err(_) => break,
+            }
+        };
+        match claimed {
+            Ok(Some(job)) => {
+                if matches!(handle.state::<WorkspaceState>().0.read(), Ok(workspace) if matches!(workspace.jobs().checkpoint_cancelled(&job.id), Ok(true)))
+                {
+                    continue;
+                }
+                let outcome = {
+                    let state = handle.state::<WorkspaceState>();
+                    match state.0.read() {
+                        Ok(workspace) => workspace
+                            .index()
+                            .scan(workspace.vault())
+                            .map_err(|error| ServiceError::new("SCAN_ERROR", error)),
+                        Err(error) => Err(ServiceError::new("STATE_ERROR", error.to_string())),
+                    }
+                };
+                let jobs_result = {
+                    let state = handle.state::<WorkspaceState>();
+                    match state.0.read() {
+                        Ok(workspace) => match &outcome {
+                            Ok(summary) => workspace
+                                .jobs()
+                                .complete(&job.id, &serde_json::to_value(summary).unwrap_or_default())
+                                .map(|_| ()),
+                            Err(error) => workspace.jobs().fail(&job.id, &error.message).map(|_| ()),
+                        },
+                        Err(_) => Ok(()),
+                    }
+                };
+                if let Err(error) = jobs_result {
+                    log::warn!("任务结果落盘失败：{error}");
+                }
+                if let Ok(summary) = outcome {
+                    let _ = handle.emit("vault://scanned", &summary);
+                }
+            }
+            _ => std::thread::sleep(Duration::from_millis(1000)),
+        }
+    });
+}
+
+/// watcher 线程：外部编辑器改动 → 防抖 → 入队 reconcile 任务 → 通知前端。
+fn spawn_vault_watcher(handle: tauri::AppHandle) {
+    let root = {
+        let state = handle.state::<WorkspaceState>();
+        match state.0.read() {
+            Ok(workspace) => workspace.path().to_path_buf(),
+            Err(_) => return,
+        }
+    };
+    std::thread::spawn(move || {
+        if let Err(error) = watcher::spawn_watcher(&root, move || {
+            let state = handle.state::<WorkspaceState>();
+            let enqueued = match state.0.read() {
+                Ok(workspace) => watcher::enqueue_reconcile(workspace.jobs()),
+                Err(_) => return,
+            };
+            if let Ok(job_id) = enqueued {
+                let _ = handle.emit("vault://changed", job_id);
+            }
+        }) {
+            log::warn!("vault watcher 未能启动：{error}");
+        }
+    });
 }
 
 #[tauri::command]

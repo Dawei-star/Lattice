@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// 001：索引投影初版。
 ///
@@ -58,6 +58,27 @@ CREATE TRIGGER trg_notes_fts_update AFTER UPDATE OF title, content ON notes BEGI
   DELETE FROM notes_fts WHERE path = old.path;
   INSERT INTO notes_fts (path, title, content) VALUES (new.path, new.title, new.content);
 END;
+"#;
+
+/// 002：持久化任务队列（升级计划 P1-03）。
+/// 索引/链接/快照等后台任务落盘，可重试、可取消、崩溃后可恢复。
+const MIGRATION_002: &str = r#"
+CREATE TABLE jobs (
+  id          TEXT PRIMARY KEY,
+  type        TEXT NOT NULL,
+  key         TEXT,
+  status      TEXT NOT NULL DEFAULT 'queued',
+  payload     TEXT,
+  result      TEXT,
+  error       TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX ix_jobs_status ON jobs (status, created_at);
+CREATE INDEX ix_jobs_type_key ON jobs (type, key);
 "#;
 
 /// 打开索引库并把 Schema 迁移到最新版本。
@@ -127,27 +148,27 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
     if version >= SCHEMA_VERSION {
         return Ok(());
     }
-    if version < 1 {
-        let transaction = connection
-            .unchecked_transaction()
-            .map_err(|error| format!("无法开启迁移事务：{error}"))?;
-        transaction
-            .execute_batch(MIGRATION_001)
-            .map_err(|error| {
-                // 事务随 drop 回滚：半套 schema 不会落盘，便于失败诊断后重试。
-                format!("无法创建索引表（已回滚，下次启动重试）：{error}")
-            })?;
-        transaction
-            .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-            .map_err(|error| format!("无法写入索引库版本：{error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("无法提交迁移事务：{error}"))?;
-        return Ok(());
+    // 每个迁移步骤一个事务：失败只回滚当前步，已完成的低版本保留。
+    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
+    for &(target, script) in steps {
+        if version < target {
+            let transaction = connection
+                .unchecked_transaction()
+                .map_err(|error| format!("无法开启迁移事务：{error}"))?;
+            transaction
+                .execute_batch(script)
+                .map_err(|error| {
+                    // 事务随 drop 回滚：半套 schema 不会落盘，便于失败诊断后重试。
+                    format!("迁移到 v{target} 失败（已回滚，下次启动重试）：{error}")
+                })?;
+            transaction
+                .execute_batch(&format!("PRAGMA user_version = {target}"))
+                .map_err(|error| format!("无法写入索引库版本：{error}"))?;
+            transaction
+                .commit()
+                .map_err(|error| format!("无法提交迁移事务：{error}"))?;
+        }
     }
-    connection
-        .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-        .map_err(|error| format!("无法写入索引库版本：{error}"))?;
     Ok(())
 }
 
