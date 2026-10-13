@@ -7,10 +7,12 @@
 //!   短于 3 字符的查询以及 FTS 未命中时走 `LIKE` 兜底 —— 与原项目两条路径一致。
 
 use crate::db;
+use crate::markdown::extract_note_tags;
 use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteFile, Vault, title_from_markdown};
 use rusqlite::{Connection, params};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -129,6 +131,9 @@ impl Index {
             for path in existing.keys() {
                 if !on_disk.contains(path.as_str()) {
                     transaction
+                        .execute("DELETE FROM note_tags WHERE note_path = ?1", params![path])
+                        .map_err(|error| format!("无法清理标签关联：{error}"))?;
+                    transaction
                         .execute("DELETE FROM notes WHERE path = ?1", params![path])
                         .map_err(|error| format!("无法清理索引：{error}"))?;
                     summary.removed += 1;
@@ -232,10 +237,49 @@ impl Index {
     pub fn remove(&self, path: &str) -> Result<(), String> {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         connection
+            .execute("DELETE FROM note_tags WHERE note_path = ?1", params![path])
+            .map_err(|error| format!("无法清理标签关联：{error}"))?;
+        connection
             .execute("DELETE FROM notes WHERE path = ?1", params![path])
             .map_err(|error| format!("无法删除索引行：{error}"))?;
         Ok(())
     }
+
+    /// 标签列表（契约 GET /api/tags 的对应命令 tag_list）：
+    /// 按 noteCount 倒序、名称 NOCASE 正序，与 Express findAllWithCounts 一致。
+    pub fn list_tags(&self) -> Result<Vec<TagEntry>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT t.id, t.name, t.created_at, COUNT(nt.note_path) AS note_count
+                 FROM tags t LEFT JOIN note_tags nt ON nt.tag_id = t.id
+                 GROUP BY t.id, t.name, t.created_at
+                 ORDER BY note_count DESC, t.name COLLATE NOCASE ASC",
+            )
+            .map_err(|error| format!("无法查询标签：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(TagEntry {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    note_count: row.get::<_, i64>(3)? as u64,
+                })
+            })
+            .map_err(|error| format!("无法查询标签：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取标签行：{error}"))
+    }
+}
+
+/// 标签条目（对齐 Express tags 表投影，camelCase 序列化）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagEntry {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub note_count: u64,
 }
 
 fn write_row(
@@ -262,7 +306,46 @@ fn write_row(
             params![path, title, raw, hash, size as i64, modified_at, indexed_at],
         )
         .map_err(|error| format!("无法写入索引：{error}"))?;
+    sync_tags(connection, path, raw, indexed_at)
+}
+
+/// 同步一篇笔记的标签派生（保存/扫描时调用；标签是正文的投影，可重建）。
+fn sync_tags(connection: &Connection, path: &str, raw: &str, indexed_at: &str) -> Result<(), String> {
+    let names = extract_note_tags(raw);
+    connection
+        .execute("DELETE FROM note_tags WHERE note_path = ?1", params![path])
+        .map_err(|error| format!("无法清理标签关联：{error}"))?;
+    for name in names {
+        let tag_id = tag_id_for(&name);
+        connection
+            .execute(
+                "INSERT INTO tags (id, name, created_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(name) DO NOTHING",
+                params![tag_id, name, indexed_at],
+            )
+            .map_err(|error| format!("无法写入标签：{error}"))?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO note_tags (note_path, tag_id) VALUES (?1, ?2)",
+                params![path, tag_id],
+            )
+            .map_err(|error| format!("无法关联标签：{error}"))?;
+    }
     Ok(())
+}
+
+/// 标签 id：由名称确定性派生（UUID v4 形状），避免依赖随机 UUID 导致重建后 id 漂移。
+fn tag_id_for(name: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(name.as_bytes()));
+    format!(
+        "{}{}-{}-4{}-8{}-{}",
+        &digest[0..8],
+        &digest[8..12],
+        &digest[12..15],
+        &digest[15..16],
+        &digest[16..19],
+        &digest[20..32]
+    )
 }
 
 /// 已索引行的 `路径 -> (size, modified_at)`，用于增量比对。

@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// 001：索引投影初版。
 ///
@@ -79,6 +79,23 @@ CREATE TABLE jobs (
 );
 CREATE INDEX ix_jobs_status ON jobs (status, created_at);
 CREATE INDEX ix_jobs_type_key ON jobs (type, key);
+"#;
+
+/// 003：标签派生表（升级计划 P1-04）。
+/// 标签是正文/frontmatter 派生的投影（与 Express `#标签` 语义一致），
+/// 索引 upsert/scan 时同步，可随时由 Markdown 真源重建。
+const MIGRATION_003: &str = r#"
+CREATE TABLE tags (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE note_tags (
+  note_path TEXT NOT NULL,
+  tag_id    TEXT NOT NULL,
+  UNIQUE(note_path, tag_id)
+);
+CREATE INDEX ix_note_tags_tag ON note_tags (tag_id);
 "#;
 
 /// 打开索引库并把 Schema 迁移到最新版本。
@@ -149,7 +166,7 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         return Ok(());
     }
     // 每个迁移步骤一个事务：失败只回滚当前步，已完成的低版本保留。
-    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
+    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
     for &(target, script) in steps {
         if version < target {
             let transaction = connection

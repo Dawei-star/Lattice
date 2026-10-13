@@ -14,12 +14,13 @@
 mod db;
 mod index;
 mod jobs;
+mod markdown;
 mod time;
 mod vault;
 mod watcher;
 mod workspace;
 
-use index::{IndexStats, NoteMatch, ScanSummary};
+use index::{IndexStats, NoteMatch, ScanSummary, TagEntry};
 use jobs::Job;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -79,7 +80,8 @@ pub fn run() {
             vault_index_stats,
             job_list,
             job_get,
-            job_cancel
+            job_cancel,
+            tag_list
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -204,6 +206,16 @@ fn job_cancel(state: State<'_, WorkspaceState>, id: String) -> Result<Option<Job
             .jobs()
             .cancel(&id)
             .map_err(|error| ServiceError::new("JOBS_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn tag_list(state: State<'_, WorkspaceState>) -> Result<Vec<TagEntry>, String> {
+    with_workspace(state, |workspace| {
+        workspace
+            .index()
+            .list_tags()
+            .map_err(|error| ServiceError::new("TAGS_ERROR", error))
     })
 }
 
