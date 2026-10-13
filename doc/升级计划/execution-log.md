@@ -27,7 +27,7 @@
 |---|---|---|---|
 | P1-01 WorkspaceService | ✅ 完成 | 统一写入边界：单实例锁（VAULT_LOCKED/幂等重开）、JSONL 审计、Express 同构版本快照、ServiceError{code,message} 错误模型；9 个 vault 命令全部经 Service；前端契约文本逐字保持 | `38fad24` |
 | P1-02 SQLite 恢复与迁移 | ✅ 完成 | WAL 自恢复/事务迁移/失败诊断（P0-6 完成）+ 迁移前备份 `.bak-pre-migration`（P1-02 补齐） | `8cba5ac` |
-| P1-03 单实例锁 + watcher + jobs | 🔄 进行中 | 单实例锁已随 P1-01 落地；**待办：watcher reconcile、持久化 jobs 队列（表+执行器+job_list/job_get/job_cancel 命令）** | — |
+| P1-03 单实例锁 + watcher + jobs | ✅ 完成 | 单实例锁（P1-01）；持久化 jobs 队列（迁移 002：幂等 key/重试预算/协作取消/启动恢复）；notify watcher 500ms 防抖入队 reconcile；扫描 worker + vault://changed/scanned 事件；新命令 job_list/job_get/job_cancel | `f1100e1` |
 | P1-04 非 AI 命令面迁移 | ⬜ 未开始 | 按契约清单核销 ~60 个非 AI 端点（notes/canvas/folders/tags/search/graph/meta/files/experts/review/vault attachments） | — |
 | P1-05~07 前端 TS 化 | ⬜ 未开始 | api→store/lib→组件，strict 渐进开启 | — |
 | P1-08 功能对齐验证 | ⬜ 未开始 | 契约快照对照（fixtures + Rust 集成测试 + 前端 mock invoke） | — |
