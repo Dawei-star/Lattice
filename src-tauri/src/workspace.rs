@@ -8,7 +8,7 @@
 //! - 单实例锁：第二实例明确报"已被占用"，禁止静默共写（风险 R12）；
 //! - 统一错误模型：`ServiceError { code, message }`，命令面在 P1-04 切换。
 
-use crate::index::{Index, NoteDetail};
+use crate::index::{FolderNode, Index, NoteDetail};
 use crate::jobs::JobsQueue;
 use crate::markdown::{normalize_title, parse_frontmatter, sanitize_file_part, serialize_markdown_document, MarkdownDocument};
 use crate::time::{iso8601_utc, now_millis};
@@ -656,6 +656,132 @@ impl WorkspaceService {
             .map_err(|error| ServiceError::new("READ_ERROR", error))?;
         frontmatter_id(&raw.raw)
             .ok_or_else(|| ServiceError::new("VALIDATION", "笔记缺少 frontmatter id，无历史记录"))
+    }
+
+    /// 创建目录（契约 POST /api/folders → folder_create）：
+    /// 磁盘目录为真源（多层父目录自动创建）；同级同名视为冲突。
+    pub fn folder_create(
+        &self,
+        name: &str,
+        parent_path: Option<&str>,
+        confirmed: bool,
+    ) -> Result<FolderNode, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "创建目录需要 confirmed=true",
+            ));
+        }
+        let safe_name = sanitize_file_part(name, "未命名目录");
+        let relative = match parent_path {
+            Some(parent) => format!("{parent}/{safe_name}"),
+            None => safe_name.clone(),
+        };
+        let target = self.vault.root().join(&relative);
+        if target.exists() {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                format!("同级下已存在名为「{safe_name}」的目录"),
+            ));
+        }
+        std::fs::create_dir_all(&target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法创建目录：{error}")))?;
+        self.audit.record("folder_create", &[("path", &relative), ("actor", "ui")]);
+        Ok(FolderNode {
+            id: crate::index::stable_folder_id(&relative),
+            name: safe_name,
+            parent_id: parent_path.map(crate::index::stable_folder_id),
+            sort_order: 0,
+            note_count: 0,
+            children: Vec::new(),
+        })
+    }
+
+    /// 目录重命名/移动（契约 PATCH /api/folders/:id → folder_update）：
+    /// 磁盘 rename 一次完成子树移动，投影由全量扫描自愈（笔记/链接/标签级联）。
+    pub fn folder_update(
+        &self,
+        id: &str,
+        name: Option<String>,
+        new_parent_path: Option<&str>,
+        confirmed: bool,
+    ) -> Result<Vec<FolderNode>, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "修改目录需要 confirmed=true（会改变其下笔记路径）",
+            ));
+        }
+        let old_path = crate::index::directory_path_for_id(&self.vault, id)
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "目录不存在"))?;
+        let old_name = old_path.rsplit('/').next().unwrap_or(&old_path).to_owned();
+        let parent = old_path.rsplit_once('/').map(|(parent, _)| parent.to_owned());
+        let next_name = match name.as_deref() {
+            Some(next) => sanitize_file_part(next, "未命名目录"),
+            None => old_name,
+        };
+        let next_parent = new_parent_path.map(str::to_owned).unwrap_or(parent.clone().unwrap_or_default());
+        let parent = if new_parent_path.is_some() { Some(next_parent.clone()) } else { parent };
+        let next_path = match parent {
+            Some(parent) if !parent.is_empty() => format!("{parent}/{next_name}"),
+            _ => next_name.clone(),
+        };
+        if next_path == old_path {
+            return self
+                .index
+                .folder_tree(&self.vault)
+                .map_err(|error| ServiceError::new("FOLDERS_ERROR", error));
+        }
+        let target = self.vault.root().join(&next_path);
+        if target.exists() {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                format!("目标位置已存在「{next_name}」"),
+            ));
+        }
+        std::fs::rename(self.vault.root().join(&old_path), target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法重命名目录：{error}")))?;
+        self.audit.record("folder_rename", &[("from", &old_path), ("to", &next_path), ("actor", "ui")]);
+        // 投影自愈：路径变化级联 notes.folder_id / links / note_tags
+        self.index
+            .scan(&self.vault)
+            .map_err(|error| ServiceError::new("SCAN_ERROR", error))?;
+        self.index
+            .folder_tree(&self.vault)
+            .map_err(|error| ServiceError::new("FOLDERS_ERROR", error))
+    }
+
+    /// 删除空目录（契约 DELETE /api/folders/:id → folder_delete）：
+    /// destructive 双确认；含笔记或子目录时明确拒绝（不级联删除用户数据）。
+    pub fn folder_delete(
+        &self,
+        id: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<Vec<FolderNode>, ServiceError> {
+        if !confirmed || !second_confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除目录需要 confirmed=true 且 secondConfirmed=true",
+            ));
+        }
+        let path = crate::index::directory_path_for_id(&self.vault, id)
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "目录不存在"))?;
+        let target = self.vault.root().join(&path);
+        let mut entries = std::fs::read_dir(&target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法读取目录：{error}")))?;
+        if entries.next().is_some() {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "目录不为空：请先移走其中的笔记与子目录",
+            ));
+        }
+        std::fs::remove_dir(&target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除目录：{error}")))?;
+        self.audit.record("folder_delete", &[("path", &path), ("actor", "ui")]);
+        self.index
+            .folder_tree(&self.vault)
+            .map_err(|error| ServiceError::new("FOLDERS_ERROR", error))
     }
 }
 

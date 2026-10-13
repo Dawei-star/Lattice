@@ -92,6 +92,9 @@ pub fn run() {
             note_history_restore,
             graph_build,
             folder_tree,
+            folder_create,
+            folder_update,
+            folder_delete,
             meta_overview
         ])
         .run(tauri::generate_context!())
@@ -374,6 +377,47 @@ fn meta_overview(state: State<'_, WorkspaceState>) -> Result<MetaOverview, Strin
             .index()
             .meta_overview(workspace.vault())
             .map_err(|error| ServiceError::new("META_ERROR", error))
+    })
+}
+
+#[tauri::command]
+fn folder_create(
+    state: State<'_, WorkspaceState>,
+    name: String,
+    parent_path: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<FolderNode, String> {
+    with_workspace(state, |workspace| {
+        workspace.folder_create(&name, parent_path.as_deref(), confirmed.unwrap_or(false))
+    })
+}
+
+#[tauri::command]
+fn folder_update(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    name: Option<String>,
+    new_parent_path: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<Vec<FolderNode>, String> {
+    with_workspace(state, |workspace| {
+        workspace.folder_update(&id, name, new_parent_path.as_deref(), confirmed.unwrap_or(false))
+    })
+}
+
+#[tauri::command]
+fn folder_delete(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<Vec<FolderNode>, String> {
+    with_workspace(state, |workspace| {
+        workspace.folder_delete(
+            &id,
+            confirmed.unwrap_or(false),
+            second_confirmed.unwrap_or(false),
+        )
     })
 }
 

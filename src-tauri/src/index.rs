@@ -902,6 +902,20 @@ fn folder_id_for(path: &str) -> Option<String> {
     Some(stable_id(&directory))
 }
 
+/// 目录路径 → 确定性 id（folder 写命令与树投影共用）。
+pub fn stable_folder_id(directory: &str) -> String {
+    stable_id(directory)
+}
+
+/// 由确定性 id 反查磁盘目录相对路径（folder 写命令定位用）。
+pub fn directory_path_for_id(vault: &Vault, id: &str) -> Option<String> {
+    vault
+        .walk_directories()
+        .ok()?
+        .into_iter()
+        .find(|directory| stable_id(directory) == id)
+}
+
 /// 已索引行的 `路径 -> (size, modified_at)`，用于增量比对。
 fn load_metadata(connection: &Connection) -> Result<HashMap<String, (i64, Option<i64>)>, String> {
     let mut statement = connection
