@@ -198,7 +198,8 @@
 ## 5. 双轨映射核销（P1-05 收尾，2026-10-14）
 
 > 问题：P1-04 交付了 59 个 Rust 命令，但**命令存在 ≠ 前端路由能用**。为写「HTTP 路由 → 命令」映射表，对前端 81 个 `http.*` 调用点归并出的 58 条非 AI/MCP 路由逐条比对入参与返回结构。
-> **结果：34 条可对齐进表（31 直接 + 3 需适配），24 条排除**（11 缺命令 / 13 结构不兼容）。
+> **结果：审计时为 34 条可对齐进表（31 直接 + 3 需适配），24 条排除（11 缺命令 / 13 结构不兼容）。**
+> **后续回收（Δ13 处置）：截至 `2d34ae9` 已回收 1 条 —— `GET /notes/index`（Rust 补上 `properties` 对象后结构完全对齐），现为 35 条进表 / 23 条排除（12 结构不兼容）。**
 > 权威清单与行号证据：`web/src/api/ipc-routes.ts` 末尾「排除清单」；执行侧登记见 execution-log.md Δ13。
 
 ### 5.1 已可对齐（34）
@@ -214,7 +215,7 @@
 | `GET /vault/info` | 命令只回 `{path}`，前端消费 `vaultDir` + `profile` |
 | `POST /vault/attachments` | 命令无 `folder` 形参；返回裸 String 而前端读 `uploaded.path/name` |
 | `GET /vault/download` | 前端直接 `fetch`+`blob()`；命令返回 base64 JSON |
-| `GET /notes/index` | 命令发 `propertiesJson`(string)，前端当对象消费 |
+| `GET /notes/index` | ~~命令发 `propertiesJson`(string)，前端当对象消费~~ **已修（`2d34ae9`）：Rust 同时发 `properties` 对象，该路由已回收进表** |
 | `POST /notes` | `note_create` 无 `folder_id` 形参 |
 | `PATCH /notes/:id` | `note_update` 无 `folder_id` 形参（移动笔记无法表达） |
 | `GET /notes/:id/history` | 前端期望 `{items,currentHash}`，命令回数组 |
@@ -251,7 +252,8 @@
 
 - **静态参数契约**：`web/test/ipc-args-contract.test.mjs` —— 逐命令断言「映射表 args 构造器产出的键 ⊆ Rust 形参」且「Rust 必填形参都被提供」（多传键会被 invoke 拒绝、少传必填参数会运行时报错）。34 条路由全覆盖。
 - **运行时结构对齐**：`src-tauri/src/parity_tests.rs` —— 重建 `seed/vault` 后按 fixture 时序回放，逐字段 diff。
-- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **27 个命令 / 99 条**。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
+- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **26 个命令 / 96 条**（首版 27 / 99，随 Δ13 增量收缩）。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
+- 收缩时可能**同时暴露更深一层**的差异：补齐 `properties` 对象后，`note_update` 立刻多出 `properties.status`/`properties.type` 两条——因为原先 `properties` 整个缺失，diff 看不见对象内部。这类「净减少但更精确」的变化是预期行为，不要当成回归。
 - 差异种类：`missing-in-rust`（Express 有、Rust 无）/ `extra-in-rust` / `type-mismatch` / `error`（Rust 直接报错）。
 - 当前**唯一** `error` 类：`vault_read_asset`（`read_asset` 白名单窄于 Express，见 Δ14，待产品定夺；**不可**为消除它而擅自放宽安全边界）。
 - 已知的若干条差异已是 5.2 各条结论的实测映射，例如：`note_index` 缺 `properties`(object)、`vault_info` 多 `path` 且缺 `vaultDir`/`profile`/`mode`、`canvas_list` 元素 `string` vs `object`、`folder_update` 返回 `array`（全树）vs `object`（单节点）。
