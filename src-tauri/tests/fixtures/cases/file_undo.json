@@ -1,0 +1,37 @@
+{
+  "command": "file_undo",
+  "http": {
+    "method": "POST",
+    "path": "/api/files/undo",
+    "query": {},
+    "body": {
+      "operationId": "<operationId>",
+      "force": false
+    },
+    "status": 200
+  },
+  "data": {
+    "operationId": "<operationId>",
+    "planId": "<uuid>",
+    "undone": true
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "operationId": {
+        "type": "string"
+      },
+      "planId": {
+        "type": "string"
+      },
+      "undone": {
+        "type": "boolean"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.body.operationId",
+    "$.data.operationId",
+    "$.data.planId"
+  ]
+}

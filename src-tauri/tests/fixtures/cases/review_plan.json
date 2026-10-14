@@ -1,0 +1,245 @@
+{
+  "command": "review_plan",
+  "http": {
+    "method": "POST",
+    "path": "/api/review/health/plan",
+    "query": {},
+    "body": {
+      "findingIds": [
+        "f1a00000-0000-4000-8000-000000000011"
+      ],
+      "staleDays": 90,
+      "limit": 100
+    },
+    "status": 200
+  },
+  "data": {
+    "id": "<uuid>",
+    "version": 1,
+    "planHash": "<hash>",
+    "createdAt": "<timestamp>",
+    "expiresAt": "<timestamp>",
+    "findingIds": [
+      "f1a00000-0000-4000-8000-000000000011"
+    ],
+    "actions": [
+      {
+        "id": "update:f1a00000-0000-4000-8000-000000000011",
+        "type": "update",
+        "noteId": "f1a00000-0000-4000-8000-000000000011",
+        "path": "Alpha 笔记.md",
+        "summary": "补全来源为当前 Vault 路径",
+        "fullPath": "<vault>\\Alpha 笔记.md",
+        "directory": "<vault>",
+        "reversible": true
+      }
+    ],
+    "changes": [
+      {
+        "id": "update:f1a00000-0000-4000-8000-000000000011",
+        "type": "update",
+        "noteId": "f1a00000-0000-4000-8000-000000000011",
+        "path": "Alpha 笔记.md",
+        "summary": "补全来源为当前 Vault 路径",
+        "fullPath": "<vault>\\Alpha 笔记.md",
+        "directory": "<vault>",
+        "reversible": true
+      }
+    ],
+    "manual": [
+      {
+        "findingId": "f1a00000-0000-4000-8000-000000000011",
+        "category": "inbox",
+        "title": "Alpha 笔记",
+        "reason": "Inbox 归类需要结合上下文，保留在 Inbox 等待人工归档"
+      },
+      {
+        "findingId": "f1a00000-0000-4000-8000-000000000011",
+        "category": "incomplete",
+        "title": "Alpha 笔记",
+        "reason": "结构调整会改变知识组织方式，暂不自动移动或补造关系"
+      }
+    ],
+    "summary": {
+      "total": 3,
+      "changes": 1,
+      "manual": 2,
+      "deletes": 0
+    },
+    "confirmation": {
+      "required": true,
+      "secondConfirmationRequired": false,
+      "itemCount": 1,
+      "deleteCount": 0,
+      "paths": [
+        "<vault>\\Alpha 笔记.md"
+      ]
+    }
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "version": {
+        "type": "number"
+      },
+      "planHash": {
+        "type": "string"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "expiresAt": {
+        "type": "string"
+      },
+      "findingIds": {
+        "type": "array",
+        "element": {
+          "type": "string"
+        },
+        "length": 1
+      },
+      "actions": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "noteId": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "fullPath": {
+              "type": "string"
+            },
+            "directory": {
+              "type": "string"
+            },
+            "reversible": {
+              "type": "boolean"
+            }
+          }
+        },
+        "length": 1
+      },
+      "changes": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "noteId": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "fullPath": {
+              "type": "string"
+            },
+            "directory": {
+              "type": "string"
+            },
+            "reversible": {
+              "type": "boolean"
+            }
+          }
+        },
+        "length": 1
+      },
+      "manual": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "findingId": {
+              "type": "string"
+            },
+            "category": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 2
+      },
+      "summary": {
+        "type": "object",
+        "fields": {
+          "total": {
+            "type": "number"
+          },
+          "changes": {
+            "type": "number"
+          },
+          "manual": {
+            "type": "number"
+          },
+          "deletes": {
+            "type": "number"
+          }
+        }
+      },
+      "confirmation": {
+        "type": "object",
+        "fields": {
+          "required": {
+            "type": "boolean"
+          },
+          "secondConfirmationRequired": {
+            "type": "boolean"
+          },
+          "itemCount": {
+            "type": "number"
+          },
+          "deleteCount": {
+            "type": "number"
+          },
+          "paths": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 1
+          }
+        }
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.id",
+    "$.data.planHash",
+    "$.data.createdAt",
+    "$.data.expiresAt",
+    "$.data.actions[0].fullPath",
+    "$.data.actions[0].directory",
+    "$.data.changes[0].fullPath",
+    "$.data.changes[0].directory",
+    "$.data.confirmation.paths[0]"
+  ]
+}

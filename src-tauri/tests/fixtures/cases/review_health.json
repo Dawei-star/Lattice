@@ -1,0 +1,1046 @@
+{
+  "command": "review_health",
+  "http": {
+    "method": "GET",
+    "path": "/api/review/health",
+    "query": {
+      "staleDays": 90,
+      "limit": 100
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "scannedAt": "<timestamp>",
+    "noteCount": 4,
+    "staleDays": 90,
+    "limits": {
+      "perCategory": 100
+    },
+    "summary": {
+      "total": 12,
+      "counts": {
+        "inbox": 1,
+        "brokenLinks": 1,
+        "isolated": 2,
+        "stale": 0,
+        "duplicates": 0,
+        "conflicts": 0,
+        "metadata": 4,
+        "taxonomy": 0,
+        "incomplete": 4
+      },
+      "hardTotal": 2,
+      "warningTotal": 4,
+      "candidateTotal": 6,
+      "healthScore": 0,
+      "topPriority": [
+        {
+          "id": "broken-link:attachments/att-referenced.txt",
+          "kind": "broken-link",
+          "priority": 100
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "kind": "note",
+          "priority": 100
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000012",
+          "kind": "metadata",
+          "priority": 70
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000013",
+          "kind": "metadata",
+          "priority": 70
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000014",
+          "kind": "metadata",
+          "priority": 70
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "kind": "metadata",
+          "priority": 70
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000012",
+          "kind": "note",
+          "priority": 40
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000013",
+          "kind": "note",
+          "priority": 40
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000013",
+          "kind": "note",
+          "priority": 40
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000014",
+          "kind": "note",
+          "priority": 40
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000014",
+          "kind": "note",
+          "priority": 40
+        },
+        {
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "kind": "note",
+          "priority": 40
+        }
+      ]
+    },
+    "categories": {
+      "inbox": [
+        {
+          "status": "open",
+          "severity": "error",
+          "confidence": "high",
+          "priority": 100,
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "kind": "note",
+          "title": "Alpha 笔记",
+          "path": "Alpha 笔记.md",
+          "folderId": null,
+          "updatedAt": "<timestamp>",
+          "wordCount": 12,
+          "reason": "Inbox 中仍处于「captured」状态",
+          "inboxStatus": "captured"
+        }
+      ],
+      "brokenLinks": [
+        {
+          "id": "broken-link:attachments/att-referenced.txt",
+          "kind": "broken-link",
+          "targetTitle": "attachments/att-referenced.txt",
+          "referenceCount": 1,
+          "sources": [
+            {
+              "id": "f1a00000-0000-4000-8000-000000000012",
+              "title": "Beta 笔记",
+              "path": "项目/Beta 笔记.md"
+            }
+          ],
+          "reason": "有 1 篇笔记引用「attachments/att-referenced.txt」，但目标笔记尚不存在",
+          "status": "open",
+          "severity": "error",
+          "confidence": "high",
+          "priority": 100
+        }
+      ],
+      "isolated": [
+        {
+          "status": "open",
+          "severity": "candidate",
+          "confidence": "review",
+          "priority": 40,
+          "id": "f1a00000-0000-4000-8000-000000000013",
+          "kind": "note",
+          "title": "待移动笔记",
+          "path": "待移动笔记.md",
+          "folderId": null,
+          "updatedAt": "<timestamp>",
+          "wordCount": 6,
+          "reason": "没有出链，也没有其他笔记引用它",
+          "outgoingCount": 0,
+          "backlinkCount": 0
+        },
+        {
+          "status": "open",
+          "severity": "candidate",
+          "confidence": "review",
+          "priority": 40,
+          "id": "f1a00000-0000-4000-8000-000000000014",
+          "kind": "note",
+          "title": "待删除笔记",
+          "path": "项目/归档/待删除笔记.md",
+          "folderId": "<uuid>",
+          "updatedAt": "<timestamp>",
+          "wordCount": 9,
+          "reason": "没有出链，也没有其他笔记引用它",
+          "outgoingCount": 0,
+          "backlinkCount": 0
+        }
+      ],
+      "stale": [],
+      "duplicates": [],
+      "conflicts": [],
+      "metadata": [
+        {
+          "status": "open",
+          "severity": "warning",
+          "confidence": "review",
+          "priority": 70,
+          "id": "f1a00000-0000-4000-8000-000000000012",
+          "kind": "metadata",
+          "title": "Beta 笔记",
+          "path": "项目/Beta 笔记.md",
+          "folderId": "<uuid>",
+          "updatedAt": "<timestamp>",
+          "wordCount": 10,
+          "missing": [
+            "来源"
+          ],
+          "metadata": {
+            "hasTags": true,
+            "hasSource": false,
+            "hasTimestamps": true
+          },
+          "reason": "缺少元数据：来源"
+        },
+        {
+          "status": "open",
+          "severity": "warning",
+          "confidence": "review",
+          "priority": 70,
+          "id": "f1a00000-0000-4000-8000-000000000013",
+          "kind": "metadata",
+          "title": "待移动笔记",
+          "path": "待移动笔记.md",
+          "folderId": null,
+          "updatedAt": "<timestamp>",
+          "wordCount": 6,
+          "missing": [
+            "标签",
+            "来源"
+          ],
+          "metadata": {
+            "hasTags": false,
+            "hasSource": false,
+            "hasTimestamps": true
+          },
+          "reason": "缺少元数据：标签、来源"
+        },
+        {
+          "status": "open",
+          "severity": "warning",
+          "confidence": "review",
+          "priority": 70,
+          "id": "f1a00000-0000-4000-8000-000000000014",
+          "kind": "metadata",
+          "title": "待删除笔记",
+          "path": "项目/归档/待删除笔记.md",
+          "folderId": "<uuid>",
+          "updatedAt": "<timestamp>",
+          "wordCount": 9,
+          "missing": [
+            "来源"
+          ],
+          "metadata": {
+            "hasTags": true,
+            "hasSource": false,
+            "hasTimestamps": true
+          },
+          "reason": "缺少元数据：来源"
+        },
+        {
+          "status": "open",
+          "severity": "warning",
+          "confidence": "review",
+          "priority": 70,
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "kind": "metadata",
+          "title": "Alpha 笔记",
+          "path": "Alpha 笔记.md",
+          "folderId": null,
+          "updatedAt": "<timestamp>",
+          "wordCount": 12,
+          "missing": [
+            "来源"
+          ],
+          "metadata": {
+            "hasTags": true,
+            "hasSource": false,
+            "hasTimestamps": true
+          },
+          "reason": "缺少元数据：来源"
+        }
+      ],
+      "taxonomy": [],
+      "incomplete": [
+        {
+          "status": "open",
+          "severity": "candidate",
+          "confidence": "review",
+          "priority": 40,
+          "id": "f1a00000-0000-4000-8000-000000000012",
+          "kind": "note",
+          "title": "Beta 笔记",
+          "path": "项目/Beta 笔记.md",
+          "folderId": "<uuid>",
+          "updatedAt": "<timestamp>",
+          "wordCount": 10,
+          "missing": [
+            "缺少自定义属性"
+          ],
+          "reason": "缺少自定义属性"
+        },
+        {
+          "status": "open",
+          "severity": "candidate",
+          "confidence": "review",
+          "priority": 40,
+          "id": "f1a00000-0000-4000-8000-000000000013",
+          "kind": "note",
+          "title": "待移动笔记",
+          "path": "待移动笔记.md",
+          "folderId": null,
+          "updatedAt": "<timestamp>",
+          "wordCount": 6,
+          "missing": [
+            "未归入目录",
+            "没有标签",
+            "缺少自定义属性"
+          ],
+          "reason": "未归入目录、没有标签、缺少自定义属性"
+        },
+        {
+          "status": "open",
+          "severity": "candidate",
+          "confidence": "review",
+          "priority": 40,
+          "id": "f1a00000-0000-4000-8000-000000000014",
+          "kind": "note",
+          "title": "待删除笔记",
+          "path": "项目/归档/待删除笔记.md",
+          "folderId": "<uuid>",
+          "updatedAt": "<timestamp>",
+          "wordCount": 9,
+          "missing": [
+            "缺少自定义属性"
+          ],
+          "reason": "缺少自定义属性"
+        },
+        {
+          "status": "open",
+          "severity": "candidate",
+          "confidence": "review",
+          "priority": 40,
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "kind": "note",
+          "title": "Alpha 笔记",
+          "path": "Alpha 笔记.md",
+          "folderId": null,
+          "updatedAt": "<timestamp>",
+          "wordCount": 12,
+          "missing": [
+            "未归入目录",
+            "缺少自定义属性"
+          ],
+          "reason": "未归入目录、缺少自定义属性"
+        }
+      ]
+    },
+    "prioritized": [
+      {
+        "id": "broken-link:attachments/att-referenced.txt",
+        "kind": "broken-link",
+        "targetTitle": "attachments/att-referenced.txt",
+        "referenceCount": 1,
+        "sources": [
+          {
+            "id": "f1a00000-0000-4000-8000-000000000012",
+            "title": "Beta 笔记",
+            "path": "项目/Beta 笔记.md"
+          }
+        ],
+        "reason": "有 1 篇笔记引用「attachments/att-referenced.txt」，但目标笔记尚不存在",
+        "status": "open",
+        "severity": "error",
+        "confidence": "high",
+        "priority": 100
+      },
+      {
+        "status": "open",
+        "severity": "error",
+        "confidence": "high",
+        "priority": 100,
+        "id": "f1a00000-0000-4000-8000-000000000011",
+        "kind": "note",
+        "title": "Alpha 笔记",
+        "path": "Alpha 笔记.md",
+        "folderId": null,
+        "updatedAt": "<timestamp>",
+        "wordCount": 12,
+        "reason": "Inbox 中仍处于「captured」状态",
+        "inboxStatus": "captured"
+      },
+      {
+        "status": "open",
+        "severity": "warning",
+        "confidence": "review",
+        "priority": 70,
+        "id": "f1a00000-0000-4000-8000-000000000012",
+        "kind": "metadata",
+        "title": "Beta 笔记",
+        "path": "项目/Beta 笔记.md",
+        "folderId": "<uuid>",
+        "updatedAt": "<timestamp>",
+        "wordCount": 10,
+        "missing": [
+          "来源"
+        ],
+        "metadata": {
+          "hasTags": true,
+          "hasSource": false,
+          "hasTimestamps": true
+        },
+        "reason": "缺少元数据：来源"
+      },
+      {
+        "status": "open",
+        "severity": "warning",
+        "confidence": "review",
+        "priority": 70,
+        "id": "f1a00000-0000-4000-8000-000000000013",
+        "kind": "metadata",
+        "title": "待移动笔记",
+        "path": "待移动笔记.md",
+        "folderId": null,
+        "updatedAt": "<timestamp>",
+        "wordCount": 6,
+        "missing": [
+          "标签",
+          "来源"
+        ],
+        "metadata": {
+          "hasTags": false,
+          "hasSource": false,
+          "hasTimestamps": true
+        },
+        "reason": "缺少元数据：标签、来源"
+      },
+      {
+        "status": "open",
+        "severity": "warning",
+        "confidence": "review",
+        "priority": 70,
+        "id": "f1a00000-0000-4000-8000-000000000014",
+        "kind": "metadata",
+        "title": "待删除笔记",
+        "path": "项目/归档/待删除笔记.md",
+        "folderId": "<uuid>",
+        "updatedAt": "<timestamp>",
+        "wordCount": 9,
+        "missing": [
+          "来源"
+        ],
+        "metadata": {
+          "hasTags": true,
+          "hasSource": false,
+          "hasTimestamps": true
+        },
+        "reason": "缺少元数据：来源"
+      },
+      {
+        "status": "open",
+        "severity": "warning",
+        "confidence": "review",
+        "priority": 70,
+        "id": "f1a00000-0000-4000-8000-000000000011",
+        "kind": "metadata",
+        "title": "Alpha 笔记",
+        "path": "Alpha 笔记.md",
+        "folderId": null,
+        "updatedAt": "<timestamp>",
+        "wordCount": 12,
+        "missing": [
+          "来源"
+        ],
+        "metadata": {
+          "hasTags": true,
+          "hasSource": false,
+          "hasTimestamps": true
+        },
+        "reason": "缺少元数据：来源"
+      },
+      {
+        "status": "open",
+        "severity": "candidate",
+        "confidence": "review",
+        "priority": 40,
+        "id": "f1a00000-0000-4000-8000-000000000012",
+        "kind": "note",
+        "title": "Beta 笔记",
+        "path": "项目/Beta 笔记.md",
+        "folderId": "<uuid>",
+        "updatedAt": "<timestamp>",
+        "wordCount": 10,
+        "missing": [
+          "缺少自定义属性"
+        ],
+        "reason": "缺少自定义属性"
+      },
+      {
+        "status": "open",
+        "severity": "candidate",
+        "confidence": "review",
+        "priority": 40,
+        "id": "f1a00000-0000-4000-8000-000000000013",
+        "kind": "note",
+        "title": "待移动笔记",
+        "path": "待移动笔记.md",
+        "folderId": null,
+        "updatedAt": "<timestamp>",
+        "wordCount": 6,
+        "reason": "没有出链，也没有其他笔记引用它",
+        "outgoingCount": 0,
+        "backlinkCount": 0
+      },
+      {
+        "status": "open",
+        "severity": "candidate",
+        "confidence": "review",
+        "priority": 40,
+        "id": "f1a00000-0000-4000-8000-000000000013",
+        "kind": "note",
+        "title": "待移动笔记",
+        "path": "待移动笔记.md",
+        "folderId": null,
+        "updatedAt": "<timestamp>",
+        "wordCount": 6,
+        "missing": [
+          "未归入目录",
+          "没有标签",
+          "缺少自定义属性"
+        ],
+        "reason": "未归入目录、没有标签、缺少自定义属性"
+      },
+      {
+        "status": "open",
+        "severity": "candidate",
+        "confidence": "review",
+        "priority": 40,
+        "id": "f1a00000-0000-4000-8000-000000000014",
+        "kind": "note",
+        "title": "待删除笔记",
+        "path": "项目/归档/待删除笔记.md",
+        "folderId": "<uuid>",
+        "updatedAt": "<timestamp>",
+        "wordCount": 9,
+        "reason": "没有出链，也没有其他笔记引用它",
+        "outgoingCount": 0,
+        "backlinkCount": 0
+      },
+      {
+        "status": "open",
+        "severity": "candidate",
+        "confidence": "review",
+        "priority": 40,
+        "id": "f1a00000-0000-4000-8000-000000000014",
+        "kind": "note",
+        "title": "待删除笔记",
+        "path": "项目/归档/待删除笔记.md",
+        "folderId": "<uuid>",
+        "updatedAt": "<timestamp>",
+        "wordCount": 9,
+        "missing": [
+          "缺少自定义属性"
+        ],
+        "reason": "缺少自定义属性"
+      },
+      {
+        "status": "open",
+        "severity": "candidate",
+        "confidence": "review",
+        "priority": 40,
+        "id": "f1a00000-0000-4000-8000-000000000011",
+        "kind": "note",
+        "title": "Alpha 笔记",
+        "path": "Alpha 笔记.md",
+        "folderId": null,
+        "updatedAt": "<timestamp>",
+        "wordCount": 12,
+        "missing": [
+          "未归入目录",
+          "缺少自定义属性"
+        ],
+        "reason": "未归入目录、缺少自定义属性"
+      }
+    ]
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "scannedAt": {
+        "type": "string"
+      },
+      "noteCount": {
+        "type": "number"
+      },
+      "staleDays": {
+        "type": "number"
+      },
+      "limits": {
+        "type": "object",
+        "fields": {
+          "perCategory": {
+            "type": "number"
+          }
+        }
+      },
+      "summary": {
+        "type": "object",
+        "fields": {
+          "total": {
+            "type": "number"
+          },
+          "counts": {
+            "type": "object",
+            "fields": {
+              "inbox": {
+                "type": "number"
+              },
+              "brokenLinks": {
+                "type": "number"
+              },
+              "isolated": {
+                "type": "number"
+              },
+              "stale": {
+                "type": "number"
+              },
+              "duplicates": {
+                "type": "number"
+              },
+              "conflicts": {
+                "type": "number"
+              },
+              "metadata": {
+                "type": "number"
+              },
+              "taxonomy": {
+                "type": "number"
+              },
+              "incomplete": {
+                "type": "number"
+              }
+            }
+          },
+          "hardTotal": {
+            "type": "number"
+          },
+          "warningTotal": {
+            "type": "number"
+          },
+          "candidateTotal": {
+            "type": "number"
+          },
+          "healthScore": {
+            "type": "number"
+          },
+          "topPriority": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                }
+              }
+            },
+            "length": 12
+          }
+        }
+      },
+      "categories": {
+        "type": "object",
+        "fields": {
+          "inbox": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "status": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "folderId": {
+                  "type": "null"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "wordCount": {
+                  "type": "number"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "inboxStatus": {
+                  "type": "string"
+                }
+              }
+            },
+            "length": 1
+          },
+          "brokenLinks": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "targetTitle": {
+                  "type": "string"
+                },
+                "referenceCount": {
+                  "type": "number"
+                },
+                "sources": {
+                  "type": "array",
+                  "element": {
+                    "type": "object",
+                    "fields": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "path": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "length": 1
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                }
+              }
+            },
+            "length": 1
+          },
+          "isolated": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "status": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "folderId": {
+                  "type": "null"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "wordCount": {
+                  "type": "number"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "outgoingCount": {
+                  "type": "number"
+                },
+                "backlinkCount": {
+                  "type": "number"
+                }
+              }
+            },
+            "length": 2
+          },
+          "stale": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          },
+          "duplicates": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          },
+          "conflicts": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          },
+          "metadata": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "status": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "folderId": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "wordCount": {
+                  "type": "number"
+                },
+                "missing": {
+                  "type": "array",
+                  "element": {
+                    "type": "string"
+                  },
+                  "length": 1
+                },
+                "metadata": {
+                  "type": "object",
+                  "fields": {
+                    "hasTags": {
+                      "type": "boolean"
+                    },
+                    "hasSource": {
+                      "type": "boolean"
+                    },
+                    "hasTimestamps": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            },
+            "length": 4
+          },
+          "taxonomy": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          },
+          "incomplete": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "status": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "folderId": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "wordCount": {
+                  "type": "number"
+                },
+                "missing": {
+                  "type": "array",
+                  "element": {
+                    "type": "string"
+                  },
+                  "length": 1
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            },
+            "length": 4
+          }
+        }
+      },
+      "prioritized": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "targetTitle": {
+              "type": "string"
+            },
+            "referenceCount": {
+              "type": "number"
+            },
+            "sources": {
+              "type": "array",
+              "element": {
+                "type": "object",
+                "fields": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              },
+              "length": 1
+            },
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "severity": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "string"
+            },
+            "priority": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 12
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.scannedAt",
+    "$.data.categories.inbox[0].updatedAt",
+    "$.data.categories.isolated[0].updatedAt",
+    "$.data.categories.isolated[1].folderId",
+    "$.data.categories.isolated[1].updatedAt",
+    "$.data.categories.metadata[0].folderId",
+    "$.data.categories.metadata[0].updatedAt",
+    "$.data.categories.metadata[1].updatedAt",
+    "$.data.categories.metadata[2].folderId",
+    "$.data.categories.metadata[2].updatedAt",
+    "$.data.categories.metadata[3].updatedAt",
+    "$.data.categories.incomplete[0].folderId",
+    "$.data.categories.incomplete[0].updatedAt",
+    "$.data.categories.incomplete[1].updatedAt",
+    "$.data.categories.incomplete[2].folderId",
+    "$.data.categories.incomplete[2].updatedAt",
+    "$.data.categories.incomplete[3].updatedAt",
+    "$.data.prioritized[1].updatedAt",
+    "$.data.prioritized[2].folderId",
+    "$.data.prioritized[2].updatedAt",
+    "$.data.prioritized[3].updatedAt",
+    "$.data.prioritized[4].folderId",
+    "$.data.prioritized[4].updatedAt",
+    "$.data.prioritized[5].updatedAt",
+    "$.data.prioritized[6].folderId",
+    "$.data.prioritized[6].updatedAt",
+    "$.data.prioritized[7].updatedAt",
+    "$.data.prioritized[8].updatedAt",
+    "$.data.prioritized[9].folderId",
+    "$.data.prioritized[9].updatedAt",
+    "$.data.prioritized[10].folderId",
+    "$.data.prioritized[10].updatedAt",
+    "$.data.prioritized[11].updatedAt"
+  ]
+}

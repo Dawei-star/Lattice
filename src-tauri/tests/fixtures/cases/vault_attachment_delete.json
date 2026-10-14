@@ -1,0 +1,30 @@
+{
+  "command": "vault_attachment_delete",
+  "http": {
+    "method": "DELETE",
+    "path": "/api/vault/attachments",
+    "query": {
+      "path": "attachments/att-fixture.txt",
+      "confirmed": "true",
+      "secondConfirmed": "true"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "path": "attachments/att-fixture.txt",
+    "deleted": true
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "path": {
+        "type": "string"
+      },
+      "deleted": {
+        "type": "boolean"
+      }
+    }
+  },
+  "volatilePaths": []
+}

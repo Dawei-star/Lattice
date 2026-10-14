@@ -1,0 +1,30 @@
+{
+  "command": "canvas_move",
+  "http": {
+    "method": "PATCH",
+    "path": "/api/canvas/file",
+    "query": {},
+    "body": {
+      "fromPath": "fix-canvas.canvas",
+      "toPath": "fix-canvas-moved.canvas",
+      "confirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "fromPath": "fix-canvas.canvas",
+    "toPath": "fix-canvas-moved.canvas"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "fromPath": {
+        "type": "string"
+      },
+      "toPath": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": []
+}

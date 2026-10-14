@@ -1,0 +1,44 @@
+{
+  "command": "vault_attachment_upload",
+  "http": {
+    "method": "POST",
+    "path": "/api/vault/attachments",
+    "query": {
+      "name": "att-fixture.txt",
+      "confirmed": "true"
+    },
+    "body": null,
+    "status": 201
+  },
+  "data": {
+    "path": "attachments/att-fixture.txt",
+    "name": "att-fixture.txt",
+    "mimeType": "text/plain",
+    "size": 19,
+    "modifiedAt": "<timestamp>"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "path": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "mimeType": {
+        "type": "string"
+      },
+      "size": {
+        "type": "number"
+      },
+      "modifiedAt": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.modifiedAt"
+  ],
+  "note": "raw 请求体；query 携带 name/confirmed。命令侧参数改为字节数组。"
+}

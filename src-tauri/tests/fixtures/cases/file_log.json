@@ -1,0 +1,125 @@
+{
+  "command": "file_log",
+  "http": {
+    "method": "GET",
+    "path": "/api/files/log",
+    "query": {
+      "limit": 20
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "<uuid>",
+      "at": "<timestamp>",
+      "planVersion": 1,
+      "planId": "<uuid>",
+      "actor": "local-user",
+      "role": "editor",
+      "source": "files-api",
+      "status": "completed",
+      "type": "undo",
+      "path": null,
+      "targetPath": null,
+      "action": {
+        "id": null,
+        "type": "undo",
+        "path": null,
+        "targetPath": null
+      },
+      "operationId": "<operationId>"
+    },
+    {
+      "id": "<operationId>",
+      "at": "<timestamp>",
+      "planVersion": 1,
+      "planId": "<uuid>",
+      "actor": "local-user",
+      "role": "editor",
+      "source": "files-api",
+      "status": "completed",
+      "type": "create",
+      "path": "fixture-executed.txt",
+      "targetPath": null,
+      "action": {
+        "id": "op-1",
+        "type": "create",
+        "path": "fixture-executed.txt"
+      },
+      "operationId": "<operationId>"
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string"
+        },
+        "planVersion": {
+          "type": "number"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "path": {
+          "type": "null"
+        },
+        "targetPath": {
+          "type": "null"
+        },
+        "action": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "null"
+            },
+            "type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "null"
+            },
+            "targetPath": {
+              "type": "null"
+            }
+          }
+        },
+        "operationId": {
+          "type": "string"
+        }
+      }
+    },
+    "length": 2
+  },
+  "volatilePaths": [
+    "$.data[0].id",
+    "$.data[0].at",
+    "$.data[0].planId",
+    "$.data[0].operationId",
+    "$.data[1].id",
+    "$.data[1].at",
+    "$.data[1].planId",
+    "$.data[1].operationId"
+  ]
+}

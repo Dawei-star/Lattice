@@ -1,0 +1,73 @@
+{
+  "command": "canvas_read",
+  "http": {
+    "method": "GET",
+    "path": "/api/canvas/",
+    "query": {
+      "path": "seed-canvas.canvas"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "nodes": [
+      {
+        "id": "seed-node-1",
+        "type": "text",
+        "text": "种子节点",
+        "x": 0,
+        "y": 0,
+        "width": 200,
+        "height": 100
+      }
+    ],
+    "edges": [],
+    "revision": "<hash>"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "nodes": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "width": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 1
+      },
+      "edges": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "revision": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.revision"
+  ]
+}

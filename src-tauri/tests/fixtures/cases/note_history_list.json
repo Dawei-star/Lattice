@@ -1,0 +1,56 @@
+{
+  "command": "note_history_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/notes/f1a00000-0000-4000-8000-000000000011/history",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "items": [
+      {
+        "version": "<version>",
+        "hash": "<hash>",
+        "createdAt": "<timestamp>",
+        "size": 245
+      }
+    ],
+    "currentHash": "<hash>"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "items": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "version": {
+              "type": "string"
+            },
+            "hash": {
+              "type": "string"
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "size": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 1
+      },
+      "currentHash": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.items[0].version",
+    "$.data.items[0].hash",
+    "$.data.items[0].createdAt",
+    "$.data.currentHash"
+  ]
+}

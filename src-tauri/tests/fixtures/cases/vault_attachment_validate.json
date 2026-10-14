@@ -1,0 +1,42 @@
+{
+  "command": "vault_attachment_validate",
+  "http": {
+    "method": "POST",
+    "path": "/api/vault/attachments/validate",
+    "query": {},
+    "body": {
+      "content": "引用 ![[attachments/att-referenced.txt]] 与 ![[attachments/missing.txt]]\n",
+      "filePath": "Alpha 笔记.md"
+    },
+    "status": 200
+  },
+  "data": {
+    "references": [
+      "attachments/att-referenced.txt",
+      "attachments/missing.txt"
+    ],
+    "missing": [
+      "attachments/missing.txt"
+    ]
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "references": {
+        "type": "array",
+        "element": {
+          "type": "string"
+        },
+        "length": 2
+      },
+      "missing": {
+        "type": "array",
+        "element": {
+          "type": "string"
+        },
+        "length": 1
+      }
+    }
+  },
+  "volatilePaths": []
+}

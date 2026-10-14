@@ -1,0 +1,141 @@
+{
+  "command": "note_history_restore",
+  "http": {
+    "method": "POST",
+    "path": "/api/notes/f1a00000-0000-4000-8000-000000000011/history/<version>/restore",
+    "query": {},
+    "body": {
+      "confirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "id": "f1a00000-0000-4000-8000-000000000011",
+    "title": "Alpha 笔记",
+    "content": "Alpha 的正文\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n",
+    "folderId": null,
+    "filePath": "Alpha 笔记.md",
+    "isPinned": false,
+    "wordCount": 12,
+    "contentHash": "<hash>",
+    "propertiesJson": "{\"status\":\"captured\",\"type\":\"inbox\"}",
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "properties": {
+      "status": "captured",
+      "type": "inbox"
+    },
+    "tags": [
+      {
+        "id": "<uuid>",
+        "name": "tag-alpha"
+      }
+    ],
+    "outgoing": [
+      {
+        "targetTitle": "Beta 笔记",
+        "targetNoteId": "f1a00000-0000-4000-8000-000000000012",
+        "resolvedTitle": "Beta 笔记",
+        "resolved": true
+      }
+    ],
+    "backlinks": []
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      },
+      "folderId": {
+        "type": "null"
+      },
+      "filePath": {
+        "type": "string"
+      },
+      "isPinned": {
+        "type": "boolean"
+      },
+      "wordCount": {
+        "type": "number"
+      },
+      "contentHash": {
+        "type": "string"
+      },
+      "propertiesJson": {
+        "type": "string"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "type": "string"
+      },
+      "properties": {
+        "type": "object",
+        "fields": {
+          "status": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "tags": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 1
+      },
+      "outgoing": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "targetTitle": {
+              "type": "string"
+            },
+            "targetNoteId": {
+              "type": "string"
+            },
+            "resolvedTitle": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "boolean"
+            }
+          }
+        },
+        "length": 1
+      },
+      "backlinks": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.path",
+    "$.data.contentHash",
+    "$.data.createdAt",
+    "$.data.updatedAt",
+    "$.data.tags[0].id"
+  ]
+}

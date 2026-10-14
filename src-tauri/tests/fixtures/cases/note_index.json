@@ -1,0 +1,123 @@
+{
+  "command": "note_index",
+  "http": {
+    "method": "GET",
+    "path": "/api/notes/index",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "f1a00000-0000-4000-8000-000000000011",
+      "title": "Alpha 笔记",
+      "folderId": null,
+      "isPinned": false,
+      "filePath": "Alpha 笔记.md",
+      "wordCount": 12,
+      "contentHash": "<hash>",
+      "propertiesJson": "{\"status\":\"captured\",\"type\":\"inbox\"}",
+      "updatedAt": "<timestamp>",
+      "properties": {
+        "status": "captured",
+        "type": "inbox"
+      }
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000012",
+      "title": "Beta 笔记",
+      "folderId": "<uuid>",
+      "isPinned": false,
+      "filePath": "项目/Beta 笔记.md",
+      "wordCount": 10,
+      "contentHash": "<hash>",
+      "propertiesJson": "{}",
+      "updatedAt": "<timestamp>",
+      "properties": {}
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000013",
+      "title": "待移动笔记",
+      "folderId": null,
+      "isPinned": false,
+      "filePath": "待移动笔记.md",
+      "wordCount": 6,
+      "contentHash": "<hash>",
+      "propertiesJson": "{}",
+      "updatedAt": "<timestamp>",
+      "properties": {}
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000014",
+      "title": "待删除笔记",
+      "folderId": "<uuid>",
+      "isPinned": false,
+      "filePath": "项目/归档/待删除笔记.md",
+      "wordCount": 9,
+      "contentHash": "<hash>",
+      "propertiesJson": "{}",
+      "updatedAt": "<timestamp>",
+      "properties": {}
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "folderId": {
+          "type": "null"
+        },
+        "isPinned": {
+          "type": "boolean"
+        },
+        "filePath": {
+          "type": "string"
+        },
+        "wordCount": {
+          "type": "number"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "propertiesJson": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "properties": {
+          "type": "object",
+          "fields": {
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "length": 4
+  },
+  "volatilePaths": [
+    "$.data[0].contentHash",
+    "$.data[0].updatedAt",
+    "$.data[1].folderId",
+    "$.data[1].contentHash",
+    "$.data[1].updatedAt",
+    "$.data[2].contentHash",
+    "$.data[2].updatedAt",
+    "$.data[3].folderId",
+    "$.data[3].contentHash",
+    "$.data[3].updatedAt"
+  ],
+  "note": "Express 同时返回 propertiesJson(string) 与 properties(object)。"
+}

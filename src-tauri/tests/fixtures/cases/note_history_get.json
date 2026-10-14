@@ -1,0 +1,62 @@
+{
+  "command": "note_history_get",
+  "http": {
+    "method": "GET",
+    "path": "/api/notes/f1a00000-0000-4000-8000-000000000011/history/<version>",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "version": "<version>",
+    "hash": "<hash>",
+    "createdAt": "<timestamp>",
+    "title": "Alpha 笔记",
+    "content": "Alpha 的正文\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n",
+    "isPinned": false,
+    "properties": {
+      "status": "captured",
+      "type": "inbox"
+    }
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "version": {
+        "type": "string"
+      },
+      "hash": {
+        "type": "string"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      },
+      "isPinned": {
+        "type": "boolean"
+      },
+      "properties": {
+        "type": "object",
+        "fields": {
+          "status": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.path",
+    "$.data.version",
+    "$.data.hash",
+    "$.data.createdAt"
+  ]
+}

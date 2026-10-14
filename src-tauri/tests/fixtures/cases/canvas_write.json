@@ -1,0 +1,88 @@
+{
+  "command": "canvas_write",
+  "http": {
+    "method": "PUT",
+    "path": "/api/canvas/",
+    "query": {
+      "path": "fix-canvas.canvas"
+    },
+    "body": {
+      "nodes": [
+        {
+          "id": "fix-n1",
+          "type": "text",
+          "text": "固定画布节点",
+          "x": 10,
+          "y": 20,
+          "width": 160,
+          "height": 90
+        }
+      ],
+      "edges": [],
+      "confirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "nodes": [
+      {
+        "id": "fix-n1",
+        "type": "text",
+        "text": "固定画布节点",
+        "x": 10,
+        "y": 20,
+        "width": 160,
+        "height": 90
+      }
+    ],
+    "edges": [],
+    "revision": "<hash>"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "nodes": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "width": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 1
+      },
+      "edges": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "revision": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.revision"
+  ],
+  "note": "新建画布需 confirmed=true；命令侧 body 拆成 nodes/edges。"
+}

@@ -1,0 +1,141 @@
+{
+  "command": "expert_save",
+  "http": {
+    "method": "POST",
+    "path": "/api/experts",
+    "query": {},
+    "body": {
+      "id": "fix-expert-two",
+      "name": "固定专家二",
+      "description": "第二个固定专家",
+      "icon": "sparkles",
+      "enabled": true,
+      "confirmed": true
+    },
+    "status": 201
+  },
+  "data": {
+    "id": "fix-expert-two",
+    "version": "1.0.0",
+    "name": "固定专家二",
+    "description": "第二个固定专家",
+    "icon": "sparkles",
+    "enabled": true,
+    "systemPrompt": "",
+    "scope": {
+      "include": [],
+      "exclude": []
+    },
+    "skills": [],
+    "capabilities": {
+      "context": [
+        "current-note",
+        "project",
+        "vault"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "writePolicy": "confirm",
+      "maxRounds": 6
+    },
+    "routing": {
+      "keywords": [],
+      "priority": 50,
+      "confidenceThreshold": 0.72
+    },
+    "source": "workspace"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "icon": {
+        "type": "string"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "systemPrompt": {
+        "type": "string"
+      },
+      "scope": {
+        "type": "object",
+        "fields": {
+          "include": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          },
+          "exclude": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          }
+        }
+      },
+      "skills": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "capabilities": {
+        "type": "object",
+        "fields": {
+          "context": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 3
+          },
+          "tools": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 2
+          },
+          "writePolicy": {
+            "type": "string"
+          },
+          "maxRounds": {
+            "type": "number"
+          }
+        }
+      },
+      "routing": {
+        "type": "object",
+        "fields": {
+          "keywords": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          },
+          "priority": {
+            "type": "number"
+          },
+          "confidenceThreshold": {
+            "type": "number"
+          }
+        }
+      },
+      "source": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": []
+}

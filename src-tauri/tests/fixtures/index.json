@@ -1,0 +1,541 @@
+{
+  "note": "P1-08 功能对齐验证 fixtures 索引。由 src-tauri/tests/tools/record-fixtures.mjs 生成，幂等：重复运行结果一致。",
+  "coverage": {
+    "recorded": 50,
+    "skipped": 9,
+    "registeredCommands": 59,
+    "endpointsWithoutCommand": 20
+  },
+  "domains": {
+    "vault": [
+      "vault_attachment_cleanup",
+      "vault_attachment_delete",
+      "vault_attachment_references",
+      "vault_attachment_upload",
+      "vault_attachment_validate",
+      "vault_attachments_list",
+      "vault_download",
+      "vault_files_list",
+      "vault_info",
+      "vault_read_asset"
+    ],
+    "notes": [
+      "note_create",
+      "note_delete",
+      "note_history_get",
+      "note_history_list",
+      "note_history_restore",
+      "note_index",
+      "note_update"
+    ],
+    "tags": [
+      "tag_list"
+    ],
+    "search": [
+      "search_query"
+    ],
+    "graph": [
+      "graph_build"
+    ],
+    "meta": [
+      "meta_overview"
+    ],
+    "folders": [
+      "folder_create",
+      "folder_delete",
+      "folder_tree",
+      "folder_update"
+    ],
+    "canvas": [
+      "canvas_delete",
+      "canvas_list",
+      "canvas_move",
+      "canvas_read",
+      "canvas_write"
+    ],
+    "files": [
+      "file_execute",
+      "file_find",
+      "file_grep",
+      "file_log",
+      "file_preview",
+      "file_read",
+      "file_undo"
+    ],
+    "experts": [
+      "expert_delete",
+      "expert_get",
+      "expert_list",
+      "expert_route",
+      "expert_save",
+      "skill_delete",
+      "skill_get",
+      "skill_list",
+      "skill_save"
+    ],
+    "review": [
+      "review_execute",
+      "review_health",
+      "review_plan"
+    ],
+    "jobs": [
+      "job_list"
+    ]
+  },
+  "cases": [
+    {
+      "command": "canvas_delete",
+      "domain": "canvas",
+      "file": "cases/canvas_delete.json",
+      "http": "DELETE /api/canvas/file"
+    },
+    {
+      "command": "canvas_list",
+      "domain": "canvas",
+      "file": "cases/canvas_list.json",
+      "http": "GET /api/canvas/files"
+    },
+    {
+      "command": "canvas_move",
+      "domain": "canvas",
+      "file": "cases/canvas_move.json",
+      "http": "PATCH /api/canvas/file"
+    },
+    {
+      "command": "canvas_read",
+      "domain": "canvas",
+      "file": "cases/canvas_read.json",
+      "http": "GET /api/canvas/"
+    },
+    {
+      "command": "canvas_write",
+      "domain": "canvas",
+      "file": "cases/canvas_write.json",
+      "http": "PUT /api/canvas/"
+    },
+    {
+      "command": "expert_delete",
+      "domain": "experts",
+      "file": "cases/expert_delete.json",
+      "http": "DELETE /api/experts/fix-expert-two"
+    },
+    {
+      "command": "expert_get",
+      "domain": "experts",
+      "file": "cases/expert_get.json",
+      "http": "GET /api/experts/fix-expert"
+    },
+    {
+      "command": "expert_list",
+      "domain": "experts",
+      "file": "cases/expert_list.json",
+      "http": "GET /api/experts"
+    },
+    {
+      "command": "expert_route",
+      "domain": "experts",
+      "file": "cases/expert_route.json",
+      "http": "POST /api/experts/route"
+    },
+    {
+      "command": "expert_save",
+      "domain": "experts",
+      "file": "cases/expert_save.json",
+      "http": "POST /api/experts"
+    },
+    {
+      "command": "file_execute",
+      "domain": "files",
+      "file": "cases/file_execute.json",
+      "http": "POST /api/files/execute"
+    },
+    {
+      "command": "file_find",
+      "domain": "files",
+      "file": "cases/file_find.json",
+      "http": "GET /api/files/find"
+    },
+    {
+      "command": "file_grep",
+      "domain": "files",
+      "file": "cases/file_grep.json",
+      "http": "GET /api/files/grep"
+    },
+    {
+      "command": "file_log",
+      "domain": "files",
+      "file": "cases/file_log.json",
+      "http": "GET /api/files/log"
+    },
+    {
+      "command": "file_preview",
+      "domain": "files",
+      "file": "cases/file_preview.json",
+      "http": "POST /api/files/preview"
+    },
+    {
+      "command": "file_read",
+      "domain": "files",
+      "file": "cases/file_read.json",
+      "http": "GET /api/files/read"
+    },
+    {
+      "command": "file_undo",
+      "domain": "files",
+      "file": "cases/file_undo.json",
+      "http": "POST /api/files/undo"
+    },
+    {
+      "command": "folder_create",
+      "domain": "folders",
+      "file": "cases/folder_create.json",
+      "http": "POST /api/folders"
+    },
+    {
+      "command": "folder_delete",
+      "domain": "folders",
+      "file": "cases/folder_delete.json",
+      "http": "DELETE /api/folders/<uuid>"
+    },
+    {
+      "command": "folder_tree",
+      "domain": "folders",
+      "file": "cases/folder_tree.json",
+      "http": "GET /api/folders"
+    },
+    {
+      "command": "folder_update",
+      "domain": "folders",
+      "file": "cases/folder_update.json",
+      "http": "PATCH /api/folders/<uuid>"
+    },
+    {
+      "command": "graph_build",
+      "domain": "graph",
+      "file": "cases/graph_build.json",
+      "http": "GET /api/graph"
+    },
+    {
+      "command": "job_list",
+      "domain": "jobs",
+      "file": "cases/job_list.json",
+      "http": "GET /api/jobs"
+    },
+    {
+      "command": "meta_overview",
+      "domain": "meta",
+      "file": "cases/meta_overview.json",
+      "http": "GET /api/meta/overview"
+    },
+    {
+      "command": "note_create",
+      "domain": "notes",
+      "file": "cases/note_create.json",
+      "http": "POST /api/notes"
+    },
+    {
+      "command": "note_delete",
+      "domain": "notes",
+      "file": "cases/note_delete.json",
+      "http": "DELETE /api/notes/f1a00000-0000-4000-8000-000000000015"
+    },
+    {
+      "command": "note_history_get",
+      "domain": "notes",
+      "file": "cases/note_history_get.json",
+      "http": "GET /api/notes/f1a00000-0000-4000-8000-000000000011/history/<version>"
+    },
+    {
+      "command": "note_history_list",
+      "domain": "notes",
+      "file": "cases/note_history_list.json",
+      "http": "GET /api/notes/f1a00000-0000-4000-8000-000000000011/history"
+    },
+    {
+      "command": "note_history_restore",
+      "domain": "notes",
+      "file": "cases/note_history_restore.json",
+      "http": "POST /api/notes/f1a00000-0000-4000-8000-000000000011/history/<version>/restore"
+    },
+    {
+      "command": "note_index",
+      "domain": "notes",
+      "file": "cases/note_index.json",
+      "http": "GET /api/notes/index"
+    },
+    {
+      "command": "note_update",
+      "domain": "notes",
+      "file": "cases/note_update.json",
+      "http": "PATCH /api/notes/f1a00000-0000-4000-8000-000000000011"
+    },
+    {
+      "command": "review_execute",
+      "domain": "review",
+      "file": "cases/review_execute.json",
+      "http": "POST /api/review/health/execute"
+    },
+    {
+      "command": "review_health",
+      "domain": "review",
+      "file": "cases/review_health.json",
+      "http": "GET /api/review/health"
+    },
+    {
+      "command": "review_plan",
+      "domain": "review",
+      "file": "cases/review_plan.json",
+      "http": "POST /api/review/health/plan"
+    },
+    {
+      "command": "search_query",
+      "domain": "search",
+      "file": "cases/search_query.json",
+      "http": "GET /api/search"
+    },
+    {
+      "command": "skill_delete",
+      "domain": "experts",
+      "file": "cases/skill_delete.json",
+      "http": "DELETE /api/experts/skills/fix-skill-two"
+    },
+    {
+      "command": "skill_get",
+      "domain": "experts",
+      "file": "cases/skill_get.json",
+      "http": "GET /api/experts/skills/fix-skill"
+    },
+    {
+      "command": "skill_list",
+      "domain": "experts",
+      "file": "cases/skill_list.json",
+      "http": "GET /api/experts/skills"
+    },
+    {
+      "command": "skill_save",
+      "domain": "experts",
+      "file": "cases/skill_save.json",
+      "http": "POST /api/experts/skills"
+    },
+    {
+      "command": "tag_list",
+      "domain": "tags",
+      "file": "cases/tag_list.json",
+      "http": "GET /api/tags"
+    },
+    {
+      "command": "vault_attachment_cleanup",
+      "domain": "vault",
+      "file": "cases/vault_attachment_cleanup.json",
+      "http": "POST /api/vault/attachments/cleanup"
+    },
+    {
+      "command": "vault_attachment_delete",
+      "domain": "vault",
+      "file": "cases/vault_attachment_delete.json",
+      "http": "DELETE /api/vault/attachments"
+    },
+    {
+      "command": "vault_attachment_references",
+      "domain": "vault",
+      "file": "cases/vault_attachment_references.json",
+      "http": "GET /api/vault/attachments/references"
+    },
+    {
+      "command": "vault_attachment_upload",
+      "domain": "vault",
+      "file": "cases/vault_attachment_upload.json",
+      "http": "POST /api/vault/attachments"
+    },
+    {
+      "command": "vault_attachment_validate",
+      "domain": "vault",
+      "file": "cases/vault_attachment_validate.json",
+      "http": "POST /api/vault/attachments/validate"
+    },
+    {
+      "command": "vault_attachments_list",
+      "domain": "vault",
+      "file": "cases/vault_attachments_list.json",
+      "http": "GET /api/vault/attachments"
+    },
+    {
+      "command": "vault_download",
+      "domain": "vault",
+      "file": "cases/vault_download.json",
+      "http": "GET /api/vault/download"
+    },
+    {
+      "command": "vault_files_list",
+      "domain": "vault",
+      "file": "cases/vault_files_list.json",
+      "http": "GET /api/vault/files"
+    },
+    {
+      "command": "vault_info",
+      "domain": "vault",
+      "file": "cases/vault_info.json",
+      "http": "GET /api/vault/info"
+    },
+    {
+      "command": "vault_read_asset",
+      "domain": "vault",
+      "file": "cases/vault_read_asset.json",
+      "http": "GET /api/vault/attachment"
+    }
+  ],
+  "skippedCommands": [
+    {
+      "command": "vault_open",
+      "reason": "Rust 内部命令，Express 无对应端点"
+    },
+    {
+      "command": "vault_list",
+      "reason": "Rust 内部命令，Express 无对应端点（列表语义由 note_index 覆盖）"
+    },
+    {
+      "command": "vault_read",
+      "reason": "Rust 内部命令，Express 无对应端点（文件读取由 file_read 覆盖）"
+    },
+    {
+      "command": "vault_write",
+      "reason": "Rust 内部命令，Express 无对应端点（写入分散在 note_update / canvas_write）"
+    },
+    {
+      "command": "vault_search",
+      "reason": "Rust 内部命令，Express 无对应端点（由 search_query 覆盖）"
+    },
+    {
+      "command": "vault_scan",
+      "reason": "Rust 内部命令，Express 无对应端点（无 HTTP 扫描入口）"
+    },
+    {
+      "command": "vault_index_stats",
+      "reason": "Rust 内部命令，Express 无对应端点（由 meta_overview 近似覆盖）"
+    },
+    {
+      "command": "job_get",
+      "reason": "无法确定性播种：job 仅由 ai-reindex（P3 端点）创建"
+    },
+    {
+      "command": "job_cancel",
+      "reason": "无法确定性播种：job 仅由 ai-reindex（P3 端点）创建"
+    }
+  ],
+  "endpointsWithoutCommand": [
+    {
+      "endpoint": "PUT /api/vault/profile",
+      "command": "vault_profile_set",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "POST /api/vault/migrate",
+      "command": "vault_migrate_sqlite",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "GET /api/vault/assets",
+      "command": "vault_assets_list",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "GET /api/notes",
+      "command": "note_list",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "GET /api/notes/:id",
+      "command": "note_get",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "POST /api/notes/:id/duplicate",
+      "command": "note_duplicate",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "GET /api/notes/templates",
+      "command": "note_templates_list",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "POST /api/notes/from-template",
+      "command": "note_create_from_template",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "POST /api/notes/daily",
+      "command": "note_create_daily",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "DELETE /api/tags/:id",
+      "command": "tag_delete",
+      "reason": "契约 ⬜ 未实现（Rust 未注册）"
+    },
+    {
+      "endpoint": "GET /health",
+      "command": null,
+      "reason": "契约 ⛔ 随 Express 废弃"
+    },
+    {
+      "endpoint": "GET /ready",
+      "command": null,
+      "reason": "契约 ⛔ 随 Express 废弃（由启动恢复序列替代）"
+    },
+    {
+      "endpoint": "POST /api/workspace/sse-ticket",
+      "command": null,
+      "reason": "契约 ⛔ 随 Express 废弃（IPC 无需票据）"
+    },
+    {
+      "endpoint": "GET /api/vault/events",
+      "command": null,
+      "reason": "SSE 流式，改 Tauri event（P1-08 不录）"
+    },
+    {
+      "endpoint": "POST /api/ai/chat/stream",
+      "command": null,
+      "reason": "SSE 流式，P3"
+    },
+    {
+      "endpoint": "POST /api/ai/write/stream",
+      "command": null,
+      "reason": "SSE 流式，P3"
+    },
+    {
+      "endpoint": "GET /api/update/check",
+      "command": "update_check",
+      "reason": "P4（改 tauri-plugin-updater）"
+    },
+    {
+      "endpoint": "GET /api/mcp/info",
+      "command": "mcp_info",
+      "reason": "P4（MCP sidecar）"
+    },
+    {
+      "endpoint": "GET /api/mcp/project",
+      "command": "mcp_project_get",
+      "reason": "P4（MCP sidecar）"
+    },
+    {
+      "endpoint": "PUT /api/mcp/project",
+      "command": "mcp_project_set",
+      "reason": "P4（MCP sidecar）"
+    }
+  ],
+  "normalization": {
+    "placeholders": {
+      "<timestamp>": "ISO-8601 时间戳（键名 createdAt/updatedAt/modifiedAt/at… 或正文/路径中内嵌的 ISO 时间）",
+      "<uuid>": "非播种的随机/自动生成 UUID（含目录 id、tag id、plan id 等）",
+      "<hash>": "64 位十六进制哈希（contentHash / planHash / canvas revision 等）",
+      "<version>": "笔记历史版本标识 YYYYMMDDTHHMMSSmmmZ-<hash>",
+      "<operationId>": "files 操作 id <epochMs>-<8 hex>",
+      "<vault>": "临时运行目录前缀（VAULT_DIR / DB 所在 mkdtemp 根）",
+      "<repo>": "仓库根绝对路径前缀（内置专家/技能 filePath）"
+    },
+    "durations": "durationMs/tookMs/elapsedMs/duration 归零",
+    "anchors": "播种时显式指定的 id（note uuid、expert/skill id）原样保留",
+    "seedVault": "seed/vault 下 .md/.canvas 文本内的 ISO 时间戳已归一为 <timestamp>，保证快照字节级可复现"
+  }
+}

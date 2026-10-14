@@ -1,0 +1,246 @@
+{
+  "command": "file_preview",
+  "http": {
+    "method": "POST",
+    "path": "/api/files/preview",
+    "query": {},
+    "body": {
+      "type": "create",
+      "path": "fixture-preview.txt",
+      "content": "preview fixture\n",
+      "confirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "type": "create",
+    "path": "fixture-preview.txt",
+    "summary": "create fixture-preview.txt (source missing)",
+    "impact": "写入或更新内容；影响 1 个路径，目标目前不存在",
+    "fullPath": "<vault>\\fixture-preview.txt",
+    "directory": "<vault>",
+    "reversible": true,
+    "requiresSecondConfirmation": false,
+    "changes": [
+      {
+        "path": "fixture-preview.txt",
+        "fullPath": "<vault>\\fixture-preview.txt",
+        "directory": "<vault>",
+        "before": {
+          "exists": false,
+          "type": "missing"
+        }
+      }
+    ],
+    "planHash": "<hash>",
+    "diff": "--- fixture-preview.txt\n+++ fixture-preview.txt\n-\n+preview fixture\n+",
+    "after": {
+      "exists": true,
+      "type": "file",
+      "size": 16,
+      "sha256": "<hash>"
+    },
+    "plan": {
+      "version": 1,
+      "id": "<uuid>",
+      "actor": "local-user",
+      "role": "editor",
+      "source": "files-api",
+      "createdAt": "<timestamp>",
+      "actions": [
+        {
+          "id": "op-1",
+          "type": "create",
+          "path": "fixture-preview.txt",
+          "content": "preview fixture\n",
+          "all": false
+        }
+      ]
+    },
+    "actor": "local-user",
+    "role": "editor",
+    "blocked": false,
+    "confirmation": {
+      "required": true,
+      "secondConfirmationRequired": false,
+      "deleteCount": 0,
+      "itemCount": 1,
+      "paths": [
+        "<vault>\\fixture-preview.txt"
+      ]
+    }
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "type": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      },
+      "impact": {
+        "type": "string"
+      },
+      "fullPath": {
+        "type": "string"
+      },
+      "directory": {
+        "type": "string"
+      },
+      "reversible": {
+        "type": "boolean"
+      },
+      "requiresSecondConfirmation": {
+        "type": "boolean"
+      },
+      "changes": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "path": {
+              "type": "string"
+            },
+            "fullPath": {
+              "type": "string"
+            },
+            "directory": {
+              "type": "string"
+            },
+            "before": {
+              "type": "object",
+              "fields": {
+                "exists": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "length": 1
+      },
+      "planHash": {
+        "type": "string"
+      },
+      "diff": {
+        "type": "string"
+      },
+      "after": {
+        "type": "object",
+        "fields": {
+          "exists": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size": {
+            "type": "number"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "plan": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "number"
+          },
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "actions": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "all": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "length": 1
+          }
+        }
+      },
+      "actor": {
+        "type": "string"
+      },
+      "role": {
+        "type": "string"
+      },
+      "blocked": {
+        "type": "boolean"
+      },
+      "confirmation": {
+        "type": "object",
+        "fields": {
+          "required": {
+            "type": "boolean"
+          },
+          "secondConfirmationRequired": {
+            "type": "boolean"
+          },
+          "deleteCount": {
+            "type": "number"
+          },
+          "itemCount": {
+            "type": "number"
+          },
+          "paths": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 1
+          }
+        }
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.fullPath",
+    "$.data.directory",
+    "$.data.changes[0].fullPath",
+    "$.data.changes[0].directory",
+    "$.data.planHash",
+    "$.data.after.sha256",
+    "$.data.plan.id",
+    "$.data.plan.createdAt",
+    "$.data.confirmation.paths[0]"
+  ],
+  "note": "命令形参是 action/actions 二态；前端传单个 FileAction。"
+}

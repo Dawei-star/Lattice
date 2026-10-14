@@ -1,0 +1,97 @@
+{
+  "command": "note_create",
+  "http": {
+    "method": "POST",
+    "path": "/api/notes",
+    "query": {},
+    "body": {
+      "id": "f1a00000-0000-4000-8000-000000000015",
+      "title": "新建笔记",
+      "content": "新建正文\n",
+      "folderId": null,
+      "properties": {},
+      "confirmed": true
+    },
+    "status": 201
+  },
+  "data": {
+    "id": "f1a00000-0000-4000-8000-000000000015",
+    "title": "新建笔记",
+    "content": "新建正文\n",
+    "folderId": null,
+    "filePath": "新建笔记.md",
+    "isPinned": false,
+    "wordCount": 4,
+    "contentHash": "<hash>",
+    "propertiesJson": "{}",
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "properties": {},
+    "tags": [],
+    "outgoing": [],
+    "backlinks": []
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      },
+      "folderId": {
+        "type": "null"
+      },
+      "filePath": {
+        "type": "string"
+      },
+      "isPinned": {
+        "type": "boolean"
+      },
+      "wordCount": {
+        "type": "number"
+      },
+      "contentHash": {
+        "type": "string"
+      },
+      "propertiesJson": {
+        "type": "string"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "type": "string"
+      },
+      "properties": {
+        "type": "object",
+        "fields": {}
+      },
+      "tags": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "outgoing": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "backlinks": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.contentHash",
+    "$.data.createdAt",
+    "$.data.updatedAt"
+  ],
+  "note": "客户端显式提供 id（幂等）。"
+}

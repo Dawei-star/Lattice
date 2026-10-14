@@ -1,0 +1,256 @@
+{
+  "command": "expert_get",
+  "http": {
+    "method": "GET",
+    "path": "/api/experts/fix-expert",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "id": "fix-expert",
+    "version": "1.0.0",
+    "name": "固定专家",
+    "description": "固定专家描述",
+    "icon": "sparkles",
+    "enabled": true,
+    "systemPrompt": "你是固定专家",
+    "scope": {
+      "include": [
+        "固定"
+      ],
+      "exclude": []
+    },
+    "skills": [
+      {
+        "id": "fix-skill",
+        "enabled": true,
+        "priority": 60,
+        "config": {},
+        "skill": {
+          "id": "fix-skill",
+          "version": "1.0.0",
+          "name": "固定技能",
+          "description": "固定技能描述",
+          "triggers": [
+            "固定"
+          ],
+          "tools": [
+            "read"
+          ],
+          "permissions": [
+            "read"
+          ],
+          "inputSchema": {
+            "type": "object"
+          },
+          "outputSchema": {
+            "type": "object"
+          },
+          "source": "workspace",
+          "enabled": true,
+          "contentHash": "<hash>"
+        }
+      }
+    ],
+    "capabilities": {
+      "context": [
+        "current-note",
+        "project",
+        "vault"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "writePolicy": "confirm",
+      "maxRounds": 6
+    },
+    "routing": {
+      "keywords": [
+        "固定",
+        "专家"
+      ],
+      "priority": 80,
+      "confidenceThreshold": 0.5
+    },
+    "source": "workspace"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "icon": {
+        "type": "string"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "systemPrompt": {
+        "type": "string"
+      },
+      "scope": {
+        "type": "object",
+        "fields": {
+          "include": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 1
+          },
+          "exclude": {
+            "type": "array",
+            "element": null,
+            "length": 0
+          }
+        }
+      },
+      "skills": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "priority": {
+              "type": "number"
+            },
+            "config": {
+              "type": "object",
+              "fields": {}
+            },
+            "skill": {
+              "type": "object",
+              "fields": {
+                "id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "triggers": {
+                  "type": "array",
+                  "element": {
+                    "type": "string"
+                  },
+                  "length": 1
+                },
+                "tools": {
+                  "type": "array",
+                  "element": {
+                    "type": "string"
+                  },
+                  "length": 1
+                },
+                "permissions": {
+                  "type": "array",
+                  "element": {
+                    "type": "string"
+                  },
+                  "length": 1
+                },
+                "inputSchema": {
+                  "type": "object",
+                  "fields": {
+                    "type": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "outputSchema": {
+                  "type": "object",
+                  "fields": {
+                    "type": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "source": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "contentHash": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "length": 1
+      },
+      "capabilities": {
+        "type": "object",
+        "fields": {
+          "context": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 3
+          },
+          "tools": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 2
+          },
+          "writePolicy": {
+            "type": "string"
+          },
+          "maxRounds": {
+            "type": "number"
+          }
+        }
+      },
+      "routing": {
+        "type": "object",
+        "fields": {
+          "keywords": {
+            "type": "array",
+            "element": {
+              "type": "string"
+            },
+            "length": 2
+          },
+          "priority": {
+            "type": "number"
+          },
+          "confidenceThreshold": {
+            "type": "number"
+          }
+        }
+      },
+      "source": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.skills[0].skill.contentHash"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "command": "file_find",
+  "http": {
+    "method": "GET",
+    "path": "/api/files/find",
+    "query": {
+      "pattern": "**/*",
+      "dir": "项目"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "pattern": "**/*",
+    "items": [
+      {
+        "path": "项目/归档/待删除笔记.md",
+        "size": 199,
+        "modifiedAt": "<timestamp>"
+      },
+      {
+        "path": "项目/Beta 笔记.md",
+        "size": 226,
+        "modifiedAt": "<timestamp>"
+      }
+    ],
+    "total": 2
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "pattern": {
+        "type": "string"
+      },
+      "items": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "path": {
+              "type": "string"
+            },
+            "size": {
+              "type": "number"
+            },
+            "modifiedAt": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 2
+      },
+      "total": {
+        "type": "number"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.items[0].modifiedAt",
+    "$.data.items[1].modifiedAt"
+  ],
+  "note": "限制 dir=项目 以避开 .lattice/history 下带时间戳的历史文件。"
+}

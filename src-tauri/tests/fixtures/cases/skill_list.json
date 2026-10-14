@@ -1,0 +1,494 @@
+{
+  "command": "skill_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/experts/skills",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "decision-capture",
+      "version": "1.0.0",
+      "name": "决策记录归档",
+      "description": "把散落在笔记里的决策、结论和待验证假设抽取成结构化决策记录。",
+      "triggers": [
+        "记录决策",
+        "归档结论",
+        "整理决策",
+        "这次决定",
+        "方案对比"
+      ],
+      "tools": [
+        "read",
+        "search",
+        "create"
+      ],
+      "permissions": [
+        "read",
+        "write:confirm"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "sources"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "decisions",
+          "openQuestions"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\decision-capture\\SKILL.md"
+    },
+    {
+      "id": "inbox-triage",
+      "version": "1.0.0",
+      "name": "Inbox 内容分流",
+      "description": "读取待整理 Inbox，判断其最可能的项目归属并说明依据。",
+      "triggers": [
+        "整理 Inbox",
+        "归档收集内容",
+        "判断项目归属"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "permissions": [
+        "read"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "inboxFiles",
+          "folders"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "decisions",
+          "uncertain"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\inbox-triage\\SKILL.md"
+    },
+    {
+      "id": "link-graph-analysis",
+      "version": "1.0.0",
+      "name": "关联脉络梳理",
+      "description": "围绕一个主题梳理双链与图谱关系，输出知识脉络和扩展阅读建议。",
+      "triggers": [
+        "梳理脉络",
+        "关联分析",
+        "知识地图",
+        "这个主题 related",
+        "扩展阅读"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "permissions": [
+        "read"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "topic"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "coreNodes",
+          "clusters",
+          "gaps"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\link-graph-analysis\\SKILL.md"
+    },
+    {
+      "id": "note-structure-audit",
+      "version": "1.0.0",
+      "name": "笔记结构体检",
+      "description": "检查单篇笔记的标题层级、链接、标签和待办完整性，给出可确认的修复清单。",
+      "triggers": [
+        "检查笔记",
+        "整理结构",
+        "体检笔记",
+        "标题层级",
+        "补标签"
+      ],
+      "tools": [
+        "read",
+        "search",
+        "update"
+      ],
+      "permissions": [
+        "read",
+        "write:confirm"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "path"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "issues",
+          "proposedEdits"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\note-structure-audit\\SKILL.md"
+    },
+    {
+      "id": "operation-plan",
+      "version": "1.0.0",
+      "name": "文件操作计划",
+      "description": "把已经确认的整理决定转换为可预览的文件操作计划。",
+      "triggers": [
+        "生成归档计划",
+        "整理文件",
+        "移动文件"
+      ],
+      "tools": [
+        "archive",
+        "move"
+      ],
+      "permissions": [
+        "write:confirm"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "decisions"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "actions",
+          "uncertain"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\operation-plan\\SKILL.md"
+    },
+    {
+      "id": "task-batch-planner",
+      "version": "1.0.0",
+      "name": "批量任务拆解",
+      "description": "把一句模糊的批量指令拆成边界明确、可核对、可中断的执行批次。",
+      "triggers": [
+        "批量整理",
+        "批量重命名",
+        "批量移动",
+        "全库迁移",
+        "一次性处理",
+        "分批处理",
+        "统一改格式"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "permissions": [
+        "read"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "goal",
+          "scope"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "batches",
+          "excluded",
+          "verification"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\task-batch-planner\\SKILL.md"
+    },
+    {
+      "id": "task-round-discipline",
+      "version": "1.0.0",
+      "name": "任务模式多轮推进",
+      "description": "在多轮工具循环里保持计划与事实一致：核对上一轮结果、按需接续、不重复已完成的动作。",
+      "triggers": [
+        "继续",
+        "接着做",
+        "下一步",
+        "剩下的",
+        "还没处理完",
+        "任务模式"
+      ],
+      "tools": [
+        "read",
+        "search",
+        "create",
+        "update",
+        "move",
+        "copy",
+        "archive"
+      ],
+      "permissions": [
+        "read",
+        "write:confirm"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "goal"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "done",
+          "remaining",
+          "blockers"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\task-round-discipline\\SKILL.md"
+    },
+    {
+      "id": "vault-health-check",
+      "version": "1.0.0",
+      "name": "知识库巡检",
+      "description": "扫描整个知识库，找出孤立笔记、断链、重复内容和僵尸笔记，输出分级体检报告。",
+      "triggers": [
+        "知识库体检",
+        "巡检",
+        "找孤立笔记",
+        "断链检查",
+        "重复笔记",
+        "整理知识库"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "permissions": [
+        "read"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "orphans",
+          "brokenLinks",
+          "duplicates",
+          "stale"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\vault-health-check\\SKILL.md"
+    },
+    {
+      "id": "vault-search",
+      "version": "1.0.0",
+      "name": "知识库检索",
+      "description": "围绕用户问题搜索知识库并返回可引用的证据。",
+      "triggers": [
+        "搜索资料",
+        "研究主题",
+        "找相关笔记",
+        "整理引用"
+      ],
+      "tools": [
+        "search",
+        "read"
+      ],
+      "permissions": [
+        "read"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "query"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "sources",
+          "summary"
+        ]
+      },
+      "source": "builtin",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<repo>\\server\\src\\modules\\experts\\builtin\\skills\\vault-search\\SKILL.md"
+    },
+    {
+      "id": "fix-skill",
+      "version": "1.0.0",
+      "name": "固定技能",
+      "description": "固定技能描述",
+      "triggers": [
+        "固定"
+      ],
+      "tools": [
+        "read"
+      ],
+      "permissions": [
+        "read"
+      ],
+      "inputSchema": {
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "source": "workspace",
+      "enabled": true,
+      "contentHash": "<hash>",
+      "filePath": "<vault>\\.lattice\\skills\\fix-skill\\SKILL.md"
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "triggers": {
+          "type": "array",
+          "element": {
+            "type": "string"
+          },
+          "length": 5
+        },
+        "tools": {
+          "type": "array",
+          "element": {
+            "type": "string"
+          },
+          "length": 3
+        },
+        "permissions": {
+          "type": "array",
+          "element": {
+            "type": "string"
+          },
+          "length": 2
+        },
+        "inputSchema": {
+          "type": "object",
+          "fields": {
+            "type": {
+              "type": "string"
+            },
+            "required": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 1
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object",
+          "fields": {
+            "type": {
+              "type": "string"
+            },
+            "required": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 2
+            }
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "filePath": {
+          "type": "string"
+        }
+      }
+    },
+    "length": 10
+  },
+  "volatilePaths": [
+    "$.data[0].contentHash",
+    "$.data[0].filePath",
+    "$.data[1].contentHash",
+    "$.data[1].filePath",
+    "$.data[2].contentHash",
+    "$.data[2].filePath",
+    "$.data[3].contentHash",
+    "$.data[3].filePath",
+    "$.data[4].contentHash",
+    "$.data[4].filePath",
+    "$.data[5].contentHash",
+    "$.data[5].filePath",
+    "$.data[6].contentHash",
+    "$.data[6].filePath",
+    "$.data[7].contentHash",
+    "$.data[7].filePath",
+    "$.data[8].contentHash",
+    "$.data[8].filePath",
+    "$.data[9].contentHash",
+    "$.data[9].filePath"
+  ]
+}

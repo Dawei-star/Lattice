@@ -1,0 +1,54 @@
+{
+  "command": "folder_create",
+  "http": {
+    "method": "POST",
+    "path": "/api/folders",
+    "query": {},
+    "body": {
+      "name": "新目录",
+      "parentId": "<uuid>",
+      "sortOrder": 1,
+      "confirmed": true
+    },
+    "status": 201
+  },
+  "data": {
+    "id": "<uuid>",
+    "name": "新目录",
+    "parentId": "<uuid>",
+    "sortOrder": 1,
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "parentId": {
+        "type": "string"
+      },
+      "sortOrder": {
+        "type": "number"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.body.parentId",
+    "$.data.id",
+    "$.data.parentId",
+    "$.data.createdAt",
+    "$.data.updatedAt"
+  ],
+  "note": "命令 folder_create 收父目录路径 parent_path；Express 收 parentId。"
+}

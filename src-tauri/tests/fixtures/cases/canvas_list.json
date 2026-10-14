@@ -1,0 +1,37 @@
+{
+  "command": "canvas_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/canvas/files",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "path": "seed-canvas.canvas",
+      "name": "seed-canvas.canvas",
+      "folderPath": ""
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "folderPath": {
+          "type": "string"
+        }
+      }
+    },
+    "length": 1
+  },
+  "volatilePaths": [],
+  "note": "命令 canvas_list 回 Vec<String>；Express 回 {path,name,folderPath}。"
+}

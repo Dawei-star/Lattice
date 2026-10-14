@@ -1,0 +1,48 @@
+{
+  "command": "file_read",
+  "http": {
+    "method": "GET",
+    "path": "/api/files/read",
+    "query": {
+      "path": "Alpha 笔记.md",
+      "offset": 0,
+      "limit": 1000
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "path": "Alpha 笔记.md",
+    "size": 245,
+    "offset": 0,
+    "limit": 1000,
+    "eof": true,
+    "content": "---\nid: f1a00000-0000-4000-8000-000000000011\ntitle: Alpha 笔记\npinned: false\ncreated_at: <timestamp>\nupdated_at: <timestamp>\nstatus: captured\ntype: inbox\n---\nAlpha 的正文\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "path": {
+        "type": "string"
+      },
+      "size": {
+        "type": "number"
+      },
+      "offset": {
+        "type": "number"
+      },
+      "limit": {
+        "type": "number"
+      },
+      "eof": {
+        "type": "boolean"
+      },
+      "content": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.content"
+  ]
+}

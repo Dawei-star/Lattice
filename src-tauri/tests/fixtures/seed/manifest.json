@@ -1,0 +1,81 @@
+{
+  "note": "确定性播种清单。id 为播种时显式指定者（跨通道对齐锚点）；文件夹与标签 id 由服务端随机生成，此处以占位符表达（folderId:N 与 folder 条目的 id 一一对应），按 path/name 寻址。",
+  "notes": [
+    {
+      "id": "f1a00000-0000-4000-8000-000000000011",
+      "filePath": "Alpha 笔记.md",
+      "title": "Alpha 笔记",
+      "folderId": null
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000012",
+      "filePath": "项目/Beta 笔记.md",
+      "title": "Beta 笔记",
+      "folderId": "<folderId:0>"
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000013",
+      "filePath": "待移动笔记.md",
+      "title": "待移动笔记",
+      "folderId": null
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000014",
+      "filePath": "项目/归档/待删除笔记.md",
+      "title": "待删除笔记",
+      "folderId": "<folderId:1>"
+    }
+  ],
+  "folders": [
+    {
+      "id": "<folderId:0>",
+      "path": "项目",
+      "name": "项目"
+    },
+    {
+      "id": "<folderId:1>",
+      "path": "项目/归档",
+      "name": "归档"
+    }
+  ],
+  "tags": [
+    {
+      "id": "<uuid>",
+      "name": "tag-alpha",
+      "noteCount": 1
+    },
+    {
+      "id": "<uuid>",
+      "name": "tag-archive",
+      "noteCount": 1
+    },
+    {
+      "id": "<uuid>",
+      "name": "tag-beta",
+      "noteCount": 1
+    }
+  ],
+  "canvas": [
+    {
+      "path": "seed-canvas.canvas"
+    }
+  ],
+  "attachments": [
+    {
+      "path": "attachments/att-referenced.txt",
+      "name": "att-referenced.txt"
+    }
+  ],
+  "experts": [
+    {
+      "id": "fix-expert",
+      "name": "固定专家"
+    }
+  ],
+  "skills": [
+    {
+      "id": "fix-skill",
+      "name": "固定技能"
+    }
+  ]
+}

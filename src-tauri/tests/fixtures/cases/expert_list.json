@@ -1,0 +1,669 @@
+{
+  "command": "expert_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/experts",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "decision-archivist",
+      "version": "1.0.0",
+      "name": "决策归档官",
+      "description": "把散落在笔记里的决策、结论和待验证假设抽取成结构化决策记录。",
+      "icon": "inbox",
+      "enabled": true,
+      "systemPrompt": "你是一名决策记录者。你的原则是「宁缺毋滥」：只有原文能追溯、有明确结论的内容才算决策，讨论中的倾向一律归入遗留问题。五要素缺项就标未记录，绝不编造背景或日期。归档的价值在于日后可回溯，因此每条决策都必须带来源引用。",
+      "scope": {
+        "include": [
+          "决策记录",
+          "方案对比整理",
+          "结论归档",
+          "待验证假设梳理",
+          "会议要点提炼"
+        ],
+        "exclude": [
+          "文件整理",
+          "知识库巡检",
+          "直接删除内容"
+        ]
+      },
+      "skills": [
+        {
+          "id": "decision-capture",
+          "enabled": true,
+          "priority": 90,
+          "config": {
+            "requireSource": true
+          },
+          "available": true
+        },
+        {
+          "id": "vault-search",
+          "enabled": true,
+          "priority": 65,
+          "config": {
+            "requireCitation": true
+          },
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "current-note",
+          "project",
+          "vault"
+        ],
+        "tools": [
+          "read",
+          "search",
+          "create"
+        ],
+        "writePolicy": "confirm",
+        "maxRounds": 7
+      },
+      "routing": {
+        "keywords": [
+          "记录决策",
+          "归档结论",
+          "整理决策",
+          "方案对比",
+          "会议纪要",
+          "拍板",
+          "遗留问题"
+        ],
+        "priority": 68,
+        "confidenceThreshold": 0.75
+      },
+      "source": "builtin",
+      "skillCount": 2
+    },
+    {
+      "id": "general",
+      "version": "1.0.0",
+      "name": "通用助手",
+      "description": "处理一般知识库问答、检索和文件操作建议。",
+      "icon": "sparkles",
+      "enabled": true,
+      "systemPrompt": "保持清晰、谨慎并说明依据。遇到超出能力范围的请求时，直接说明限制。",
+      "scope": {
+        "include": [
+          "知识库问答",
+          "笔记检索",
+          "一般文件操作"
+        ],
+        "exclude": []
+      },
+      "skills": [],
+      "capabilities": {
+        "context": [
+          "current-note",
+          "project",
+          "vault"
+        ],
+        "tools": [
+          "read",
+          "search",
+          "mcp",
+          "create",
+          "update",
+          "delete",
+          "move",
+          "copy",
+          "archive"
+        ],
+        "writePolicy": "auto",
+        "maxRounds": 6
+      },
+      "routing": {
+        "keywords": [],
+        "priority": 10,
+        "confidenceThreshold": 0.72
+      },
+      "source": "builtin",
+      "skillCount": 0
+    },
+    {
+      "id": "inbox-organizer",
+      "version": "1.0.0",
+      "name": "Inbox 整理专家",
+      "description": "判断 Inbox 内容的项目归属，生成可确认的归档和移动计划。",
+      "icon": "inbox",
+      "enabled": true,
+      "systemPrompt": "你专注于 Inbox 整理。无法可靠判断归属时必须保留原位置并说明原因，不得为了完成数量而强行分类。",
+      "scope": {
+        "include": [
+          "Inbox 整理",
+          "项目归属判断",
+          "归档计划",
+          "文件移动计划"
+        ],
+        "exclude": [
+          "模型配置",
+          "系统设置",
+          "外部发布"
+        ]
+      },
+      "skills": [
+        {
+          "id": "inbox-triage",
+          "enabled": true,
+          "priority": 90,
+          "config": {
+            "requireReason": true
+          },
+          "available": true
+        },
+        {
+          "id": "operation-plan",
+          "enabled": true,
+          "priority": 80,
+          "config": {
+            "writeMode": "confirm"
+          },
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "project",
+          "vault",
+          "inbox"
+        ],
+        "tools": [
+          "read",
+          "search",
+          "archive",
+          "move"
+        ],
+        "writePolicy": "confirm",
+        "maxRounds": 6
+      },
+      "routing": {
+        "keywords": [
+          "Inbox",
+          "收集",
+          "归档",
+          "整理",
+          "归入项目"
+        ],
+        "priority": 80,
+        "confidenceThreshold": 0.72
+      },
+      "source": "builtin",
+      "skillCount": 2
+    },
+    {
+      "id": "knowledge-curator",
+      "version": "1.0.0",
+      "name": "知识库管家",
+      "description": "定期巡检整个知识库，找出孤立笔记、断链和重复内容，并给出整理路线。",
+      "icon": "search",
+      "enabled": true,
+      "systemPrompt": "你是一名知识库维护者。你的价值在于发现用户看不见的结构问题，而不是增加内容。任何结论都必须给出证据位置；无法确证的一律标注不确定。宁可报告「没有发现问题」，也不要为了显得有用而夸大问题严重性。你不做任何写入和删除，只输出体检报告和建议。",
+      "scope": {
+        "include": [
+          "知识库巡检",
+          "孤立笔记",
+          "断链修复建议",
+          "重复内容识别",
+          "整体整理规划"
+        ],
+        "exclude": [
+          "单篇笔记改写",
+          "Inbox 分流",
+          "模型配置",
+          "系统设置"
+        ]
+      },
+      "skills": [
+        {
+          "id": "vault-health-check",
+          "enabled": true,
+          "priority": 90,
+          "config": {
+            "readOnly": true
+          },
+          "available": true
+        },
+        {
+          "id": "link-graph-analysis",
+          "enabled": true,
+          "priority": 70,
+          "config": {},
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "project",
+          "vault"
+        ],
+        "tools": [
+          "read",
+          "search"
+        ],
+        "writePolicy": "disabled",
+        "maxRounds": 8
+      },
+      "routing": {
+        "keywords": [
+          "巡检",
+          "体检",
+          "孤立",
+          "断链",
+          "死链",
+          "重复",
+          "僵尸",
+          "整理规划",
+          "知识库整体"
+        ],
+        "priority": 75,
+        "confidenceThreshold": 0.75
+      },
+      "source": "builtin",
+      "skillCount": 2
+    },
+    {
+      "id": "knowledge-researcher",
+      "version": "1.0.0",
+      "name": "知识研究专家",
+      "description": "检索知识库、分析关联内容并生成带引用的研究摘要。",
+      "icon": "search",
+      "enabled": true,
+      "systemPrompt": "你是一名严谨的知识研究专家。结论必须区分事实、推断和待验证信息，并优先给出可追溯引用。",
+      "scope": {
+        "include": [
+          "知识检索",
+          "关联分析",
+          "研究摘要",
+          "引用整理"
+        ],
+        "exclude": [
+          "直接移动文件",
+          "系统配置"
+        ]
+      },
+      "skills": [
+        {
+          "id": "vault-search",
+          "enabled": true,
+          "priority": 90,
+          "config": {
+            "requireCitation": true
+          },
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "current-note",
+          "project",
+          "vault"
+        ],
+        "tools": [
+          "read",
+          "search"
+        ],
+        "writePolicy": "disabled",
+        "maxRounds": 5
+      },
+      "routing": {
+        "keywords": [
+          "研究",
+          "资料",
+          "引用",
+          "分析",
+          "总结",
+          "关联"
+        ],
+        "priority": 70,
+        "confidenceThreshold": 0.72
+      },
+      "source": "builtin",
+      "skillCount": 1
+    },
+    {
+      "id": "note-editor",
+      "version": "1.0.0",
+      "name": "笔记编辑助手",
+      "description": "逐篇检查笔记结构、标题层级、双链和标签，给出可确认的修复清单。",
+      "icon": "sparkles",
+      "enabled": true,
+      "systemPrompt": "你是一名严谨的笔记编辑。你只修结构问题——标题层级、双链格式、标签位置、待办归属——绝不改写用户的思路、措辞和结论。修改前必须先展示原文片段与替换后片段的对照。区分事实与判断：结构问题直接指出，写作偏好只在用户明确要求时提出。",
+      "scope": {
+        "include": [
+          "单篇笔记结构检查",
+          "标题层级修正",
+          "标签整理",
+          "双链修复",
+          "待办梳理"
+        ],
+        "exclude": [
+          "全库巡检",
+          "Inbox 分流",
+          "文件移动",
+          "删除内容"
+        ]
+      },
+      "skills": [
+        {
+          "id": "note-structure-audit",
+          "enabled": true,
+          "priority": 90,
+          "config": {
+            "requireDiff": true
+          },
+          "available": true
+        },
+        {
+          "id": "vault-search",
+          "enabled": true,
+          "priority": 60,
+          "config": {
+            "requireCitation": true
+          },
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "current-note",
+          "project",
+          "vault"
+        ],
+        "tools": [
+          "read",
+          "search",
+          "update"
+        ],
+        "writePolicy": "confirm",
+        "maxRounds": 6
+      },
+      "routing": {
+        "keywords": [
+          "检查笔记",
+          "整理结构",
+          "标题层级",
+          "补标签",
+          "格式乱",
+          "笔记体检"
+        ],
+        "priority": 60,
+        "confidenceThreshold": 0.75
+      },
+      "source": "builtin",
+      "skillCount": 2
+    },
+    {
+      "id": "task-executor",
+      "version": "1.0.0",
+      "name": "任务执行专家",
+      "description": "为任务模式设计：把一条批量指令拆成可核对的批次，多轮执行「检索 → 读取 → 写入」并如实汇报进度。",
+      "icon": "inbox",
+      "enabled": true,
+      "systemPrompt": "你为一个多轮自主执行环境工作：系统会把你上一轮请求的读取与检索结果回填给你，你可以据此继续下一轮，直到任务完成。\n\n你的价值在于「把一件模糊的事做完并说清楚」，而不是动作发得多。核心准则：\n\n1. 范围先于动作。用户说「整理全库」时，先用检索报出实际命中数量与判定规则，再谈怎么做；你自己都不知道影响面有多大，就不该动手。\n2. 批次先于规模。单轮动作上限 30 个、自动读取上限 5 个——但不要顶满。用户要逐条核对确认清单，超过二十条人就不会看了。第一批取 3–5 个有代表性的样本，确认规则无误再推进。\n3. 事实先于计划。是否已执行以系统回填的工具结果为准，不以你上一轮的打算为准。未获确认的写操作停在待确认清单里，不要假设它已落盘，也不要重复发起。\n4. 诚实高于顺滑。宁可报告「12 篇里做了 8 篇，剩下 4 篇判断不了」，也不要为了显得利落而声称全部完成。不确定的条目单独列出来交给用户判断，不要塞进批次赌一把。\n5. 不越界。删除不在你的能力范围内，需要删除时如实说明并请用户确认或改用通用助手，不要用移动到角落变相删除。路径只能是 Vault 内相对路径，`_templates`、`.lattice`、`.fc` 一律不碰。\n\n工具循环有 6 轮预算。连续两轮没有实质进展就停下说明，不要空转，也不要编造进展。",
+      "scope": {
+        "include": [
+          "批量文件整理",
+          "批量重命名与格式统一",
+          "跨目录批量移动",
+          "按主题分批归档",
+          "多轮任务推进与进度汇报"
+        ],
+        "exclude": [
+          "单篇笔记结构修复",
+          "全库知识库巡检",
+          "Inbox 分流",
+          "决策记录抽取",
+          "模型配置",
+          "系统设置"
+        ]
+      },
+      "skills": [
+        {
+          "id": "task-batch-planner",
+          "enabled": true,
+          "priority": 90,
+          "config": {
+            "maxBatchSize": 20,
+            "sampleBatchSize": 5
+          },
+          "available": true
+        },
+        {
+          "id": "task-round-discipline",
+          "enabled": true,
+          "priority": 80,
+          "config": {
+            "maxRounds": 6
+          },
+          "available": true
+        },
+        {
+          "id": "vault-search",
+          "enabled": true,
+          "priority": 60,
+          "config": {
+            "requireCitation": true
+          },
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "current-note",
+          "project",
+          "vault",
+          "inbox"
+        ],
+        "tools": [
+          "read",
+          "search",
+          "create",
+          "update",
+          "move",
+          "copy",
+          "archive"
+        ],
+        "writePolicy": "confirm",
+        "maxRounds": 6
+      },
+      "routing": {
+        "keywords": [
+          "批量",
+          "批量整理",
+          "批量重命名",
+          "批量移动",
+          "全库整理",
+          "一次性处理",
+          "分批",
+          "统一格式",
+          "全部文件",
+          "多轮"
+        ],
+        "priority": 72,
+        "confidenceThreshold": 0.75
+      },
+      "source": "builtin",
+      "skillCount": 3
+    },
+    {
+      "id": "fix-expert",
+      "version": "1.0.0",
+      "name": "固定专家",
+      "description": "固定专家描述",
+      "icon": "sparkles",
+      "enabled": true,
+      "systemPrompt": "你是固定专家",
+      "scope": {
+        "include": [
+          "固定"
+        ],
+        "exclude": []
+      },
+      "skills": [
+        {
+          "id": "fix-skill",
+          "enabled": true,
+          "priority": 60,
+          "config": {},
+          "available": true
+        }
+      ],
+      "capabilities": {
+        "context": [
+          "current-note",
+          "project",
+          "vault"
+        ],
+        "tools": [
+          "read",
+          "search"
+        ],
+        "writePolicy": "confirm",
+        "maxRounds": 6
+      },
+      "routing": {
+        "keywords": [
+          "固定",
+          "专家"
+        ],
+        "priority": 80,
+        "confidenceThreshold": 0.5
+      },
+      "source": "workspace",
+      "skillCount": 1
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "systemPrompt": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object",
+          "fields": {
+            "include": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 5
+            },
+            "exclude": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 3
+            }
+          }
+        },
+        "skills": {
+          "type": "array",
+          "element": {
+            "type": "object",
+            "fields": {
+              "id": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "number"
+              },
+              "config": {
+                "type": "object",
+                "fields": {
+                  "requireSource": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "available": {
+                "type": "boolean"
+              }
+            }
+          },
+          "length": 2
+        },
+        "capabilities": {
+          "type": "object",
+          "fields": {
+            "context": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 3
+            },
+            "tools": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 3
+            },
+            "writePolicy": {
+              "type": "string"
+            },
+            "maxRounds": {
+              "type": "number"
+            }
+          }
+        },
+        "routing": {
+          "type": "object",
+          "fields": {
+            "keywords": {
+              "type": "array",
+              "element": {
+                "type": "string"
+              },
+              "length": 7
+            },
+            "priority": {
+              "type": "number"
+            },
+            "confidenceThreshold": {
+              "type": "number"
+            }
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "skillCount": {
+          "type": "number"
+        }
+      }
+    },
+    "length": 8
+  },
+  "volatilePaths": []
+}

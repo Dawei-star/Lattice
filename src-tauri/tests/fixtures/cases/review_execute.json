@@ -1,0 +1,245 @@
+{
+  "command": "review_execute",
+  "http": {
+    "method": "POST",
+    "path": "/api/review/health/execute",
+    "query": {},
+    "body": {
+      "planId": "<uuid>",
+      "planHash": "<hash>",
+      "confirmed": true,
+      "secondConfirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "planId": "<uuid>",
+    "actor": "local-user",
+    "results": [
+      {
+        "id": "update:f1a00000-0000-4000-8000-000000000011",
+        "type": "update",
+        "path": "Alpha 笔记.md",
+        "status": "completed",
+        "summary": "补全来源为当前 Vault 路径",
+        "result": {
+          "id": "f1a00000-0000-4000-8000-000000000011",
+          "title": "Alpha 笔记",
+          "content": "Alpha 的正文\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n",
+          "folderId": null,
+          "filePath": "Alpha 笔记.md",
+          "isPinned": false,
+          "wordCount": 12,
+          "contentHash": "<hash>",
+          "propertiesJson": "{\"source\":\"vault:Alpha 笔记.md\",\"status\":\"captured\",\"type\":\"inbox\"}",
+          "createdAt": "<timestamp>",
+          "updatedAt": "<timestamp>",
+          "properties": {
+            "source": "vault:Alpha 笔记.md",
+            "status": "captured",
+            "type": "inbox"
+          },
+          "tags": [
+            {
+              "id": "<uuid>",
+              "name": "tag-alpha"
+            }
+          ],
+          "outgoing": [
+            {
+              "targetTitle": "Beta 笔记",
+              "targetNoteId": "f1a00000-0000-4000-8000-000000000012",
+              "resolvedTitle": "Beta 笔记",
+              "resolved": true
+            }
+          ],
+          "backlinks": []
+        }
+      }
+    ],
+    "manual": [
+      {
+        "findingId": "f1a00000-0000-4000-8000-000000000011",
+        "category": "inbox",
+        "title": "Alpha 笔记",
+        "reason": "Inbox 归类需要结合上下文，保留在 Inbox 等待人工归档"
+      },
+      {
+        "findingId": "f1a00000-0000-4000-8000-000000000011",
+        "category": "incomplete",
+        "title": "Alpha 笔记",
+        "reason": "结构调整会改变知识组织方式，暂不自动移动或补造关系"
+      }
+    ],
+    "completed": 1,
+    "failed": 0,
+    "skipped": 2
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "planId": {
+        "type": "string"
+      },
+      "actor": {
+        "type": "string"
+      },
+      "results": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "result": {
+              "type": "object",
+              "fields": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "folderId": {
+                  "type": "null"
+                },
+                "filePath": {
+                  "type": "string"
+                },
+                "isPinned": {
+                  "type": "boolean"
+                },
+                "wordCount": {
+                  "type": "number"
+                },
+                "contentHash": {
+                  "type": "string"
+                },
+                "propertiesJson": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object",
+                  "fields": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "tags": {
+                  "type": "array",
+                  "element": {
+                    "type": "object",
+                    "fields": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "length": 1
+                },
+                "outgoing": {
+                  "type": "array",
+                  "element": {
+                    "type": "object",
+                    "fields": {
+                      "targetTitle": {
+                        "type": "string"
+                      },
+                      "targetNoteId": {
+                        "type": "string"
+                      },
+                      "resolvedTitle": {
+                        "type": "string"
+                      },
+                      "resolved": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "length": 1
+                },
+                "backlinks": {
+                  "type": "array",
+                  "element": null,
+                  "length": 0
+                }
+              }
+            }
+          }
+        },
+        "length": 1
+      },
+      "manual": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "findingId": {
+              "type": "string"
+            },
+            "category": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 2
+      },
+      "completed": {
+        "type": "number"
+      },
+      "failed": {
+        "type": "number"
+      },
+      "skipped": {
+        "type": "number"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.body.planId",
+    "$.http.body.planHash",
+    "$.data.planId",
+    "$.data.results[0].result.contentHash",
+    "$.data.results[0].result.createdAt",
+    "$.data.results[0].result.updatedAt",
+    "$.data.results[0].result.tags[0].id"
+  ]
+}

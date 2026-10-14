@@ -1,0 +1,54 @@
+{
+  "command": "vault_files_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/vault/files",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "path": "attachments/att-fixture.txt",
+      "name": "att-fixture.txt",
+      "mimeType": "text/plain",
+      "size": 19,
+      "modifiedAt": "<timestamp>"
+    },
+    {
+      "path": "attachments/att-referenced.txt",
+      "name": "att-referenced.txt",
+      "mimeType": "text/plain",
+      "size": 19,
+      "modifiedAt": "<timestamp>"
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "modifiedAt": {
+          "type": "string"
+        }
+      }
+    },
+    "length": 2
+  },
+  "volatilePaths": [
+    "$.data[0].modifiedAt",
+    "$.data[1].modifiedAt"
+  ]
+}

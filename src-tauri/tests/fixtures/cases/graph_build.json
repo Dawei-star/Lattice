@@ -1,0 +1,143 @@
+{
+  "command": "graph_build",
+  "http": {
+    "method": "GET",
+    "path": "/api/graph",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "nodes": [
+      {
+        "id": "f1a00000-0000-4000-8000-000000000011",
+        "title": "Alpha 笔记",
+        "folderId": null,
+        "isPinned": false,
+        "wordCount": 12,
+        "degree": 1
+      },
+      {
+        "id": "f1a00000-0000-4000-8000-000000000012",
+        "title": "Beta 笔记",
+        "folderId": "<uuid>",
+        "isPinned": false,
+        "wordCount": 10,
+        "degree": 2
+      },
+      {
+        "id": "f1a00000-0000-4000-8000-000000000013",
+        "title": "待移动笔记",
+        "folderId": null,
+        "isPinned": false,
+        "wordCount": 6,
+        "degree": 0
+      },
+      {
+        "id": "f1a00000-0000-4000-8000-000000000014",
+        "title": "待删除笔记",
+        "folderId": "<uuid>",
+        "isPinned": false,
+        "wordCount": 9,
+        "degree": 0
+      }
+    ],
+    "edges": [
+      {
+        "source": "f1a00000-0000-4000-8000-000000000011",
+        "target": "f1a00000-0000-4000-8000-000000000012"
+      }
+    ],
+    "dangling": [
+      {
+        "targetTitle": "attachments/att-referenced.txt",
+        "referenceCount": 1
+      }
+    ],
+    "stats": {
+      "nodeCount": 4,
+      "edgeCount": 1,
+      "isolatedCount": 2
+    }
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "nodes": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "folderId": {
+              "type": "null"
+            },
+            "isPinned": {
+              "type": "boolean"
+            },
+            "wordCount": {
+              "type": "number"
+            },
+            "degree": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 4
+      },
+      "edges": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "source": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 1
+      },
+      "dangling": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "targetTitle": {
+              "type": "string"
+            },
+            "referenceCount": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 1
+      },
+      "stats": {
+        "type": "object",
+        "fields": {
+          "nodeCount": {
+            "type": "number"
+          },
+          "edgeCount": {
+            "type": "number"
+          },
+          "isolatedCount": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.nodes[1].folderId",
+    "$.data.nodes[3].folderId"
+  ]
+}

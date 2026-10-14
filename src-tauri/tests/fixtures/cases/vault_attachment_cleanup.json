@@ -1,0 +1,72 @@
+{
+  "command": "vault_attachment_cleanup",
+  "http": {
+    "method": "POST",
+    "path": "/api/vault/attachments/cleanup",
+    "query": {},
+    "body": {
+      "dryRun": true
+    },
+    "status": 200
+  },
+  "data": {
+    "dryRun": true,
+    "candidates": [
+      {
+        "path": "attachments/att-fixture.txt",
+        "name": "att-fixture.txt",
+        "mimeType": "text/plain",
+        "size": 19,
+        "modifiedAt": "<timestamp>"
+      }
+    ],
+    "deleted": [],
+    "skipped": []
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "dryRun": {
+        "type": "boolean"
+      },
+      "candidates": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "path": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "mimeType": {
+              "type": "string"
+            },
+            "size": {
+              "type": "number"
+            },
+            "modifiedAt": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 1
+      },
+      "deleted": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "skipped": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.candidates[0].modifiedAt"
+  ],
+  "note": "dryRun=true，不触发破坏性确认；命令默认 dryRun=true。"
+}

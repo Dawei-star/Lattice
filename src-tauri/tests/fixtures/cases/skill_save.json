@@ -1,0 +1,108 @@
+{
+  "command": "skill_save",
+  "http": {
+    "method": "POST",
+    "path": "/api/experts/skills",
+    "query": {},
+    "body": {
+      "id": "fix-skill-two",
+      "name": "固定技能二",
+      "description": "第二个固定技能",
+      "content": "第二个固定技能内容",
+      "enabled": true,
+      "confirmed": true
+    },
+    "status": 201
+  },
+  "data": {
+    "id": "fix-skill-two",
+    "version": "1.0.0",
+    "name": "固定技能二",
+    "description": "第二个固定技能",
+    "triggers": [],
+    "tools": [],
+    "permissions": [
+      "read"
+    ],
+    "inputSchema": {
+      "type": "object"
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "source": "workspace",
+    "enabled": true,
+    "content": "第二个固定技能内容\n",
+    "contentHash": "<hash>",
+    "path": "<vault>\\.lattice\\skills\\fix-skill-two\\SKILL.md"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "triggers": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "tools": {
+        "type": "array",
+        "element": null,
+        "length": 0
+      },
+      "permissions": {
+        "type": "array",
+        "element": {
+          "type": "string"
+        },
+        "length": 1
+      },
+      "inputSchema": {
+        "type": "object",
+        "fields": {
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "fields": {
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "source": {
+        "type": "string"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "content": {
+        "type": "string"
+      },
+      "contentHash": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.contentHash",
+    "$.data.path"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "command": "meta_overview",
+  "http": {
+    "method": "GET",
+    "path": "/api/meta/overview",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "noteCount": 4,
+    "folderCount": 2,
+    "tagCount": 3,
+    "linkCount": 1,
+    "danglingCount": 1,
+    "totalWords": 37,
+    "danglingLinks": [
+      {
+        "targetTitle": "attachments/att-referenced.txt",
+        "referenceCount": 1
+      }
+    ]
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "noteCount": {
+        "type": "number"
+      },
+      "folderCount": {
+        "type": "number"
+      },
+      "tagCount": {
+        "type": "number"
+      },
+      "linkCount": {
+        "type": "number"
+      },
+      "danglingCount": {
+        "type": "number"
+      },
+      "totalWords": {
+        "type": "number"
+      },
+      "danglingLinks": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "targetTitle": {
+              "type": "string"
+            },
+            "referenceCount": {
+              "type": "number"
+            }
+          }
+        },
+        "length": 1
+      }
+    }
+  },
+  "volatilePaths": []
+}

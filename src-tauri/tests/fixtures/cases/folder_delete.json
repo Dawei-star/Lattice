@@ -1,0 +1,32 @@
+{
+  "command": "folder_delete",
+  "http": {
+    "method": "DELETE",
+    "path": "/api/folders/<uuid>",
+    "query": {},
+    "body": {
+      "confirmed": true,
+      "secondConfirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "deletedFolderCount": 1,
+    "affectedNoteCount": 0
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "deletedFolderCount": {
+        "type": "number"
+      },
+      "affectedNoteCount": {
+        "type": "number"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.path"
+  ],
+  "note": "Express 回 {deletedFolderCount,affectedNoteCount}；命令侧无 affectedNoteCount。"
+}

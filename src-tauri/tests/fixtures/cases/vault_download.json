@@ -1,0 +1,18 @@
+{
+  "command": "vault_download",
+  "http": {
+    "method": "GET",
+    "path": "/api/vault/download",
+    "query": {
+      "path": "attachments/att-fixture.txt"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": "YXR0YWNobWVudCBmaXh0dXJlCg==",
+  "schema": {
+    "type": "string"
+  },
+  "volatilePaths": [],
+  "note": "二进制下载；data 为 base64 原文。"
+}

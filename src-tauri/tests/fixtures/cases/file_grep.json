@@ -1,0 +1,69 @@
+{
+  "command": "file_grep",
+  "http": {
+    "method": "GET",
+    "path": "/api/files/grep",
+    "query": {
+      "query": "Beta",
+      "dir": "项目",
+      "regex": "false"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "query": "Beta",
+    "regex": false,
+    "items": [
+      {
+        "path": "项目/Beta 笔记.md",
+        "line": 3,
+        "text": "title: Beta 笔记"
+      },
+      {
+        "path": "项目/Beta 笔记.md",
+        "line": 8,
+        "text": "Beta 的正文"
+      },
+      {
+        "path": "项目/Beta 笔记.md",
+        "line": 12,
+        "text": "标签 #tag-beta"
+      }
+    ],
+    "total": 3
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "query": {
+        "type": "string"
+      },
+      "regex": {
+        "type": "boolean"
+      },
+      "items": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "path": {
+              "type": "string"
+            },
+            "line": {
+              "type": "number"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 3
+      },
+      "total": {
+        "type": "number"
+      }
+    }
+  },
+  "volatilePaths": []
+}

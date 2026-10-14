@@ -1,0 +1,107 @@
+{
+  "command": "folder_tree",
+  "http": {
+    "method": "GET",
+    "path": "/api/folders",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "<uuid>",
+      "name": "项目",
+      "parentId": null,
+      "sortOrder": 0,
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "noteCount": 1,
+      "children": [
+        {
+          "id": "<uuid>",
+          "name": "归档",
+          "parentId": "<uuid>",
+          "sortOrder": 0,
+          "createdAt": "<timestamp>",
+          "updatedAt": "<timestamp>",
+          "noteCount": 1,
+          "children": []
+        }
+      ]
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parentId": {
+          "type": "null"
+        },
+        "sortOrder": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "noteCount": {
+          "type": "number"
+        },
+        "children": {
+          "type": "array",
+          "element": {
+            "type": "object",
+            "fields": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parentId": {
+                "type": "string"
+              },
+              "sortOrder": {
+                "type": "number"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "noteCount": {
+                "type": "number"
+              },
+              "children": {
+                "type": "array",
+                "element": null,
+                "length": 0
+              }
+            }
+          },
+          "length": 1
+        }
+      }
+    },
+    "length": 1
+  },
+  "volatilePaths": [
+    "$.data[0].id",
+    "$.data[0].createdAt",
+    "$.data[0].updatedAt",
+    "$.data[0].children[0].id",
+    "$.data[0].children[0].parentId",
+    "$.data[0].children[0].createdAt",
+    "$.data[0].children[0].updatedAt"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "command": "vault_attachment_references",
+  "http": {
+    "method": "GET",
+    "path": "/api/vault/attachments/references",
+    "query": {
+      "path": "attachments/att-referenced.txt"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "path": "attachments/att-referenced.txt",
+    "referenced": true,
+    "referencedBy": [
+      {
+        "filePath": "项目/Beta 笔记.md",
+        "title": "Beta 笔记"
+      }
+    ]
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "path": {
+        "type": "string"
+      },
+      "referenced": {
+        "type": "boolean"
+      },
+      "referencedBy": {
+        "type": "array",
+        "element": {
+          "type": "object",
+          "fields": {
+            "filePath": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 1
+      }
+    }
+  },
+  "volatilePaths": []
+}

@@ -1,0 +1,170 @@
+{
+  "command": "file_execute",
+  "http": {
+    "method": "POST",
+    "path": "/api/files/execute",
+    "query": {},
+    "body": {
+      "type": "create",
+      "path": "fixture-executed.txt",
+      "content": "executed fixture\n",
+      "planId": "<uuid>",
+      "planHash": "<hash>",
+      "confirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "operationId": "<operationId>",
+    "planId": "<uuid>",
+    "planVersion": 1,
+    "undoable": true,
+    "path": "fixture-executed.txt",
+    "size": 17,
+    "preview": {
+      "type": "create",
+      "path": "fixture-executed.txt",
+      "summary": "create fixture-executed.txt (source missing)",
+      "impact": "写入或更新内容；影响 1 个路径，目标目前不存在",
+      "fullPath": "<vault>\\fixture-executed.txt",
+      "directory": "<vault>",
+      "reversible": true,
+      "requiresSecondConfirmation": false,
+      "changes": [
+        {
+          "path": "fixture-executed.txt",
+          "fullPath": "<vault>\\fixture-executed.txt",
+          "directory": "<vault>",
+          "before": {
+            "exists": false,
+            "type": "missing"
+          }
+        }
+      ],
+      "planHash": "<hash>",
+      "diff": "--- fixture-executed.txt\n+++ fixture-executed.txt\n-\n+executed fixture\n+",
+      "after": {
+        "exists": true,
+        "type": "file",
+        "size": 17,
+        "sha256": "<hash>"
+      }
+    }
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "operationId": {
+        "type": "string"
+      },
+      "planId": {
+        "type": "string"
+      },
+      "planVersion": {
+        "type": "number"
+      },
+      "undoable": {
+        "type": "boolean"
+      },
+      "path": {
+        "type": "string"
+      },
+      "size": {
+        "type": "number"
+      },
+      "preview": {
+        "type": "object",
+        "fields": {
+          "type": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "fullPath": {
+            "type": "string"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "reversible": {
+            "type": "boolean"
+          },
+          "requiresSecondConfirmation": {
+            "type": "boolean"
+          },
+          "changes": {
+            "type": "array",
+            "element": {
+              "type": "object",
+              "fields": {
+                "path": {
+                  "type": "string"
+                },
+                "fullPath": {
+                  "type": "string"
+                },
+                "directory": {
+                  "type": "string"
+                },
+                "before": {
+                  "type": "object",
+                  "fields": {
+                    "exists": {
+                      "type": "boolean"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "length": 1
+          },
+          "planHash": {
+            "type": "string"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "after": {
+            "type": "object",
+            "fields": {
+              "exists": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string"
+              },
+              "size": {
+                "type": "number"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.body.planId",
+    "$.http.body.planHash",
+    "$.data.operationId",
+    "$.data.planId",
+    "$.data.preview.fullPath",
+    "$.data.preview.directory",
+    "$.data.preview.changes[0].fullPath",
+    "$.data.preview.changes[0].directory",
+    "$.data.preview.planHash",
+    "$.data.preview.after.sha256"
+  ]
+}

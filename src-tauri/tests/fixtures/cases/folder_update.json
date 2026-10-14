@@ -1,0 +1,52 @@
+{
+  "command": "folder_update",
+  "http": {
+    "method": "PATCH",
+    "path": "/api/folders/<uuid>",
+    "query": {},
+    "body": {
+      "name": "新目录改名",
+      "confirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "id": "<uuid>",
+    "name": "新目录改名",
+    "parentId": "<uuid>",
+    "sortOrder": 1,
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>"
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "parentId": {
+        "type": "string"
+      },
+      "sortOrder": {
+        "type": "number"
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "type": "string"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.http.path",
+    "$.data.id",
+    "$.data.parentId",
+    "$.data.createdAt",
+    "$.data.updatedAt"
+  ],
+  "note": "命令 folder_update 收 new_parent_path 且回全树；Express 收 parentId 且回单节点。"
+}

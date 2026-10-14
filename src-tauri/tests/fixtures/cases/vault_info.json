@@ -1,0 +1,71 @@
+{
+  "command": "vault_info",
+  "http": {
+    "method": "GET",
+    "path": "/api/vault/info",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": {
+    "vaultDir": "<vault>",
+    "mode": "markdown",
+    "profile": {
+      "version": 1,
+      "paths": {
+        "inbox": "Inbox",
+        "daily": "Daily",
+        "journal": "Journal"
+      }
+    },
+    "profilePath": "<vault>\\.lattice\\profile.json",
+    "profileStatus": "default",
+    "profileWarning": null
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "vaultDir": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string"
+      },
+      "profile": {
+        "type": "object",
+        "fields": {
+          "version": {
+            "type": "number"
+          },
+          "paths": {
+            "type": "object",
+            "fields": {
+              "inbox": {
+                "type": "string"
+              },
+              "daily": {
+                "type": "string"
+              },
+              "journal": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "profilePath": {
+        "type": "string"
+      },
+      "profileStatus": {
+        "type": "string"
+      },
+      "profileWarning": {
+        "type": "null"
+      }
+    }
+  },
+  "volatilePaths": [
+    "$.data.vaultDir",
+    "$.data.profilePath"
+  ]
+}

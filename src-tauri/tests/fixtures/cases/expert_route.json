@@ -1,0 +1,53 @@
+{
+  "command": "expert_route",
+  "http": {
+    "method": "POST",
+    "path": "/api/experts/route",
+    "query": {},
+    "body": {
+      "message": "固定专家请回答"
+    },
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "fix-expert",
+      "name": "固定专家",
+      "description": "固定专家描述",
+      "icon": "sparkles",
+      "matched": [
+        "固定",
+        "专家"
+      ]
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "array",
+          "element": {
+            "type": "string"
+          },
+          "length": 2
+        }
+      }
+    },
+    "length": 1
+  },
+  "volatilePaths": []
+}

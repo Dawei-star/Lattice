@@ -1,0 +1,32 @@
+{
+  "command": "canvas_delete",
+  "http": {
+    "method": "DELETE",
+    "path": "/api/canvas/file",
+    "query": {
+      "path": "fix-canvas-moved.canvas"
+    },
+    "body": {
+      "confirmed": true,
+      "secondConfirmed": true
+    },
+    "status": 200
+  },
+  "data": {
+    "path": "fix-canvas-moved.canvas",
+    "deleted": true
+  },
+  "schema": {
+    "type": "object",
+    "fields": {
+      "path": {
+        "type": "string"
+      },
+      "deleted": {
+        "type": "boolean"
+      }
+    }
+  },
+  "volatilePaths": [],
+  "note": "确认参数在 body，路径在 query（与 web/src/api/canvas.ts 一致）。"
+}

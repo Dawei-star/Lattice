@@ -1,0 +1,59 @@
+{
+  "command": "tag_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/tags",
+    "query": {},
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "<uuid>",
+      "name": "tag-alpha",
+      "createdAt": "<timestamp>",
+      "noteCount": 1
+    },
+    {
+      "id": "<uuid>",
+      "name": "tag-archive",
+      "createdAt": "<timestamp>",
+      "noteCount": 1
+    },
+    {
+      "id": "<uuid>",
+      "name": "tag-beta",
+      "createdAt": "<timestamp>",
+      "noteCount": 1
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "noteCount": {
+          "type": "number"
+        }
+      }
+    },
+    "length": 3
+  },
+  "volatilePaths": [
+    "$.data[0].id",
+    "$.data[0].createdAt",
+    "$.data[1].id",
+    "$.data[1].createdAt",
+    "$.data[2].id",
+    "$.data[2].createdAt"
+  ]
+}

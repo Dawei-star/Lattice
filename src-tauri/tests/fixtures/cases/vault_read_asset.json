@@ -1,0 +1,18 @@
+{
+  "command": "vault_read_asset",
+  "http": {
+    "method": "GET",
+    "path": "/api/vault/attachment",
+    "query": {
+      "path": "attachments/att-fixture.txt"
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": "YXR0YWNobWVudCBmaXh0dXJlCg==",
+  "schema": {
+    "type": "string"
+  },
+  "volatilePaths": [],
+  "note": "二进制响应；data 为 base64 原文。命令 vault_read_asset 亦返回 base64。"
+}

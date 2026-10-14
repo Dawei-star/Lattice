@@ -1,0 +1,20 @@
+{
+  "command": "job_list",
+  "http": {
+    "method": "GET",
+    "path": "/api/jobs",
+    "query": {
+      "limit": 50
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": [],
+  "schema": {
+    "type": "array",
+    "element": null,
+    "length": 0
+  },
+  "volatilePaths": [],
+  "note": "播种库内无后台任务，返回空数组。"
+}

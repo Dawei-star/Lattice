@@ -1,0 +1,67 @@
+{
+  "command": "search_query",
+  "http": {
+    "method": "GET",
+    "path": "/api/search",
+    "query": {
+      "q": "Alpha",
+      "limit": 10
+    },
+    "body": null,
+    "status": 200
+  },
+  "data": [
+    {
+      "id": "f1a00000-0000-4000-8000-000000000011",
+      "title": "Alpha 笔记",
+      "folderId": null,
+      "filePath": "Alpha 笔记.md",
+      "isPinned": false,
+      "contentHash": "<hash>",
+      "propertiesJson": "{\"status\":\"captured\",\"type\":\"inbox\"}",
+      "updatedAt": "<timestamp>",
+      "excerpt": "Alpha 的正文 标签 #tag-alpha 引用 Beta 笔记"
+    }
+  ],
+  "schema": {
+    "type": "array",
+    "element": {
+      "type": "object",
+      "fields": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "folderId": {
+          "type": "null"
+        },
+        "filePath": {
+          "type": "string"
+        },
+        "isPinned": {
+          "type": "boolean"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "propertiesJson": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        }
+      }
+    },
+    "length": 1
+  },
+  "volatilePaths": [
+    "$.data[0].contentHash",
+    "$.data[0].updatedAt"
+  ],
+  "note": "响应 data 为命中数组，meta.strategy/count 未进 case。"
+}
