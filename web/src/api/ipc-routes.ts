@@ -67,8 +67,6 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
     args: (ctx) => ({ id: asString(ctx.params.id) }) },
   { method: 'GET', path: /^\/experts\/(?<id>[^/]+)$/, command: 'expert_get',
     args: (ctx) => ({ id: asString(ctx.params.id) }) },
-  { method: 'GET', path: /^\/notes\/(?<id>[^/]+)\/history$/, command: 'note_history_list',
-    args: (ctx) => ({ id: asString(ctx.params.id) }) },
 
   // --------------------------------------------------------------- POST
   { method: 'POST', path: '/vault/attachments/validate', command: 'vault_attachment_validate',
@@ -251,6 +249,61 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
         secondConfirmed: flag(body.secondConfirmed),
       };
     } },
+];
+
+/**
+ * 契约里仍是 ⬜、尚未实现为 Tauri 命令的非 AI 端点（对应下方排除清单 A）。
+ *
+ * 这些名字**不应**出现在 `src-tauri/src/lib.rs` 的 `generate_handler!` 里。
+ * 一旦有人实现了其中一个，`web/test/ipc-routes-contract.test.mjs` 会失败，提示把
+ * 对应路由从排除清单移进 `IPC_ROUTES`——把「待办」变成可执行断言。
+ */
+export const IPC_PENDING_COMMANDS: readonly string[] = [
+  'vault_profile_set',
+  'vault_migrate_sqlite',
+  'vault_assets_list',
+  'note_list',
+  'note_get',
+  'note_duplicate',
+  'note_templates_list',
+  'note_create_from_template',
+  'note_create_daily',
+  'tag_delete',
+];
+
+/**
+ * 已排除的路由（`METHOD /path`，动态段写 `:id` 形态）。
+ *
+ * 约束：**不得**同时出现在 `IPC_ROUTES` 中——进表项与排除项是互斥的，
+ * 由 ipc-routes-contract 测试守住。排除理由见上方注释块 A/B 两节。
+ */
+export const IPC_EXCLUDED_ROUTES: readonly string[] = [
+  // A. 缺命令（11）
+  'PUT /vault/profile',
+  'POST /vault/migrate',
+  'GET /vault/assets',
+  'GET /notes',
+  'GET /notes/:id',
+  'POST /notes/:id/duplicate',
+  'GET /notes/templates',
+  'POST /notes/from-template',
+  'POST /notes/daily',
+  'DELETE /tags/:id',
+  'GET /health',
+  // B. 结构不兼容（13）
+  'GET /vault/info',
+  'POST /vault/attachments',
+  'GET /vault/download',
+  'GET /notes/index',
+  'POST /notes',
+  'PATCH /notes/:id',
+  'GET /notes/:id/history',
+  'GET /notes/:id/history/:version',
+  'POST /folders',
+  'PATCH /folders/:id',
+  'DELETE /folders/:id',
+  'GET /search',
+  'GET /canvas/files',
 ];
 
 /**
