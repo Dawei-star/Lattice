@@ -2,7 +2,16 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 ｜ P1-05 收尾（api 层 invoke 双轨）完成：58 条路由审计后建表，34 条可对齐进表、24 条带证据排除；入口切换按决策暂缓
+> **最后更新**：2026-10-14 17:05 ｜ P1-05 收尾（api 层 invoke 双轨）完成：58 条路由逐条审计后建表，34 条可对齐、24 条带证据排除；桌面入口切换按决策暂缓
+
+## 本轮变更（2026-10-14）
+
+| 节点 | 状态 | 提交 | 一句话 |
+|---|---|---|---|
+| P1-07 组件层 TS 化 | ✅ 完成 | `d2a7a9a` | 34 文件 `.jsx`→`.tsx`，strict 错误 1343→0；顺修 1 处既有 bug（Δ12） |
+| P1-05 收尾：api 层 invoke 双轨 | ✅ 完成（入口切换暂缓） | `9271e2e` | 映射表 34/58 可对齐，24 条排除并出清单（Δ13） |
+
+> 验证口径：`tsc --noEmit` 0 错 · `npm --prefix web run test` **EXIT=0**（含 154 项集成检查）· `vite build` 通过（1986 modules）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -21,7 +30,7 @@
 - [x] P1-01 WorkspaceService 统一写入边界（锁/审计/快照/错误模型）
 - [x] P1-02 SQLite 恢复/迁移事务化/迁移前备份
 - [x] P1-03 watcher reconcile + 持久化 jobs 队列
-- [ ] P1-04 非 AI 命令面迁移 ✅ 完成
+- [x] P1-04 非 AI 命令面迁移（96 端点中非 AI/MCP 侧 59 个全部实现为 Rust 命令）
   - [x] tags 投影（`tag_list`）
   - [x] notes 模型地基（frontmatter 解析/字数口径/迁移 004-005/`note_index`）
   - [x] `note_create`（confirmed 闸门/id 幂等/路径递增分配）
@@ -39,7 +48,7 @@
   - [x] files 全套 7（`file_read`/`file_find`/`file_grep`/`file_preview`/`file_execute`/`file_undo`/`file_log`；planHash 校验→.fc 快照→原子落盘→审计→undo 还原，delete 双确认）
   - [x] experts/skills 全套 9（`expert_list/get/save/delete/route` + `skill_list/get/save/delete`；内置 7 专家 9 技能编译期嵌入，工作区层 `.lattice/experts|skills`，workspace 覆盖 builtin、保存/删除双确认闸门）
   - [x] review 3（`review_health`/`review_plan`/`review_execute`；9 类线索扫描 + 健康分，修复计划内存 TTL 15min + planHash + contentHash 重校验）
-- [x] **P1-04 非 AI 命令面迁移全部完成**（96 端点中非 AI/MCP 侧 59 个全部迁移）
+- [x] **P1-04 非 AI 命令面迁移全部完成**（96 端点中非 AI/MCP 侧 59 个全部实现为 Rust 命令）——但「命令已实现」≠「前端路由可用」，见下方「IPC 命令核销」与 Δ13
 - [x] P1-05 api 层 TS 化（12 模块 git mv 转 .ts + 类型标注，零运行时改动；测试 import 改 .ts 后缀走 Node 24 type stripping；tsconfig 开 allowImportingTsExtensions）
 - [x] P1-06 hooks/lib TS 化（20 文件 git mv 转 .ts/.tsx + 类型标注；11 个测试 import 改 .ts；顺修类型化揭出的 2 处既有 bug：useToast dedupe 反向清理失效、static-export 索引页 rows.map→notes.map）
 - [x] P1-07 components/shell/settings 全量 .jsx → .tsx（34 文件 git mv；**strict 错误 1343→0**：CanvasView 328 / SettingsModal 252 / FolderTree 199 / AIAssistantPanel 175 / EditorPane 167 / ExpertsCenter 118 / ModelCenter 98 / Sidebar 5 / App 1；顺修 1 处既有 bug：McpServerSettings 作用域引用失效（组件内引用不存在的外层 `onConfirmFileOperation`/`vaultPath`，一旦开启项目级 MCP 必抛 ReferenceError）；`test/ai-motion.test.mjs` 源路径 .jsx→.tsx）
@@ -51,24 +60,50 @@
 
 ## IPC 命令核销（契约清单 96 端点）
 
-**已迁移 59 个**（vault 9 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folders 4 + meta_overview + canvas 5 + attachments 8 + files 7 + experts/skills 9 + review 3 + vault_download 等计入 vault 侧）
-**剩余 37 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围；引用正则为常见形态近似，P1-08 契约对齐时校准）
+三个**不同口径**的数字，不要混用：
+
+| 口径 | 数字 | 含义 |
+|---|---|---|
+| 契约端点 | 96 | 冻结清单总量（[ipc-contract.md](ipc-contract.md) §2） |
+| 已实现 Rust 命令 | 59 | P1-04 交付（vault 9 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folders 4 + meta_overview + canvas 5 + attachments 8 + files 7 + experts/skills 9 + review 3） |
+| 未迁移端点 | 37 | 口径 = 96 − 59（含 P3 AI 22、P4 MCP 3、⛔ 废弃 4、及其余 ⬜；⬜ 与 ⛔ 的归类存在重叠，P1-08 时校准） |
+
+**双轨映射核销（P1-05 收尾）**——前端 api 层 81 个 `http.*` 调用点归并出 **58 条非 AI/MCP 路由**，逐条比对入参与返回结构（注意：58 是「前端路由数」，与上面的「端点数」不同口径）：
+
+| 结论 | 条数 | 处理 |
+|---|---|---|
+| 直接映射 | 31 | 进 `ipc-routes.ts`，参数与返回均对齐 |
+| 需适配映射 | 3 | 进表：`PUT /canvas` 拆 `nodes`/`edges`；`/files/preview`、`/files/execute` 的 `action`/`actions` 二态 |
+| 缺命令 | 11 | 契约 ⬜ 的 10 条 + ⛔ 的 `/health`，不阻塞（回落 HTTP） |
+| **结构不兼容** | **13** | 命令存在但入参/返回对不上，**接上去会静默改行为**——明细见 Δ13 |
+
+**权威清单**：`web/src/api/ipc-routes.ts`（进表项 + 末尾「排除清单」，逐条带行号证据）；契约侧见 [ipc-contract.md](ipc-contract.md) §5「双轨映射核销」
 
 ## 关键问题点（活跃）
 
 - ~~Δ2 folders/UUID 映射~~：已解决（迁移 007 + 确定性目录 id）；已知限制：目录改名后确定性 id 变化（用户排序 sortOrder 特性延后，见 progress 下一步）
 - Δ3 CI server-test 曾现 flaky（重跑即绿），已加失败 annotation 机制 → **已定位疑似成因**：`vault-attachments.test.js` 的符号链接用例是否执行取决于本机 `fs.symlink` 能否成功，见 Δ10
 - Δ4 运行态性能指标（冷启动/内存）待人工采集
-- **Δ10（新增）** 本机 `server-test` 194→193 失败 1 项：`server/test/vault-attachments.test.js:86`「符号链接指向点目录的下载应 404，实得 200」，3/3 确定性复现；经核验本次 P1-07 提交 **0 个 server 文件**（44 个变更全在 web/），`server/` 工作区干净、最近一次服务端改动早于 P1 全部批次 → 属**预先存在**的环境相关用例（Windows realpath/符号链接语义），非本次引入。CI 跑 ubuntu-latest 不受影响；建议 P1-08 一并核对 Rust `vault_download` 的符号链接/点目录语义后再定 M1 门禁口径
+- **Δ10（新增）** 本机 `server-test` 194→193 失败 1 项：`server/test/vault-attachments.test.js:86`「符号链接指向点目录的下载应 404，实得 200」，3/3 确定性复现；经核验本轮两笔提交（`d2a7a9a` P1-07 / `9271e2e` P1-05 收尾）**0 个 server 文件**，改动全在 `web/` 与 `doc/`，`server/` 工作区干净、最近一次服务端改动早于 P1 全部批次 → 属**预先存在**的环境相关用例（Windows realpath/符号链接语义），非本次引入。CI 跑 ubuntu-latest 不受影响；建议 P1-08 一并核对 Rust `vault_download` 的符号链接/点目录语义后再定 M1 门禁口径
 - **Δ11（新增）** 类型化过程中揭出 api 契约层类型过宽（不在 P1-07 改动范围，登记给 P1-08 校准）：`resources.ts` 的 `notesApi.history` 标为 `unknown[]`、`notesApi.historyVersion` 返回 `unknown`、`NoteDetail` 缺 `filePath`；`vault-files.ts` 的 `LatticeDesktopBridge` 缺 `revealVault`/`backupVault`/`exportStaticSite`，`vaultAttachmentsApi.upload` 条目缺 `mimeType`；`canvas.ts` 的 `CanvasDocument.nodes/edges` 为 `unknown[]`。当前以组件侧局部类型 + `as` 断言消化（全仓 `as unknown as` 仅 16 处、`: any` 29 处）
 - **Δ13（新增，M1 前必做）**「已有 59 个 command」≠「前端 58 条路由都能走 IPC」：逐条审计后只有 **34 条**可对齐，**24 条排除**，其中 13 条是**结构不兼容**（比缺命令更危险，因为 Rust 命令存在、接上去会静默改变行为）：
   - 参数缺失：`note_create`/`note_update` 无 `folderId`（新建到目录、移动笔记无法表达）；`search_query` 无 `folderId`/`inboxStatus`；`folder_create`/`folder_update` 收**父目录路径**而前端传 `parentId`；`vault_attachment_upload` 无 `folder`
   - 返回结构不符：`note_index` 发 `propertiesJson`(string) 而前端当对象用（`App.tsx:367` 等）；`notes/:id/history` 前端要 `{items,currentHash}`、命令发数组；`history/:version` 前端要 `{version,createdAt,title,content,isPinned,properties}`、命令只给 `{version,raw,hash}`；`canvas_list` 发 `Vec<String>` 而前端要 `path/name/folderPath` 对象；`vault_info` 只回 `{path}` 而前端读 `vaultDir`+`profile`；`vault_download` 发 base64 JSON 而前端直接 `fetch+blob`
   - 语义差异：`folder_delete` 对非空目录返回 CONFLICT 拒绝，Express 语义是「笔记移到未分类」；前端读的 `affectedNoteCount` 命令也没有
   - **结论**：入口切全功能 App 必须先补齐这些（尤其 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参），否则桌面态会静默丢功能。完整清单与行号证据见 `web/src/api/ipc-routes.ts` 文件末尾「排除清单」
+- 其余仍挂着的：Δ5 契约「第二人抽查 10 项」单人环境无法满足 · Δ6 远端 main 落后 v0.1.5（待 Gate Review 后合回）· Δ7 gh CLI 不可用（CI 由 push 触发）· Δ9 experts/skills 内置资源仍 `include_str` 自 `server/`，**P1-09 删 Express 前必须迁到 src-tauri**（Δ1/Δ8 已解决，全量清单见 [execution-log.md](execution-log.md)）
+
+## M1 达成条件（P1 收口自查）
+
+- [ ] P1-08 契约快照对照三部分全绿（Express 录制 fixtures + Rust 集成测试 + 前端 mock invoke）
+- [ ] **Δ13 补齐**：至少 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参、folder 系 id 寻址；补齐前**不得**把桌面入口切到全功能 App（计划 §5.3-5 的顺序约束）
+- [ ] Δ11 api 契约类型收紧（去掉组件侧 `as unknown as` / `: any` 断言）
+- [ ] Δ10 server-test 基线重采，并写明「本机符号链接可创建」这一口径
+- [ ] Δ9 builtin 资源迁出 `server/`（P1-09 前置）
+- [ ] Δ4 运行态指标人工采集（冷启动/首屏/内存）
 
 ## 下一步
 
-1. P1-08 功能对齐验证（契约快照对照）；顺带校准 Δ11 的 api 契约类型
-2. **Δ13 处置（M1 前必做）**：按 `api/ipc-routes.ts` 末尾排除清单补齐 Rust 侧，才能切桌面入口
-3. P1-08 时复核 Δ10：确认 Rust 侧 `vault_download` 对符号链接/点目录的返回码与 Express 一致，并重采 server-test 基线
+1. **P1-08 功能对齐验证**（契约快照对照）：按契约清单逐项核销桌面通道 vs Express 通道行为一致
+2. **Δ13 处置（M1 前必做）**：按 `ipc-routes.ts` 末尾排除清单补 Rust 形参/命令，打通 24 条未映射路由
+3. Δ11 收紧 api 契约类型；Δ10 复核 Rust `vault_download` 对符号链接/点目录的返回码
