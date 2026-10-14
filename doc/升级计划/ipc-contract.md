@@ -252,7 +252,7 @@
 
 - **静态参数契约**：`web/test/ipc-args-contract.test.mjs` —— 逐命令断言「映射表 args 构造器产出的键 ⊆ Rust 形参」且「Rust 必填形参都被提供」（多传键会被 invoke 拒绝、少传必填参数会运行时报错）。34 条路由全覆盖。
 - **运行时结构对齐**：`src-tauri/src/parity_tests.rs` —— 重建 `seed/vault` 后按 fixture 时序回放，逐字段 diff。
-- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **26 个命令 / 96 条**（首版 27 / 99，随 Δ13 增量收缩）。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
+- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **26 个命令 / 93 条**（首版 27 / 99，随 Δ13 增量收缩：`2d34ae9` 99→96，`af0fa83` 96→93）。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
 - 收缩时可能**同时暴露更深一层**的差异：补齐 `properties` 对象后，`note_update` 立刻多出 `properties.status`/`properties.type` 两条——因为原先 `properties` 整个缺失，diff 看不见对象内部。这类「净减少但更精确」的变化是预期行为，不要当成回归。
 - 差异种类：`missing-in-rust`（Express 有、Rust 无）/ `extra-in-rust` / `type-mismatch` / `error`（Rust 直接报错）。
 - 当前**唯一** `error` 类：`vault_read_asset`（`read_asset` 白名单窄于 Express，见 Δ14，待产品定夺；**不可**为消除它而擅自放宽安全边界）。
