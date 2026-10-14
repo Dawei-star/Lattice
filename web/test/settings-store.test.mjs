@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { installDom } from './dom-setup.mjs';
-import { saveSettings, subscribeSettings } from '../src/settings/settings.js';
+import { saveSettings, subscribeSettings } from '../src/settings/settings.ts';
 
 installDom();
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAiProvider, getActiveAiProvider, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.js';
-import { isLocalOllamaEndpoint } from '../src/settings/aiProviders.js';
+import { createAiProvider, getActiveAiProvider, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.ts';
+import { isLocalOllamaEndpoint } from '../src/settings/aiProviders.ts';
 
 const values = new Map();
 globalThis.localStorage = {

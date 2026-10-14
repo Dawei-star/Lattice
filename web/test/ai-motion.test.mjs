@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const styles = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
-const panel = fs.readFileSync(new URL('../src/components/AIAssistantPanel.jsx', import.meta.url), 'utf8');
+const panel = fs.readFileSync(new URL('../src/components/AIAssistantPanel.tsx', import.meta.url), 'utf8');
 
 assert.match(
   styles,

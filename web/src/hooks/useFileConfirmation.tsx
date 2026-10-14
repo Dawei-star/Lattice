@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { AlertTriangle, FolderOpen, ShieldCheck, X } from 'lucide-react';
-import Modal from '../ui/Modal.jsx';
+import Modal from '../ui/Modal.tsx';
 
 /** 文件写操作的单一动作描述。 */
 export interface FileOperationAction {

@@ -1,0 +1,217 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { isComposingEvent } from '../lib/events.ts';
+import { formatRelativeTime } from '../lib/format.ts';
+import Modal from '../ui/Modal.tsx';
+import type { NoteIndexRow, AttachmentRow } from '../hooks/useVault.ts';
+
+/** 检索结果条目（笔记或附件）。 */
+export type SwitcherEntryBase =
+  | { type: 'note'; note: NoteIndexRow; title: string; meta: string | undefined }
+  | { type: 'attachment'; attachment: AttachmentRow; title: string; meta: string | undefined };
+
+/** 带匹配得分的检索结果条目。 */
+export type SwitcherEntry = SwitcherEntryBase & { score: number };
+
+export interface QuickSwitcherProps {
+  open: boolean;
+  noteIndex: NoteIndexRow[];
+  attachmentFiles?: AttachmentRow[];
+  showAttachments?: boolean;
+  onClose: () => void;
+  onSelect: (item: SwitcherEntry) => void;
+  onCreate: (title: string) => void;
+}
+
+/**
+ * 快速切换器（Ctrl / Cmd + K）。
+ * 在标题索引里做加权模糊匹配：前缀命中 > 包含命中 > 子序列命中。
+ * 「显示附件」开启时，图片、视频、PDF 等附件文件也会进入匹配结果。
+ * 没有任何命中时提供「以此标题新建」的入口，这条路径同时也用于补全悬空链接。
+ */
+export default function QuickSwitcher({ open, noteIndex, attachmentFiles = [], showAttachments = false, onClose, onSelect, onCreate }: QuickSwitcherProps) {
+  const [keyword, setKeyword] = useState('');
+  const [cursor, setCursor] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setKeyword('');
+      setCursor(0);
+      // 等弹层挂载完成再聚焦，否则 focus 会丢失
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [open]);
+
+  const matches = useMemo<SwitcherEntry[]>(() => {
+    const trimmed = keyword.trim().toLowerCase();
+    const noteEntries: SwitcherEntryBase[] = noteIndex.map((note) => ({ type: 'note', note, title: note.title.toLowerCase(), meta: note.updatedAt }));
+    const attachmentEntries: SwitcherEntryBase[] = showAttachments
+      ? attachmentFiles.map((file) => ({
+          type: 'attachment',
+          attachment: file,
+          title: (file.name ?? file.path ?? '').toLowerCase(),
+          meta: file.modifiedAt as string | undefined,
+        }))
+      : [];
+
+    if (!trimmed) {
+      return [...noteEntries, ...attachmentEntries].slice(0, 40).map((entry) => ({ ...entry, score: 0 }));
+    }
+
+    return [...noteEntries, ...attachmentEntries]
+      .map((entry) => ({ ...entry, score: scoreTitle(entry.title, trimmed) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 40);
+  }, [keyword, noteIndex, attachmentFiles, showAttachments]);
+
+  const exactMatch = matches.some((item) => item.title === keyword.trim().toLowerCase());
+  const showCreate = keyword.trim().length > 0 && !exactMatch;
+  const optionCount = matches.length + (showCreate ? 1 : 0);
+
+  useEffect(() => {
+    setCursor((current) => Math.min(current, Math.max(0, optionCount - 1)));
+  }, [optionCount]);
+
+  useEffect(() => {
+    const node = listRef.current?.querySelector('.switcher__item.is-cursor');
+    node?.scrollIntoView({ block: 'nearest' });
+  }, [cursor]);
+
+  // 在 window 上监听 Esc：焦点若因任何原因不在对话框内（例如用户点了遮罩边缘），
+  // 仅靠对话框自身的 onKeyDown 会漏掉关闭操作
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isComposingEvent(event)) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const commit = (index: number) => {
+    if (index < matches.length) {
+      onSelect(matches[index]);
+      return;
+    }
+    if (showCreate) onCreate(keyword.trim());
+  };
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // 输入法组词期间：Enter 确认候选、Esc 取消组词、方向键选候选，都不触发切换器行为
+    if (isComposingEvent(event)) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setCursor((current) => (current + 1) % Math.max(1, optionCount));
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setCursor((current) => (current - 1 + optionCount) % Math.max(1, optionCount));
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      commit(cursor);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} ariaLabel="快速切换笔记" className="switcher" >
+      <div onKeyDown={handleKeyDown}>
+        <div className="switcher__search">
+          <svg viewBox="0 0 16 16" aria-hidden="true" className="icon">
+            <path d="M7 1a6 6 0 1 0 3.7 10.7l3.3 3.3 1.4-1.4-3.3-3.3A6 6 0 0 0 7 1Zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" fill="currentColor" />
+          </svg>
+          <input
+            ref={inputRef}
+            value={keyword}
+            placeholder="输入标题跳转，或输入新标题直接创建…"
+            aria-label="检索笔记标题"
+            onChange={(event) => {
+              setKeyword(event.target.value);
+              setCursor(0);
+            }}
+          />
+          <span className="kbd">Esc</span>
+        </div>
+
+        <ul className="switcher__list" ref={listRef} role="listbox">
+          {matches.map((item, index) => (
+            <li key={item.type === 'attachment' ? `attachment:${item.attachment.path}` : item.note.id}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={cursor === index}
+                className={`switcher__item ${cursor === index ? 'is-cursor' : ''}`}
+                onMouseEnter={() => setCursor(index)}
+                onClick={() => onSelect(item)}
+              >
+                <span className="switcher__title">{item.type === 'attachment' ? item.attachment.name : item.note.title}</span>
+                <span className="switcher__meta">
+                  {item.type === 'attachment' ? '附件' : ''}
+                  {item.meta ? formatRelativeTime(item.meta) : ''}
+                </span>
+              </button>
+            </li>
+          ))}
+
+          {showCreate ? (
+            <li>
+              <button
+                type="button"
+                role="option"
+                aria-selected={cursor === matches.length}
+                className={`switcher__item switcher__item--create ${cursor === matches.length ? 'is-cursor' : ''}`}
+                onMouseEnter={() => setCursor(matches.length)}
+                onClick={() => onCreate(keyword.trim())}
+              >
+                <span className="switcher__title">新建「{keyword.trim()}」</span>
+                <span className="switcher__meta">创建并打开</span>
+              </button>
+            </li>
+          ) : null}
+
+          {optionCount === 0 ? (
+            <li className="switcher__empty">没有匹配的笔记，输入新标题即可创建。</li>
+          ) : null}
+        </ul>
+
+        <div className="switcher__footer">
+          <span><span className="kbd">↑</span><span className="kbd">↓</span> 选择</span>
+          <span><span className="kbd">Enter</span> 打开</span>
+          <span><span className="kbd">Esc</span> 关闭</span>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * 标题打分：前缀命中给最高分，其次按位置加权的包含命中，最后是子序列命中。
+ * @returns {number} 0 表示不匹配
+ */
+function scoreTitle(title: string, keyword: string): number {
+  if (title === keyword) return 1000;
+  if (title.startsWith(keyword)) return 800 - title.length;
+  if (title.includes(keyword)) return 500 - title.indexOf(keyword);
+
+  // 子序列匹配：允许「架分」命中「架构分层」，但不强求连续
+  let cursor = 0;
+  let gapPenalty = 0;
+  for (const char of keyword) {
+    const found = title.indexOf(char, cursor);
+    if (found === -1) return 0;
+    gapPenalty += found - cursor;
+    cursor = found + 1;
+  }
+  return Math.max(1, 300 - gapPenalty);
+}

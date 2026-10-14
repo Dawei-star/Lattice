@@ -13,8 +13,8 @@ import {
   isMarketEntryInstalled,
   resolveMarketArgs,
   unresolvedMarketArgs,
-} from '../src/settings/mcpMarketplace.js';
-import { pendingArgTokens } from '../src/settings/mcpSettings.js';
+} from '../src/settings/mcpMarketplace.ts';
+import { pendingArgTokens } from '../src/settings/mcpSettings.ts';
 
 const byKey = (key) => MCP_MARKET_CATALOG.find((entry) => entry.key === key);
 const logoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'mcp-logos');

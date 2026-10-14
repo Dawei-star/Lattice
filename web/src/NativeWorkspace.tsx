@@ -6,7 +6,7 @@ import { marked } from 'marked';
 import { nativeVault, type NativeIndexStats, type NativeNoteContents, type NativeNoteFile } from './api/native-vault';
 import { createNativeDocument, splitNativeDocument } from './api/native-document.ts';
 import { resolveAttachmentPath } from './api/vault-files.ts';
-import MarkdownPreview from './components/MarkdownPreview.jsx';
+import MarkdownPreview from './components/MarkdownPreview.tsx';
 import './native-workspace.css';
 
 type EditorMode = 'edit' | 'split' | 'preview';

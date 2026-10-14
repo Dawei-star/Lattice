@@ -3,7 +3,7 @@
  * 只做一件事 —— 挂载真实的 App 组件树，并暴露 DOM 供测试脚本断言。
  */
 import { createRoot } from 'react-dom/client';
-import App from '../src/App.jsx';
+import App from '../src/App.tsx';
 import { ToastProvider } from '../src/hooks/useToast.tsx';
 
 export function mount() {

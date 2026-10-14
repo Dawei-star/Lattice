@@ -1,9 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App.jsx';
+import App from './App.tsx';
 import NativeWorkspace from './NativeWorkspace';
 import { isTauri } from '@tauri-apps/api/core';
-import AppErrorBoundary from './components/AppErrorBoundary.jsx';
+import AppErrorBoundary from './components/AppErrorBoundary.tsx';
 import { ToastProvider } from './hooks/useToast.tsx';
 import './styles.css';
 

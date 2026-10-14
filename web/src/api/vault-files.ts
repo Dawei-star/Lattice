@@ -7,12 +7,37 @@ const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
 /** 写文件确认载荷（高风险操作的二次确认结果）。 */
 export type FileConfirmation = Record<string, unknown>;
 
+/** getVaultInfo 返回的知识库信息（桌面壳扩展字段不逐一声明）。 */
+export interface LatticeDesktopVaultInfo {
+  path?: string;
+  vaultDir?: string;
+  [key: string]: unknown;
+}
+
 /** window.latticeDesktop 注入的桌面端文件桥（桌面壳环境提供，浏览器环境缺失）。 */
 export interface LatticeDesktopBridge {
   readMarkdownFile(filePath: string): Promise<string | null>;
   writeMarkdownFile(filePath: string, raw: string, confirmation: FileConfirmation): Promise<unknown>;
   moveMarkdownFile(fromPath: string, toPath: string, raw: string, confirmation: FileConfirmation): Promise<unknown>;
   removeMarkdownFile(filePath: string, confirmation: FileConfirmation): Promise<unknown>;
+  /** 获取当前挂载知识库的信息（路径等） */
+  getVaultInfo?(): Promise<LatticeDesktopVaultInfo | null>;
+  /** 用系统默认应用打开本地文件 */
+  openVaultFile?(filePath: string): Promise<unknown>;
+  /** 在系统资源管理器中显示本地路径 */
+  revealVaultPath?(relativePath: string): Promise<unknown>;
+  /** 切换到指定知识库目录并重启应用 */
+  selectVaultPath?(path: string, confirmation: FileConfirmation): Promise<{ canceled?: boolean; path?: string } | null>;
+  /** 弹出目录选择器并挂载新知识库 */
+  selectVault?(confirmation: FileConfirmation): Promise<{ canceled?: boolean; path?: string } | null>;
+  /** 为外部 Markdown 文件申请写入授权 */
+  requestExternalWrite?(token: string): Promise<{ granted?: boolean; message?: string } | null | undefined>;
+  /** 读取外部 Markdown 文件的会话内容 */
+  readExternalMarkdownFile?(token: string): Promise<{ fileName: string; content?: string; filePath?: string; writeGranted?: boolean; modifiedAt?: string } | null | undefined>;
+  /** 覆盖保存外部 Markdown 文件 */
+  writeExternalMarkdownFile?(token: string, content: string, confirmation: FileConfirmation): Promise<unknown>;
+  /** 订阅「从外部打开 Markdown 文件」事件；返回取消订阅函数 */
+  onOpenExternalFile?(handler: (token: string) => void): (() => void) | undefined;
 }
 
 declare global {

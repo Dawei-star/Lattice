@@ -14,7 +14,7 @@ import {
   setArgValue,
   withVisibleServers,
   writeEnvValue,
-} from '../src/settings/mcpSettings.js';
+} from '../src/settings/mcpSettings.ts';
 
 const values = new Map();
 globalThis.localStorage = {
