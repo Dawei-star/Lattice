@@ -13,7 +13,7 @@
 | 看板刷新 | ✅ 完成 | `c0e178a` | 三口径拆分 + M1 自查清单 |
 | P1-08 第 1 步（前置）：契约一致性校验 | ✅ 完成 | `b678f4c` | 映射表 ↔ Rust 注册表防漂移；修正 1 处落表错误 |
 | P1-08 第 1 步（正式）：录制契约快照 | ✅ 完成 | `30e90e0` | 50 case + seed vault + 递归 schema；幂等验证通过；新增 fixtures 自检器 |
-| **P1-08 第 2 步：双通道对齐断言** | ✅ 完成 | `6555003` | 静态参数契约（当 34 条路由全覆盖）+ Rust 结构对齐；差异基线 27 命令 / 99 条（**现 23 / 80**，映射表现 35 / 23） |
+| **P1-08 第 2 步：双通道对齐断言** | ✅ 完成 | `6555003` | 静态参数契约（当 34 条路由全覆盖）+ Rust 结构对齐；差异基线 27 命令 / 99 条（**现 22 / 76**，映射表现 36 / 22） |
 | **P1-08 第 3 步：消费层一致性断言** | ✅ 完成 | `5585a04` | 50 fixture 双通道回放，交付给 UI 的值逐字节一致；表内 0 静默回落 |
 | **Δ13 增量 1：note 系 `properties` 对象** | ✅ 完成 | `2d34ae9` | Rust 补发 `properties` 对象；差异 99→96、回收 `GET /notes/index`（映射表 35/23） |
 | **Δ13 增量 2：`note_update` 保留属性** | ✅ 完成 | `af0fa83` | 修 `properties.unwrap_or_default()` 导致改正文即清空 frontmatter 属性的真 bug；差异 96→93 |
@@ -70,7 +70,7 @@
   - [ ] 第 2 步：Rust 侧逐命令加载 fixture 断言结构/语义一致（注意命令是 crate 私有 `fn`，测试须落在 `src/` 内的 `#[cfg(test)]`，`tests/` 目录调不到）
   - [x] **第 2 步：双通道对齐断言 ✅**（`6555003`）两条腿：
     - **静态参数契约**（`web/test/ipc-args-contract.test.mjs`，已进 web `test` 链）：解析 `lib.rs` 每个 `#[tauri::command]` 形参并转 camelCase，再用**万能 Proxy ctx 实际调用映射表的 `args` 构造器**收集键集合，断言「不多传键 + 必填形参都被提供」——34 条路由全覆盖、0 跳过。这是 invoke 最高频失效模式（参数名漂移）的守门人
-    - **运行时结构对齐**（`src-tauri/src/parity_tests.rs`，crate 内 `#[cfg(test)]`；命令经 F2 后是私有 `fn` 且 `with_workspace` 需要 `State`，单测只能测**服务层**）：重建 seed Vault → 按 fixture 时序回放 → 算 schema → 与 Express 逐字段 diff → 与期望清单 `src-tauri/tests/fixtures/divergence.json` 比对。**基线：27 个命令 / 99 条差异**（**现已收缩到 23 / 80**，见 Δ13 处置）。清单**设计成可收缩**：修好一处即失败并点名要删的条目；服务调用统一走 `capture()`，出错记成差异而不是 panic 掉整份基线
+    - **运行时结构对齐**（`src-tauri/src/parity_tests.rs`，crate 内 `#[cfg(test)]`；命令经 F2 后是私有 `fn` 且 `with_workspace` 需要 `State`，单测只能测**服务层**）：重建 seed Vault → 按 fixture 时序回放 → 算 schema → 与 Express 逐字段 diff → 与期望清单 `src-tauri/tests/fixtures/divergence.json` 比对。**基线：27 个命令 / 99 条差异**（**现已收缩到 22 / 76**，见 Δ13 处置）。清单**设计成可收缩**：修好一处即失败并点名要删的条目；服务调用统一走 `capture()`，出错记成差异而不是 panic 掉整份基线
   - [x] **第 3 步：消费层一致性断言 ✅**（`5585a04`）`web/test/ipc-parity-consumption.test.mjs`（已进 web `test` 链）——**数据驱动**：把 50 个 fixture 的同一份 `data` 分别经 ①HTTP（fetch 桩返回 `{data}` 信封）与 ②IPC（invoke 桩直接返回数据本身）走一遍 `http.*`，断言两条通道交付给消费层的值逐字节相同（**50/50 一致**）；同时钉住「实际走的通道」——**表内 30 条全部走 invoke、表外 20 条必须回落 HTTP、表内 0 条静默回落**（静默回落是真 hazard：路由匹配上了但 `args` 自述表达不了会回落，而真实桌面端没有 Express 兜底）。另覆盖错误路径：HTTP 400 `{error:{message}}` 与 IPC 抛出同一文案，两条通道的用户可见 message 一致（`code` 不同属已知差异：HTTP 保留服务端 code，IPC 为裸字符串只能标 `IPC_ERROR`）。**反向验证三种破坏全部被拦**：删表内路由 / IPC 侧不套信封（点名 30 个命令）/ 强制 args 返回 undefined（点名静默回落路由）
 - [ ] P1-09 删除 Express 回落 ← **当前（前置：Δ13/Δ14 处置）**
 - [ ] P1-10 验收发布 v0.2.0
@@ -103,7 +103,7 @@
 - Δ4 运行态性能指标（冷启动/内存）待人工采集
 - **Δ10（新增）** 本机 `server-test` 194→193 失败 1 项：`server/test/vault-attachments.test.js:86`「符号链接指向点目录的下载应 404，实得 200」，3/3 确定性复现；经核验本轮两笔提交（`d2a7a9a` P1-07 / `9271e2e` P1-05 收尾）**0 个 server 文件**，改动全在 `web/` 与 `doc/`，`server/` 工作区干净、最近一次服务端改动早于 P1 全部批次 → 属**预先存在**的环境相关用例（Windows realpath/符号链接语义），非本次引入。CI 跑 ubuntu-latest 不受影响；建议 P1-08 一并核对 Rust `vault_download` 的符号链接/点目录语义后再定 M1 门禁口径
 - **Δ11（新增）** 类型化过程中揭出 api 契约层类型过宽（不在 P1-07 改动范围，登记给 P1-08 校准）：`resources.ts` 的 `notesApi.history` 标为 `unknown[]`、`notesApi.historyVersion` 返回 `unknown`、`NoteDetail` 缺 `filePath`；`vault-files.ts` 的 `LatticeDesktopBridge` 缺 `revealVault`/`backupVault`/`exportStaticSite`，`vaultAttachmentsApi.upload` 条目缺 `mimeType`；`canvas.ts` 的 `CanvasDocument.nodes/edges` 为 `unknown[]`。当前以组件侧局部类型 + `as` 断言消化（全仓 `as unknown as` 仅 16 处、`: any` 29 处）
-- **Δ13（新增，M1 前必做）**「已有 59 个 command」≠「前端 58 条路由都能走 IPC」：审计时只有 **34 条**可对齐、**24 条排除**（13 条结构不兼容），**截至 `2d34ae9` 已回收 1 条 → 35 / 23**（`GET /notes/index`：Rust 补发 `properties` 对象后完全对齐）：
+- **Δ13（新增，M1 前必做）**「已有 59 个 command」≠「前端 58 条路由都能走 IPC」：审计时只有 **34 条**可对齐、**24 条排除**（13 条结构不兼容），**已回收 2 条（`GET /notes/index`、`GET /canvas/files`）→ 36 / 22**（`GET /notes/index`：Rust 补发 `properties` 对象后完全对齐）：
   - 参数缺失：`note_create`/`note_update` 无 `folderId`（新建到目录、移动笔记无法表达）；`search_query` 无 `folderId`/`inboxStatus`；`folder_create`/`folder_update` 收**父目录路径**而前端传 `parentId`；`vault_attachment_upload` 无 `folder`
   - 返回结构不符：~~`note_index` 发 `propertiesJson`(string) 而前端当对象用~~ **已修**（`2d34ae9`，Rust 同发 `properties` 对象）；`notes/:id/history` 前端要 `{items,currentHash}`、命令发数组；`history/:version` 前端要 `{version,createdAt,title,content,isPinned,properties}`、命令只给 `{version,raw,hash}`；`canvas_list` 发 `Vec<String>` 而前端要 `path/name/folderPath` 对象；`vault_info` 只回 `{path}` 而前端读 `vaultDir`+`profile`；`vault_download` 发 base64 JSON 而前端直接 `fetch+blob`
   - 语义差异：`folder_delete` 对非空目录返回 CONFLICT 拒绝，Express 语义是「笔记移到未分类」；前端读的 `affectedNoteCount` 命令也没有
