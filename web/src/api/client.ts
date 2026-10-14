@@ -14,7 +14,7 @@
 
 // import.meta.env 由 Vite 在构建时注入；用可选链兜底，
 // 这样同一份代码在非 Vite 环境（如 Node 冒烟测试）里也能安全降级到 /api
-import { workspaceHeaders } from './workspace-auth.js';
+import { workspaceHeaders } from './workspace-auth.ts';
 
 const RAW_BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? '/api';
 const BASE_URL = RAW_BASE_URL.replace(/\/+$/, '');
@@ -23,7 +23,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 400;
 
-const FALLBACK_MESSAGES = {
+const FALLBACK_MESSAGES: Record<number, string> = {
   400: '请求格式有误，请刷新页面后重试',
   401: '登录状态已失效，请重新登录',
   403: '没有权限执行该操作',
@@ -38,12 +38,28 @@ const FALLBACK_MESSAGES = {
   504: '服务响应超时，请稍后重试',
 };
 
+/** 后端错误元信息（写入 ApiError 供 UI 分支处理）。 */
+export interface ApiErrorMeta {
+  status?: number;
+  code?: string;
+  details?: unknown;
+  requestId?: string;
+  cause?: unknown;
+}
+
+/** 后端逐字段校验错误项。 */
+export interface ApiFieldError {
+  field: string;
+  message: string;
+}
+
 export class ApiError extends Error {
-  /**
-   * @param {string} message 面向用户的可读提示
-   * @param {{ status?: number, code?: string, details?: unknown, requestId?: string, cause?: unknown }} [meta]
-   */
-  constructor(message, meta = {}) {
+  status: number;
+  code: string;
+  details: unknown;
+  requestId: string | undefined;
+
+  constructor(message: string, meta: ApiErrorMeta = {}) {
     super(message, { cause: meta.cause });
     this.name = 'ApiError';
     this.status = meta.status ?? 0;
@@ -53,26 +69,35 @@ export class ApiError extends Error {
   }
 
   /** 网络不可达 / 后端未启动 */
-  get isOffline() {
+  get isOffline(): boolean {
     return this.code === 'OFFLINE' || this.code === 'NETWORK';
   }
 
-  get isTimeout() {
+  get isTimeout(): boolean {
     return this.code === 'TIMEOUT';
   }
 
-  get isRetryable() {
+  get isRetryable(): boolean {
     return this.status === 0 || this.status === 429 || this.status >= 500;
   }
 
   /** 把后端的逐字段校验错误摊平成 { 字段名: 提示 } */
-  get fieldErrors() {
+  get fieldErrors(): Record<string, string> {
     if (!Array.isArray(this.details)) return {};
-    return Object.fromEntries(this.details.map((item) => [item.field, item.message]));
+    return Object.fromEntries(
+      (this.details as ApiFieldError[]).map((item) => [item.field, item.message]),
+    );
   }
 }
 
-function resolveMessage(status, code, serverMessage) {
+interface ApiPayloadError {
+  code?: string;
+  message?: string;
+  details?: unknown;
+  requestId?: string;
+}
+
+function resolveMessage(status: number, code: string | undefined, serverMessage: string | undefined): string {
   if (code === 'OFFLINE') return '当前处于离线状态，请检查网络连接';
   if (code === 'NETWORK') return '无法连接后端服务，请确认服务已启动（默认 http://localhost:5177）';
   if (code === 'TIMEOUT') return '请求超时，后端可能未响应，请稍后重试';
@@ -82,7 +107,7 @@ function resolveMessage(status, code, serverMessage) {
   return FALLBACK_MESSAGES[status] ?? `请求失败（HTTP ${status}）`;
 }
 
-function delay(ms, signal) {
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     // 调用时 signal 已 aborted 的窄窗口：监听器不会再触发，promise 永不 settle
     if (signal?.aborted) {
@@ -97,7 +122,16 @@ function delay(ms, signal) {
   });
 }
 
-async function attemptOnce(url, { method, body, rawBody, timeout, signal, headers }) {
+interface AttemptOptions {
+  method: string;
+  body?: unknown;
+  rawBody?: BodyInit;
+  timeout: number;
+  signal?: AbortSignal;
+  headers?: Record<string, string>;
+}
+
+async function attemptOnce(url: URL, { method, body, rawBody, timeout, signal, headers }: AttemptOptions): Promise<unknown> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     throw new ApiError('', { code: 'OFFLINE', status: 0 });
   }
@@ -120,7 +154,7 @@ async function attemptOnce(url, { method, body, rawBody, timeout, signal, header
     });
 
     const raw = await response.text();
-    let payload = null;
+    let payload: { data?: unknown; error?: ApiPayloadError; meta?: unknown } | null = null;
     if (raw) {
       try {
         payload = JSON.parse(raw);
@@ -142,7 +176,7 @@ async function attemptOnce(url, { method, body, rawBody, timeout, signal, header
     return payload;
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    if (error.name === 'AbortError') {
+    if ((error as Error).name === 'AbortError') {
       // 外部主动取消不应被当作超时
       if (signal?.aborted) throw error;
       throw new ApiError('', { code: 'TIMEOUT', status: 0, cause: error });
@@ -154,12 +188,23 @@ async function attemptOnce(url, { method, body, rawBody, timeout, signal, header
   }
 }
 
-/**
- * @param {string} path 以 / 开头的资源路径
- * @param {{ method?: string, body?: unknown, query?: Record<string, unknown>, headers?: Record<string, string>, signal?: AbortSignal, timeout?: number, retries?: number, base?: string }} [options]
- * @returns {Promise<unknown>} 后端返回的完整响应体
- */
-async function requestRaw(path, options = {}) {
+/** 请求选项：method 之外的公共配置（超时/重试/取消/自定义头）。 */
+export interface RequestOptions {
+  body?: unknown;
+  query?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  timeout?: number;
+  retries?: number;
+  base?: string;
+}
+
+interface RequestRawOptions extends RequestOptions {
+  method?: string;
+  rawBody?: BodyInit;
+}
+
+async function requestRaw(path: string, options: RequestRawOptions = {}): Promise<unknown> {
   const {
     method = 'GET',
     body,
@@ -184,7 +229,7 @@ async function requestRaw(path, options = {}) {
   for (;;) {
     attempt += 1;
     try {
-        return await attemptOnce(url, { method, body, rawBody, timeout, signal, headers });
+      return await attemptOnce(url, { method, body, rawBody, timeout, signal, headers });
     } catch (error) {
       const retryable = error instanceof ApiError && error.isRetryable;
       if (!retryable || attempt > retries) throw error;
@@ -196,22 +241,22 @@ async function requestRaw(path, options = {}) {
   }
 }
 
-/** 只取 data 字段（绝大多数接口的用法） */
-async function request(path, options) {
-  const payload = await requestRaw(path, options);
-  return payload?.data;
+/** 只取 data 字段（绝大多数接口的用法）。 */
+async function request<T = unknown>(path: string, options?: RequestRawOptions): Promise<T> {
+  const payload = (await requestRaw(path, options)) as { data?: T } | null;
+  return payload?.data as T;
 }
 
 export const http = {
-  get: (path, options) => request(path, { ...options, method: 'GET' }),
+  get: <T = unknown>(path: string, options?: RequestOptions) => request<T>(path, { ...options, method: 'GET' }),
   /** 需要同时读取 data 与 meta（如分页总数、检索策略）时使用 */
-  getFull: (path, options) => requestRaw(path, { ...options, method: 'GET' }),
-  post: (path, body, options) => request(path, { ...options, method: 'POST', body }),
-  postFull: (path, body, options) => requestRaw(path, { ...options, method: 'POST', body }),
-  postRaw: (path, body, options) => requestRaw(path, { ...options, method: 'POST', rawBody: body }),
-  patch: (path, body, options) => request(path, { ...options, method: 'PATCH', body }),
-  put: (path, body, options) => request(path, { ...options, method: 'PUT', body }),
-  delete: (path, options = {}) => request(path, { ...options, method: 'DELETE', body: options.body }),
+  getFull: <T = unknown>(path: string, options?: RequestOptions) => requestRaw(path, { ...options, method: 'GET' }) as Promise<T>,
+  post: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) => request<T>(path, { ...options, method: 'POST', body }),
+  postFull: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) => requestRaw(path, { ...options, method: 'POST', body }) as Promise<T>,
+  postRaw: <T = unknown>(path: string, body: BodyInit, options?: RequestOptions) => requestRaw(path, { ...options, method: 'POST', rawBody: body }) as Promise<T>,
+  patch: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) => request<T>(path, { ...options, method: 'PATCH', body }),
+  put: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) => request<T>(path, { ...options, method: 'PUT', body }),
+  delete: <T = unknown>(path: string, options: RequestOptions = {}) => request<T>(path, { ...options, method: 'DELETE', body: options.body }),
 };
 
 export { BASE_URL };

@@ -3,7 +3,7 @@
  * 不在渲染进程直连 GitHub —— 桌面端页面的 CSP（connect-src 'self'）
  * 会拦截跨域请求，直连只会得到 Failed to fetch。
  */
-import { http } from '../api/client.js';
+import { http } from '../api/client.ts';
 
 /**
  * @param {{ currentVersion?: string, httpImpl?: typeof http }} [options] httpImpl 注入便于测试

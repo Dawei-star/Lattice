@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleAlert, Copy, Layers3, List, LoaderCircle, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, TriangleAlert, X } from 'lucide-react';
-import { aiApi } from '../api/ai.js';
-import { expertsApi } from '../api/experts.js';
-import { filesApi } from '../api/files.js';
+import { aiApi } from '../api/ai.ts';
+import { expertsApi } from '../api/experts.ts';
+import { filesApi } from '../api/files.ts';
 import { renderMarkdown } from '../lib/markdown.js';
 import { getActiveAiProvider, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.js';
 import { collectActiveMcpServers, loadMcpSettings, mergeProjectServers } from '../settings/mcpSettings.js';
-import { mcpApi } from '../api/mcp.js';
+import { mcpApi } from '../api/mcp.ts';
 import Modal from '../ui/Modal.jsx';
 
 // 这里的「执行」是调用文件内核 / AI 动作的 HTTP 接口，与 SQL 无关；

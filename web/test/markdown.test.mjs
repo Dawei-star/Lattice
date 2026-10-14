@@ -3,7 +3,7 @@ import { installDom } from './dom-setup.mjs';
 
 installDom();
 const { parseOutline, renderMarkdown } = await import('../src/lib/markdown.js');
-const { resolveAttachmentPath, relativeAttachmentReference } = await import('../src/api/vault-files.js');
+const { resolveAttachmentPath, relativeAttachmentReference } = await import('../src/api/vault-files.ts');
 
 const html = renderMarkdown('```md\n[[Do not link]]\n```\n\n[[Open me]]', {
   resolveTitle: (title) => (title === 'Open me' ? { id: 'note-1' } : null),

@@ -17,7 +17,7 @@ import {
   Tags,
   TriangleAlert,
 } from 'lucide-react';
-import { reviewApi } from '../api/review.js';
+import { reviewApi } from '../api/review.ts';
 import { formatNumber, formatRelativeTime } from '../lib/format.js';
 
 const CATEGORY_META = {

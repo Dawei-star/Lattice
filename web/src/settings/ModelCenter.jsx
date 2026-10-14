@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import Modal from '../ui/Modal.jsx';
-import { aiApi } from '../api/ai.js';
+import { aiApi } from '../api/ai.ts';
 import { createAiProvider, isMaskedApiKey, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
 import { CUSTOM_SERVICE, PROVIDERS, findProviderByService, isLocalOllamaEndpoint } from './aiProviders.js';
 export default function ModelCenter() {

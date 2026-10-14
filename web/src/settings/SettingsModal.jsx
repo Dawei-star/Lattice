@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from '../ui/Modal.jsx';
-import { mcpApi } from '../api/mcp.js';
-import { notesApi } from '../api/resources.js';
-import { vaultApi } from '../api/vault.js';
-import { resolveAttachmentPath, vaultFiles } from '../api/vault-files.js';
+import { mcpApi } from '../api/mcp.ts';
+import { notesApi } from '../api/resources.ts';
+import { vaultApi } from '../api/vault.ts';
+import { resolveAttachmentPath, vaultFiles } from '../api/vault-files.ts';
 import { buildStaticSite } from '../lib/static-export.js';
 import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirectory } from '../lib/static-site.js';
 import { clearImportedTheme, importThemeFile, loadImportedTheme } from '../lib/theme.js';

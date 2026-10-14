@@ -1,4 +1,4 @@
-import { aiApi } from '../api/ai.js';
+import { aiApi } from '../api/ai.ts';
 import { isLocalOllamaEndpoint } from './aiProviders.js';
 
 const STORAGE_KEY = 'lattice-ai-settings-v1';

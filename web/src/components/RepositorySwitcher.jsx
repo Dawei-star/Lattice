@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronsUpDown, CircleHelp } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { vaultApi } from '../api/vault.js';
+import { vaultApi } from '../api/vault.ts';
 import Modal from '../ui/Modal.jsx';
 import { useToast } from '../hooks/useToast.jsx';
 

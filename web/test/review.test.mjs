@@ -16,7 +16,7 @@ test('review api requests a bounded health scan', async () => {
   };
 
   try {
-    const { reviewApi } = await import('../src/api/review.js');
+    const { reviewApi } = await import('../src/api/review.ts');
     const result = await reviewApi.health({ staleDays: 120, limit: 25 });
     assert.equal(result.noteCount, 0);
     assert.equal(calls[0], 'http://127.0.0.1:5177/api/review/health?staleDays=120&limit=25');

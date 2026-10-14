@@ -3,8 +3,8 @@ import { gsap } from 'gsap';
 import { useGSAP } from '@gsap/react';
 import ContextMenu from '../ui/ContextMenu.jsx';
 import Modal from '../ui/Modal.jsx';
-import { canvasApi } from '../api/canvas.js';
-import { vaultAssetsApi, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
+import { canvasApi } from '../api/canvas.ts';
+import { vaultAssetsApi, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
 import { getClipboardImageFiles } from '../lib/clipboard.js';
 
 const EMPTY_DOCUMENT = { nodes: [], edges: [] };

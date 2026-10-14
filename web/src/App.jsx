@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { notesApi } from './api/resources.js';
+import { notesApi } from './api/resources.ts';
 import EditorPane from './components/EditorPane.jsx';
 import InboxCaptureModal from './components/InboxCaptureModal.jsx';
 import LinkPanel from './components/LinkPanel.jsx';
@@ -18,8 +18,8 @@ import Modal from './ui/Modal.jsx';
 import Resizer from './ui/Resizer.jsx';
 import { loadImportedTheme } from './lib/theme.js';
 import { DEFAULT_LAYOUT, loadLayout, saveLayout } from './lib/layout.js';
-import { noteFilePath, vaultFiles } from './api/vault-files.js';
-import { expertsApi } from './api/experts.js';
+import { noteFilePath, vaultFiles } from './api/vault-files.ts';
+import { expertsApi } from './api/experts.ts';
 import { applySettings, loadSettings, subscribeSettings } from './settings/settings.js';
 import { registerPwa } from './lib/pwa.js';
 

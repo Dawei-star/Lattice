@@ -19,7 +19,7 @@ Object.defineProperty(globalThis, 'sessionStorage', {
   },
 });
 
-const { getWorkspaceAccessToken, workspaceHeaders } = await import('../src/api/workspace-auth.js');
+const { getWorkspaceAccessToken, workspaceHeaders } = await import('../src/api/workspace-auth.ts');
 
 storage.set('lattice-ai-settings-v1', JSON.stringify({ accessToken: '  workspace-token-1234567890  ' }));
 assert.equal(getWorkspaceAccessToken(), 'workspace-token-1234567890');

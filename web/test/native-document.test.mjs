@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { splitNativeDocument, createNativeDocument } from '../src/api/native-document.js';
+import { splitNativeDocument, createNativeDocument } from '../src/api/native-document.ts';
 
 const raw = '---\r\nid: 123\r\ntags:\r\n  - test\r\n---\r\n# Text\r\n[[Link]]\r\n';
 const { prefix, content } = splitNativeDocument(raw);

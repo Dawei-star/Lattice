@@ -4,8 +4,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FilePlus2, FolderOpen, RefreshCw, Save, Search } from 'lucide-react';
 import { marked } from 'marked';
 import { nativeVault, type NativeIndexStats, type NativeNoteContents, type NativeNoteFile } from './api/native-vault';
-import { createNativeDocument, splitNativeDocument } from './api/native-document.js';
-import { resolveAttachmentPath } from './api/vault-files.js';
+import { createNativeDocument, splitNativeDocument } from './api/native-document.ts';
+import { resolveAttachmentPath } from './api/vault-files.ts';
 import MarkdownPreview from './components/MarkdownPreview.jsx';
 import './native-workspace.css';
 

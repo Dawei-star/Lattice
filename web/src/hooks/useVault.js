@@ -6,12 +6,12 @@
  * 不直接调用 API 层，也不自己拼查询参数。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, BASE_URL } from '../api/client.js';
-import { canvasApi } from '../api/canvas.js';
-import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.js';
-import { vaultApi } from '../api/vault.js';
-import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.js';
-import { createSseTicket, getWorkspaceAccessToken } from '../api/workspace-auth.js';
+import { ApiError, BASE_URL } from '../api/client.ts';
+import { canvasApi } from '../api/canvas.ts';
+import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.ts';
+import { vaultApi } from '../api/vault.ts';
+import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
+import { createSseTicket, getWorkspaceAccessToken } from '../api/workspace-auth.ts';
 import { useDebouncedValue } from './useDebouncedValue.js';
 import { useToast } from './useToast.jsx';
 import { mergeSavedNoteIntoCollection } from '../lib/note-state.js';

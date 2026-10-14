@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BookOpen, Copy, Gauge, Layers3, Link2, Pencil, Plus, RefreshCw, Save, Search, ShieldCheck, Sparkles, Trash2, Wrench, X } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
-import { expertsApi } from '../api/experts.js';
+import { expertsApi } from '../api/experts.ts';
 
 const EMPTY_EXPERT = {
   id: '',

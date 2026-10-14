@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { formatDateTime, formatNumber, formatRelativeTime } from '../lib/format.js';
-import { aiApi } from '../api/ai.js';
+import { aiApi } from '../api/ai.ts';
 import { loadAiSettings } from '../settings/aiSettings.js';
 
 /**
