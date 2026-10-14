@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 21:15 ｜ **Δ13 处置推进**：NoteDetail 关系字段（`tags`/`outgoing`/`backlinks`）补齐 + `propertiesJson` 线缆归一，差异清单 **99→80 条**；`note_create`/`note_update`/`note_history_restore` 三条命令**响应结构已完全对齐**
+> **最后更新**：2026-10-14 21:25 ｜ **Δ13 处置推进**：NoteDetail 关系字段（`tags`/`outgoing`/`backlinks`）补齐、`propertiesJson` 线缆归一、`canvas_list` 改回对象数组，差异清单 **99→76 条**；`note_create`/`note_update`/`note_history_restore`/`canvas_list` 共 4 条命令响应结构完全对齐，并**再回收 `GET /canvas/files`**（映射表 36/22）
 
 ## 本轮变更（2026-10-14）
 
@@ -19,6 +19,7 @@
 | **Δ13 增量 2：`note_update` 保留属性** | ✅ 完成 | `af0fa83` | 修 `properties.unwrap_or_default()` 导致改正文即清空 frontmatter 属性的真 bug；差异 96→93 |
 | **Δ13 增量 3：NoteDetail 关系字段** | ✅ 完成 | `80977f5` | 先补 fixture 覆盖（原 outgoing/backlinks 全为空数组、元素形状无基准），再按 Express 查询实现 `tags`/`outgoing`/`backlinks`；差异 93→81，2 条命令彻底对齐 |
 | **Δ13 增量 4：`propertiesJson` 线缆归一** | ✅ 完成 | `6de9dc0` | 无属性笔记 Express 发 `"{}"` 而 Rust 发 null → 改为线缆层始终发字符串；差异 81→80，`note_create` 彻底对齐 |
+| **Δ13 增量 5：`canvas_list` 返回对象** | ✅ 完成 | `7d4cac9` | 由 `Vec<String>` 改为 `{path,name,folderPath}` 对象数组；差异 80→76，回收 `GET /canvas/files`（映射表 36/22） |
 
 > 验证口径：`tsc --noEmit` 0 错 · `npm --prefix web run test` **EXIT=0**（含 154 项集成检查）· `vite build` 通过（1986 modules）
 
@@ -107,14 +108,14 @@
   - 返回结构不符：~~`note_index` 发 `propertiesJson`(string) 而前端当对象用~~ **已修**（`2d34ae9`，Rust 同发 `properties` 对象）；`notes/:id/history` 前端要 `{items,currentHash}`、命令发数组；`history/:version` 前端要 `{version,createdAt,title,content,isPinned,properties}`、命令只给 `{version,raw,hash}`；`canvas_list` 发 `Vec<String>` 而前端要 `path/name/folderPath` 对象；`vault_info` 只回 `{path}` 而前端读 `vaultDir`+`profile`；`vault_download` 发 base64 JSON 而前端直接 `fetch+blob`
   - 语义差异：`folder_delete` 对非空目录返回 CONFLICT 拒绝，Express 语义是「笔记移到未分类」；前端读的 `affectedNoteCount` 命令也没有
   - **结论**：入口切全功能 App 必须先补齐这些（尤其 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参），否则桌面态会静默丢功能。完整清单与行号证据见 `web/src/api/ipc-routes.ts` 文件末尾「排除清单」
-  - **处置进展**：`2d34ae9` 修掉 note 系 `properties` 共性缺口并回收 `/notes/index`（差异 99→96）；`af0fa83` 修掉 `note_update` 改正文即清空 frontmatter 属性的真 bug（差异 96→93）。**当前 23 命令 / 80 条**
+  - **处置进展**：`2d34ae9` 修掉 note 系 `properties` 共性缺口并回收 `/notes/index`（99→96）；`af0fa83` 修掉 `note_update` 改正文即清空 frontmatter 属性的真 bug（96→93）；`80977f5` 补齐 NoteDetail 的 `tags`/`outgoing`/`backlinks`（93→81）；`6de9dc0` 把 `propertiesJson` 在线缆层归一（81→80）；`7d4cac9` 让 `canvas_list` 返回对象数组并回收 `/canvas/files`（80→76）。**当前 22 命令 / 76 条，映射表 36 进表 / 22 排除**
 - 其余仍挂着的：Δ5 契约「第二人抽查 10 项」单人环境无法满足 · Δ6 远端 main 落后 v0.1.5（待 Gate Review 后合回）· Δ7 gh CLI 不可用（CI 由 push 触发）· Δ9 experts/skills 内置资源仍 `include_str` 自 `server/`，**P1-09 删 Express 前必须迁到 src-tauri**（Δ1/Δ8 已解决，全量清单见 [execution-log.md](execution-log.md)）
 - **Δ14（新增，待产品决策）** `vault_read_asset` 的白名单与 Express **刻意不同**：Rust 只认 png/jpg/jpeg/gif/webp（并显式拒绝 SVG），Express 的 `/api/vault/attachment` 能返回任意白名单附件（fixture 用的就是 `.txt`）。**这条差异已如实记入 `divergence.json`（唯一一条 `error` 类），没有去改 Rust**。原因：曾把 `read_asset` 改成复用全量白名单（`vault_file_mime`），结果打破既存测试 `vault::tests::attachments_are_limited_to_safe_image_files`（断言 `read_asset("attachments/test.svg").is_err()`），而契约 §5.2/§1 也写明 SVG 必须强制 attachment 防 XSS——**这是有意为之的安全姿态，不能为了让 parity 变绿而放宽**。需在 P1-08 定夺：是保持 Rust 的窄白名单（则契约需注明桌面态不支持内联预览非图片附件），还是放宽并同步补 XSS 防护（例如仅允许非可执行类型、SVG 走 `<img>` 且禁脚本）。判定依据可参考：SVG 作为 `<img src="data:...">` 通常不可执行脚本，但作为导航/内联文档可以
 
 ## M1 达成条件（P1 收口自查）
 
 - [x] P1-08 第 1 步：契约快照基线（50 case）+ fixtures 自检器（`npm run verify:fixtures`）
-- [x] P1-08 第 2 步：双通道对齐断言（静态参数契约 + Rust 结构对齐，差异清单已从 27 命令 / 99 条收缩到 **23 / 80**）
+- [x] P1-08 第 2 步：双通道对齐断言（静态参数契约 + Rust 结构对齐，差异清单已从 27 命令 / 99 条收缩到 **22 / 76**）
 - [x] P1-08 第 3 步：消费层一致性断言（50 fixture 双通道回放，值逐字节一致；表内 0 静默回落）
 - [ ] **Δ13 补齐**：至少 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参、folder 系 id 寻址；补齐前**不得**把桌面入口切到全功能 App（计划 §5.3-5 的顺序约束）
 - [ ] **Δ14 定夺**：`vault_read_asset` 白名单口径（保持窄白名单并写进契约，或放宽并补 XSS 防护）
@@ -125,7 +126,8 @@
 
 ## 下一步
 
-1. **Δ13 处置（M1 前必做，主战场）**：按 `ipc-routes.ts` 排除清单 + `divergence.json` 的 **80 条**差异继续补 Rust——建议顺序：①~~NoteDetail 补 `tags`/`outgoing`/`backlinks`~~ ✅（`80977f5`）②**note 系 `folderId` 形参**（打通新建到目录 / 移动笔记，也是 `POST /notes`、`PATCH /notes/:id` 两条路由能否回收的关键）③folder 系 id 寻址与 `affectedNoteCount`（7 条）④`canvas_list` 返回对象（4 条）⑤`vault_info` 补 `vaultDir`/`profile`（7 条）⑥补 10 个 ⬜ 命令 ⑦**扩展 harness 的数组比对**（现仅采样首元素，会漏掉后续元素的类型问题）
+1. **Δ13 处置（M1 前必做，主战场）**：按 `ipc-routes.ts` 排除清单 + `divergence.json` 的 **76 条**差异继续补 Rust——建议顺序：①~~NoteDetail 补关系字段~~ ✅ ②~~`canvas_list` 返回对象~~ ✅ ③**note 系 `folderId` 形参（头号目标，但不是一个签名改动的事，见下方专门说明）** ④folder 系 id 寻址与 `affectedNoteCount`（7 条）⑤`vault_info` 补 `vaultDir`/`profile`（7 条）⑥补 10 个 ⬜ 命令 ⑦**扩展 harness 的数组比对**（现仅采样首元素，会漏掉后续元素的类型问题）
+2. **`folderId` 的落地要点（已勘察，避免重复踩坑）**：Ⅰ Express 的确认闸门在**控制器层**——`title !== undefined || folderId !== undefined` 即要求确认，Rust 现只对 title 做了，folderId 也得加；Ⅱ 文件必须真正移到目标目录，而 Rust 的 `allocate_file_path` 目前**只支持根目录**，需要目录感知版本（好消息：`index.rs:1174` 的 `directory_path_for_id` 已能由确定性 id 反查目录路径）；Ⅲ **Tauri 表达不了 Express 的 `undefined` vs `null` 区分**——serde 会把「键缺失」与「显式 null」都解成 `Option::None`，于是「保持原目录」与「移到根目录」会静默合并。需要先定一个明确编码（例如以空串作为「根」的哨兵值），这是**设计决策**，不能顺手补丁
 2. **Δ14 定夺**：`vault_read_asset` 白名单口径（需产品/安全拍板，不是纯技术选择）
 3. Δ11 收紧 api 契约类型；Δ10 复核 Rust `vault_download` 对符号链接/点目录的返回码
 4. **待对齐项**：Express 对行首 `#标签` 有 heading 启发式（会被当标题吃掉），播种须内联；Rust 标签解析口径需核对

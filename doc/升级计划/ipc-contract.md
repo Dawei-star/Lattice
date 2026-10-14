@@ -84,7 +84,7 @@
 
 | 方法 | 路径 | 请求 | 响应 | 服务层 | 未来 Rust 命令 | 状态 |
 |---|---|---|---|---|---|---|
-| GET | `/api/canvas/files` | — | 文件列表 | canvas.service | `canvas_list` | ⬜ |
+| GET | `/api/canvas/files` | — | 文件列表 | canvas.service | `canvas_list` | ✅ |
 | GET | `/api/canvas/` | query: `path` | 画布 JSON | canvas.service | `canvas_read` | ⬜ |
 | PUT | `/api/canvas/` | body: `nodes≤10000, edges≤20000, expectedHash?(409), confirmed…`；仅新建要求确认 | 写入结果 | canvas.service | `canvas_write` | ⬜ |
 | PATCH | `/api/canvas/file` | body: `fromPath, toPath, confirmed…` | 移动结果 | canvas.service | `canvas_move` | ⬜ |
@@ -199,7 +199,7 @@
 
 > 问题：P1-04 交付了 59 个 Rust 命令，但**命令存在 ≠ 前端路由能用**。为写「HTTP 路由 → 命令」映射表，对前端 81 个 `http.*` 调用点归并出的 58 条非 AI/MCP 路由逐条比对入参与返回结构。
 > **结果：审计时为 34 条可对齐进表（31 直接 + 3 需适配），24 条排除（11 缺命令 / 13 结构不兼容）。**
-> **后续回收（Δ13 处置）：截至 `2d34ae9` 已回收 1 条 —— `GET /notes/index`（Rust 补上 `properties` 对象后结构完全对齐），现为 35 条进表 / 23 条排除（12 结构不兼容）。**
+> **后续回收（Δ13 处置）：已回收 2 条** —— `GET /notes/index`（`2d34ae9`，Rust 补 `properties` 对象）与 `GET /canvas/files`（`7d4cac9`，`canvas_list` 改回 `{path,name,folderPath}` 对象数组），**现为 36 条进表 / 22 条排除（11 结构不兼容）**。
 > 权威清单与行号证据：`web/src/api/ipc-routes.ts` 末尾「排除清单」；执行侧登记见 execution-log.md Δ13。
 
 ### 5.1 已可对齐（34）
@@ -224,7 +224,7 @@
 | `PATCH /folders/:id` | 命令收 `new_parent_path`，前端传 `parentId`；且命令回全树而前端类型是单节点 |
 | `DELETE /folders/:id` | 前端读 `affectedNoteCount`（命令无）；Rust 对非空目录 CONFLICT 拒绝 vs Express「笔记移到未分类」 |
 | `GET /search` | `search_query` 仅 `(q,limit)`，无法表达 `folderId`/`inboxStatus`；返回信封不同 |
-| `GET /canvas/files` | `canvas_list` 回 `Vec<String>`，前端消费 `path/name/folderPath` 对象 |
+| `GET /canvas/files` | ~~`canvas_list` 回 `Vec<String>`，前端消费 `path/name/folderPath` 对象~~ **已修（`7d4cac9`）：改回对象数组，该路由已回收进表** |
 
 ### 5.3 缺命令（11）
 
@@ -252,7 +252,7 @@
 
 - **静态参数契约**：`web/test/ipc-args-contract.test.mjs` —— 逐命令断言「映射表 args 构造器产出的键 ⊆ Rust 形参」且「Rust 必填形参都被提供」（多传键会被 invoke 拒绝、少传必填参数会运行时报错）。34 条路由全覆盖。
 - **运行时结构对齐**：`src-tauri/src/parity_tests.rs` —— 重建 `seed/vault` 后按 fixture 时序回放，逐字段 diff。
-- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **23 个命令 / 80 条**（首版 27 / 99，随 Δ13 增量收缩：`2d34ae9` 99→96，`af0fa83` 96→93，`80977f5` 93→81 且 `note_update`/`note_history_restore` **完全对齐**，`6de9dc0` 81→80 且 `note_create` 完全对齐）。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
+- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **22 个命令 / 76 条**（首版 27 / 99，随 Δ13 增量收缩：`2d34ae9` 99→96，`af0fa83` 96→93，`80977f5` 93→81 且 `note_update`/`note_history_restore` **完全对齐**，`6de9dc0` 81→80 且 `note_create` 完全对齐，`7d4cac9` 80→76 且 `canvas_list` 完全对齐）。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
 - 收缩时可能**同时暴露更深一层**的差异：补齐 `properties` 对象后，`note_update` 立刻多出 `properties.status`/`properties.type` 两条——因为原先 `properties` 整个缺失，diff 看不见对象内部。这类「净减少但更精确」的变化是预期行为，不要当成回归。
 - **两个操作/能力上的坑（踩过）**：
   1. `record-fixtures.mjs` 会 `rm -rf` 整个 fixtures 目录（`record-fixtures.mjs:686`），**因此重录会连 `divergence.json` 一起删掉**，下一次 parity 会「自动重建基线 + 报一次首次运行的失败」。这看起来像 harness 飘了，实际是设计使然——别误判成 flaky。
