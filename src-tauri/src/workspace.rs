@@ -459,18 +459,23 @@ impl WorkspaceService {
         let next_title = title.unwrap_or_else(|| current.title.clone());
         let next_content = content.unwrap_or_else(|| current.content.clone());
         let next_pinned = is_pinned.unwrap_or(current.is_pinned);
-        let next_properties = properties.unwrap_or_default();
+        // 未提供 `properties` 时**保留**笔记现有属性（Express 语义）：
+        // 否则仅改正文就会把 frontmatter 里的 status/type 等静默清空，Inbox 与属性面板随之失效
+        // （P1-08 差异清单暴露）。注意 `Some(空 map)` 仍表示「显式清空」，不能与 `None` 混为一谈。
+        let current_properties: serde_json::Value = current
+            .properties_json
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .filter(|value| value.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let next_properties = match properties {
+            Some(values) => values,
+            None => current_properties.as_object().cloned().unwrap_or_default(),
+        };
 
         let content_changed = next_content != current.content;
         let pinned_changed = next_pinned != current.is_pinned;
-        let properties_changed = {
-            let current_properties: serde_json::Value = current
-                .properties_json
-                .as_deref()
-                .and_then(|text| serde_json::from_str(text).ok())
-                .unwrap_or(serde_json::Value::Null);
-            serde_json::Value::Object(next_properties.clone()) != current_properties
-        };
+        let properties_changed = serde_json::Value::Object(next_properties.clone()) != current_properties;
         let path_changed = title_changed;
         if !title_changed && !content_changed && !pinned_changed && !properties_changed {
             return Ok(current); // 无变化短路

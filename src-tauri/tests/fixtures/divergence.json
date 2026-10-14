@@ -362,24 +362,6 @@
         "rust": "absent"
       },
       {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data.properties.status",
-        "rust": "absent"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data.properties.type",
-        "rust": "absent"
-      },
-      {
-        "express": "string",
-        "kind": "type-mismatch",
-        "path": "$.data.propertiesJson",
-        "rust": "null"
-      },
-      {
         "express": "array",
         "kind": "missing-in-rust",
         "path": "$.data.tags",
