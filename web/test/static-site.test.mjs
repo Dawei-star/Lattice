@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { installDom } from './dom-setup.mjs';
 
 installDom();
-const { buildStaticSite } = await import('../src/lib/static-export.js');
+const { buildStaticSite } = await import('../src/lib/static-export.ts');
 
 const notes = [
   {

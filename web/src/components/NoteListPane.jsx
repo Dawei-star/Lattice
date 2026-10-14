@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { CheckCircle2, Pin, Sparkles } from 'lucide-react';
-import { formatNumber, formatRelativeTime } from '../lib/format.js';
-import { highlightText } from '../lib/markdown.js';
+import { formatNumber, formatRelativeTime } from '../lib/format.ts';
+import { highlightText } from '../lib/markdown.ts';
 import ContextMenu from '../ui/ContextMenu.jsx';
 
 export const SORT_LABELS = {

@@ -1,4 +1,4 @@
-const EXTENSIONS = Object.freeze({
+const EXTENSIONS: Record<string, string> = Object.freeze({
   'image/avif': 'avif',
   'image/gif': 'gif',
   'image/jpeg': 'jpg',
@@ -8,7 +8,7 @@ const EXTENSIONS = Object.freeze({
 });
 
 /** Return image files from a clipboard payload with stable, filesystem-safe names. */
-export function getClipboardImageFiles(clipboardData, timestamp = Date.now()) {
+export function getClipboardImageFiles(clipboardData: DataTransfer | null | undefined, timestamp = Date.now()): File[] {
   return Array.from(clipboardData?.items ?? [])
     .map((item) => {
       const file = item?.getAsFile?.();
@@ -18,10 +18,10 @@ export function getClipboardImageFiles(clipboardData, timestamp = Date.now()) {
     .map(({ file, type }, index) => {
       return file ? createClipboardImageFile(file, type, timestamp, index) : null;
     })
-    .filter(Boolean);
+    .filter(Boolean) as File[];
 }
 
-export function createClipboardImageFile(file, mimeType = file?.type, timestamp = Date.now(), index = 0) {
+export function createClipboardImageFile(file: File, mimeType: string | undefined = file?.type, timestamp = Date.now(), index = 0): File {
   const type = normalizeImageMime(mimeType || file?.type) || 'image/png';
   if (!EXTENSIONS[type]) throw new TypeError(`Unsupported clipboard image type: ${type}`);
   const extension = EXTENSIONS[type] ?? 'png';
@@ -33,12 +33,12 @@ export function createClipboardImageFile(file, mimeType = file?.type, timestamp 
   });
 }
 
-function normalizeImageMime(value) {
+function normalizeImageMime(value: unknown): string {
   const type = String(value ?? '').split(';', 1)[0].trim().toLowerCase();
   return type === 'image/jpg' ? 'image/jpeg' : type;
 }
 
-function formatTimestamp(value) {
+function formatTimestamp(value: number): string {
   const date = new Date(value);
   const parts = [
     date.getFullYear(),

@@ -9,7 +9,7 @@
  *   @@LATTICE_TOKEN_n@@  行内的双链 / 行内嵌入
  */
 import { marked } from 'marked';
-import { sanitizeHtml } from './sanitize.js';
+import { sanitizeHtml } from './sanitize.ts';
 
 // headerIds / mangle 在 marked v5+ 已移除，v14 传了也只是静默忽略，不再保留
 marked.setOptions({ gfm: true, breaks: false });
@@ -23,7 +23,23 @@ const BLOCK_TOKEN = /@@LATTICE_BLOCK_(\d+)@@/g;
 const INLINE_TOKEN = /@@LATTICE_TOKEN_(\d+)@@/g;
 const CODE_SPAN = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/g;
 
-function escapeHtml(value) {
+/** renderMarkdown 的选项。 */
+export interface RenderMarkdownOptions {
+  /** 双链标题解析器：返回真值表示笔记已存在（返回对象可携带 id/filePath 等字段） */
+  resolveTitle?: (title: string) => unknown;
+  /** 资源引用 → 可访问 URL（返回 null 表示无法解析） */
+  resolveAsset?: ((reference: string) => string | null) | null;
+}
+
+/** 编辑器大纲条目（start 为源文本偏移量）。 */
+export interface OutlineEntry {
+  level: number;
+  text: string;
+  start: number;
+  index: number;
+}
+
+function escapeHtml(value: string): string {
   return String(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -33,20 +49,16 @@ function escapeHtml(value) {
 }
 
 /**
- * @param {string} source Markdown 正文
- * @param {{ resolveTitle?: (title: string) => { id: string } | null }} [options]
- * @returns {string} 已完成消毒、可安全注入的 HTML
+ * 渲染 Markdown：已完成消毒、可安全注入的 HTML。
  */
-export function renderMarkdown(source, options = {}) {
+export function renderMarkdown(source: string | null | undefined, options: RenderMarkdownOptions = {}): string {
   const resolveTitle = options.resolveTitle ?? (() => null);
   const resolveAsset = options.resolveAsset ?? (() => null);
   const text = source ?? '';
 
-  /** @type {string[]} */
-  const blockTokens = [];
-  /** @type {string[]} */
-  const inlineTokens = [];
-  const pushInline = (html) => {
+  const blockTokens: string[] = [];
+  const inlineTokens: string[] = [];
+  const pushInline = (html: string): string => {
     inlineTokens.push(html);
     return `@@LATTICE_TOKEN_${inlineTokens.length - 1}@@`;
   };
@@ -63,7 +75,7 @@ export function renderMarkdown(source, options = {}) {
     .join('\n'));
 
   // ── 第二步：把行内双链 / 行内嵌入替换成行内占位 ────────────────
-  const tokenized = replaceOutsideCode(draft, (segment) => segment.replace(WIKI_LINK, (match, bang, target, heading, alias) => {
+  const tokenized = replaceOutsideCode(draft, (segment) => segment.replace(WIKI_LINK, (match: string, bang: string, target: string, heading: string, alias: string) => {
     const title = target.trim();
     if (!title) return match;
 
@@ -88,23 +100,23 @@ export function renderMarkdown(source, options = {}) {
 
   // ── 第三步：回填块级嵌入 ──────────────────────────────────────
   // 块级嵌入被 marked 包进了 <p>，需要连同 <p> 一起去掉，否则 div 嵌在 p 里是非法结构
-  html = html.replace(new RegExp(`<p>\\s*${BLOCK_TOKEN.source}\\s*</p>`, 'g'), (match, index) => {
+  html = html.replace(new RegExp(`<p>\\s*${BLOCK_TOKEN.source}\\s*</p>`, 'g'), (match: string, index: string) => {
     const title = blockTokens[Number(index)];
     return title === undefined ? match : renderBlockEmbed(title, resolveTitle);
   });
-  html = html.replace(BLOCK_TOKEN, (match, index) => {
+  html = html.replace(BLOCK_TOKEN, (match: string, index: string) => {
     const title = blockTokens[Number(index)];
     return title === undefined ? match : renderBlockEmbed(title, resolveTitle);
   });
 
   // ── 第四步：回填行内占位 ──────────────────────────────────────
-  html = html.replace(INLINE_TOKEN, (match, index) => inlineTokens[Number(index)] ?? '');
+  html = html.replace(INLINE_TOKEN, (match: string, index: string) => inlineTokens[Number(index)] ?? '');
 
   return sanitizeHtml(html);
 }
 
-function rewriteAssetUrls(html, resolveAsset) {
-  return html.replace(/(<img\b[^>]*\bsrc=")([^"]+)("[^>]*>)/gi, (match, prefix, source, suffix) => {
+function rewriteAssetUrls(html: string, resolveAsset: (reference: string) => string | null): string {
+  return html.replace(/(<img\b[^>]*\bsrc=")([^"]+)("[^>]*>)/gi, (match: string, prefix: string, source: string, suffix: string) => {
     if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(source)) return match;
     try {
       const resolved = resolveAsset(source);
@@ -115,18 +127,18 @@ function rewriteAssetUrls(html, resolveAsset) {
   });
 }
 
-function replaceOutsideCode(source, replace) {
+function replaceOutsideCode(source: string, replace: (segment: string) => string): string {
   let result = '';
   let cursor = 0;
   for (const match of source.matchAll(CODE_SPAN)) {
     result += replace(source.slice(cursor, match.index));
     result += match[0];
-    cursor = match.index + match[0].length;
+    cursor = match.index! + match[0].length;
   }
   return result + replace(source.slice(cursor));
 }
 
-function renderBlockEmbed(title, resolveTitle) {
+function renderBlockEmbed(title: string, resolveTitle: (title: string) => unknown): string {
   const resolved = resolveTitle(title);
   const link = `<a class="wiki-link" href="#" data-wiki-title="${escapeHtml(title)}">${escapeHtml(title)}</a>`;
 
@@ -149,12 +161,10 @@ function renderBlockEmbed(title, resolveTitle) {
 
 /**
  * 抽出正文中所有块级嵌入的目标标题，用于在渲染前并发预取内容。
- * @param {string} source
- * @returns {string[]}
  */
-export function collectEmbedTargets(source) {
-  const targets = [];
-  const seen = new Set();
+export function collectEmbedTargets(source: string | null | undefined): string[] {
+  const targets: string[] = [];
+  const seen = new Set<string>();
 
   for (const line of (source ?? '').split('\n')) {
     const match = line.match(BLOCK_EMBED);
@@ -173,10 +183,8 @@ export function collectEmbedTargets(source) {
 /**
  * 把纯文本里命中的检索词包上 <mark>，用于搜索结果高亮。
  * 输出经由 escapeHtml 处理，不引入注入风险。
- * @param {string} text
- * @param {string} query
  */
-export function highlightText(text, query) {
+export function highlightText(text: string | null | undefined, query: string | null | undefined): string {
   const source = text ?? '';
   const needle = (query ?? '').trim();
   if (!needle) return escapeHtml(source);
@@ -203,8 +211,8 @@ export function highlightText(text, query) {
  * document structure. `start` is a source offset, so editors can jump without
  * reparsing the document or keeping a second document model.
  */
-export function parseOutline(source) {
-  const headings = [];
+export function parseOutline(source: string | null | undefined): OutlineEntry[] {
+  const headings: OutlineEntry[] = [];
   let offset = 0;
   let insideFence = false;
 

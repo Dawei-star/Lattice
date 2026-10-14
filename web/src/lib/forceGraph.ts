@@ -10,6 +10,47 @@
  * Barnes-Hut 四叉树近似，这里不做过度设计。
  */
 
+/** 布局输入的节点：至少要有 id，degree 影响初始半径。 */
+export interface ForceLayoutNode {
+  id: string;
+  degree?: number;
+  [key: string]: unknown;
+}
+
+/** 布局输入/输出的边：两端指向布局后的节点对象。 */
+export interface ForceLayoutLink {
+  source: ForceLayoutNode;
+  target: ForceLayoutNode;
+}
+
+/** 视口尺寸。 */
+export interface ForceLayoutViewport {
+  width: number;
+  height: number;
+}
+
+/** 参与布局计算的节点：在原始字段上叠加位置/速度信息。 */
+export type LaidNode = ForceLayoutNode & {
+  degree: number;
+  radius: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  fixed: boolean;
+};
+
+/** createForceLayout 的返回结构。 */
+export interface ForceLayoutResult {
+  nodes: LaidNode[];
+  links: ForceLayoutLink[];
+  byId: Map<string, LaidNode>;
+  step(): boolean;
+  /** 重新加热，用于用户拖拽节点后让布局继续收敛 */
+  reheat(value?: number): void;
+  readonly alpha: number;
+}
+
 const REPULSION = 5200;
 const SPRING_LENGTH = 96;
 const SPRING_STRENGTH = 0.012;
@@ -17,22 +58,17 @@ const CENTER_PULL = 0.006;
 const DAMPING = 0.86;
 const MAX_VELOCITY = 14;
 
-/**
- * @param {Array<{ id: string, degree?: number }>} nodes
- * @param {Array<{ source: string, target: string }>} edges
- * @param {{ width: number, height: number }} viewport
- */
-export function createForceLayout(nodes, edges, viewport) {
+export function createForceLayout(nodes: ForceLayoutNode[], edges: Array<{ source: string; target: string }>, viewport: ForceLayoutViewport): ForceLayoutResult {
   const centerX = viewport.width / 2;
   const centerY = viewport.height / 2;
   // 节点越多，初始半径越大，避免开局挤成一团
   const initialRadius = Math.min(viewport.width, viewport.height) * 0.3 * Math.min(1.6, 0.6 + nodes.length / 60);
 
-  const byId = new Map();
+  const byId = new Map<string, LaidNode>();
   const list = nodes.map((node, index) => {
     const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
     const jitter = 0.75 + Math.random() * 0.5;
-    const laid = {
+    const laid: LaidNode = {
       ...node,
       degree: node.degree ?? 0,
       radius: 4 + Math.min(14, Math.sqrt(node.degree ?? 0) * 3.2),
@@ -48,11 +84,11 @@ export function createForceLayout(nodes, edges, viewport) {
 
   const links = edges
     .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
-    .filter((link) => link.source && link.target && link.source !== link.target);
+    .filter((link): link is { source: LaidNode; target: LaidNode } => link.source !== undefined && link.target !== undefined && link.source !== link.target);
 
   let alpha = 1;
 
-  function step() {
+  function step(): boolean {
     if (alpha < 0.004) return false;
 
     // 斥力：两两相斥
@@ -144,9 +180,8 @@ export function createForceLayout(nodes, edges, viewport) {
 
 /**
  * 按视口尺寸计算缩放与平移，让图始终完整可见。
- * @param {Array<{x: number, y: number, radius: number}>} nodes
  */
-export function computeFit(nodes, viewport, padding = 60) {
+export function computeFit(nodes: Array<{ x: number; y: number; radius: number }>, viewport: ForceLayoutViewport, padding = 60): { scale: number; offsetX: number; offsetY: number } {
   if (nodes.length === 0) return { scale: 1, offsetX: 0, offsetY: 0 };
 
   let minX = Infinity;

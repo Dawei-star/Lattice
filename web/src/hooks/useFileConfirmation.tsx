@@ -2,7 +2,54 @@ import { useCallback, useRef, useState } from 'react';
 import { AlertTriangle, FolderOpen, ShieldCheck, X } from 'lucide-react';
 import Modal from '../ui/Modal.jsx';
 
-const OPERATION_LABELS = {
+/** 文件写操作的单一动作描述。 */
+export interface FileOperationAction {
+  type?: string;
+  path?: string;
+  targetPath?: string;
+  fullPath?: string;
+  directory?: string;
+  contentSummary?: string;
+  [key: string]: unknown;
+}
+
+/** 请求确认时的操作描述（动作列表可选，缺省时把整个 operation 当作单一动作）。 */
+export interface FileOperationInput {
+  type?: string;
+  path?: string;
+  targetPath?: string;
+  summary?: string;
+  impact?: string;
+  reversible?: boolean;
+  requiresSecondConfirmation?: boolean;
+  fullPath?: string;
+  directory?: string;
+  contentSummary?: string;
+  actions?: FileOperationAction[];
+  vaultDir?: string;
+  [key: string]: unknown;
+}
+
+/** 归一化后的操作：补全默认值并派生 isDelete / requiresSecondConfirmation。 */
+export interface NormalizedFileOperation extends FileOperationInput {
+  actions: FileOperationAction[];
+  type: string;
+  summary: string;
+  impact: string;
+  reversible: boolean;
+  isDelete: boolean;
+  requiresSecondConfirmation: boolean;
+  fullPath?: string;
+  directory?: string;
+}
+
+/** 用户对一次文件操作的确认结果。 */
+export interface FileConfirmationResult {
+  confirmed: boolean;
+  secondConfirmed?: boolean;
+}
+
+const OPERATION_LABELS: Record<string, string> = {
   create: '创建',
   write: '覆盖',
   update: '修改',
@@ -15,18 +62,28 @@ const OPERATION_LABELS = {
   mkdir: '创建目录',
 };
 
+interface FileOperationConfirmationCardProps {
+  operation: NormalizedFileOperation;
+  onConfirm: (result: { secondConfirmed: boolean }) => void;
+  onCancel: () => void;
+}
+
 /**
  * 文件写操作的统一确认闸门。服务端仍要求 confirmed，前端只对删除展示
  * 阻断式确认卡片，其他写操作保持即时反馈；队列保证删除请求不会互相覆盖。
  */
-export function useFileConfirmation() {
-  const [pending, setPending] = useState(null);
-  const queueRef = useRef([]);
-  const resolverRef = useRef(null);
+export function useFileConfirmation(): {
+  requestFileConfirmation: (operation: FileOperationInput) => Promise<FileConfirmationResult>;
+  pending: NormalizedFileOperation | null;
+  ConfirmationCard: JSX.Element | null;
+} {
+  const [pending, setPending] = useState<NormalizedFileOperation | null>(null);
+  const queueRef = useRef<Array<{ operation: NormalizedFileOperation; resolve: (result: FileConfirmationResult) => void }>>([]);
+  const resolverRef = useRef<((result: FileConfirmationResult) => void) | null>(null);
 
   const pump = useCallback(() => {
     if (resolverRef.current || !queueRef.current.length) return;
-    const next = queueRef.current.shift();
+    const next = queueRef.current.shift()!;
     resolverRef.current = next.resolve;
     if (!next.operation.isDelete) {
       resolverRef.current = null;
@@ -37,12 +94,12 @@ export function useFileConfirmation() {
     setPending(next.operation);
   }, []);
 
-  const requestFileConfirmation = useCallback((operation) => new Promise((resolve) => {
+  const requestFileConfirmation = useCallback((operation: FileOperationInput) => new Promise<FileConfirmationResult>((resolve) => {
     queueRef.current.push({ operation: normalizeOperation(operation), resolve });
     pump();
   }), [pump]);
 
-  const finish = useCallback((result) => {
+  const finish = useCallback((result: FileConfirmationResult) => {
     const resolve = resolverRef.current;
     resolverRef.current = null;
     setPending(null);
@@ -61,12 +118,12 @@ export function useFileConfirmation() {
   return { requestFileConfirmation, pending, ConfirmationCard };
 }
 
-function normalizeOperation(operation = {}) {
+function normalizeOperation(operation: FileOperationInput = {}): NormalizedFileOperation {
   const actions = Array.isArray(operation.actions) && operation.actions.length
     ? operation.actions
     : [operation];
   const vaultDir = String(operation.vaultDir ?? '').replace(/[\\/]+$/, '');
-  const withAbsolutePath = (pathValue) => vaultDir && pathValue
+  const withAbsolutePath = (pathValue: string): string | undefined => vaultDir && pathValue
     ? `${vaultDir}\\${pathValue.replaceAll('/', '\\')}`
     : undefined;
   const normalizedActions = actions.map((action) => ({
@@ -93,13 +150,13 @@ function normalizeOperation(operation = {}) {
   };
 }
 
-function FileOperationConfirmationCard({ operation, onConfirm, onCancel }) {
+function FileOperationConfirmationCard({ operation, onConfirm, onCancel }: FileOperationConfirmationCardProps) {
   const [deleteStep, setDeleteStep] = useState(0);
   const actions = operation.actions ?? [];
   const title = deleteStep === 1 ? '再次确认删除' : '确认删除文件';
 
   return (
-    <Modal open title={title} ariaLabel={title} onClose={onCancel} className="file-confirmation-modal">
+    <Modal open title={title} ariaLabel={title} onClose={onCancel} className="file-confirmation-modal" initialFocusRef={undefined}>
       <section className="file-confirmation-card" aria-label="删除文件确认">
         <header className="file-confirmation-card__header">
           <div className="file-confirmation-card__icon is-danger" aria-hidden="true">
@@ -113,7 +170,7 @@ function FileOperationConfirmationCard({ operation, onConfirm, onCancel }) {
         </header>
 
         <div className="file-confirmation-card__summary">
-          <div><span>操作类型</span><strong>{actions.map((action) => OPERATION_LABELS[action.type] ?? action.type).join('、')}</strong></div>
+          <div><span>操作类型</span><strong>{actions.map((action) => OPERATION_LABELS[action.type ?? ''] ?? action.type).join('、')}</strong></div>
           <div><span>影响范围</span><strong>{operation.impact}</strong></div>
           <div><span>可撤销性</span><strong>{operation.reversible ? '已生成快照，可撤销' : '不可撤销'}</strong></div>
         </div>
@@ -123,7 +180,7 @@ function FileOperationConfirmationCard({ operation, onConfirm, onCancel }) {
           {actions.map((action, index) => (
             <div className="file-confirmation-card__file" key={`${action.type}-${action.path}-${index}`}>
               <div className="file-confirmation-card__file-topline">
-                <span className={`file-confirmation-card__operation is-${action.type}`}>{OPERATION_LABELS[action.type] ?? action.type}</span>
+                <span className={`file-confirmation-card__operation is-${action.type}`}>{OPERATION_LABELS[action.type ?? ''] ?? action.type}</span>
                 <code>{action.path || '未指定路径'}</code>
               </div>
               {action.targetPath ? <div className="file-confirmation-card__target">目标：<code>{action.targetPath}</code></div> : null}

@@ -4,8 +4,15 @@
  * 方向键选候选），这些按键不应触发界面快捷行为，否则输入法用户的输入会被打断。
  */
 
+/** 兼容 React 合成事件与原生事件的最小键盘事件形状 */
+export interface ComposingEventLike {
+  nativeEvent?: { isComposing?: boolean } | undefined;
+  isComposing?: boolean | undefined;
+  keyCode?: number | undefined;
+}
+
 /** 该键盘事件是否来自输入法组词过程（兼容 React 合成事件与原生事件） */
-export function isComposingEvent(event) {
+export function isComposingEvent(event: ComposingEventLike): boolean {
   const native = event.nativeEvent ?? event;
   return native.isComposing === true || event.keyCode === 229;
 }

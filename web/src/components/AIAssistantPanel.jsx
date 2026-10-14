@@ -3,7 +3,7 @@ import { BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Cir
 import { aiApi } from '../api/ai.ts';
 import { expertsApi } from '../api/experts.ts';
 import { filesApi } from '../api/files.ts';
-import { renderMarkdown } from '../lib/markdown.js';
+import { renderMarkdown } from '../lib/markdown.ts';
 import { getActiveAiProvider, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.js';
 import { collectActiveMcpServers, loadMcpSettings, mergeProjectServers } from '../settings/mcpSettings.js';
 import { mcpApi } from '../api/mcp.ts';

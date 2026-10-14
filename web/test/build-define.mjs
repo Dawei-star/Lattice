@@ -2,7 +2,7 @@
  * jsdom 冒烟测试用 esbuild 打包 App 时要注入的常量。
  *
  * 这些测试**不走 vite**，因此拿不到 `vite.config.js` 里的 `define.__APP_VERSION__`；
- * 而 `src/lib/appVersion.js` 在拿不到注入时会**显式抛错**（刻意不兜底字面量版本号，
+ * 而 `src/lib/appVersion.ts` 在拿不到注入时会**显式抛错**（刻意不兜底字面量版本号，
  * 详见该文件注释）。所以每个 esbuild 调用点都必须经由这里取同一个值。
  *
  * 值统一从 `web/package.json` 读，与 vite 的注入源保持一致 —— 测试与产物同源，

@@ -30,7 +30,7 @@ const DROP_ENTIRELY = new Set([
 
 /** 允许保留的属性（全局 + 按标签） */
 const GLOBAL_ATTRS = new Set(['class', 'title', 'dir', 'lang']);
-const TAG_ATTRS = {
+const TAG_ATTRS: Record<string, Set<string>> = {
   A: new Set(['href', 'rel', 'target']),
   IMG: new Set(['src', 'alt', 'width', 'height', 'loading']),
   INPUT: new Set(['type', 'checked', 'disabled']),
@@ -49,7 +49,7 @@ const ALLOWED_DATA_ATTRS = new Set(['data-wiki-title', 'data-wiki-heading', 'dat
 
 const SAFE_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 
-function isSafeUrl(rawValue) {
+function isSafeUrl(rawValue: string): boolean {
   const value = rawValue.trim();
   if (value === '') return false;
   // 相对路径与锚点放行；//host 形式的协议相对 URL 不放行——
@@ -66,7 +66,7 @@ function isSafeUrl(rawValue) {
   }
 }
 
-function cleanElement(element) {
+function cleanElement(element: Element): void {
   const tag = element.tagName;
 
   if (DROP_ENTIRELY.has(tag)) {
@@ -119,10 +119,9 @@ function cleanElement(element) {
 }
 
 /**
- * @param {string} html
- * @returns {string} 安全可注入的 HTML
+ * @returns 安全可注入的 HTML
  */
-export function sanitizeHtml(html) {
+export function sanitizeHtml(html: string): string {
   const doc = new DOMParser().parseFromString(`<div id="lattice-root">${html}</div>`, 'text/html');
   const root = doc.getElementById('lattice-root');
   if (!root) return '';

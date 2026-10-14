@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { installDom } from './dom-setup.mjs';
 
 installDom();
-const { parseOutline, renderMarkdown } = await import('../src/lib/markdown.js');
+const { parseOutline, renderMarkdown } = await import('../src/lib/markdown.ts');
 const { resolveAttachmentPath, relativeAttachmentReference } = await import('../src/api/vault-files.ts');
 
 const html = renderMarkdown('```md\n[[Do not link]]\n```\n\n[[Open me]]', {

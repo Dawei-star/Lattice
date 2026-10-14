@@ -1,16 +1,39 @@
-export function registerPwa({ onInstallAvailable, onUpdateAvailable } = {}) {
-  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return () => {};
+/** 注册回调：安装提示可用 / 更新可用时通知调用方。 */
+export interface PwaRegistrationOptions {
+  onInstallAvailable?: (available: boolean) => void;
+  onUpdateAvailable?: (registration: ServiceWorkerRegistration) => void;
+}
+
+/** beforeinstallprompt 事件（DOM 标准尚未收录，这里只做结构化类型声明）。 */
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: string }>;
+}
+
+/** registerPwa 的返回值：卸载清理函数，附加 promptInstall / applyUpdate 动作。 */
+export type PwaRegistration = (() => void) & { promptInstall: () => Promise<boolean>; applyUpdate: () => boolean };
+
+/** PWA 未就绪（或环境不支持）时的空实现。 */
+function inactiveRegistration(): PwaRegistration {
+  return Object.assign(() => {}, {
+    promptInstall: (): Promise<boolean> => Promise.resolve(false),
+    applyUpdate: (): boolean => false,
+  });
+}
+
+export function registerPwa({ onInstallAvailable, onUpdateAvailable }: PwaRegistrationOptions = {}): PwaRegistration {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return inactiveRegistration();
   // 开发模式绝不注册：SW 的 cache-first 会把 Vite 的 /src 模块永久缓存，
   // 热更新全部失效，且新旧模块 ESM 导出对不上时整页白屏（生产构建资源
   // 带内容哈希，才适合 SW 缓存）。import.meta.env 仅在 Vite 构建时存在。
-  if (import.meta.env?.DEV) return () => {};
+  if (import.meta.env?.DEV) return inactiveRegistration();
 
-  let installEvent = null;
-  let registration = null;
+  let installEvent: BeforeInstallPromptEvent | null = null;
+  let registration: ServiceWorkerRegistration | null = null;
   let disposed = false;
-  const handleBeforeInstallPrompt = (event) => {
+  const handleBeforeInstallPrompt = (event: Event) => {
     event.preventDefault();
-    installEvent = event;
+    installEvent = event as BeforeInstallPromptEvent;
     onInstallAvailable?.(true);
   };
   window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -19,11 +42,11 @@ export function registerPwa({ onInstallAvailable, onUpdateAvailable } = {}) {
     if (disposed) return;
     registration = nextRegistration;
     const notifyIfWaiting = () => {
-      if (registration.waiting && navigator.serviceWorker.controller) onUpdateAvailable?.(registration);
+      if (nextRegistration.waiting && navigator.serviceWorker.controller) onUpdateAvailable?.(nextRegistration);
     };
     notifyIfWaiting();
-    registration.addEventListener('updatefound', () => {
-      const worker = registration.installing;
+    nextRegistration.addEventListener('updatefound', () => {
+      const worker = nextRegistration.installing;
       if (!worker) return;
       worker.addEventListener('statechange', () => {
         if (worker.state === 'installed') notifyIfWaiting();

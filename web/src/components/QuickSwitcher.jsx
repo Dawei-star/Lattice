@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isComposingEvent } from '../lib/events.js';
-import { formatRelativeTime } from '../lib/format.js';
+import { isComposingEvent } from '../lib/events.ts';
+import { formatRelativeTime } from '../lib/format.ts';
 import Modal from '../ui/Modal.jsx';
 
 /**

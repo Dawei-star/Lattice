@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import ContextMenu from '../ui/ContextMenu.jsx';
-import { nextFolderName } from '../lib/folder-naming.js';
-import { canvasDisplayName, toCanvasFileName } from '../lib/canvas-naming.js';
+import { nextFolderName } from '../lib/folder-naming.ts';
+import { canvasDisplayName, toCanvasFileName } from '../lib/canvas-naming.ts';
 
 const TreeDragContext = createContext(null);
 

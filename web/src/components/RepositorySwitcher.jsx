@@ -3,7 +3,7 @@ import { ChevronsUpDown, CircleHelp } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { vaultApi } from '../api/vault.ts';
 import Modal from '../ui/Modal.jsx';
-import { useToast } from '../hooks/useToast.jsx';
+import { useToast } from '../hooks/useToast.tsx';
 
 const STORAGE_KEY = 'lattice-repositories';
 

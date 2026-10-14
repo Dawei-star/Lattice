@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { isComposingEvent } from '../lib/events.js';
+import { isComposingEvent } from '../lib/events.ts';
 
 /** Shared modal shell with Escape, backdrop close, and a small focus trap. */
 export default function Modal({ open, title, ariaLabel, onClose, children, className = '', initialFocusRef }) {

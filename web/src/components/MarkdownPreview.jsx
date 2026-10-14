@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { renderMarkdown } from '../lib/markdown.js';
+import { renderMarkdown } from '../lib/markdown.ts';
 import Lightbox from './Lightbox.jsx';
 
 const MAX_EMBED_DEPTH = 2;

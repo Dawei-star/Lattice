@@ -4,7 +4,7 @@ import App from './App.jsx';
 import NativeWorkspace from './NativeWorkspace';
 import { isTauri } from '@tauri-apps/api/core';
 import AppErrorBoundary from './components/AppErrorBoundary.jsx';
-import { ToastProvider } from './hooks/useToast.jsx';
+import { ToastProvider } from './hooks/useToast.tsx';
 import './styles.css';
 
 const container = document.getElementById('root');

@@ -1,10 +1,90 @@
-import { renderMarkdown } from './markdown.js';
+import { renderMarkdown } from './markdown.ts';
 
 const MAX_EMBED_DEPTH = 2;
 const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_SITE_ASSET_BYTES = 25 * 1024 * 1024;
 const SITE_NAME = '格物 Lattice';
 const REPOSITORY_URL = 'https://github.com/Dawei-star/Lattice';
+
+declare global {
+  // Node 兜底（jsdom/浏览器没有 Buffer；TS DOM lib 未声明该全局）
+  var Buffer: { from(value: string, encoding: string): { toString(encoding: string): string } } | undefined;
+}
+
+/** 静态导出可解析的 wiki 标题目标：rewriteWikiLinks 依赖 filePath 计算相对链接。 */
+export interface StaticExportTitleTarget {
+  filePath?: string | null;
+  [key: string]: unknown;
+}
+
+/** 标题解析器：返回 null 表示目标笔记不存在。 */
+export type StaticExportTitleResolver = (title: string) => StaticExportTitleTarget | null;
+
+/** 嵌入解析结果：字符串正文，或带正文与源路径的对象。 */
+export type EmbedSource = string | { content?: string; filePath?: string } | null | undefined;
+
+/** 嵌入解析器：可返回字符串或对象。 */
+export type ResolveEmbedFn = (title: string) => Promise<EmbedSource> | EmbedSource;
+
+/** buildStaticHtml 的选项。 */
+export interface BuildStaticHtmlOptions {
+  title: string;
+  content: string;
+  resolveTitle?: StaticExportTitleResolver;
+  resolveAsset?: ((reference: string) => string | null) | null;
+  resolveAssetForPath?: ((reference: string, sourceFilePath: string) => string | null) | null;
+  resolveEmbed?: ResolveEmbedFn | null;
+  fetchImpl?: typeof fetch | null;
+  sourcePath?: string;
+  sourceFilePath?: string;
+  siteIndexPath?: string | null;
+  inlineImages?: boolean;
+}
+
+/** 静态站点文件条目：文本或二进制内容。 */
+export interface StaticSiteFile {
+  path: string;
+  content: string | Uint8Array<ArrayBuffer>;
+}
+
+/** 静态站点导出的笔记输入/规范化条目。 */
+export interface StaticSiteNote {
+  id?: string;
+  title: string;
+  content?: string;
+  filePath?: string;
+  outputPath?: string;
+  [key: string]: unknown;
+}
+
+/** buildStaticSite 的返回结构。 */
+export interface StaticSiteResult {
+  files: StaticSiteFile[];
+  noteCount: number;
+  assetCount: number;
+  byteCount: number;
+}
+
+/** buildStaticSite 的选项。 */
+export interface BuildStaticSiteOptions {
+  notes?: StaticSiteNote[];
+  resolveAssetUrl?: (note: StaticSiteNote, reference: string) => string | null;
+  fetchImpl?: typeof fetch | null;
+  siteTitle?: string;
+}
+
+/** renderStaticBody 的内部上下文。 */
+interface StaticRenderContext {
+  resolveTitle: StaticExportTitleResolver;
+  resolveAsset?: ((reference: string) => string | null) | null;
+  resolveAssetForPath?: ((reference: string, sourceFilePath: string) => string | null) | null;
+  resolveEmbed?: ResolveEmbedFn | null;
+  fetchImpl?: typeof fetch | null;
+  sourcePath: string;
+  sourceFilePath?: string;
+  depth: number;
+  trail: Set<string>;
+}
 
 /** Build a standalone HTML document while keeping remote resources untouched. */
 export async function buildStaticHtml({
@@ -19,7 +99,7 @@ export async function buildStaticHtml({
   sourceFilePath = sourcePath,
   siteIndexPath = null,
   inlineImages = true,
-}) {
+}: BuildStaticHtmlOptions): Promise<string> {
   const body = await renderStaticBody(content, {
     resolveTitle,
     resolveAsset,
@@ -28,7 +108,7 @@ export async function buildStaticHtml({
     sourcePath,
     sourceFilePath,
     depth: 0,
-    trail: new Set(),
+    trail: new Set<string>(),
   });
   const root = parseFragment(body);
   if (inlineImages) await inlineVaultImages(root, fetchImpl);
@@ -47,25 +127,23 @@ export async function buildStaticHtml({
 
 /**
  * Build a deployable static site from note details.
- * @param {{ notes?: Array<{ id?: string, title: string, content?: string, filePath?: string }>, resolveAssetUrl?: (note: object, reference: string) => string|null, fetchImpl?: typeof fetch, siteTitle?: string }} options
- * @returns {Promise<{ files: Array<{ path: string, content: string|Uint8Array }>, noteCount: number, assetCount: number, byteCount: number }>}
  */
 export async function buildStaticSite({
   notes = [],
   resolveAssetUrl = () => null,
   fetchImpl = globalThis.fetch,
   siteTitle = SITE_NAME,
-}) {
+}: BuildStaticSiteOptions): Promise<StaticSiteResult> {
   const normalizedNotes = normalizeSiteNotes(notes);
-  const notesByPath = new Map(normalizedNotes.map((note) => [normalizeFilePath(note.filePath), note]));
-  const titleIndex = new Map();
+  const notesByPath = new Map(normalizedNotes.map((note): [string, StaticSiteNote & { outputPath: string }] => [normalizeFilePath(note.filePath), note]));
+  const titleIndex = new Map<string, StaticSiteNote & { outputPath: string }>();
   for (const note of normalizedNotes) {
     const key = note.title.trim().toLowerCase();
     if (!titleIndex.has(key)) titleIndex.set(key, note);
   }
-  const resolveTitle = (title) => titleIndex.get(String(title ?? '').trim().toLowerCase()) ?? null;
-  const assets = new Map();
-  const collectAsset = (reference, sourceFilePath) => {
+  const resolveTitle: StaticExportTitleResolver = (title) => titleIndex.get(String(title ?? '').trim().toLowerCase()) ?? null;
+  const assets = new Map<string, { url: string }>();
+  const collectAsset = (reference: string, sourceFilePath: string | undefined): string | null => {
     const sourceNote = notesByPath.get(normalizeFilePath(sourceFilePath));
     if (!sourceNote) return null;
     const sourceUrl = resolveAssetUrl(sourceNote, reference);
@@ -74,9 +152,13 @@ export async function buildStaticSite({
     assets.set(assetPath, { url: sourceUrl });
     return sourceUrl;
   };
-  const createEmbedResolver = () => async (title) => {
+  const createEmbedResolver = (): ResolveEmbedFn => async (title) => {
     const embedded = resolveTitle(title);
-    return embedded ? { content: embedded.content ?? '', filePath: embedded.filePath } : null;
+    if (!embedded) return null;
+    return {
+      content: typeof embedded.content === 'string' ? embedded.content : '',
+      filePath: embedded.filePath ?? undefined,
+    };
   };
 
   // First render discovers every image URL, including images inside expanded embeds.
@@ -94,7 +176,7 @@ export async function buildStaticSite({
     });
   }
 
-  const downloadedAssets = new Map();
+  const downloadedAssets = new Map<string, { content: Uint8Array<ArrayBuffer>; size: number }>();
   if (typeof fetchImpl === 'function') {
     await Promise.all([...assets.entries()].map(async ([assetPath, asset]) => {
       try {
@@ -112,7 +194,7 @@ export async function buildStaticSite({
     }));
   }
 
-  const files = [];
+  const files: StaticSiteFile[] = [];
   for (const note of normalizedNotes) {
     const html = await buildStaticHtml({
       title: note.title,
@@ -138,7 +220,7 @@ export async function buildStaticSite({
     byteCount: files.reduce((total, file) => total + contentByteLength(file.content), 0),
   };
 
-  function resolveStaticAsset(reference, sourceFilePath, currentOutputPath) {
+  function resolveStaticAsset(reference: string, sourceFilePath: string | undefined, currentOutputPath: string): string | null {
     const sourceNote = notesByPath.get(normalizeFilePath(sourceFilePath));
     if (!sourceNote) return null;
     const sourceUrl = resolveAssetUrl(sourceNote, reference);
@@ -149,7 +231,7 @@ export async function buildStaticSite({
   }
 }
 
-function normalizeSiteNotes(notes) {
+function normalizeSiteNotes(notes: StaticSiteNote[]): Array<StaticSiteNote & { outputPath: string; content: string }> {
   const used = new Set(['index.html']);
   return (Array.isArray(notes) ? notes : []).filter((note) => note?.title).map((note, index) => {
     const filePath = normalizeFilePath(note.filePath || `${note.title || `note-${index + 1}`}.md`);
@@ -163,16 +245,16 @@ function normalizeSiteNotes(notes) {
   });
 }
 
-function buildStaticIndex({ siteTitle, notes }) {
+function buildStaticIndex({ siteTitle, notes }: { siteTitle: string; notes: Array<StaticSiteNote & { outputPath: string }> }): string {
   const rows = notes.map((note) => ({ title: note.title, path: note.outputPath }));
   const serialized = JSON.stringify(rows).replace(/</g, '\\u003c');
-  const list = rows.map((note) => `<li><a href="${escapeHtml(note.outputPath)}"><strong>${escapeHtml(note.title)}</strong><span>${escapeHtml(note.filePath)}</span></a></li>`).join('');
+  const list = notes.map((note) => `<li><a href="${escapeHtml(note.outputPath)}"><strong>${escapeHtml(note.title)}</strong><span>${escapeHtml(note.filePath)}</span></a></li>`).join('');
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="application-name" content="${escapeHtml(siteTitle)}"><title>${escapeHtml(siteTitle)}</title><style>:root{color-scheme:light;--canvas:#f4f6f9;--surface:#fff;--ink:#111827;--muted:#667085;--subtle:#98a2b3;--line:#e4e7ec;--brand:#3e55c7}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.6 "Noto Sans SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif}.site-index{max-width:900px;margin:0 auto;padding:52px 24px 70px}.site-index__eyebrow{color:var(--brand);font-size:12px;font-weight:800;letter-spacing:.08em}.site-index h1{margin:10px 0 8px;font-size:36px}.site-index__meta{color:var(--muted)}.site-index__search{width:100%;margin:28px 0 18px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font:inherit}.site-index ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;padding:0;list-style:none}.site-index li a{display:flex;flex-direction:column;gap:3px;padding:15px 16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);text-decoration:none}.site-index li a:hover{border-color:#9aaaf0;box-shadow:0 6px 18px rgba(18,32,63,.06)}.site-index li span{color:var(--subtle);font-size:12px;overflow-wrap:anywhere}.site-index__empty{color:var(--muted)}@media(max-width:600px){.site-index{padding:32px 18px 48px}.site-index h1{font-size:29px}}</style></head><body><main class="site-index"><span class="site-index__eyebrow">LATTICE / STATIC VAULT</span><h1>${escapeHtml(siteTitle)}</h1><p class="site-index__meta">${rows.length} 篇笔记 · 可直接部署的静态知识库</p><input class="site-index__search" type="search" placeholder="搜索笔记标题或路径" aria-label="搜索笔记"><ul>${list || '<li class="site-index__empty">暂无可导出的笔记</li>'}</ul></main><script type="application/json" id="lattice-site-index">${serialized}</script><script>const data=JSON.parse(document.getElementById('lattice-site-index').textContent);const input=document.querySelector('.site-index__search');const items=[...document.querySelectorAll('.site-index li:not(.site-index__empty)')];input.addEventListener('input',()=>{const query=input.value.trim().toLowerCase();items.forEach((item,index)=>{const entry=data[index];const haystack=(entry.title+' '+entry.path).toLowerCase();item.hidden=Boolean(query&&!haystack.includes(query));});});</script></body></html>`;
 }
 
-async function renderStaticBody(source, context) {
+async function renderStaticBody(source: string, context: StaticRenderContext): Promise<string> {
   const assetResolver = context.resolveAssetForPath
-    ? (reference) => context.resolveAssetForPath(reference, context.sourceFilePath ?? context.sourcePath)
+    ? (reference: string) => context.resolveAssetForPath!(reference, context.sourceFilePath ?? context.sourcePath)
     : context.resolveAsset;
   const html = renderMarkdown(source, {
     resolveTitle: context.resolveTitle,
@@ -189,8 +271,8 @@ async function renderStaticBody(source, context) {
   return root.innerHTML;
 }
 
-async function expandEmbeds(root, context) {
-  const embeds = [...root.querySelectorAll('.note-embed[data-embed-title]')];
+async function expandEmbeds(root: HTMLElement, context: StaticRenderContext): Promise<void> {
+  const embeds = [...root.querySelectorAll<HTMLElement>('.note-embed[data-embed-title]')];
   for (const embed of embeds) {
     const title = embed.getAttribute('data-embed-title')?.trim() ?? '';
     const body = embed.querySelector('.note-embed__body');
@@ -203,7 +285,7 @@ async function expandEmbeds(root, context) {
     }
 
     try {
-      const embedded = await context.resolveEmbed(title);
+      const embedded = await context.resolveEmbed(title) as { content?: string; filePath?: string } | null | undefined;
       const content = typeof embedded === 'string' ? embedded : embedded?.content;
       if (!content?.trim()) {
         markEmbedError(embed, 'Embedded note is empty');
@@ -223,10 +305,10 @@ async function expandEmbeds(root, context) {
   }
 }
 
-function rewriteWikiLinks(root, resolveTitle, sourcePath = '') {
+function rewriteWikiLinks(root: HTMLElement, resolveTitle: StaticExportTitleResolver, sourcePath = ''): void {
   for (const anchor of [...root.querySelectorAll('a.wiki-link[data-wiki-title]')]) {
     const title = anchor.getAttribute('data-wiki-title')?.trim() ?? '';
-    let target = null;
+    let target: StaticExportTitleTarget | null = null;
     try {
       target = title ? resolveTitle(title) : null;
     } catch {
@@ -250,8 +332,8 @@ function rewriteWikiLinks(root, resolveTitle, sourcePath = '') {
   }
 }
 
-function assignHeadingIds(root) {
-  const used = new Map();
+function assignHeadingIds(root: HTMLElement): void {
+  const used = new Map<string, number>();
   for (const heading of root.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
     const base = headingAnchor(heading.textContent ?? 'section');
     const count = (used.get(base) ?? 0) + 1;
@@ -260,7 +342,7 @@ function assignHeadingIds(root) {
   }
 }
 
-async function inlineVaultImages(root, fetchImpl) {
+async function inlineVaultImages(root: HTMLElement, fetchImpl: typeof fetch | null | undefined): Promise<void> {
   if (typeof fetchImpl !== 'function') return;
   const currentOrigin = globalThis.location?.origin ?? null;
 
@@ -268,7 +350,7 @@ async function inlineVaultImages(root, fetchImpl) {
     const source = image.getAttribute('src');
     if (!source) continue;
 
-    let url;
+    let url: URL;
     try {
       url = new URL(source, globalThis.location?.href ?? 'http://localhost/');
     } catch {
@@ -283,7 +365,7 @@ async function inlineVaultImages(root, fetchImpl) {
       const blob = await response.blob();
       if (!blob || blob.size > MAX_INLINE_IMAGE_BYTES) continue;
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      const binary = [];
+      const binary: string[] = [];
       for (let offset = 0; offset < bytes.length; offset += 0x8000) {
         binary.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
       }
@@ -294,19 +376,19 @@ async function inlineVaultImages(root, fetchImpl) {
   }
 }
 
-function markEmbedError(embed, message) {
+function markEmbedError(embed: HTMLElement, message: string): void {
   embed.dataset.embedState = 'error';
   const body = embed.querySelector('.note-embed__body');
   if (body) body.textContent = message;
 }
 
-function parseFragment(html) {
+function parseFragment(html: string): HTMLElement {
   if (typeof DOMParser !== 'function') throw new Error('Static export requires DOMParser');
   const document = new DOMParser().parseFromString(`<div id="lattice-export-root">${html}</div>`, 'text/html');
-  return document.querySelector('#lattice-export-root');
+  return document.querySelector('#lattice-export-root') as HTMLElement;
 }
 
-export function exportPath(filePath) {
+export function exportPath(filePath: string | null | undefined): string {
   const segments = String(filePath ?? '').replaceAll('\\', '/').split('/').filter(Boolean);
   if (!segments.length) return 'note.html';
   const last = segments.length - 1;
@@ -315,7 +397,7 @@ export function exportPath(filePath) {
   return encodePathSegments(segments);
 }
 
-export function relativeExportPath(fromPath, toPath) {
+export function relativeExportPath(fromPath: string | null | undefined, toPath: string | null | undefined): string {
   const hasSourceFile = Boolean(String(fromPath ?? '').trim());
   const from = String(fromPath ?? '').split('/').filter(Boolean);
   const to = String(toPath ?? '').split('/').filter(Boolean);
@@ -335,11 +417,11 @@ export function relativeExportPath(fromPath, toPath) {
   return hasSourceFile ? encoded : `./${encoded}`;
 }
 
-function encodePathSegments(segments) {
+function encodePathSegments(segments: string[]): string {
   return segments.map((segment) => encodeURIComponent(segment)).join('/');
 }
 
-function assetOutputPath(sourceUrl, reference) {
+function assetOutputPath(sourceUrl: string, reference: string): string {
   let candidate = '';
   try {
     const parsed = new URL(sourceUrl, globalThis.location?.href ?? 'http://localhost/');
@@ -352,16 +434,16 @@ function assetOutputPath(sourceUrl, reference) {
   return `assets/${encodePathSegments(segments.length ? segments : ['asset.bin'])}`;
 }
 
-function normalizeFilePath(filePath) {
+function normalizeFilePath(filePath: unknown): string {
   return String(filePath ?? '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, '').split('/').filter((segment) => segment && segment !== '.' && segment !== '..').join('/');
 }
 
-function contentByteLength(content) {
+function contentByteLength(content: string | Uint8Array): number {
   if (content instanceof Uint8Array) return content.byteLength;
   return new TextEncoder().encode(String(content ?? '')).byteLength;
 }
 
-function headingAnchor(value) {
+function headingAnchor(value: string): string {
   return String(value)
     .trim()
     .toLowerCase()
@@ -370,13 +452,13 @@ function headingAnchor(value) {
     .replace(/^-+|-+$/g, '') || 'section';
 }
 
-function encodeBase64(value) {
+function encodeBase64(value: string): string {
   if (typeof btoa === 'function') return btoa(value);
   const buffer = globalThis.Buffer;
   return buffer ? buffer.from(value, 'binary').toString('base64') : '';
 }
 
-function escapeHtml(value) {
+function escapeHtml(value: string | null | undefined): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

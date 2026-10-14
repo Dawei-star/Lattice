@@ -29,6 +29,7 @@ export interface NoteFileMeta {
   createdAt: string;
   updatedAt: string;
   folderId?: string | null;
+  filePath?: string;
   properties?: NoteProperties;
   content?: string;
 }

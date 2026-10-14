@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nextFolderName } from '../src/lib/folder-naming.js';
+import { nextFolderName } from '../src/lib/folder-naming.ts';
 
 test('default folder names are unique within one sibling list', () => {
   assert.equal(nextFolderName([]), '未命名');

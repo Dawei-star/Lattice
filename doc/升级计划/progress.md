@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 ｜ P1-05 完成：api 层 12 模块全部 TS 化（typecheck strict + 全量测试绿）
+> **最后更新**：2026-10-14 ｜ P1-06 完成：hooks/lib 20 文件全部 TS 化（strict 全绿；顺修类型化揭出的 2 处既有 bug）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -40,8 +40,10 @@
   - [x] experts/skills 全套 9（`expert_list/get/save/delete/route` + `skill_list/get/save/delete`；内置 7 专家 9 技能编译期嵌入，工作区层 `.lattice/experts|skills`，workspace 覆盖 builtin、保存/删除双确认闸门）
   - [x] review 3（`review_health`/`review_plan`/`review_execute`；9 类线索扫描 + 健康分，修复计划内存 TTL 15min + planHash + contentHash 重校验）
 - [x] **P1-04 非 AI 命令面迁移全部完成**（96 端点中非 AI/MCP 侧 59 个全部迁移）
-- [x] P1-05 api 层 TS 化（12 模块 git mv 转 .ts + 类型标注，零运行时改动；测试 import 改 .ts 后缀走 Node 24 type stripping；tsconfig 开 allowImportingTsExtensions）← **当前**
-- [ ] P1-05~07 前端 TS 化
+- [x] P1-05 api 层 TS 化（12 模块 git mv 转 .ts + 类型标注，零运行时改动；测试 import 改 .ts 后缀走 Node 24 type stripping；tsconfig 开 allowImportingTsExtensions）
+- [x] P1-06 hooks/lib TS 化（20 文件 git mv 转 .ts/.tsx + 类型标注；11 个测试 import 改 .ts；顺修类型化揭出的 2 处既有 bug：useToast dedupe 反向清理失效、static-export 索引页 rows.map→notes.map）
+- [ ] P1-07 components/shell/settings 全量 .jsx → .tsx ← **当前**
+- [ ] P1-05 收尾项：api 层 invoke 双轨封装（桌面通道 invoke / Express 回落）+ 入口切全功能 App
 - [ ] P1-08 功能对齐验证（契约快照对照）
 - [ ] P1-09 删除 Express 回落
 - [ ] P1-10 验收发布 v0.2.0
@@ -59,6 +61,6 @@
 
 ## 下一步
 
-1. P1-05 收尾项：api 层 invoke 双轨封装（桌面通道 invoke / Express 回落）+ 入口切全功能 App
-2. P1-06 store/hooks/lib → TS + strict 收紧
-3. P1-07 components/shell/settings 全量 .jsx → .tsx
+1. P1-07 components/shell/settings 全量 .jsx → .tsx
+2. P1-05 收尾项：api 层 invoke 双轨封装（桌面通道 invoke / Express 回落）+ 入口切全功能 App
+3. P1-08 功能对齐验证（契约快照对照）

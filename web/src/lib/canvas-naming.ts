@@ -1,10 +1,10 @@
 const INVALID_CANVAS_NAME = /[<>:"/\\|?*\u0000-\u001f\u007f]/;
 
-export function canvasDisplayName(value) {
+export function canvasDisplayName(value: unknown): string {
   return String(value ?? '').replace(/\.canvas$/i, '');
 }
 
-export function toCanvasFileName(value) {
+export function toCanvasFileName(value: unknown): string {
   const candidate = String(value ?? '').trim();
   const baseName = canvasDisplayName(candidate).trim();
   if (!baseName || baseName === '.' || baseName === '..' || INVALID_CANVAS_NAME.test(baseName)) return '';

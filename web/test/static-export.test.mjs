@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { installDom } from './dom-setup.mjs';
 
 installDom();
-const { buildStaticHtml } = await import('../src/lib/static-export.js');
+const { buildStaticHtml } = await import('../src/lib/static-export.ts');
 
 const notes = new Map([
   ['linked note', { id: 'linked-id', filePath: 'Guides/Linked note.md' }],

@@ -10,7 +10,31 @@ const ALLOWED_TOKENS = new Set([
 
 const SAFE_COLOR = /^(transparent|currentColor|#[0-9a-f]{3,8}|rgba?\([^;{}]+\)|hsla?\([^;{}]+\))$/i;
 
-const CONTRAST_RULES = [
+/** 主题颜色令牌表：令牌名 → 合法 CSS 颜色值。 */
+export type ThemeTokens = Record<string, string>;
+
+/** 已应用/导入的主题：名称 + 令牌表。 */
+export interface ImportedTheme {
+  name: string;
+  tokens: ThemeTokens;
+}
+
+/** 对比度不足的命中项。 */
+export interface ContrastIssue {
+  foreground: string;
+  background: string;
+  minimum: number;
+  ratio: number;
+}
+
+interface ContrastRule {
+  foreground: string;
+  minimum: number;
+  background?: string;
+  backgrounds?: string[];
+}
+
+const CONTRAST_RULES: ContrastRule[] = [
   { foreground: 'text', minimum: 4.5, backgrounds: ['bg', 'bg-panel', 'bg-subtle'] },
   { foreground: 'text-secondary', minimum: 4.5, backgrounds: ['bg', 'bg-panel', 'bg-subtle'] },
   { foreground: 'text-tertiary', minimum: 3, backgrounds: ['bg', 'bg-panel', 'bg-subtle'] },
@@ -19,7 +43,15 @@ const CONTRAST_RULES = [
   { foreground: 'accent-contrast', background: 'accent', minimum: 4.5 },
 ];
 
-export async function importThemeFile(file) {
+/** 解析后的 CSS 颜色通道值（r/g/b 0-255，a 0-1）。 */
+interface RgbaColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+export async function importThemeFile(file: File): Promise<ImportedTheme> {
   if (!file) throw new Error('请选择主题文件');
   if (file.size > 256 * 1024) throw new Error('主题文件不能超过 256 KB');
 
@@ -41,7 +73,7 @@ export async function importThemeFile(file) {
   return theme;
 }
 
-export function loadImportedTheme() {
+export function loadImportedTheme(): ImportedTheme | null {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
     if (!saved?.tokens) return null;
@@ -58,34 +90,39 @@ export function loadImportedTheme() {
   }
 }
 
-export function clearImportedTheme() {
+export function clearImportedTheme(): void {
   for (const token of ALLOWED_TOKENS) document.documentElement.style.removeProperty(`--${token}`);
   try { localStorage.removeItem(STORAGE_KEY); } catch {}
 }
 
-export function applyImportedTheme(theme) {
+export function applyImportedTheme(theme: ImportedTheme): void {
   for (const token of ALLOWED_TOKENS) document.documentElement.style.removeProperty(`--${token}`);
   for (const [token, value] of Object.entries(theme.tokens)) {
     document.documentElement.style.setProperty(`--${token}`, value);
   }
 }
 
-function parseJsonTheme(text) {
+interface RawTheme {
+  name: string;
+  tokens: ThemeTokens;
+}
+
+function parseJsonTheme(text: string): RawTheme {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('主题 JSON 格式无效');
   return { name: parsed.name, tokens: parsed.colors ?? parsed.tokens ?? parsed };
 }
 
-function parseCssTheme(text) {
-  const tokens = {};
+function parseCssTheme(text: string): RawTheme {
+  const tokens: ThemeTokens = {};
   for (const match of text.matchAll(/--([a-z0-9-]+)\s*:\s*([^;{}]+)\s*;?/gi)) {
     tokens[match[1]] = match[2].trim();
   }
   return { name: 'CSS theme', tokens };
 }
 
-function sanitizeTokens(raw) {
-  const tokens = {};
+function sanitizeTokens(raw: ThemeTokens | null | undefined): ThemeTokens {
+  const tokens: ThemeTokens = {};
   for (const [key, value] of Object.entries(raw ?? {})) {
     const token = key.replace(/^--/, '').trim();
     const normalized = String(value).trim();
@@ -94,12 +131,12 @@ function sanitizeTokens(raw) {
   return tokens;
 }
 
-export function validateThemeContrast(rawTokens) {
+export function validateThemeContrast(rawTokens: ThemeTokens | Record<string, string> | null | undefined): ContrastIssue[] {
   const tokens = sanitizeTokens(rawTokens);
-  const issues = [];
+  const issues: ContrastIssue[] = [];
 
   for (const rule of CONTRAST_RULES) {
-    const backgroundNames = rule.background ? [rule.background] : rule.backgrounds;
+    const backgroundNames = rule.background ? [rule.background] : (rule.backgrounds as string[]);
     if (!tokens[rule.foreground]) continue;
 
     for (const backgroundName of backgroundNames) {
@@ -123,7 +160,7 @@ export function validateThemeContrast(rawTokens) {
   return issues;
 }
 
-function formatContrastIssues(issues) {
+function formatContrastIssues(issues: ContrastIssue[]): string {
   const details = issues
     .slice(0, 5)
     .map((issue) => `${issue.foreground} / ${issue.background} ${issue.ratio.toFixed(2)}:1（至少 ${issue.minimum}:1）`)
@@ -132,7 +169,7 @@ function formatContrastIssues(issues) {
   return `主题对比度不足：${details}${remainder}`;
 }
 
-function resolveBackground(tokens, token) {
+function resolveBackground(tokens: ThemeTokens, token: string): RgbaColor | null {
   const base = parseCssColor(tokens.bg);
   const color = parseCssColor(tokens[token]);
   if (!color) return null;
@@ -140,13 +177,13 @@ function resolveBackground(tokens, token) {
   return compositeColor(color, base);
 }
 
-function resolveForeground(value, background) {
+function resolveForeground(value: string, background: RgbaColor | null): RgbaColor | null {
   const color = parseCssColor(value);
   if (!color || !background) return null;
   return compositeColor(color, background);
 }
 
-function parseCssColor(value) {
+function parseCssColor(value: unknown): RgbaColor | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
   if (normalized === 'currentcolor') return null;
@@ -172,13 +209,13 @@ function parseCssColor(value) {
     ? channelText.split(',').map((part) => part.trim())
     : channelText.trim().split(/\s+/);
   let alpha = alphaText ? parseAlpha(alphaText) : 1;
-  if (channels.length === 4 && !alphaText) alpha = parseAlpha(channels.pop());
+  if (channels.length === 4 && !alphaText) alpha = parseAlpha(channels.pop()!);
   if (channels.length !== 3 || alpha == null) return null;
 
   if (type.startsWith('rgb')) {
     const rgb = channels.map(parseRgbChannel);
     if (rgb.some((channel) => channel == null)) return null;
-    return { r: rgb[0], g: rgb[1], b: rgb[2], a: alpha };
+    return { r: rgb[0]!, g: rgb[1]!, b: rgb[2]!, a: alpha };
   }
 
   const hue = parseHue(channels[0]);
@@ -189,31 +226,31 @@ function parseCssColor(value) {
   return { ...rgb, a: alpha };
 }
 
-function splitAlpha(body) {
+function splitAlpha(body: string): [string, string] {
   const slashIndex = body.indexOf('/');
   if (slashIndex === -1) return [body, ''];
   return [body.slice(0, slashIndex).trim(), body.slice(slashIndex + 1).trim()];
 }
 
-function parseRgbChannel(value) {
+function parseRgbChannel(value: string): number | null {
   const number = Number.parseFloat(value);
   if (!Number.isFinite(number)) return null;
   return clamp(value.trim().endsWith('%') ? number * 2.55 : number, 0, 255);
 }
 
-function parseAlpha(value) {
+function parseAlpha(value: string): number | null {
   const number = Number.parseFloat(value);
   if (!Number.isFinite(number)) return null;
   return clamp(value.trim().endsWith('%') ? number / 100 : number, 0, 1);
 }
 
-function parsePercentage(value) {
+function parsePercentage(value: string): number | null {
   const number = Number.parseFloat(value);
   if (!Number.isFinite(number)) return null;
   return clamp(value.trim().endsWith('%') ? number / 100 : number, 0, 1);
 }
 
-function parseHue(value) {
+function parseHue(value: string): number | null {
   const number = Number.parseFloat(value);
   if (!Number.isFinite(number)) return null;
   const normalized = value.trim();
@@ -222,14 +259,14 @@ function parseHue(value) {
   return number;
 }
 
-function hslToRgb(hue, saturation, lightness) {
+function hslToRgb(hue: number, saturation: number, lightness: number): { r: number; g: number; b: number } {
   const h = ((hue % 360) + 360) % 360 / 360;
   if (saturation === 0) {
     const gray = lightness * 255;
     return { r: gray, g: gray, b: gray };
   }
 
-  const hueToRgb = (p, q, t) => {
+  const hueToRgb = (p: number, q: number, t: number): number => {
     let value = t;
     if (value < 0) value += 1;
     if (value > 1) value -= 1;
@@ -250,7 +287,7 @@ function hslToRgb(hue, saturation, lightness) {
   };
 }
 
-function compositeColor(foreground, background) {
+function compositeColor(foreground: RgbaColor, background: RgbaColor | null): RgbaColor | null {
   if (!background) return foreground.a >= 1 ? foreground : null;
   const alpha = foreground.a + background.a * (1 - foreground.a);
   if (alpha <= 0) return null;
@@ -262,19 +299,19 @@ function compositeColor(foreground, background) {
   };
 }
 
-function toOpaque(color) {
+function toOpaque(color: RgbaColor): RgbaColor | null {
   return color.a >= 1 ? color : null;
 }
 
-function contrastRatio(foreground, background) {
+function contrastRatio(foreground: RgbaColor, background: RgbaColor): number {
   const foregroundLuminance = relativeLuminance(foreground);
   const backgroundLuminance = relativeLuminance(background);
   return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
     / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
 }
 
-function relativeLuminance(color) {
-  const channel = (value) => {
+function relativeLuminance(color: RgbaColor): number {
+  const channel = (value: number): number => {
     const normalized = value / 255;
     return normalized <= 0.03928
       ? normalized / 12.92
@@ -283,8 +320,8 @@ function relativeLuminance(color) {
   return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
 }
 
-function clamp(value, minimum, maximum) {
+function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-export const importedThemeStorageKey = STORAGE_KEY;
+export const importedThemeStorageKey: string = STORAGE_KEY;

@@ -1,22 +1,55 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
 
-const ToastContext = createContext(null);
+/** Toast 语气。 */
+export type ToastTone = 'success' | 'info' | 'error';
 
-const AUTO_DISMISS_MS = { success: 2600, info: 3200, error: 6000 };
+/** push 一条 toast 的选项。 */
+export interface ToastOptions {
+  tone?: ToastTone;
+  /** 次级说明文字 */
+  detail?: string;
+  /** 展示时长（毫秒），<=0 表示不自动消失 */
+  duration?: number;
+  /** 去重键：同键未消失时返回已有 toast 的 id */
+  dedupeKey?: string;
+}
 
-export function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([]);
+/** 单条 toast 的渲染数据。 */
+export interface ToastItem {
+  id: number;
+  message: string;
+  tone: ToastTone;
+  detail?: string;
+  dedupeKey?: string;
+}
+
+/** ToastProvider 暴露的 API（useToast 的返回值）。 */
+export interface ToastApi {
+  push: (message: string, options?: ToastOptions) => number | null | undefined;
+  dismiss: (id: number) => void;
+  success: (message: string, options?: ToastOptions) => number | null | undefined;
+  info: (message: string, options?: ToastOptions) => number | null | undefined;
+  error: (message: string, options?: ToastOptions) => number | null | undefined;
+}
+
+const ToastContext = createContext<ToastApi | null>(null);
+
+const AUTO_DISMISS_MS: Record<ToastTone, number> = { success: 2600, info: 3200, error: 6000 };
+
+export function ToastProvider({ children }: { children: ReactNode }) {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const seq = useRef(0);
-  const dedupeKeys = useRef(new Map());
+  const dedupeKeys = useRef(new Map<string, number>());
 
-  const dismiss = useCallback((id) => {
-    const dedupeKey = dedupeKeys.current.get(id);
-    if (dedupeKey) dedupeKeys.current.delete(id);
+  const dismiss = useCallback((id: number) => {
+    for (const [dedupeKey, toastId] of dedupeKeys.current) {
+      if (toastId === id) dedupeKeys.current.delete(dedupeKey);
+    }
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
   const push = useCallback(
-    (message, options = {}) => {
+    (message: string, options: ToastOptions = {}): number | null | undefined => {
       if (!message) return null;
       if (options.dedupeKey && dedupeKeys.current.has(options.dedupeKey)) {
         return dedupeKeys.current.get(options.dedupeKey);
@@ -36,7 +69,7 @@ export function ToastProvider({ children }) {
     [dismiss],
   );
 
-  const api = useMemo(
+  const api = useMemo<ToastApi>(
     () => ({
       push,
       dismiss,
@@ -68,7 +101,7 @@ export function ToastProvider({ children }) {
   );
 }
 
-export function useToast() {
+export function useToast(): ToastApi {
   const context = useContext(ToastContext);
   if (!context) throw new Error('useToast 必须在 ToastProvider 内部使用');
   return context;

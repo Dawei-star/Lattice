@@ -4,7 +4,7 @@
  */
 import { createRoot } from 'react-dom/client';
 import App from '../src/App.jsx';
-import { ToastProvider } from '../src/hooks/useToast.jsx';
+import { ToastProvider } from '../src/hooks/useToast.tsx';
 
 export function mount() {
   const container = document.getElementById('root');

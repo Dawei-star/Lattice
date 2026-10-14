@@ -1,5 +1,5 @@
 /** Return the first available default name among a folder's siblings. */
-export function nextFolderName(siblings = []) {
+export function nextFolderName(siblings: Array<{ name?: string | null }> = []): string {
   const usedNames = new Set(
     siblings
       .map((folder) => String(folder?.name ?? '').trim().toLocaleLowerCase())

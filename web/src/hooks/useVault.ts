@@ -7,17 +7,83 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, BASE_URL } from '../api/client.ts';
-import { canvasApi } from '../api/canvas.ts';
-import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi } from '../api/resources.ts';
-import { vaultApi } from '../api/vault.ts';
-import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
+import { canvasApi, type CanvasFileSummary } from '../api/canvas.ts';
+import { foldersApi, graphApi, metaApi, notesApi, searchApi, tagsApi, type FolderNode, type GraphSnapshot, type MetaOverview, type NoteCreateInput, type NoteDetail, type NoteIndexEntry, type NoteProperties, type NoteSummary, type NotesListQuery, type SearchHit, type Tag } from '../api/resources.ts';
+import { vaultApi, type VaultProfile, type VaultProfilePaths } from '../api/vault.ts';
+import { noteFilePath, uniqueNoteFilePath, vaultAttachmentsApi, vaultFiles, type VaultAttachmentSummary } from '../api/vault-files.ts';
 import { createSseTicket, getWorkspaceAccessToken } from '../api/workspace-auth.ts';
-import { useDebouncedValue } from './useDebouncedValue.js';
-import { useToast } from './useToast.jsx';
-import { mergeSavedNoteIntoCollection } from '../lib/note-state.js';
+import { useDebouncedValue } from './useDebouncedValue.ts';
+import { useToast } from './useToast.tsx';
+import { mergeSavedNoteIntoCollection } from '../lib/note-state.ts';
+import type { FileConfirmationResult, FileOperationInput } from './useFileConfirmation.tsx';
 
-const DEFAULT_FILTER = { kind: 'all', folderId: null, tagId: null, inboxStatus: null };
-const DEFAULT_VAULT_PROFILE = Object.freeze({
+/** Inbox 处理状态。 */
+export type InboxStatus = 'all' | 'captured' | 'processing' | 'processed';
+
+/** 笔记列表排序字段。 */
+export type NoteSortOrder = 'updated' | 'created' | 'title';
+
+/** 筛选类型。 */
+export type VaultFilterKind = 'all' | 'folder' | 'tag' | 'inbox';
+
+/** 笔记筛选状态（各 kind 下未用字段缺省）。 */
+export interface VaultFilter {
+  kind: VaultFilterKind;
+  folderId?: string | null;
+  tagId?: string | null;
+  inboxStatus?: InboxStatus | null;
+}
+
+/** 本地维护的 Vault 档案（路径配置收敛后）。 */
+export interface VaultProfileConfig {
+  version: number;
+  paths: { inbox: string; daily: string; journal: string };
+}
+
+/** 各区块加载态。 */
+export interface VaultLoadingState {
+  sidebar: boolean;
+  notes: boolean;
+  note: boolean;
+  graph: boolean;
+}
+
+/** 全文检索状态。 */
+export interface VaultSearchState {
+  loading: boolean;
+  items: SearchHit[];
+  strategy: string;
+  query: string;
+}
+
+/** 笔记详情实际携带的投影字段（契约未显式声明，运行时存在）。 */
+export type NoteDetailRow = NoteDetail & { filePath?: string; contentHash?: string | null };
+
+/** 全量索引条目实际携带 filePath（契约未显式声明，运行时存在）。 */
+export type NoteIndexRow = NoteIndexEntry & { filePath?: string };
+
+/** 附件列表项（按目录归位后补全 folderPath）。 */
+export type AttachmentRow = VaultAttachmentSummary & { folderPath: string };
+
+/** saveNote 支持的局部更新载荷。 */
+export interface NoteSavePatch {
+  title?: string;
+  content?: string;
+  folderId?: string | null;
+  isPinned?: boolean;
+  properties?: NoteProperties;
+  /** 桌面模式落盘前的乐观锁：磁盘内容哈希比对 */
+  expectedHash?: string;
+}
+
+/** useVault 的选项。 */
+export interface UseVaultOptions {
+  /** 文件操作确认闸门（由 useFileConfirmation 提供） */
+  requestFileConfirmation?: (operation: FileOperationInput) => Promise<FileConfirmationResult>;
+}
+
+const DEFAULT_FILTER: VaultFilter = { kind: 'all', folderId: null, tagId: null, inboxStatus: null };
+const DEFAULT_VAULT_PROFILE: VaultProfileConfig = Object.freeze({
   version: 1,
   paths: Object.freeze({ inbox: 'Inbox', daily: 'Daily', journal: 'Journal' }),
 });
@@ -28,7 +94,7 @@ const SEARCH_DEBOUNCE_MS = 280;
 const UNFILED = '__none__';
 const DEFAULT_CANVAS_PATH = '画板.canvas';
 
-function flattenFolderTree(nodes, result = []) {
+function flattenFolderTree(nodes: FolderNode[] | null | undefined, result: FolderNode[] = []): FolderNode[] {
   for (const node of nodes ?? []) {
     result.push(node);
     flattenFolderTree(node.children, result);
@@ -36,7 +102,7 @@ function flattenFolderTree(nodes, result = []) {
   return result;
 }
 
-function ensureDefaultCanvas(files) {
+function ensureDefaultCanvas(files: CanvasFileSummary[] | null | undefined): CanvasFileSummary[] {
   const normalized = Array.isArray(files) ? files : [];
   if (normalized.length > 0) return normalized;
   return [
@@ -45,11 +111,11 @@ function ensureDefaultCanvas(files) {
   ];
 }
 
-function nextCanvasPath(files, folderPath = '') {
+function nextCanvasPath(files: CanvasFileSummary[] | null | undefined, folderPath = ''): string {
   const normalizedFolder = String(folderPath ?? '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
   const existing = new Set((files ?? []).map((file) => String(file?.path ?? '')));
   let suffix = 0;
-  let candidate;
+  let candidate: string;
   do {
     const name = suffix === 0 ? '未命名.canvas' : `未命名 ${suffix + 1}.canvas`;
     candidate = normalizedFolder ? `${normalizedFolder}/${name}` : name;
@@ -58,7 +124,7 @@ function nextCanvasPath(files, folderPath = '') {
   return candidate;
 }
 
-function normalizeNoteFilePath(value) {
+function normalizeNoteFilePath(value: unknown): string {
   return String(value ?? '')
     .trim()
     .replaceAll('\\', '/')
@@ -66,9 +132,9 @@ function normalizeNoteFilePath(value) {
     .toLowerCase();
 }
 
-function normalizeVaultProfile(value) {
-  const paths = value?.paths ?? {};
-  const normalizePath = (candidate, fallback) => {
+function normalizeVaultProfile(value: VaultProfile | null | undefined): VaultProfileConfig {
+  const paths: VaultProfilePaths = value?.paths ?? {};
+  const normalizePath = (candidate: unknown, fallback: string): string => {
     if (typeof candidate !== 'string') return fallback;
     const normalized = candidate.trim().replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
     return normalized && !normalized.split('/').some((part) => !part || part === '.' || part === '..')
@@ -86,7 +152,7 @@ function normalizeVaultProfile(value) {
 }
 
 /** 附件按其真实所在目录归位（attachments/、attachments/笔记标题/ 或笔记旁的任意目录），与目录树路径对齐。 */
-function normalizeAttachmentFiles(files) {
+function normalizeAttachmentFiles(files: VaultAttachmentSummary[] | null | undefined): AttachmentRow[] {
   return (Array.isArray(files) ? files : []).map((file) => {
     const path = String(file?.path ?? '').replaceAll('\\', '/');
     const separator = path.lastIndexOf('/');
@@ -95,50 +161,50 @@ function normalizeAttachmentFiles(files) {
   });
 }
 
-export function useVault({ requestFileConfirmation } = {}) {
+export function useVault({ requestFileConfirmation }: UseVaultOptions = {}) {
   const toast = useToast();
 
-  const [folders, setFolders] = useState([]);
-  const [profile, setProfile] = useState(DEFAULT_VAULT_PROFILE);
+  const [folders, setFolders] = useState<FolderNode[]>([]);
+  const [profile, setProfile] = useState<VaultProfileConfig>(DEFAULT_VAULT_PROFILE);
   const [vaultDir, setVaultDir] = useState('');
-  const [tags, setTags] = useState([]);
-  const [overview, setOverview] = useState(null);
-  const [noteIndex, setNoteIndex] = useState([]);
-  const [canvasFiles, setCanvasFiles] = useState([]);
-  const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [overview, setOverview] = useState<MetaOverview | null>(null);
+  const [noteIndex, setNoteIndex] = useState<NoteIndexRow[]>([]);
+  const [canvasFiles, setCanvasFiles] = useState<CanvasFileSummary[]>([]);
+  const [attachmentFiles, setAttachmentFiles] = useState<AttachmentRow[]>([]);
 
-  const [filter, setFilter] = useState(DEFAULT_FILTER);
-  const [sort, setSort] = useState('updated');
-  const [notes, setNotes] = useState([]);
+  const [filter, setFilter] = useState<VaultFilter>(DEFAULT_FILTER);
+  const [sort, setSort] = useState<NoteSortOrder>('updated');
+  const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [notesTotal, setNotesTotal] = useState(0);
   const [page, setPage] = useState(0);
 
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
-  const [search, setSearch] = useState({ loading: false, items: [], strategy: '', query: '' });
+  const [search, setSearch] = useState<VaultSearchState>({ loading: false, items: [], strategy: '', query: '' });
 
-  const [activeNote, setActiveNote] = useState(null);
-  const [graph, setGraph] = useState(null);
+  const [activeNote, setActiveNote] = useState<NoteDetailRow | null>(null);
+  const [graph, setGraph] = useState<GraphSnapshot | null>(null);
   const [graphStale, setGraphStale] = useState(true);
-  const [loading, setLoading] = useState({ sidebar: true, notes: true, note: false, graph: false });
+  const [loading, setLoading] = useState<VaultLoadingState>({ sidebar: true, notes: true, note: false, graph: false });
   const [connectionDown, setConnectionDown] = useState(false);
   const [workspaceToken, setWorkspaceToken] = useState(() => getWorkspaceAccessToken());
   const [vaultChangeRevision, setVaultChangeRevision] = useState(0);
 
   /** 编辑器未保存内容的重载保护：切换笔记前由编辑区注册拦截器 */
-  const navigationGuard = useRef(null);
+  const navigationGuard = useRef<(() => boolean) | null>(null);
   const openRequest = useRef(0);
   const listRequestIdRef = useRef(0);
   const sseConnectedRef = useRef(false);
-  const activeNoteRef = useRef(activeNote);
-  const noteMutationQueuesRef = useRef(new Map());
+  const activeNoteRef = useRef<NoteDetailRow | null>(activeNote);
+  const noteMutationQueuesRef = useRef(new Map<string, Promise<unknown>>());
 
   // refreshNotes 的身份随 filter/page/sort 变化，openNote 又依赖它：
   // SSE 订阅 effect 若直接依赖两者，每次筛选/翻页都会断流重连（token 模式
   // 重连窗口内还会丢事件）。这里用 ref 持有最新版本，订阅本身保持稳定。
   // （二者此时尚未定义，只能先置空，渲染完成后由下方 effect 回填）
-  const refreshNotesRef = useRef(null);
-  const openNoteRef = useRef(null);
+  const refreshNotesRef = useRef<(() => Promise<void>) | null>(null);
+  const openNoteRef = useRef<((id: string) => Promise<NoteDetailRow | null>) | null>(null);
 
   useEffect(() => {
     activeNoteRef.current = activeNote;
@@ -151,7 +217,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   }, []);
 
   const handleError = useCallback(
-    (error, fallbackMessage) => {
+    (error: any, fallbackMessage?: string): void => {
       if (error?.name === 'AbortError') return;
 
       if (error instanceof ApiError) {
@@ -178,7 +244,7 @@ export function useVault({ requestFileConfirmation } = {}) {
     [toast],
   );
 
-  const confirmFileOperation = useCallback(async (operation) => {
+  const confirmFileOperation = useCallback(async (operation: FileOperationInput): Promise<{ confirmed: boolean; secondConfirmed: boolean } | null> => {
     if (typeof requestFileConfirmation !== 'function') {
       throw new Error('文件操作确认组件未挂载，已阻止本次写入');
     }
@@ -193,7 +259,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   // 'notes' = 只刷 folders/tags/overview/index。SSE 笔记级事件走 'notes'：
   // 附件与画布文件不会被 .md watcher 事件改变，全库附件扫描没必要每次跑。
   const refreshSidebar = useCallback(
-    async ({ silent = false, scope = 'all' } = {}) => {
+    async ({ silent = false, scope = 'all' }: { silent?: boolean; scope?: 'all' | 'notes' } = {}): Promise<void> => {
       if (!silent) setLoading((current) => ({ ...current, sidebar: true }));
       try {
         const [folderTree, tagList, stats, index] = await Promise.all([
@@ -249,14 +315,14 @@ export function useVault({ requestFileConfirmation } = {}) {
     [handleError],
   );
 
-  const refreshNotes = useCallback(async () => {
+  const refreshNotes = useCallback(async (): Promise<void> => {
     // 请求序号防竞态：快速切换目录/排序/翻页时，旧请求晚到会覆盖新筛选的结果
     const requestId = ++listRequestIdRef.current;
     setLoading((current) => ({ ...current, notes: true }));
     try {
-      const params = { sort, limit: PAGE_SIZE, offset: page * PAGE_SIZE };
+      const params: NotesListQuery = { sort, limit: PAGE_SIZE, offset: page * PAGE_SIZE };
       if (filter.kind === 'folder') params.folderId = filter.folderId ?? UNFILED;
-      if (filter.kind === 'tag') params.tagId = filter.tagId;
+      if (filter.kind === 'tag') params.tagId = filter.tagId as string | undefined;
       if (filter.kind === 'inbox') params.inboxStatus = filter.inboxStatus ?? 'all';
 
       const result = await notesApi.list(params);
@@ -278,12 +344,12 @@ export function useVault({ requestFileConfirmation } = {}) {
     setPage((current) => Math.min(current, Math.max(0, Math.ceil(notesTotal / PAGE_SIZE) - 1)));
   }, [notesTotal]);
 
-  const setSortOrder = useCallback((nextSort) => {
+  const setSortOrder = useCallback((nextSort: NoteSortOrder): void => {
     setSort(nextSort);
     setPage(0);
   }, []);
 
-  const refreshGraph = useCallback(async () => {
+  const refreshGraph = useCallback(async (): Promise<void> => {
     setLoading((current) => ({ ...current, graph: true }));
     try {
       const data = await graphApi.get();
@@ -338,7 +404,7 @@ export function useVault({ requestFileConfirmation } = {}) {
 
   // ── 标题索引：双链解析、快速切换、嵌入目标定位都依赖它 ─────────
   const titleIndex = useMemo(() => {
-    const map = new Map();
+    const map = new Map<string, NoteIndexRow>();
     // noteIndex 已按更新时间倒序，同名笔记因此自然保留最近更新的那篇
     for (const entry of noteIndex) {
       const key = entry.title.trim().toLowerCase();
@@ -348,32 +414,32 @@ export function useVault({ requestFileConfirmation } = {}) {
   }, [noteIndex]);
 
   const resolveTitle = useCallback(
-    (title) => titleIndex.get(String(title ?? '').trim().toLowerCase()) ?? null,
+    (title: string): NoteIndexRow | null => titleIndex.get(String(title ?? '').trim().toLowerCase()) ?? null,
     [titleIndex],
   );
 
   // ── 动作 ────────────────────────────────────────────────────────
-  const registerNavigationGuard = useCallback((guard) => {
+  const registerNavigationGuard = useCallback((guard: () => boolean): void => {
     navigationGuard.current = guard;
   }, []);
 
   // 无副作用探针：编辑器报告"当前是否有未保存草稿"，供 SSE 外部更新
   // 决定是否自动刷新（有草稿时自动刷新会静默覆盖外部修改或本地草稿）
-  const dirtyProbe = useRef(null);
-  const registerDirtyProbe = useCallback((probe) => {
+  const dirtyProbe = useRef<(() => boolean) | null>(null);
+  const registerDirtyProbe = useCallback((probe: () => boolean): void => {
     dirtyProbe.current = probe;
   }, []);
-  const hasUnsavedChanges = useCallback(() => dirtyProbe.current?.() === true, []);
+  const hasUnsavedChanges = useCallback((): boolean => dirtyProbe.current?.() === true, []);
 
   /** 返回 true 允许切换；返回 false 表示被拦下（守卫返回 false，通常因未保存内容） */
-  const confirmNavigation = useCallback(() => {
+  const confirmNavigation = useCallback((): boolean => {
     const guard = navigationGuard.current;
     if (typeof guard !== 'function') return true;
     return guard() !== false;
   }, []);
 
   const openNote = useCallback(
-    async (id) => {
+    async (id: string): Promise<NoteDetailRow | null> => {
       const requestId = ++openRequest.current;
       if (!id) {
         setActiveNote(null);
@@ -381,7 +447,7 @@ export function useVault({ requestFileConfirmation } = {}) {
       }
       setLoading((current) => ({ ...current, note: true }));
       try {
-        const note = await notesApi.get(id);
+        const note: NoteDetailRow = await notesApi.get(id);
         if (vaultFiles.isAvailable() && note.filePath) {
           try {
             const content = await vaultFiles.readMarkdown(note.filePath);
@@ -420,14 +486,14 @@ export function useVault({ requestFileConfirmation } = {}) {
 
   /** 按标题打开；标题不存在时返回 null，由调用方决定是否创建 */
   const findNoteByFilePath = useCallback(
-    async (filePath) => {
+    async (filePath: string): Promise<NoteIndexRow | null> => {
       const expectedPath = normalizeNoteFilePath(filePath);
       if (!expectedPath) return null;
 
-      let lastError = null;
+      let lastError: unknown = null;
       for (let attempt = 0; attempt < 12; attempt += 1) {
         try {
-          const index = await notesApi.index();
+          const index: NoteIndexRow[] = await notesApi.index();
           setNoteIndex(index ?? []);
           const match = (index ?? []).find((entry) => normalizeNoteFilePath(entry.filePath) === expectedPath);
           if (match) {
@@ -448,7 +514,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const openByTitle = useCallback(
-    async (title) => {
+    async (title: string): Promise<NoteDetailRow | null> => {
       const hit = resolveTitle(title);
       if (!hit) return null;
       return openNote(hit.id);
@@ -457,7 +523,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const createNote = useCallback(
-    async (input = {}) => {
+    async (input: NoteCreateInput = {}): Promise<NoteDetailRow | NoteDetail | null> => {
       try {
         if (vaultFiles.isAvailable()) {
           const timestamp = new Date().toISOString();
@@ -484,7 +550,7 @@ export function useVault({ requestFileConfirmation } = {}) {
           for (let attempt = 0; attempt < 4; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 220));
             try {
-              const indexed = await notesApi.get(note.id);
+              const indexed: NoteDetailRow = await notesApi.get(note.id);
               if (vaultFiles.isAvailable() && indexed.filePath) {
                 indexed.content = await vaultFiles.readMarkdown(indexed.filePath) ?? indexed.content;
               }
@@ -524,7 +590,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   /** 保存后即时更新列表中的对应行；与服务器/磁盘的完整同步交给 SSE 驱动的刷新 */
-  const patchNoteListItem = useCallback((saved) => {
+  const patchNoteListItem = useCallback((saved: NoteDetailRow | NoteDetail): void => {
     if (!saved?.id) return;
     setNotes((current) => mergeSavedNoteIntoCollection(current, saved));
     setNoteIndex((current) => mergeSavedNoteIntoCollection(current, saved));
@@ -532,7 +598,7 @@ export function useVault({ requestFileConfirmation } = {}) {
 
   // Keep mutations for one note ordered so a rename cannot be followed by an
   // older autosave that still targets the previous file path.
-  const enqueueNoteMutation = useCallback((id, operation) => {
+  const enqueueNoteMutation = useCallback(<T>(id: string, operation: () => Promise<T>): Promise<T> => {
     const previous = noteMutationQueuesRef.current.get(id) ?? Promise.resolve();
     const next = previous.then(operation, operation);
     noteMutationQueuesRef.current.set(id, next);
@@ -556,7 +622,7 @@ export function useVault({ requestFileConfirmation } = {}) {
    * 不再人为等待 + 全量刷新——否则连续自动保存就是每秒十几个请求的风暴。
    */
   const saveNote = useCallback(
-    (id, patch) => enqueueNoteMutation(id, async () => {
+    (id: string, patch: NoteSavePatch) => enqueueNoteMutation(id, async (): Promise<NoteDetailRow | NoteDetail> => {
       const current = activeNoteRef.current?.id === id ? activeNoteRef.current : null;
       const nextPatch = { ...patch };
 
@@ -580,17 +646,13 @@ export function useVault({ requestFileConfirmation } = {}) {
         if (nextPatch.expectedHash) {
           const diskContent = await vaultFiles.readMarkdown(current.filePath);
           if (diskContent !== null && diskContent !== current.content) {
-            const conflict = new Error('笔记已被外部程序修改，已拦截本次保存以避免覆盖外部改动');
+            const conflict = new Error('笔记已被外部程序修改，已拦截本次保存以避免覆盖外部改动') as Error & { status: number; code: string };
             conflict.status = 409;
             conflict.code = 'CONFLICT';
             throw conflict;
           }
         }
-        const saved = {
-          ...current,
-          ...nextPatch,
-          updatedAt: new Date().toISOString(),
-        };
+        const saved = { ...current, ...nextPatch, updatedAt: new Date().toISOString() } as NoteDetailRow;
         const pathChanged = saved.title !== current.title || saved.folderId !== current.folderId;
         const nextPath = pathChanged
           ? uniqueNoteFilePath(saved, folders, noteIndex)
@@ -608,8 +670,8 @@ export function useVault({ requestFileConfirmation } = {}) {
           : {};
         if (pathChanged && !confirmation) throw new Error('用户取消了文件操作');
         const written = nextPath === current.filePath
-          ? await vaultFiles.writeMarkdown(current.filePath, saved, confirmation)
-          : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved, confirmation);
+          ? await vaultFiles.writeMarkdown(current.filePath, saved, confirmation!)
+          : await vaultFiles.moveMarkdown(current.filePath, nextPath, saved, confirmation!);
         if (!written) throw new Error('无法写入 Markdown 文件');
         saved.filePath = nextPath;
         activeNoteRef.current = saved;
@@ -648,7 +710,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const deleteNote = useCallback(
-    async (id) => {
+    async (id: string): Promise<boolean> => {
       try {
         const current = activeNote?.id === id ? activeNote : null;
         let deletedOnDisk = false;
@@ -688,12 +750,12 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const duplicateNote = useCallback(
-    async (source) => {
+    async (source: { id: string }): Promise<NoteDetailRow | NoteDetail | null> => {
       if (!source?.id) return null;
       try {
         // Desktop mode reads the authoritative Markdown before creating the copy.
         // This keeps the duplicate path identical to a normal note creation.
-        const detail = await notesApi.get(source.id);
+        const detail: NoteDetailRow = await notesApi.get(source.id);
         if (vaultFiles.isAvailable() && detail.filePath) {
           const content = await vaultFiles.readMarkdown(detail.filePath);
           if (content !== null) detail.content = content;
@@ -722,7 +784,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const renameNote = useCallback(
-    async (id, title) => {
+    async (id: string, title: string): Promise<NoteDetailRow | NoteDetail | null> => {
       try {
         const saved = await saveNote(id, { title });
         await Promise.all([refreshNotes(), refreshSidebar({ silent: true })]);
@@ -737,7 +799,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const createFolder = useCallback(
-    async (name, parentId = null) => {
+    async (name: string, parentId: string | null = null): Promise<FolderNode | null> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'mkdir',
@@ -759,7 +821,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const moveFolder = useCallback(
-    async (id, parentId) => {
+    async (id: string, parentId: string | null): Promise<boolean> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'move',
@@ -786,21 +848,21 @@ export function useVault({ requestFileConfirmation } = {}) {
     const EventSourceCtor = window.EventSource ?? globalThis.EventSource;
     if (typeof EventSourceCtor !== 'function') return undefined;
 
-    let source = null;
+    let source: EventSource | null = null;
     let disposed = false;
-    let reconnectTimer = null;
+    let reconnectTimer: number | undefined;
     let reconnectAttempts = 0;
-    let refreshTimer = null;
+    let refreshTimer: number | undefined;
     let refreshInFlight = false;
 
     // 刷新在途时新到达的请求合并为一次「补跑」：既不并发重入（会有状态竞争），
     // 也不丢弃（否则刷新期间到达的最后一条变更会被吞掉，界面停留旧数据）。
     // 范围合并取更宽的一侧：notes 事件合并到 all 时按 all 补跑。
-    let refreshPendingScope = null;
-    const runRefresh = async (scope = 'all') => {
+    let refreshPendingScope: 'all' | 'notes' | null = null;
+    const runRefresh = async (scope: 'all' | 'notes' = 'all'): Promise<void> => {
       refreshInFlight = true;
       try {
-        await Promise.all([refreshNotesRef.current(), refreshSidebar({ silent: true, scope })]);
+        await Promise.all([refreshNotesRef.current!(), refreshSidebar({ silent: true, scope })]);
       } finally {
         refreshInFlight = false;
         if (refreshPendingScope) {
@@ -811,7 +873,7 @@ export function useVault({ requestFileConfirmation } = {}) {
       }
     };
 
-    const refreshFromVault = (scope = 'all') => {
+    const refreshFromVault = (scope: 'all' | 'notes' = 'all'): void => {
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
         if (refreshInFlight) {
@@ -822,8 +884,8 @@ export function useVault({ requestFileConfirmation } = {}) {
       }, 80);
     };
 
-    const handleMessage = (message) => {
-      let change;
+    const handleMessage = (message: MessageEvent): void => {
+      let change: any;
       try {
         change = JSON.parse(message.data);
       } catch {
@@ -845,7 +907,7 @@ export function useVault({ requestFileConfirmation } = {}) {
         return;
       }
 
-      const current = activeNoteRef.current;
+      const current = activeNoteRef.current!;
       const currentFile = current?.filePath ? String(current.filePath).replaceAll('\\', '/') : null;
       const changeFile = change.file ? String(change.file).replaceAll('\\', '/') : null;
       const touchesCurrentNote = Boolean(current) && (current.id === change.id || (currentFile && changeFile && currentFile === changeFile));
@@ -891,10 +953,10 @@ export function useVault({ requestFileConfirmation } = {}) {
     // 配置了工作区令牌：长期令牌不进 URL，先换取一次性短时票据再开流；
     // 票据核销后 EventSource 的自动重连必然 401，因此出错时手动关闭、
     // 换新票据重连（指数退避）
-    const connect = async () => {
+    const connect = async (): Promise<void> => {
       if (disposed) return;
       try {
-        const ticket = await createSseTicket();
+        const ticket = await createSseTicket() as { ticket?: string } | null;
         if (disposed) return;
         if (!ticket?.ticket) throw new Error('事件流票据获取失败');
         const eventsUrl = new URL(`${BASE_URL}/vault/events`, window.location.origin);
@@ -931,7 +993,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   }, [hasUnsavedChanges, refreshSidebar, toast, workspaceToken]);
 
   const moveCanvas = useCallback(
-    async (fromPath, toPath) => {
+    async (fromPath: string, toPath: string): Promise<boolean> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'move',
@@ -953,7 +1015,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const renameCanvas = useCallback(
-    async (fromPath, toPath) => {
+    async (fromPath: string, toPath: string): Promise<boolean> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'rename',
@@ -975,7 +1037,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const deleteCanvas = useCallback(
-    async (filePath) => {
+    async (filePath: string): Promise<boolean> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'delete',
@@ -997,7 +1059,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const createCanvas = useCallback(
-    async (folderPath = '') => {
+    async (folderPath = ''): Promise<string | null> => {
       const filePath = nextCanvasPath(canvasFiles, folderPath);
       try {
         const confirmation = await confirmFileOperation({
@@ -1019,7 +1081,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const duplicateFolder = useCallback(
-    async (source) => {
+    async (source: FolderNode): Promise<boolean> => {
       if (!source?.id) return false;
       try {
         const siblingNames = new Set(
@@ -1035,12 +1097,12 @@ export function useVault({ requestFileConfirmation } = {}) {
           suffix += 1;
         }
 
-        const folderIds = new Map();
+        const folderIds = new Map<string | null, string>();
          const rootCopy = await createFolder(name, source.parentId ?? null);
          if (!rootCopy) return false;
         folderIds.set(source.id, rootCopy.id);
 
-        const copyChildren = async (original, parentId) => {
+        const copyChildren = async (original: FolderNode, parentId: string): Promise<void> => {
           for (const child of original.children ?? []) {
              const copy = await createFolder(child.name, parentId);
              if (!copy) return;
@@ -1069,7 +1131,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const deleteFolder = useCallback(
-    async (id) => {
+    async (id: string): Promise<boolean> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'delete',
@@ -1079,7 +1141,7 @@ export function useVault({ requestFileConfirmation } = {}) {
           requiresSecondConfirmation: true,
         });
         if (!confirmation) return false;
-        const result = await foldersApi.remove(id, { body: confirmation, retries: 0 });
+        const result: any = await foldersApi.remove(id, { body: confirmation, retries: 0 });
         setFilter((current) => (current.kind === 'folder' && current.folderId === id ? DEFAULT_FILTER : current));
         await Promise.all([refreshSidebar({ silent: true }), refreshNotes()]);
         toast.success(
@@ -1097,7 +1159,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const renameFolder = useCallback(
-    async (id, name) => {
+    async (id: string, name: string): Promise<boolean> => {
       try {
         const confirmation = await confirmFileOperation({
           type: 'rename',
@@ -1119,7 +1181,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const moveNote = useCallback(
-    async (id, folderId) => {
+    async (id: string, folderId: string | null): Promise<boolean> => {
       try {
         const saved = await saveNote(id, { folderId });
         setActiveNote((current) => (current && current.id === id ? saved : current));
@@ -1134,7 +1196,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const updateInboxStatus = useCallback(
-    async (note, status) => {
+    async (note: { id: string; properties?: NoteProperties }, status: InboxStatus): Promise<boolean> => {
       if (!note?.id || !['captured', 'processing', 'processed'].includes(status)) return false;
       try {
         const saved = await saveNote(note.id, {
@@ -1152,10 +1214,10 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const archiveInboxNote = useCallback(
-    async (note, folderId) => {
+    async (note: { id: string; properties?: NoteProperties }, folderId: string | null): Promise<boolean> => {
       if (!note?.id || folderId === undefined) return false;
       try {
-        const properties = { ...(note.properties ?? {}), status: 'processed' };
+        const properties: NoteProperties = { ...(note.properties ?? {}), status: 'processed' };
         delete properties.type;
         const saved = await saveNote(note.id, { folderId, properties });
         setActiveNote((current) => (current && current.id === saved.id ? saved : current));
@@ -1170,7 +1232,7 @@ export function useVault({ requestFileConfirmation } = {}) {
   );
 
   const togglePin = useCallback(
-    async (note) => {
+    async (note: { id: string; isPinned: boolean }): Promise<boolean> => {
       try {
         const saved = await saveNote(note.id, { isPinned: !note.isPinned });
         setActiveNote((current) => (current && current.id === saved.id ? saved : current));
@@ -1183,25 +1245,25 @@ export function useVault({ requestFileConfirmation } = {}) {
     [handleError, saveNote],
   );
 
-  const selectFolder = useCallback((folderId) => {
+  const selectFolder = useCallback((folderId: string | null): void => {
     setFilter({ kind: 'folder', folderId });
     setPage(0);
     setQuery('');
   }, []);
 
-  const selectTag = useCallback((tagId) => {
+  const selectTag = useCallback((tagId: string): void => {
     setFilter({ kind: 'tag', tagId });
     setPage(0);
     setQuery('');
   }, []);
 
-  const selectInbox = useCallback((status = 'all') => {
+  const selectInbox = useCallback((status: InboxStatus = 'all'): void => {
     setFilter({ kind: 'inbox', folderId: null, tagId: null, inboxStatus: status });
     setPage(0);
     setQuery('');
   }, []);
 
-  const clearFilter = useCallback(() => {
+  const clearFilter = useCallback((): void => {
     setFilter(DEFAULT_FILTER);
     setPage(0);
   }, []);

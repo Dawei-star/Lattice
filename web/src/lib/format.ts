@@ -9,9 +9,8 @@ const UNITS = [
 
 /**
  * 相对时间。超过一周直接显示日期，比「37 天前」更好读。
- * @param {string} iso
  */
-export function formatRelativeTime(iso) {
+export function formatRelativeTime(iso: string | null | undefined): string {
   if (!iso) return '';
   const timestamp = new Date(iso).getTime();
   if (Number.isNaN(timestamp)) return '';
@@ -30,7 +29,7 @@ export function formatRelativeTime(iso) {
   return formatDate(iso);
 }
 
-export function formatDate(iso) {
+export function formatDate(iso: string | null | undefined): string {
   if (!iso) return '';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
@@ -43,17 +42,17 @@ export function formatDate(iso) {
   return sameYear ? `${month}-${day}` : `${date.getFullYear()}-${month}-${day}`;
 }
 
-export function formatDateTime(iso) {
+export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
 
-  const pad = (n) => String(n).padStart(2, '0');
+  const pad = (n: number): string => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** 千分位数字 */
-export function formatNumber(value) {
+export function formatNumber(value: unknown): string {
   const number = Number(value);
   if (!Number.isFinite(number)) return '0';
   return number.toLocaleString('zh-CN');

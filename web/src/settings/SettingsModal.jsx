@@ -4,9 +4,9 @@ import { mcpApi } from '../api/mcp.ts';
 import { notesApi } from '../api/resources.ts';
 import { vaultApi } from '../api/vault.ts';
 import { resolveAttachmentPath, vaultFiles } from '../api/vault-files.ts';
-import { buildStaticSite } from '../lib/static-export.js';
-import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirectory } from '../lib/static-site.js';
-import { clearImportedTheme, importThemeFile, loadImportedTheme } from '../lib/theme.js';
+import { buildStaticSite } from '../lib/static-export.ts';
+import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirectory } from '../lib/static-site.ts';
+import { clearImportedTheme, importThemeFile, loadImportedTheme } from '../lib/theme.ts';
 import { loadSettings, saveSettings, subscribeSettings } from './settings.js';
 import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
 import { MCP_WRITE_TOOL_NAMES, createMcpServer, loadMcpSettings, readEnvValue, resolveServerArgs, saveMcpSettings, setArgValue, serversToProjectDocument, withVisibleServers, writeEnvValue } from './mcpSettings.js';
@@ -19,8 +19,8 @@ import {
   isMarketEntryInstalled,
 } from './mcpMarketplace.js';
 import ModelCenter from './ModelCenter.jsx';
-import { checkGithubReleases } from '../lib/update.js';
-import { APP_VERSION } from '../lib/appVersion.js';
+import { checkGithubReleases } from '../lib/update.ts';
+import { APP_VERSION } from '../lib/appVersion.ts';
 
 const LATTICE_ICON_URL = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHg9IjEwNCIgeT0iMTQ3IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzA0MEE0NiIvPjxyZWN0IHg9IjEwNCIgeT0iMTA0IiB3aWR0aD0iODE1IiBoZWlnaHQ9IjgxNSIgcng9IjE1NSIgZmlsbD0iIzE2MjU4NSIvPjxyZWN0IHg9IjEwMCIgeT0iMTQyIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzFGMkVBMiIvPjxyZWN0IHg9IjEwMCIgeT0iMTAwIiB3aWR0aD0iNjk0IiBoZWlnaHQ9IjY5NCIgcng9IjEyNSIgZmlsbD0iIzNCNTBERiIvPjxyZWN0IHg9Ijk2IiB5PSIxMzgiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM0QzY4RUIiLz48cmVjdCB4PSI5NiIgeT0iOTYiIHdpZHRoPSI1NzIiIGhlaWdodD0iNTcyIiByeD0iOTYiIGZpbGw9IiM3Qjk2RkYiLz48cmVjdCB4PSI5MiIgeT0iMTM0IiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjOTBBOUZGIi8+PHJlY3QgeD0iOTIiIHk9IjkyIiB3aWR0aD0iNDUxIiBoZWlnaHQ9IjQ1MSIgcng9IjY2IiBmaWxsPSIjQzZENkZGIi8+PC9zdmc+';
 const MAX_BACKGROUND_IMAGE_SIZE = 2 * 1024 * 1024;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkGithubReleases } from '../src/lib/update.js';
+import { checkGithubReleases } from '../src/lib/update.ts';
 
 const release = {
   version: '0.2.0',

@@ -5,19 +5,34 @@
  */
 import { http } from '../api/client.ts';
 
-/**
- * @param {{ currentVersion?: string, httpImpl?: typeof http }} [options] httpImpl 注入便于测试
- * @returns {Promise<{ version: string, tagName: string, name: string, htmlUrl: string, publishedAt: string|null, installer: {name: string, url: string}|null, portable: {name: string, url: string}|null, downloadUrl: string, isUpdateAvailable: boolean }>}
- */
-export async function checkGithubReleases({ currentVersion, httpImpl = http } = {}) {
+/** GitHub Release 检查结果（经后端 /api/update/check 归一化）。 */
+export interface GithubReleaseInfo {
+  version: string;
+  tagName: string;
+  name: string;
+  htmlUrl: string;
+  publishedAt: string | null;
+  installer: { name: string; url: string } | null;
+  portable: { name: string; url: string } | null;
+  downloadUrl: string;
+  isUpdateAvailable: boolean;
+}
+
+/** 检查选项：httpImpl 注入便于测试。 */
+export interface CheckGithubReleasesOptions {
+  currentVersion?: string;
+  httpImpl?: typeof http;
+}
+
+export async function checkGithubReleases({ currentVersion, httpImpl = http }: CheckGithubReleasesOptions = {}): Promise<GithubReleaseInfo> {
   try {
-    return await httpImpl.get('/update/check', {
+    return await httpImpl.get<GithubReleaseInfo>('/update/check', {
       query: { current: currentVersion },
       // 手动触发的检查无需三次退避重试，失败尽快给出反馈
       retries: 1,
       timeout: 20_000,
     });
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'ApiError') {
       if (error.isOffline || error.isTimeout || error.status === 0) {
         throw new Error('无法连接本地服务，请确认后端已启动');

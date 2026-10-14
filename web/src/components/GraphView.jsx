@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { computeFit, createForceLayout } from '../lib/forceGraph.js';
+import { computeFit, createForceLayout } from '../lib/forceGraph.ts';
 
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 3.5;

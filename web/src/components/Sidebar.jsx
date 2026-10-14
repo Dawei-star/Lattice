@@ -3,8 +3,8 @@ import { ArrowDownUp, FilePlus2, FolderPlus, PanelLeftClose, RefreshCw } from 'l
 import FolderTree from './FolderTree.jsx';
 import TagCloud from './TagCloud.jsx';
 import RepositorySwitcher from './RepositorySwitcher.jsx';
-import { formatNumber } from '../lib/format.js';
-import { nextFolderName } from '../lib/folder-naming.js';
+import { formatNumber } from '../lib/format.ts';
+import { nextFolderName } from '../lib/folder-naming.ts';
 import { SORT_LABELS } from './NoteListPane.jsx';
 
 const SORT_ORDER = Object.keys(SORT_LABELS);

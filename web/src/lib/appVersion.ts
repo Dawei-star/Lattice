@@ -15,6 +15,11 @@
  * 「版本是 0.0.0」，让更新检查拿着一个假版本号去比大小。缺失就该显式炸出来。
  */
 
+declare global {
+  // 构建期注入的全局（vite/esbuild define）；仅作类型声明，运行时零开销
+  var __APP_VERSION__: string | undefined;
+}
+
 const injected = typeof __APP_VERSION__ !== 'undefined'
   ? __APP_VERSION__
   : globalThis.__APP_VERSION__;

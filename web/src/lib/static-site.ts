@@ -1,7 +1,18 @@
 const MAX_DOWNLOAD_NAME_LENGTH = 180;
 
+/** 静态站点文件条目：文本或二进制内容。 */
+export interface StaticSiteFile {
+  path: string;
+  content: string | Uint8Array<ArrayBuffer>;
+}
+
+declare global {
+  // Node 兜底（浏览器没有 Buffer；TS DOM lib 未声明该全局）
+  var Buffer: { from(value: string, encoding: string): { toString(encoding: string): string } } | undefined;
+}
+
 /** Write a generated site into a File System Access API directory handle. */
-export async function writeStaticSiteToDirectory(directoryHandle, files) {
+export async function writeStaticSiteToDirectory(directoryHandle: FileSystemDirectoryHandle, files: StaticSiteFile[]): Promise<void> {
   if (!directoryHandle?.getFileHandle || !Array.isArray(files)) throw new Error('当前浏览器不支持目录写入');
 
   for (const file of files) {
@@ -9,7 +20,7 @@ export async function writeStaticSiteToDirectory(directoryHandle, files) {
     if (!segments.length) continue;
     let directory = directoryHandle;
     for (const segment of segments.slice(0, -1)) directory = await directory.getDirectoryHandle(segment, { create: true });
-    const target = await directory.getFileHandle(segments.at(-1), { create: true });
+    const target = await directory.getFileHandle(segments.at(-1)!, { create: true });
     const writable = await target.createWritable();
     try {
       await writable.write(file.content);
@@ -20,7 +31,7 @@ export async function writeStaticSiteToDirectory(directoryHandle, files) {
 }
 
 /** Browser fallback when a directory picker is unavailable. Directory structure cannot be preserved. */
-export async function downloadStaticSite(files) {
+export async function downloadStaticSite(files?: StaticSiteFile[]): Promise<void> {
   for (const file of files ?? []) {
     const blob = new Blob([file.content], { type: file.path.endsWith('.html') ? 'text/html;charset=utf-8' : 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
@@ -34,7 +45,7 @@ export async function downloadStaticSite(files) {
 }
 
 /** Convert binary site entries into a compact IPC-safe payload for Electron. */
-export function serializeStaticSiteFiles(files) {
+export function serializeStaticSiteFiles(files?: StaticSiteFile[]): Array<{ path: string; content: string | null; base64: string | null }> {
   return (files ?? []).map((file) => ({
     path: file.path,
     content: typeof file.content === 'string' ? file.content : null,
@@ -42,18 +53,18 @@ export function serializeStaticSiteFiles(files) {
   }));
 }
 
-function safeSegments(value) {
+function safeSegments(value: string | null | undefined): string[] {
   return String(value ?? '').replaceAll('\\', '/').split('/').filter((segment) => segment && segment !== '.' && segment !== '..' && !/^[A-Za-z]:$/.test(segment));
 }
 
-function flattenedDownloadName(value) {
+function flattenedDownloadName(value: string): string {
   const safe = safeSegments(value).join('__').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim();
   return (safe || 'lattice-export').slice(0, MAX_DOWNLOAD_NAME_LENGTH);
 }
 
-function bytesToBase64(content) {
+function bytesToBase64(content: Uint8Array): string {
   const bytes = content instanceof Uint8Array ? content : new Uint8Array(content ?? []);
-  const chunks = [];
+  const chunks: string[] = [];
   for (let offset = 0; offset < bytes.length; offset += 0x8000) chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
   const binary = chunks.join('');
   if (typeof btoa === 'function') return btoa(binary);

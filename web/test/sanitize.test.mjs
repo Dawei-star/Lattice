@@ -3,7 +3,7 @@ import test from 'node:test';
 import { installDom } from './dom-setup.mjs';
 
 installDom();
-const { sanitizeHtml } = await import('../src/lib/sanitize.js');
+const { sanitizeHtml } = await import('../src/lib/sanitize.ts');
 
 test('sanitizeHtml recursively cleans children of unknown tags', () => {
   const result = sanitizeHtml('<font><img src="x" onerror="alert(1)"></font>');

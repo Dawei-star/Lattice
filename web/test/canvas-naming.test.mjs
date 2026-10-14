@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canvasDisplayName, toCanvasFileName } from '../src/lib/canvas-naming.js';
+import { canvasDisplayName, toCanvasFileName } from '../src/lib/canvas-naming.ts';
 
 test('canvas names keep the extension out of the editor value', () => {
   assert.equal(canvasDisplayName('项目.canvas'), '项目');

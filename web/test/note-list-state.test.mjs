@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mergeSavedNoteIntoCollection } from '../src/lib/note-state.js';
+import { mergeSavedNoteIntoCollection } from '../src/lib/note-state.ts';
 
 const current = [
   {

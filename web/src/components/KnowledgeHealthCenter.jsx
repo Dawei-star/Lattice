@@ -18,7 +18,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { reviewApi } from '../api/review.ts';
-import { formatNumber, formatRelativeTime } from '../lib/format.js';
+import { formatNumber, formatRelativeTime } from '../lib/format.ts';
 
 const CATEGORY_META = {
   inbox: { label: 'Inbox 待整理', shortLabel: 'Inbox', description: '先收集、后归位的临时内容', icon: Inbox, tone: 'amber' },

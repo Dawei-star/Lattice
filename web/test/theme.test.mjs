@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { installDom } from './dom-setup.mjs';
-import { clearImportedTheme, importThemeFile, validateThemeContrast } from '../src/lib/theme.js';
+import { clearImportedTheme, importThemeFile, validateThemeContrast } from '../src/lib/theme.ts';
 
 installDom();
 

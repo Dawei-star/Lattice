@@ -5,7 +5,7 @@ import ContextMenu from '../ui/ContextMenu.jsx';
 import Modal from '../ui/Modal.jsx';
 import { canvasApi } from '../api/canvas.ts';
 import { vaultAssetsApi, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
-import { getClipboardImageFiles } from '../lib/clipboard.js';
+import { getClipboardImageFiles } from '../lib/clipboard.ts';
 
 const EMPTY_DOCUMENT = { nodes: [], edges: [] };
 const NODE_WIDTH = 248;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createClipboardImageFile, getClipboardImageFiles } from '../src/lib/clipboard.js';
+import { createClipboardImageFile, getClipboardImageFiles } from '../src/lib/clipboard.ts';
 
 const timestamp = new Date(2026, 9, 1, 12, 34, 56).getTime();
 

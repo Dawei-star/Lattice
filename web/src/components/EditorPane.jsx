@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import MarkdownPreview from './MarkdownPreview.jsx';
-import { formatDateTime, formatNumber } from '../lib/format.js';
-import { parseOutline, renderMarkdown } from '../lib/markdown.js';
+import { formatDateTime, formatNumber } from '../lib/format.ts';
+import { parseOutline, renderMarkdown } from '../lib/markdown.ts';
 import ContextMenu from '../ui/ContextMenu.jsx';
 import Resizer from '../ui/Resizer.jsx';
 import { aiApi } from '../api/ai.ts';
 import { notesApi } from '../api/resources.ts';
 import { loadAiSettings } from '../settings/aiSettings.js';
-import { loadLayout, saveLayout } from '../lib/layout.js';
+import { loadLayout, saveLayout } from '../lib/layout.ts';
 import { loadSettings, subscribeSettings } from '../settings/settings.js';
 import Modal from '../ui/Modal.jsx';
 import { encodeMarkdownUrlReference, markdownLinkLabel, relativeAttachmentReference, resolveAttachmentPath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
-import { buildStaticHtml } from '../lib/static-export.js';
-import { getClipboardImageFiles } from '../lib/clipboard.js';
+import { buildStaticHtml } from '../lib/static-export.ts';
+import { getClipboardImageFiles } from '../lib/clipboard.ts';
 import { BookOpenText, Bug, CalendarDays, Download, FilePlus2, History, ImagePlus, Inbox, Pin, RefreshCw, Search, Scale, Trash2, UsersRound } from 'lucide-react';
 
 const MODES = [
