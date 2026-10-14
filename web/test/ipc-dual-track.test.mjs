@@ -124,7 +124,9 @@ assert.deepEqual(lastInvoke().args, { path: '画板.canvas' });
 check('args 表达不了时回落 HTTP，参数齐全时走 invoke');
 
 // 7. 未映射路由（Rust 缺命令 / 结构不兼容）→ 回落 HTTP
-for (const path of ['/notes/index', '/notes/n-1', '/vault/info', '/canvas/files', '/tags/t1']) {
+//    注意：`/notes/index` 曾在列，已于 P1-08 第 2 步回收进映射表（Rust 补上 properties 对象后对齐），
+//    这里改用仍然排除的路径。谁回收了一条，就从本列表删掉它。
+for (const path of ['/notes/templates', '/notes/n-1', '/vault/info', '/canvas/files', '/tags/t1']) {
   reset();
   await http.get(path).catch(() => {});
   expectHttpOnly(`未映射路由 ${path}`);

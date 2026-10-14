@@ -291,6 +291,7 @@ impl Index {
                     file_path: note_match.path,
                     is_pinned,
                     content_hash,
+                    properties: properties_value(properties_json.as_deref()),
                     properties_json,
                     updated_at,
                     excerpt: note_match.excerpt,
@@ -352,6 +353,7 @@ impl Index {
             .map_err(|error| format!("无法查询笔记索引：{error}"))?;
         let rows = statement
             .query_map([], |row| {
+                let properties_json: Option<String> = row.get(7)?;
                 Ok(NoteIndexEntry {
                     id: row.get(0)?,
                     title: row.get(1)?,
@@ -360,7 +362,8 @@ impl Index {
                     file_path: row.get(4)?,
                     word_count: row.get::<_, i64>(5)? as u64,
                     content_hash: row.get(6)?,
-                    properties_json: row.get(7)?,
+                    properties: properties_value(properties_json.as_deref()),
+                    properties_json,
                     updated_at: row.get(8)?,
                 })
             })
@@ -582,6 +585,7 @@ impl Index {
             .map_err(|error| format!("无法查询笔记详情：{error}"))?;
         let detail = statement
             .query_row(params![value], |row| {
+                let properties_json: Option<String> = row.get(8)?;
                 Ok(NoteDetail {
                     id: row.get(0)?,
                     title: row.get(1)?,
@@ -591,7 +595,8 @@ impl Index {
                     is_pinned: row.get::<_, i64>(4)? != 0,
                     word_count: row.get::<_, i64>(6)? as u64,
                     content_hash: row.get(7)?,
-                    properties_json: row.get(8)?,
+                    properties: properties_value(properties_json.as_deref()),
+                    properties_json,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
                 })
@@ -712,6 +717,18 @@ impl Index {
 }
 
 /// 笔记详情（对齐 Express mapNote，camelCase 序列化）。
+/// 把库里存的 `properties_json` 解析成**对象**。
+///
+/// Express 在 note 系列响应里**同时**给 `propertiesJson`(string) 与 `properties`(object)；
+/// Rust 侧原先只发字符串，前端却按对象消费（`App.tsx` 等读 `note.properties?.type`），
+/// 这是 P1-08 差异清单里 note 系的共性缺口。解析失败或无属性时统一给空对象，
+/// 保证线缆上的字段类型恒为 object。
+fn properties_value(raw: Option<&str>) -> serde_json::Value {
+    raw.and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteDetail {
@@ -724,6 +741,8 @@ pub struct NoteDetail {
     pub word_count: u64,
     pub content_hash: Option<String>,
     pub properties_json: Option<String>,
+    /// 解析后的属性对象（与 Express 同名字段对齐；`properties_json` 保留兼容既有消费方）
+    pub properties: serde_json::Value,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -765,6 +784,8 @@ pub struct NoteIndexEntry {
     pub word_count: u64,
     pub content_hash: Option<String>,
     pub properties_json: Option<String>,
+    /// 解析后的属性对象（见 `properties_value`）
+    pub properties: serde_json::Value,
     pub updated_at: String,
 }
 
@@ -869,6 +890,8 @@ pub struct SearchItem {
     pub is_pinned: bool,
     pub content_hash: Option<String>,
     pub properties_json: Option<String>,
+    /// 解析后的属性对象（见 `properties_value`）
+    pub properties: serde_json::Value,
     pub updated_at: Option<String>,
     pub excerpt: String,
 }

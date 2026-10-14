@@ -238,12 +238,6 @@
         "rust": "absent"
       },
       {
-        "express": "object",
-        "kind": "missing-in-rust",
-        "path": "$.data.properties",
-        "rust": "absent"
-      },
-      {
         "express": "string",
         "kind": "type-mismatch",
         "path": "$.data.propertiesJson",
@@ -348,23 +342,9 @@
         "rust": "absent"
       },
       {
-        "express": "object",
-        "kind": "missing-in-rust",
-        "path": "$.data.properties",
-        "rust": "absent"
-      },
-      {
         "express": "array",
         "kind": "missing-in-rust",
         "path": "$.data.tags",
-        "rust": "absent"
-      }
-    ],
-    "note_index": [
-      {
-        "express": "object",
-        "kind": "missing-in-rust",
-        "path": "$.data[0].properties",
         "rust": "absent"
       }
     ],
@@ -382,9 +362,15 @@
         "rust": "absent"
       },
       {
-        "express": "object",
+        "express": "string",
         "kind": "missing-in-rust",
-        "path": "$.data.properties",
+        "path": "$.data.properties.status",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.properties.type",
         "rust": "absent"
       },
       {
@@ -411,12 +397,6 @@
         "express": "array",
         "kind": "missing-in-rust",
         "path": "$.data.results[0].result.outgoing",
-        "rust": "absent"
-      },
-      {
-        "express": "object",
-        "kind": "missing-in-rust",
-        "path": "$.data.results[0].result.properties",
         "rust": "absent"
       },
       {
