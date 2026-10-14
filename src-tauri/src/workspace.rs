@@ -814,9 +814,9 @@ impl WorkspaceService {
     }
 
     /// 画布文件列表（契约 GET /api/canvas/files → canvas_list）。
-    pub fn canvas_list(&self) -> Result<Vec<String>, ServiceError> {
+    pub fn canvas_list(&self) -> Result<Vec<CanvasFileEntry>, ServiceError> {
         let mut files = Vec::new();
-        fn walk(root: &Path, prefix: &str, files: &mut Vec<String>) {
+        fn walk(root: &Path, prefix: &str, files: &mut Vec<CanvasFileEntry>) {
             let Ok(entries) = std::fs::read_dir(root) else { return };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -827,12 +827,16 @@ impl WorkspaceService {
                     }
                     walk(&entry.path(), &relative, files);
                 } else if name.to_ascii_lowercase().ends_with(".canvas") {
-                    files.push(relative);
+                    files.push(CanvasFileEntry {
+                        path: relative,
+                        name,
+                        folder_path: prefix.to_owned(),
+                    });
                 }
             }
         }
         walk(self.vault.root(), "", &mut files);
-        files.sort();
+        files.sort_by(|left, right| left.path.cmp(&right.path));
         Ok(files)
     }
 
@@ -4235,6 +4239,20 @@ pub struct CleanupSkipped {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub referenced_by: Option<Vec<ReferenceSource>>,
+}
+
+/// 画布文件条目（对齐 Express `GET /api/canvas/files`）。
+///
+/// 原先只回 `Vec<String>`（纯路径），而前端 `CanvasFileSummary` 消费 `path/name/folderPath`
+/// 三个字段——这是 P1-08 差异清单里 `canvas_list` 的 4 条差异来源。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasFileEntry {
+    pub path: String,
+    /// 文件名（含 `.canvas` 扩展名）
+    pub name: String,
+    /// 所在目录的相对路径；根目录为空串
+    pub folder_path: String,
 }
 
 /// 下载负载（Express 为文件流；命令面以 base64 承载二进制）。

@@ -460,7 +460,7 @@ fn folder_delete(
 }
 
 #[tauri::command]
-fn canvas_list(state: State<'_, WorkspaceState>) -> Result<Vec<String>, String> {
+fn canvas_list(state: State<'_, WorkspaceState>) -> Result<Vec<crate::workspace::CanvasFileEntry>, String> {
     with_workspace(state, |workspace| workspace.canvas_list())
 }
 

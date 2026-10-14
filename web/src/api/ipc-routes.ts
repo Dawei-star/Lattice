@@ -50,6 +50,8 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
   // note_index 于 P1-08 第 2 步回收：Rust 侧补上 `properties` 对象后与 Express 结构完全对齐
   // （`npm run test:desktop` 的 parity 测试确认 `note_index` 已不在差异清单内）
   { method: 'GET', path: '/notes/index', command: 'note_index' },
+  // canvas_list 于 P1-08 第 2 步回收：Rust 改为返回 `{path,name,folderPath}` 对象数组后对齐
+  { method: 'GET', path: '/canvas/files', command: 'canvas_list' },
   { method: 'GET', path: '/folders', command: 'folder_tree' },
   { method: 'GET', path: '/canvas', command: 'canvas_read',
     args: (ctx) => {
@@ -293,7 +295,7 @@ export const IPC_EXCLUDED_ROUTES: readonly string[] = [
   'POST /notes/daily',
   'DELETE /tags/:id',
   'GET /health',
-  // B. 结构不兼容（12）
+  // B. 结构不兼容（11）
   'GET /vault/info',
   'POST /vault/attachments',
   'GET /vault/download',
@@ -305,11 +307,10 @@ export const IPC_EXCLUDED_ROUTES: readonly string[] = [
   'PATCH /folders/:id',
   'DELETE /folders/:id',
   'GET /search',
-  'GET /canvas/files',
 ];
 
 /**
- * 排除清单（23 条，逐条经代码核对，供 P1-08 核销）。
+ * 排除清单（22 条，逐条经代码核对，供 P1-08 核销）。
  *
  * A. 缺命令（11 条）——契约里仍是 ⬜，Rust 侧没有对应命令：
  *    - PUT  /vault/profile                     → 待实现 vault_profile_set（SettingsModal）
@@ -324,7 +325,7 @@ export const IPC_EXCLUDED_ROUTES: readonly string[] = [
  *    - DELETE /tags/:id                        → 待实现 tag_delete
  *    - GET  /health                            → 契约 ⛔（桌面单机无探针需求），且前端无调用点
  *
- * B. 结构不兼容（12 条）——命令存在但对不上，需先改 Rust 或前端契约：
+ * B. 结构不兼容（11 条）——命令存在但对不上，需先改 Rust 或前端契约：
  *    - GET  /vault/info          : 命令只回 {path}，前端消费 vaultDir + profile（useVault.ts:280/281）
  *    - POST /vault/attachments   : 命令无 folder 形参（EditorPane 传 query.folder），且回裸 String
  *                                  路径而前端读 uploaded.path/name
@@ -341,7 +342,6 @@ export const IPC_EXCLUDED_ROUTES: readonly string[] = [
  *                                  且 Rust 对非空目录 CONFLICT 拒绝，Express 是「笔记移到未分类」
  *    - GET  /search              : search_query 只有 (q,limit)，无法表达 folderId/inboxStatus；
  *                                  且回 {strategy,items} 与前端 {data,meta:{strategy}} 信封不同
- *    - GET  /canvas/files        : canvas_list 回 Vec<String>，前端消费 path/name/folderPath 对象
  *
  * C. 本表以外的传输形态（非路由问题，单独跟踪）：
  *    - SSE 流：ai.ts 的 writeStream / streamChat（契约计划改 Tauri channel，P3）

@@ -20,32 +20,6 @@
         "rust": "absent"
       }
     ],
-    "canvas_list": [
-      {
-        "express": "object",
-        "kind": "type-mismatch",
-        "path": "$.data[0]",
-        "rust": "string"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data[0].folderPath",
-        "rust": "absent"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data[0].name",
-        "rust": "absent"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data[0].path",
-        "rust": "absent"
-      }
-    ],
     "canvas_move": [
       {
         "express": "object",
