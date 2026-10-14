@@ -693,6 +693,7 @@ impl WorkspaceService {
         std::fs::create_dir_all(&target)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法创建目录：{error}")))?;
         self.audit.record("folder_create", &[("path", &relative), ("actor", "ui")]);
+        let (created_at, updated_at) = crate::index::directory_timestamps(self.vault.root(), &relative);
         Ok(FolderNode {
             id: crate::index::stable_folder_id(&relative),
             name: safe_name,
@@ -700,6 +701,8 @@ impl WorkspaceService {
             sort_order: 0,
             note_count: 0,
             children: Vec::new(),
+            created_at,
+            updated_at,
         })
     }
 
@@ -5137,5 +5140,68 @@ mod tests {
         // 计划执行后即删除
         let again = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true).unwrap_err();
         assert_eq!(again.code, "CONFLICT");
+    }
+
+    /// 目录树必须真正成层，且兄弟按 name 的 ASCII 不敏感升序（对齐 Express
+    /// `ORDER BY sort_order ASC, name COLLATE NOCASE ASC`）。
+    ///
+    /// 这两点 parity harness 都量不到：前者曾因「先 `nodes.remove` 再在剩余节点里找父」
+    /// 被整棵拍平成多个根节点，而 fixture 的目录树只有一个根、一个子，且数组只采样首元素，
+    /// 连顺序都看不出来。
+    #[test]
+    fn folder_tree_nests_and_orders_siblings_like_express() {
+        let directory = tempfile::tempdir().unwrap();
+        for path in ["alpha", "Beta", "Beta/child", "attachments"] {
+            fs::create_dir_all(directory.path().join(path)).unwrap();
+        }
+        fs::write(directory.path().join("alpha/note.md"), note_raw("内容")).unwrap();
+        let service = open_service(directory.path());
+        service.index().scan(service.vault()).unwrap();
+
+        let roots = service.index().folder_tree(service.vault()).unwrap();
+        let names: Vec<&str> = roots.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Beta"], "NOCASE 升序：alpha 必须排在 Beta 之前");
+        assert_eq!(roots[0].note_count, 1, "noteCount 是**直属**笔记数");
+        assert_eq!(roots[0].children.len(), 0);
+        assert_eq!(roots[1].children.len(), 1, "子目录必须挂在父节点下，不能另起为根");
+        assert_eq!(roots[1].children[0].name, "child");
+        assert_eq!(
+            roots[1].children[0].parent_id.as_deref(),
+            Some(roots[1].id.as_str()),
+            "子节点的 parentId 必须指向父节点 id"
+        );
+        assert!(roots[0].created_at.ends_with('Z'), "createdAt 是 ISO-8601 UTC");
+        assert!(roots[0].updated_at.ends_with('Z'), "updatedAt 是 ISO-8601 UTC");
+    }
+
+    /// 附件仓库不算笔记目录（Express 的 `folders` 表里没有它），但**只在下辖没有笔记时**才隐藏：
+    /// 用户自建同名目录并放入笔记时，Express 会建行并显示，Rust 不能把它吞掉。
+    #[test]
+    fn attachment_store_is_a_folder_only_when_it_holds_notes() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("attachments")).unwrap();
+        let service = open_service(directory.path());
+        service.index().scan(service.vault()).unwrap();
+
+        assert!(
+            service.index().folder_tree(service.vault()).unwrap().is_empty(),
+            "空的附件仓库不应出现在笔记目录树里"
+        );
+        assert_eq!(
+            service.index().meta_overview(service.vault()).unwrap().folder_count,
+            0,
+            "目录计数同样不含附件仓库（对齐 Express COUNT(*) FROM folders）"
+        );
+
+        fs::write(
+            directory.path().join("attachments/note.md"),
+            note_raw("放在附件仓库里的笔记"),
+        )
+        .unwrap();
+        service.index().scan(service.vault()).unwrap();
+        let roots = service.index().folder_tree(service.vault()).unwrap();
+        assert_eq!(roots.len(), 1, "里面有笔记时应按用户的笔记目录保留");
+        assert_eq!(roots[0].name, "attachments");
+        assert_eq!(service.index().meta_overview(service.vault()).unwrap().folder_count, 1);
     }
 }

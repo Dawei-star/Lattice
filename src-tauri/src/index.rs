@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// trigram 分词器按 3 字符滑窗建索引，短于此长度的查询交给 LIKE 兜底。
 const TRIGRAM_MIN_CHARS: usize = 3;
@@ -474,13 +474,23 @@ impl Index {
     }
 
     /// 目录树（契约 GET /api/folders 对应命令 folder_tree）：
-    /// 以磁盘目录为准派生（含空目录），id 为确定性投影 id，
-    /// noteCount 为直属笔记数。sortOrder 恒 0（用户排序随 folders 表批次）。
+    /// 以磁盘目录为准派生（含空目录），id 为确定性投影 id，noteCount 为**直属**笔记数
+    /// （Express `countNotesGrouped` 同样是 `GROUP BY folder_id`，非递归）。sortOrder 恒 0
+    /// （用户排序随 folders 表批次）。
+    ///
+    /// 排序对齐 Express `repository.findAll`：`ORDER BY sort_order ASC, name COLLATE NOCASE ASC`。
+    /// 组树必须**先建全部节点、再统一挂接**：此前是「先 `nodes.remove` 再在剩余节点里找父」，
+    /// 而目录按路径升序排列（父路径必然先被移出 map），于是永远找不到父 → **整棵树被拍平成
+    /// 一堆根节点**，桌面态目录层级完全丢失。
     pub fn folder_tree(&self, vault: &Vault) -> Result<Vec<FolderNode>, String> {
         let directories = vault.walk_directories()?;
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         let mut nodes: HashMap<String, FolderNode> = HashMap::new();
-        for directory in &directories {
+        let attachment_is_note_folder = folder_has_notes(&connection, ATTACHMENT_STORE_DIR)?;
+        for directory in directories
+            .iter()
+            .filter(|directory| is_note_folder(directory, attachment_is_note_folder))
+        {
             let name = directory.rsplit('/').next().unwrap_or(directory).to_owned();
             let parent_path = directory.rsplit_once('/').map(|(parent, _)| parent.to_owned());
             let direct_count: i64 = connection
@@ -490,6 +500,7 @@ impl Index {
                     |row| row.get(0),
                 )
                 .map_err(|error| format!("无法统计目录笔记：{error}"))?;
+            let (created_at, updated_at) = directory_timestamps(vault.root(), directory);
             nodes.insert(
                 directory.clone(),
                 FolderNode {
@@ -499,25 +510,39 @@ impl Index {
                     sort_order: 0,
                     note_count: direct_count as u64,
                     children: Vec::new(),
+                    created_at,
+                    updated_at,
                 },
             );
         }
-        // 组树：父在子之前（目录列表已按路径排序，父路径必然先出现）
+        // Express 的排序键（sortOrder 恒 0 ⇒ 等价于按 name 的 ASCII 不敏感升序；SQLite 的
+        // NOCASE 只对 ASCII 折叠大小写、非 ASCII 回落 BINARY，与 Rust 的字节序比较一致）
+        let sort_key = |path: &str| path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
         let mut ordered: Vec<String> = nodes.keys().cloned().collect();
-        ordered.sort();
-        let mut roots = Vec::new();
-        for path in ordered {
-            let node = nodes.remove(&path).expect("目录节点存在");
-            let parent_id = node.parent_id.clone();
-            match parent_id
-                .as_ref()
-                .and_then(|parent| nodes.values_mut().find(|node| node.id == *parent))
-            {
-                Some(parent) => parent.children.push(node),
-                None => roots.push(node),
+        ordered.sort_by(|left, right| {
+            sort_key(left)
+                .cmp(&sort_key(right))
+                .then_with(|| left.cmp(right))
+        });
+        // 第一趟：节点齐全时先记下「谁挂在谁下面」，不会再出现找不到父的情况
+        let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
+        let mut root_paths: Vec<String> = Vec::new();
+        for path in &ordered {
+            match path.rsplit_once('/') {
+                Some((parent, _)) if nodes.contains_key(parent) => {
+                    children_of
+                        .entry(parent.to_owned())
+                        .or_default()
+                        .push(path.clone());
+                }
+                _ => root_paths.push(path.clone()),
             }
-            let _ = node; // move 后占位
         }
+        // 第二趟：自根向下组装（根与兄弟的相对次序即 ordered 的次序）
+        let roots = root_paths
+            .iter()
+            .map(|path| assemble_folder_node(path, &mut nodes, &children_of))
+            .collect();
         Ok(roots)
     }
 
@@ -526,7 +551,13 @@ impl Index {
     pub fn meta_overview(&self, vault: &Vault) -> Result<MetaOverview, String> {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         let note_count = count_notes(&connection)? as u64;
-        let folder_count = vault.walk_directories()?.len() as u64;
+        // 口径 = Express `COUNT(*) FROM folders`：不含附件仓库（见 is_note_folder）
+        let attachment_is_note_folder = folder_has_notes(&connection, ATTACHMENT_STORE_DIR)?;
+        let folder_count = vault
+            .walk_directories()?
+            .iter()
+            .filter(|directory| is_note_folder(directory, attachment_is_note_folder))
+            .count() as u64;
         let tag_count: u64 = connection
             .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get::<_, i64>(0))
             .map_err(|error| format!("无法统计标签：{error}"))? as u64;
@@ -969,6 +1000,91 @@ pub struct FolderNode {
     pub sort_order: u64,
     pub note_count: u64,
     pub children: Vec<FolderNode>,
+    /// 见 [`directory_timestamps`]：磁盘元数据派生，与 Express 的 DB 记录时间**不同源**。
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 附件仓库目录名（与 `workspace::WorkspaceService::ATTACHMENT_ROOT` 同值）。
+const ATTACHMENT_STORE_DIR: &str = "attachments";
+
+/// 「笔记目录」判定：排除内部目录（`INTERNAL_DIRS` 已在 `walk_directories` 里过滤）与附件仓库。
+///
+/// Express 的目录树与 `folderCount` 都由 `folders` 表驱动，而附件仓库 `<Vault>/attachments/`
+/// 是附件上传直接建的目录、从不经 `foldersService.create`（`server/src/vault/sync.js` 的
+/// `ensureFolderPath` 只为**笔记路径**建行），因此**从不出现在 Express 的目录树与目录计数里**。
+/// Rust 是磁盘派生，必须显式排除才等价——否则桌面态会多出一个幽灵目录：fixture 实测
+/// Express `folderCount = 2`，而 `walk_directories().len() = 3`（侧栏「目录 N」会差 1，
+/// 且目录树首位会变成 `attachments`）。
+///
+/// 但**不能只按名字排除**：用户完全可以自建一个叫 `attachments` 的目录放笔记，
+/// 那样 Express 也会建行并显示它。因此仅当它**下辖没有任何笔记**（`attachment_is_note_folder == false`）
+/// 时才按内部仓库隐藏，避免静默吞掉用户的目录。
+fn is_note_folder(directory: &str, attachment_is_note_folder: bool) -> bool {
+    let first = directory.split('/').next().unwrap_or(directory);
+    if !first.eq_ignore_ascii_case(ATTACHMENT_STORE_DIR) {
+        return true;
+    }
+    attachment_is_note_folder
+}
+
+/// 指定目录（含子目录）下是否存在笔记。
+///
+/// 注意列名是 `path`（`db.rs` 的 `CREATE TABLE notes (path TEXT PRIMARY KEY, ...)`），
+/// **不是** `file_path`——那是 `NoteIndexEntry` 的字段名。查询错误一律向上传播，
+/// 不做「失败就当作有笔记」这类兜底：它会把拼错的列名伪装成正常行为（这里踩过一次，
+/// 结果是目录树照旧多出附件仓库，而 parity 因为基线已对齐而保持绿）。
+fn folder_has_notes(connection: &Connection, directory: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE path LIKE ?1",
+            params![format!("{directory}/%")],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .map_err(|error| format!("无法统计目录下笔记：{error}"))
+}
+
+/// 把已建好的节点按 `children_of` 自根向下组装（顺序即调用方给定的兄弟顺序）。
+fn assemble_folder_node(
+    path: &str,
+    nodes: &mut HashMap<String, FolderNode>,
+    children_of: &HashMap<String, Vec<String>>,
+) -> FolderNode {
+    let mut node = nodes.remove(path).expect("目录节点存在");
+    node.children = children_of
+        .get(path)
+        .map(|children| {
+            children
+                .iter()
+                .map(|child| assemble_folder_node(child, nodes, children_of))
+                .collect()
+        })
+        .unwrap_or_default();
+    node
+}
+
+/// 目录时间戳（磁盘元数据 → ISO-8601 UTC）。
+///
+/// Express 的 `createdAt`/`updatedAt` 是「首次被应用发现」时写进 `folders` 表的记录时间
+/// （`server/src/vault/sync.js:ensureFolderPath` 用 `nowIso()`）；Rust 没有 folders 表
+/// （不变量 I1：磁盘是唯一真源），因此取目录自身在磁盘上的创建/修改时间。
+/// **两者语义不同源，数值不保证与 Express 相等**，这里只保证类型与形状一致。
+/// Linux 上目录常拿不到 birthtime（`created()` 报错）→ 回退到 mtime。
+pub(crate) fn directory_timestamps(root: &Path, relative: &str) -> (String, String) {
+    fn to_millis(time: std::io::Result<SystemTime>) -> Option<i64> {
+        time.ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64)
+    }
+    let metadata = std::fs::metadata(root.join(relative));
+    let (created, modified) = match metadata.as_ref() {
+        Ok(meta) => (to_millis(meta.created()), to_millis(meta.modified())),
+        Err(_) => (None, None),
+    };
+    let created = created.or(modified).unwrap_or_else(now_millis);
+    let modified = modified.unwrap_or(created);
+    (iso8601_utc(created), iso8601_utc(modified))
 }
 
 /// 知识库总览（对齐 Express meta.service overview）。

@@ -30,22 +30,10 @@
         "rust": "array"
       },
       {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data.createdAt",
-        "rust": "absent"
-      },
-      {
         "express": "absent",
         "kind": "extra-in-rust",
         "path": "$.data.noteCount",
         "rust": "number"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data.updatedAt",
-        "rust": "absent"
       }
     ],
     "folder_delete": [
@@ -65,26 +53,6 @@
         "express": "number",
         "kind": "missing-in-rust",
         "path": "$.data.deletedFolderCount",
-        "rust": "absent"
-      }
-    ],
-    "folder_tree": [
-      {
-        "express": "object",
-        "kind": "type-mismatch",
-        "path": "$.data[0].children[0]",
-        "rust": "empty"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data[0].createdAt",
-        "rust": "absent"
-      },
-      {
-        "express": "string",
-        "kind": "missing-in-rust",
-        "path": "$.data[0].updatedAt",
         "rust": "absent"
       }
     ],
