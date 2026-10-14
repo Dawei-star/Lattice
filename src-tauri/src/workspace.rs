@@ -3210,6 +3210,958 @@ fn skill_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> Re
     }))
 }
 
+// ===========================================================================
+// review 知识健康（契约 /api/review/* → review_health/plan/execute；对齐 knowledge-health.service.js）
+// 扫描只读；修复计划仅驻内存（TTL 15 分钟），执行前重校验 contentHash。
+// 已知偏差（P1-08 校准）：finding id 用 sha256 截 12 位（Express 为 sha1，仅 id 稳定性语义）；
+// 文本归一不做 NFKC；tag-alias 正文替换为朴素字符串替换（regex 无 lookbehind）；
+// duplicates 删除不做 backlink 迁移（note_delete 暂无 replacementId）。
+// ===========================================================================
+
+static REPAIR_PLANS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, serde_json::Value>>> = std::sync::OnceLock::new();
+const REVIEW_PLAN_TTL_MILLIS: i64 = 15 * 60_000;
+
+impl WorkspaceService {
+    /// 契约 GET /api/review/health：只读、可解释、可排序的知识健康报告。
+    pub fn review_health(&self, stale_days: u64, limit: u64) -> Result<serde_json::Value, ServiceError> {
+        self.health_scan(stale_days.clamp(7, 3650), limit.clamp(1, 100))
+    }
+
+    /// 契约 POST /api/review/health/plan：依据扫描结果生成修复计划（actions + manual）。
+    pub fn review_plan(&self, finding_ids: Vec<String>, stale_days: u64, limit: u64) -> Result<serde_json::Value, ServiceError> {
+        if finding_ids.is_empty() || finding_ids.len() > 100 {
+            return Err(ServiceError::new("VALIDATION", "一次修复计划必须包含 1-100 条线索"));
+        }
+        let report = self.health_scan(stale_days.clamp(7, 3650), limit.clamp(1, 100))?;
+        let selected: std::collections::HashSet<String> = finding_ids.iter().map(String::clone).collect();
+        let mut selected_findings: Vec<(String, serde_json::Value)> = Vec::new();
+        for (category, items) in report["categories"].as_object().into_iter().flatten() {
+            for item in items.as_array().into_iter().flatten() {
+                if selected.contains(item["id"].as_str().unwrap_or_default()) {
+                    selected_findings.push((category.clone(), item.clone()));
+                }
+            }
+        }
+        let missing: Vec<&String> = finding_ids
+            .iter()
+            .filter(|id| !selected_findings.iter().any(|(_, item)| item["id"].as_str() == Some(id.as_str())))
+            .collect();
+        if !missing.is_empty() {
+            return Err(ServiceError::new("VALIDATION", "部分健康线索已不在当前扫描结果中，请重新扫描后再生成计划"));
+        }
+
+        let notes = self.index.list_for_health().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let mut updates: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut deletes: Vec<serde_json::Value> = Vec::new();
+        let mut manual: Vec<serde_json::Value> = Vec::new();
+        let now_millis_value = now_millis();
+
+        for (category, item) in &selected_findings {
+            let category = category.as_str();
+            if category == "metadata" && notes.iter().any(|note| note.id == item["id"].as_str().unwrap_or_default()) {
+                let missing_items: Vec<String> = item["missing"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
+                let note = notes.iter().find(|note| note.id == item["id"].as_str().unwrap_or_default());
+                let mut changed = false;
+                if missing_items.iter().any(|key| key == "来源")
+                    && let Some(note) = note
+                {
+                    let source = format!("vault:{}", note.file_path);
+                    changed |= review_update_property(&mut updates, note, now_millis_value, |properties| {
+                        properties.insert("source".into(), serde_json::json!(source.clone()));
+                        true
+                    }, "补全来源为当前 Vault 路径");
+                }
+                if missing_items.iter().any(|key| key == "标签") {
+                    manual.push(serde_json::json!({
+                        "findingId": item["id"], "category": category,
+                        "title": item["title"], "reason": "缺少可可靠推断的标签，保留原文并等待人工选择标签",
+                    }));
+                }
+                if missing_items.iter().any(|key| key == "时间戳") {
+                    manual.push(serde_json::json!({
+                        "findingId": item["id"], "category": category,
+                        "title": item["title"], "reason": "时间戳缺失，不能凭推测覆盖原始时间；请人工核对文件历史",
+                    }));
+                }
+                if !changed && !missing_items.iter().any(|key| key == "标签" || key == "时间戳") {
+                    manual.push(serde_json::json!({
+                        "findingId": item["id"], "category": category,
+                        "title": item["title"], "reason": "没有可安全自动补全的元数据",
+                    }));
+                }
+                continue;
+            }
+            if category == "taxonomy" && item["issueType"] == serde_json::json!("tag-alias") {
+                let aliases: Vec<String> = item["tags"].as_array().map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let canonical = item["suggestedCanonical"].as_str().unwrap_or_default().to_owned();
+                for note_id in item["noteIds"].as_array().map(|items| items.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()).unwrap_or_default() {
+                    if let Some(note) = notes.iter().find(|note| note.id == note_id) {
+                        // 属性内标签归一（数组或中/英逗号分隔字符串）
+                        let raw_tags = note.properties.get("tags").cloned();
+                        let tags: Vec<String> = match &raw_tags {
+                            Some(serde_json::Value::Array(items)) => items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect(),
+                            Some(serde_json::Value::String(text)) => text.split([',', '，', '、']).map(str::to_owned).collect(),
+                            _ => Vec::new(),
+                        };
+                        let normalized_tags: Vec<String> = {
+                            let mut seen = std::collections::HashSet::new();
+                            tags.iter()
+                                .map(|tag| review_canonicalize_alias(tag, &aliases, &canonical))
+                                .filter(|tag| !tag.is_empty())
+                                .filter(|tag| seen.insert(tag.clone()))
+                                .collect()
+                        };
+                        if !normalized_tags.is_empty() && normalized_tags != tags {
+                            let canonical_clone = canonical.clone();
+                            let normalized_clone = normalized_tags.clone();
+                            review_update_property(&mut updates, note, now_millis_value, move |properties| {
+                                properties.insert("tags".into(), serde_json::json!(normalized_clone));
+                                true
+                            }, format!("标签归一为「{canonical_clone}」"));
+                        }
+                        let mut content = note.content.clone();
+                        for alias in &aliases {
+                            if *alias != canonical {
+                                content = content.replace(&format!("#{alias}"), &format!("#{canonical}"));
+                            }
+                        }
+                        if content != note.content {
+                            review_update_content(&mut updates, note, content, now_millis_value, format!("正文标签归一为「{canonical}」"));
+                        }
+                    }
+                }
+                if item["noteIds"].as_array().map(|items| items.is_empty()).unwrap_or(true) {
+                    manual.push(serde_json::json!({
+                        "findingId": item["id"], "category": category,
+                        "title": item["title"], "reason": "没有找到受影响笔记，需人工核对标签来源",
+                    }));
+                }
+                continue;
+            }
+            if category == "taxonomy" && item["issueType"] == serde_json::json!("category-alias") {
+                let variants: Vec<String> = item["variants"].as_array().map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let canonical = review_choose_canonical(&variants);
+                for note_id in item["noteIds"].as_array().map(|items| items.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()).unwrap_or_default() {
+                    if let Some(note) = notes.iter().find(|note| note.id == note_id) {
+                        let canonical_clone = canonical.clone();
+                        review_update_property(&mut updates, note, now_millis_value, move |properties| {
+                            properties.insert("category".into(), serde_json::json!(canonical_clone));
+                            true
+                        }, format!("分类归一为「{canonical}」"));
+                    }
+                }
+                if item["noteIds"].as_array().map(|items| items.is_empty()).unwrap_or(true) {
+                    manual.push(serde_json::json!({
+                        "findingId": item["id"], "category": category,
+                        "title": item["title"], "reason": "没有找到受影响笔记，需人工核对分类来源",
+                    }));
+                }
+                continue;
+            }
+            if category == "duplicates" && item["evidence"].as_array().map(|items| items.iter().filter_map(|value| value.as_str()).any(|value| value.contains("标题相同")) && items.iter().filter_map(|value| value.as_str()).any(|value| value.contains("正文高度一致"))).unwrap_or(false) {
+                // 完全重复：保留 updatedAt 最新者（相同比 id），其余进入删除
+                let mut group: Vec<&crate::index::HealthNote> = item["noteIds"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(|value| value.as_str()).filter_map(|id| notes.iter().find(|note| note.id == id)).collect())
+                    .unwrap_or_default();
+                group.sort_by(|left, right| {
+                    right.updated_at.as_deref().unwrap_or_default().cmp(left.updated_at.as_deref().unwrap_or_default())
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                let survivor = group.first().copied();
+                for note in group.iter().skip(1) {
+                    if Some(note.id.as_str()) == survivor.map(|note| note.id.as_str()) {
+                        continue;
+                    }
+                    let survivor_id = survivor.map(|note| note.id.clone()).unwrap_or_default();
+                    let survivor_title = survivor.map(|note| note.title.clone()).unwrap_or_default();
+                    deletes.push(serde_json::json!({
+                        "id": format!("delete:{}", note.id),
+                        "type": "delete",
+                        "noteId": note.id,
+                        "replacementId": survivor_id,
+                        "path": note.file_path,
+                        "summary": format!("删除与「{survivor_title}」完全重复的副本，并将反向链接迁移到保留笔记"),
+                        "fullPath": self.vault.root().join(&note.file_path).display().to_string(),
+                        "directory": self.vault.root().join(&note.file_path).parent().map(|parent| parent.display().to_string()).unwrap_or_default(),
+                        "beforeHash": note.content_hash,
+                        "reversible": true,
+                    }));
+                }
+                continue;
+            }
+            let reason = match category {
+                "duplicates" => "仅凭当前证据无法判断保留版本，暂不合并或删除",
+                "conflicts" => "同名笔记内容存在差异，需要人工裁决后才能合并",
+                "stale" => "过时内容不能由系统凭空改写，需要人工核对来源后更新",
+                "brokenLinks" => "断链目标不明确，需人工选择创建目标或修改引用",
+                "inbox" => "Inbox 归类需要结合上下文，保留在 Inbox 等待人工归档",
+                "isolated" | "incomplete" => "结构调整会改变知识组织方式，暂不自动移动或补造关系",
+                _ => "当前线索没有安全的自动修复动作",
+            };
+            manual.push(serde_json::json!({
+                "findingId": item["id"], "category": category,
+                "title": item.get("title").cloned().unwrap_or(item.get("targetTitle").cloned().unwrap_or(serde_json::Value::Null)),
+                "reason": reason,
+            }));
+        }
+
+        let mut actions: Vec<serde_json::Value> = Vec::new();
+        for (note_id, state) in &updates {
+            let state_changed = state["propertyChanged"] == serde_json::json!(true) || state["contentChanged"] == serde_json::json!(true);
+            if !state_changed || deletes.iter().any(|action| action["noteId"] == serde_json::json!(note_id.as_str())) {
+                continue;
+            }
+            let note = notes.iter().find(|note| note.id == *note_id);
+            let Some(note) = note else { continue };
+            let mut patch = serde_json::Map::new();
+            if state["contentChanged"] == serde_json::json!(true) {
+                patch.insert("content".into(), state["content"].clone());
+            }
+            if state["propertyChanged"] == serde_json::json!(true) {
+                patch.insert("properties".into(), state["properties"].clone());
+            }
+            patch.insert("expectedHash".into(), serde_json::json!(note.content_hash));
+            actions.push(serde_json::json!({
+                "id": format!("update:{note_id}"),
+                "type": "update",
+                "noteId": note_id,
+                "path": note.file_path,
+                "patch": serde_json::Value::Object(patch),
+                "summary": state["summaries"],
+                "fullPath": self.vault.root().join(&note.file_path).display().to_string(),
+                "directory": self.vault.root().join(&note.file_path).parent().map(|parent| parent.display().to_string()).unwrap_or_default(),
+                "beforeHash": note.content_hash,
+                "reversible": true,
+            }));
+        }
+        actions.extend(deletes);
+        let plan_id = Uuid::new_v4().to_string();
+        let plan_hash = {
+            let payload = serde_json::json!({ "version": 1, "actions": actions, "manual": manual });
+            fc_sha256_hex(serde_json::to_string(&payload).map_err(|error| ServiceError::new("NOTES_ERROR", error.to_string()))?.as_bytes())
+        };
+        let plan = serde_json::json!({
+            "id": plan_id,
+            "version": 1,
+            "planHash": plan_hash,
+            "createdAt": iso8601_utc(now_millis_value),
+            "expiresAt": iso8601_utc(now_millis_value + REVIEW_PLAN_TTL_MILLIS),
+            "findingIds": finding_ids,
+            "actions": actions,
+            "manual": manual,
+        });
+        review_store_plan(plan.clone());
+        Ok(review_public_plan(&plan))
+    }
+
+    /// 契约 POST /api/review/health/execute：校验 plan/plashHash 与笔记版本后逐动作执行。
+    pub fn review_execute(&self, plan_id: &str, plan_hash: &str, confirmed: bool, second_confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+        review_prune_plans();
+        let plan = review_get_plan(plan_id)
+            .ok_or_else(|| ServiceError::new("CONFLICT", "修复计划已过期，请重新生成健康修复计划"))?;
+        if plan["planHash"].as_str().unwrap_or_default() != plan_hash {
+            return Err(ServiceError::new("CONFLICT", "修复计划已变化，请重新生成预览"));
+        }
+        let has_delete = plan["actions"].as_array().map(|actions| actions.iter().any(|action| action["type"] == serde_json::json!("delete"))).unwrap_or(false);
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+        }
+        if has_delete && !second_confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "删除操作必须完成二次确认"));
+        }
+        let mut results = Vec::new();
+        for action in plan["actions"].as_array().cloned().unwrap_or_default() {
+            let note_id = action["noteId"].as_str().unwrap_or_default().to_owned();
+            let summary = action["summary"].clone();
+            let outcome = (|| -> Result<serde_json::Value, ServiceError> {
+                let current = self
+                    .index
+                    .find_note_detail(Some(note_id.as_str()), None)
+                    .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+                let Some(current) = current else {
+                    return Err(ServiceError::new("CONFLICT", "目标笔记已变化，请重新扫描后生成计划"));
+                };
+                if current.content_hash.as_deref().unwrap_or_default() != action["beforeHash"].as_str().unwrap_or_default() {
+                    return Err(ServiceError::new("CONFLICT", "目标笔记已变化，请重新扫描后生成计划"));
+                }
+                if action["type"] == serde_json::json!("delete") {
+                    self.delete_note(&note_id, true, true)?;
+                    Ok(serde_json::json!({ "deleted": true }))
+                } else {
+                    let patch = &action["patch"];
+                    let properties = patch.get("properties").and_then(|value| value.as_object()).cloned();
+                    let detail = self.update_note(
+                        &note_id,
+                        None,
+                        patch.get("content").and_then(|value| value.as_str()).map(str::to_owned),
+                        None,
+                        properties,
+                        Some(action["beforeHash"].as_str().unwrap_or_default().to_owned()),
+                        true,
+                    )?;
+                    Ok(serde_json::to_value(detail).map_err(|error| ServiceError::new("NOTES_ERROR", error.to_string()))?)
+                }
+            })();
+            results.push(match outcome {
+                Ok(result) => serde_json::json!({
+                    "id": action["id"], "type": action["type"], "path": action["path"],
+                    "status": "completed", "summary": summary, "result": result,
+                }),
+                Err(error) => serde_json::json!({
+                    "id": action["id"], "type": action["type"], "path": action["path"],
+                    "status": "failed", "summary": summary, "error": error.message,
+                }),
+            });
+        }
+        let completed = results.iter().filter(|item| item["status"] == serde_json::json!("completed")).count();
+        let failed = results.iter().filter(|item| item["status"] == serde_json::json!("failed")).count();
+        let skipped = plan["manual"].as_array().map(|items| items.len()).unwrap_or(0);
+        review_remove_plan(plan_id);
+        Ok(serde_json::json!({
+            "planId": plan_id,
+            "actor": "local-user",
+            "results": results,
+            "manual": plan["manual"],
+            "completed": completed,
+            "failed": failed,
+            "skipped": skipped,
+        }))
+    }
+
+    /// 扫描主体（对齐 knowledge-health.service scan）：9 类线索 + 健康分。
+    fn health_scan(&self, stale_days: u64, limit: u64) -> Result<serde_json::Value, ServiceError> {
+        let notes = self.index.list_for_health().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let tags = self.index.tags_for_notes().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let (outgoing, incoming) = self.index.link_counts().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let dangling = self.index.dangling_link_details().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let now = now_millis();
+        let limit = limit as usize;
+
+        let note_finding = |note: &crate::index::HealthNote, extra: serde_json::Value| {
+            let mut finding = serde_json::json!({
+                "status": "open", "severity": "candidate", "confidence": "review", "priority": 40,
+                "id": note.id, "kind": "note", "title": note.title,
+                "path": note.file_path, "folderId": note.folder_id,
+                "updatedAt": note.updated_at, "wordCount": note.word_count,
+            });
+            if let (Some(target), Some(source)) = (finding.as_object_mut(), extra.as_object()) {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            finding
+        };
+
+        let inbox: Vec<serde_json::Value> = notes
+            .iter()
+            .filter(|note| note.properties["type"] == serde_json::json!("inbox") && note.properties["status"] != serde_json::json!("processed"))
+            .map(|note| {
+                let status = note.properties["status"].as_str().unwrap_or("captured").to_owned();
+                note_finding(note, serde_json::json!({
+                    "reason": format!("Inbox 中仍处于「{status}」状态"),
+                    "inboxStatus": status,
+                    "status": "open", "severity": "error", "confidence": "high", "priority": 100,
+                }))
+            })
+            .collect();
+
+        let mut broken_groups: std::collections::BTreeMap<String, serde_json::Value> = std::collections::BTreeMap::new();
+        for row in &dangling {
+            let key = row.target_title.to_lowercase();
+            let entry = broken_groups.entry(key).or_insert_with(|| {
+                serde_json::json!({ "targetTitle": row.target_title, "sources": [] })
+            });
+            if let Some(sources) = entry["sources"].as_array_mut() {
+                sources.push(serde_json::json!({ "id": row.source_id, "title": row.source_title, "path": row.source_path }));
+            }
+        }
+        let mut broken: Vec<serde_json::Value> = broken_groups
+            .into_values()
+            .map(|mut group| {
+                let count = group["sources"].as_array().map(|sources| sources.len()).unwrap_or(0);
+                let target = group["targetTitle"].clone();
+                group["id"] = serde_json::json!(format!("broken-link:{}", target.as_str().unwrap_or_default()));
+                group["kind"] = serde_json::json!("broken-link");
+                group["referenceCount"] = serde_json::json!(count);
+                group["reason"] = serde_json::json!(format!("有 {count} 篇笔记引用「{}」，但目标笔记尚不存在", target.as_str().unwrap_or_default()));
+                group["status"] = serde_json::json!("open");
+                group["severity"] = serde_json::json!("error");
+                group["confidence"] = serde_json::json!("high");
+                group["priority"] = serde_json::json!(100);
+                group
+            })
+            .collect();
+        broken.sort_by(|left, right| {
+            right["referenceCount"].as_i64().unwrap_or(0).cmp(&left["referenceCount"].as_i64().unwrap_or(0))
+                .then_with(|| left["targetTitle"].as_str().unwrap_or_default().cmp(right["targetTitle"].as_str().unwrap_or_default()))
+        });
+        broken.truncate(limit);
+
+        let isolated: Vec<serde_json::Value> = notes
+            .iter()
+            .filter(|note| outgoing.get(&note.id).copied().unwrap_or(0) == 0 && incoming.get(&note.id).copied().unwrap_or(0) == 0)
+            .map(|note| {
+                note_finding(note, serde_json::json!({
+                    "reason": "没有出链，也没有其他笔记引用它",
+                    "outgoingCount": 0, "backlinkCount": 0,
+                }))
+            })
+            .collect();
+
+        let cutoff = now - (stale_days as i64) * 86_400_000;
+        let stale: Vec<serde_json::Value> = notes
+            .iter()
+            .filter(|note| {
+                note.properties["type"] != serde_json::json!("inbox")
+                    && health_parse_iso_millis(note.updated_at.as_deref()).map(|millis| millis < cutoff).unwrap_or(false)
+                    && incoming.get(&note.id).copied().unwrap_or(0) == 0
+            })
+            .map(|note| {
+                let age = health_parse_iso_millis(note.updated_at.as_deref())
+                    .map(|millis| ((now - millis).max(0) / 86_400_000).max(0))
+                    .unwrap_or(0);
+                note_finding(note, serde_json::json!({
+                    "reason": format!("已超过 {stale_days} 天未更新，且没有反向链接"),
+                    "ageDays": age, "backlinkCount": 0,
+                }))
+            })
+            .collect();
+
+        // duplicates：标题归一 / 正文指纹 两条证据，同集合合并
+        let mut duplicate_groups: HashMap<String, (Vec<&crate::index::HealthNote>, std::collections::HashSet<String>)> = HashMap::new();
+        for note in &notes {
+            let title_key = review_normalize_text(&note.title);
+            if !title_key.is_empty() {
+                let entry = duplicate_groups.entry(format!("title:{title_key}")).or_insert_with(|| (Vec::new(), std::collections::HashSet::new()));
+                entry.0.push(note);
+                entry.1.insert("标题相同".into());
+            }
+            let body_key = review_body_fingerprint(&note.content);
+            if !body_key.is_empty() {
+                let entry = duplicate_groups.entry(format!("body:{body_key}")).or_insert_with(|| (Vec::new(), std::collections::HashSet::new()));
+                entry.0.push(note);
+                entry.1.insert("正文高度一致".into());
+            }
+        }
+        let mut merged: HashMap<String, (Vec<&crate::index::HealthNote>, std::collections::HashSet<String>)> = HashMap::new();
+        for (notes_in_group, evidence) in duplicate_groups.into_values() {
+            if notes_in_group.len() < 2 {
+                continue;
+            }
+            let mut ids: Vec<&str> = notes_in_group.iter().map(|note| note.id.as_str()).collect();
+            ids.sort();
+            let key = ids.join("|");
+            let entry = merged.entry(key).or_insert_with(|| (notes_in_group, std::collections::HashSet::new()));
+            for item in evidence {
+                entry.1.insert(item);
+            }
+        }
+        let duplicates: Vec<serde_json::Value> = merged
+            .into_values()
+            .take(limit)
+            .map(|(group_notes, evidence)| {
+                let mut ids: Vec<&str> = group_notes.iter().map(|note| note.id.as_str()).collect();
+                ids.sort();
+                let pair_key = ids.join("|");
+                let evidence: Vec<String> = evidence.into_iter().collect();
+                let confidence = if evidence.len() > 1 { "high" } else { "review" };
+                let notes_payload: Vec<serde_json::Value> = group_notes
+                    .iter()
+                    .map(|note| note_finding(note, serde_json::json!({ "reason": evidence.join("、") })))
+                    .collect();
+                serde_json::json!({
+                    "id": format!("duplicate:{}", &fc_sha256_hex(pair_key.as_bytes())[..12]),
+                    "kind": "duplicate",
+                    "noteIds": ids,
+                    "notes": notes_payload,
+                    "evidence": evidence,
+                    "confidence": confidence,
+                    "status": "open",
+                    "severity": if confidence == "high" { "warning" } else { "candidate" },
+                    "priority": if confidence == "high" { 75 } else { 45 },
+                    "reason": if confidence == "high" { "标题与正文都高度一致".to_owned() } else { evidence.first().cloned().unwrap_or_default() },
+                })
+            })
+            .collect();
+
+        let conflicts: Vec<serde_json::Value> = {
+            let mut groups: HashMap<String, Vec<&crate::index::HealthNote>> = HashMap::new();
+            for note in &notes {
+                let key = review_normalize_text(&note.title);
+                if key.is_empty() {
+                    continue;
+                }
+                groups.entry(key).or_default().push(note);
+            }
+            groups
+                .into_values()
+                .filter(|group| group.len() > 1 && {
+                    let fingerprints: std::collections::HashSet<String> = group
+                        .iter()
+                        .map(|note| {
+                            let normalized = review_normalize_text(&note.content);
+                            if normalized.chars().count() < 20 { note.content.clone() } else { fc_sha256_hex(normalized.as_bytes()) }
+                        })
+                        .collect();
+                    fingerprints.len() > 1
+                })
+                .take(limit)
+                .map(|group| {
+                    let mut ids: Vec<&str> = group.iter().map(|note| note.id.as_str()).collect();
+                    ids.sort();
+                    let notes_payload: Vec<serde_json::Value> = group
+                        .iter()
+                        .map(|note| note_finding(note, serde_json::json!({ "reason": "同名笔记正文存在差异" })))
+                        .collect();
+                    serde_json::json!({
+                        "id": format!("conflict:{}", &fc_sha256_hex(ids.join("|").as_bytes())[..12]),
+                        "kind": "conflict",
+                        "noteIds": ids,
+                        "notes": notes_payload,
+                        "reason": format!("标题「{}」对应多个不同版本，可能是冲突而非重复", group[0].title),
+                        "evidence": group.iter().map(|note| serde_json::json!({
+                            "id": note.id, "path": note.file_path, "updatedAt": note.updated_at, "wordCount": note.word_count,
+                        })).collect::<Vec<_>>(),
+                        "status": "open", "severity": "warning", "confidence": "review", "priority": 70,
+                    })
+                })
+                .collect()
+        };
+
+        let metadata: Vec<serde_json::Value> = notes
+            .iter()
+            .filter_map(|note| {
+                let mut missing: Vec<&str> = Vec::new();
+                if tags.get(&note.id).map(|names| names.is_empty()).unwrap_or(true) {
+                    missing.push("标签");
+                }
+                let has_source = ["source", "来源", "origin"].iter().any(|key| {
+                    note.properties.get(*key).map(|value| !value.is_null() && value.as_str().map(|text| !text.trim().is_empty()).unwrap_or(true)).unwrap_or(false)
+                });
+                if !has_source {
+                    missing.push("来源");
+                }
+                if health_parse_iso_millis(note.created_at.as_deref()).is_none() || health_parse_iso_millis(note.updated_at.as_deref()).is_none() {
+                    missing.push("时间戳");
+                }
+                if missing.is_empty() {
+                    return None;
+                }
+                let severity = if missing.contains(&"时间戳") || missing.contains(&"来源") { "warning" } else { "candidate" };
+                Some(note_finding(note, serde_json::json!({
+                    "kind": "metadata",
+                    "missing": missing,
+                    "metadata": {
+                        "hasTags": !missing.contains(&"标签"),
+                        "hasSource": !missing.contains(&"来源"),
+                        "hasTimestamps": !missing.contains(&"时间戳"),
+                    },
+                    "reason": format!("缺少元数据：{}", missing.join("、")),
+                    "status": "open",
+                    "severity": severity,
+                    "confidence": "review",
+                    "priority": if severity == "warning" { 70 } else { 40 },
+                })))
+            })
+            .take(limit)
+            .collect();
+
+        let taxonomy: Vec<serde_json::Value> = {
+            let mut findings: Vec<serde_json::Value> = Vec::new();
+            // 标签别名：归一键相同的不同写法
+            let mut tag_groups: HashMap<String, Vec<String>> = HashMap::new();
+            for names in tags.values() {
+                for name in names {
+                    let key = review_normalize_taxonomy(name);
+                    if key.is_empty() {
+                        continue;
+                    }
+                    tag_groups.entry(key).or_default().push(name.clone());
+                }
+            }
+            for (_key, mut names) in tag_groups {
+                names.sort();
+                names.dedup();
+                if names.len() < 2 {
+                    continue;
+                }
+                let affected: Vec<String> = notes
+                    .iter()
+                    .filter(|note| tags.get(&note.id).map(|note_tags| note_tags.iter().any(|name| names.contains(name))).unwrap_or(false))
+                    .map(|note| note.id.clone())
+                    .collect();
+                let mut canonical_candidates = names.clone();
+                canonical_candidates.sort_by(|left, right| left.chars().count().cmp(&right.chars().count()).then_with(|| left.cmp(right)));
+                findings.push(serde_json::json!({
+                    "id": format!("taxonomy:tag:{}", review_normalize_taxonomy(&names.join("|"))),
+                    "kind": "taxonomy",
+                    "issueType": "tag-alias",
+                    "tags": names,
+                    "noteIds": affected,
+                    "reason": format!("标签 {} 可能是同一概念的不同写法", names.iter().map(|name| format!("「{name}」")).collect::<Vec<_>>().join("、")),
+                    "suggestedCanonical": canonical_candidates.first().cloned().unwrap_or_default(),
+                    "status": "open", "severity": "warning", "confidence": "review", "priority": 70,
+                }));
+            }
+            // 分类别名：properties.category 近似写法
+            let mut category_groups: HashMap<String, (std::collections::BTreeSet<String>, Vec<String>)> = HashMap::new();
+            for note in &notes {
+                let category = note.properties.get("category").or_else(|| note.properties.get("分类"));
+                let Some(category) = category else { continue };
+                let text = match category {
+                    serde_json::Value::String(text) => text.trim().to_owned(),
+                    serde_json::Value::Null => continue,
+                    other => other.to_string(),
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let key = review_normalize_taxonomy(&text);
+                if key.is_empty() {
+                    continue;
+                }
+                let entry = category_groups.entry(key).or_insert_with(|| (std::collections::BTreeSet::new(), Vec::new()));
+                entry.0.insert(text);
+                entry.1.push(note.id.clone());
+            }
+            for (key, (variants, note_ids)) in category_groups {
+                if variants.len() < 2 {
+                    continue;
+                }
+                findings.push(serde_json::json!({
+                    "id": format!("taxonomy:category:{key}"),
+                    "kind": "taxonomy",
+                    "issueType": "category-alias",
+                    "variants": variants,
+                    "noteIds": note_ids,
+                    "reason": format!("分类存在多个近似写法：{}", variants.iter().map(|value| format!("「{value}」")).collect::<Vec<_>>().join("、")),
+                    "status": "open", "severity": "warning", "confidence": "review", "priority": 70,
+                }));
+            }
+            findings.truncate(limit);
+            findings
+        };
+
+        let system_properties = ["type", "status"];
+        let incomplete: Vec<serde_json::Value> = notes
+            .iter()
+            .filter_map(|note| {
+                let mut missing: Vec<&str> = Vec::new();
+                if note.folder_id.is_none() {
+                    missing.push("未归入目录");
+                }
+                if tags.get(&note.id).map(|names| names.is_empty()).unwrap_or(true) {
+                    missing.push("没有标签");
+                }
+                if !note.properties.as_object().map(|object| object.keys().any(|key| !system_properties.contains(&key.as_str()))).unwrap_or(false) {
+                    missing.push("缺少自定义属性");
+                }
+                if missing.is_empty() {
+                    return None;
+                }
+                Some(note_finding(note, serde_json::json!({ "missing": missing, "reason": missing.join("、") })))
+            })
+            .take(limit)
+            .collect();
+
+        let rank = |mut items: Vec<serde_json::Value>| {
+            items.sort_by(review_compare_findings);
+            items.truncate(limit);
+            items
+        };
+        let categories = serde_json::json!({
+            "inbox": rank(inbox),
+            "brokenLinks": rank(broken),
+            "isolated": rank(isolated),
+            "stale": rank(stale),
+            "duplicates": rank(duplicates),
+            "conflicts": rank(conflicts),
+            "metadata": rank(metadata),
+            "taxonomy": rank(taxonomy),
+            "incomplete": rank(incomplete),
+        });
+        let mut findings: Vec<serde_json::Value> = Vec::new();
+        for items in categories.as_object().into_iter().flat_map(|object| object.values()) {
+            findings.extend(items.as_array().cloned().unwrap_or_default());
+        }
+        findings.sort_by(review_compare_findings);
+        let counts: serde_json::Map<String, serde_json::Value> = categories
+            .as_object()
+            .map(|object| object.iter().map(|(key, items)| (key.clone(), serde_json::json!(items.as_array().map(|items| items.len()).unwrap_or(0)))).collect())
+            .unwrap_or_default();
+        let hard_total = findings.iter().filter(|item| item["severity"] == serde_json::json!("error")).count();
+        let warning_total = findings.iter().filter(|item| item["severity"] == serde_json::json!("warning")).count();
+        let candidate_total = findings.iter().filter(|item| item["severity"] == serde_json::json!("candidate")).count();
+        let weighted: i64 = findings
+            .iter()
+            .map(|item| if item["severity"] == serde_json::json!("error") { 2 } else { 1 })
+            .sum();
+        let note_count = notes.len();
+        let health_score = if note_count > 0 {
+            ((100.0 - (weighted as f64 / (note_count as f64 * 2.0)) * 100.0).round().max(0.0)) as i64
+        } else {
+            100
+        };
+        Ok(serde_json::json!({
+            "scannedAt": iso8601_utc(now),
+            "noteCount": note_count,
+            "staleDays": stale_days,
+            "limits": { "perCategory": limit },
+            "summary": {
+                "total": findings.len(),
+                "counts": serde_json::Value::Object(counts),
+                "hardTotal": hard_total,
+                "warningTotal": warning_total,
+                "candidateTotal": candidate_total,
+                "healthScore": health_score,
+                "topPriority": findings.iter().take(20).map(|item| serde_json::json!({
+                    "id": item["id"], "kind": item["kind"], "priority": item["priority"],
+                })).collect::<Vec<_>>(),
+            },
+            "categories": categories,
+            "prioritized": findings.iter().take(limit.max(20)).cloned().collect::<Vec<_>>(),
+        }))
+    }
+}
+
+/// 修复计划内存态：存完整 plan（含 patch/beforeHash），TTL 15 分钟。
+fn review_store_plan(plan: serde_json::Value) {
+    let plans = REPAIR_PLANS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = plans.lock() {
+        review_prune_locked(&mut guard);
+        guard.insert(plan["id"].as_str().unwrap_or_default().to_owned(), plan);
+    }
+}
+
+fn review_get_plan(plan_id: &str) -> Option<serde_json::Value> {
+    let plans = REPAIR_PLANS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = plans.lock().ok()?;
+    review_prune_locked(&mut guard);
+    guard.get(plan_id).cloned()
+}
+
+fn review_remove_plan(plan_id: &str) {
+    if let Some(plans) = REPAIR_PLANS.get()
+        && let Ok(mut guard) = plans.lock()
+    {
+        guard.remove(plan_id);
+    }
+}
+
+fn review_prune_plans() {
+    if let Some(plans) = REPAIR_PLANS.get()
+        && let Ok(mut guard) = plans.lock()
+    {
+        review_prune_locked(&mut guard);
+    }
+}
+
+fn review_prune_locked(plans: &mut HashMap<String, serde_json::Value>) {
+    let now = now_millis();
+    plans.retain(|_, plan| {
+        health_parse_iso_millis(plan["expiresAt"].as_str())
+            .map(|expires| expires > now)
+            .unwrap_or(false)
+    });
+}
+
+/// 对外计划形状：剥离 patch/beforeHash（对齐 publicPlan）。
+fn review_public_plan(plan: &serde_json::Value) -> serde_json::Value {
+    let stripped: Vec<serde_json::Value> = plan["actions"]
+        .as_array()
+        .map(|actions| {
+            actions
+                .iter()
+                .map(|action| {
+                    let mut copy = action.clone();
+                    if let Some(object) = copy.as_object_mut() {
+                        object.remove("patch");
+                        object.remove("beforeHash");
+                    }
+                    copy
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let manual_count = plan["manual"].as_array().map(|items| items.len()).unwrap_or(0);
+    let delete_count = stripped.iter().filter(|action| action["type"] == serde_json::json!("delete")).count();
+    serde_json::json!({
+        "id": plan["id"],
+        "version": plan["version"],
+        "planHash": plan["planHash"],
+        "createdAt": plan["createdAt"],
+        "expiresAt": plan["expiresAt"],
+        "findingIds": plan["findingIds"],
+        "actions": stripped,
+        "changes": stripped,
+        "manual": plan["manual"],
+        "summary": {
+            "total": stripped.len() + manual_count,
+            "changes": stripped.len(),
+            "manual": manual_count,
+            "deletes": delete_count,
+        },
+        "confirmation": {
+            "required": !stripped.is_empty(),
+            "secondConfirmationRequired": delete_count > 0,
+            "itemCount": stripped.len(),
+            "deleteCount": delete_count,
+            "paths": stripped.iter().filter_map(|action| action.get("fullPath").cloned()).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// 属性变更累积（对齐 updateProperties：无变化返回 false，不变更摘要）。
+fn review_update_property(
+    updates: &mut HashMap<String, serde_json::Value>,
+    note: &crate::index::HealthNote,
+    at: i64,
+    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> bool,
+    summary: impl Into<String>,
+) -> bool {
+    let state = review_state_for(updates, note, at);
+    let before = serde_json::to_string(&state["properties"]).unwrap_or_default();
+    let Some(object) = state["properties"].as_object_mut() else { return false };
+    if !mutate(object) {
+        return false;
+    }
+    let after = serde_json::to_string(&state["properties"]).unwrap_or_default();
+    if before == after {
+        return false;
+    }
+    state["propertyChanged"] = serde_json::json!(true);
+    if let Some(summaries) = state["summaries"].as_array_mut() {
+        summaries.push(serde_json::json!(summary.into()));
+    }
+    true
+}
+
+/// 内容变更累积（对齐 updateContent）。
+fn review_update_content(
+    updates: &mut HashMap<String, serde_json::Value>,
+    note: &crate::index::HealthNote,
+    next: String,
+    at: i64,
+    summary: impl Into<String>,
+) -> bool {
+    let state = review_state_for(updates, note, at);
+    if state["content"] == serde_json::json!(next) {
+        return false;
+    }
+    state["content"] = serde_json::json!(next);
+    state["contentChanged"] = serde_json::json!(true);
+    if let Some(summaries) = state["summaries"].as_array_mut() {
+        summaries.push(serde_json::json!(summary.into()));
+    }
+    true
+}
+
+fn review_state_for<'a>(
+    updates: &'a mut HashMap<String, serde_json::Value>,
+    note: &crate::index::HealthNote,
+    at: i64,
+) -> &'a mut serde_json::Value {
+    updates.entry(note.id.clone()).or_insert_with(|| {
+        serde_json::json!({
+            "noteId": note.id,
+            "path": note.file_path,
+            "beforeHash": note.content_hash,
+            "properties": note.properties.clone(),
+            "content": note.content,
+            "propertyChanged": false,
+            "contentChanged": false,
+            "summaries": [],
+            "at": at,
+        })
+    })
+}
+
+fn review_choose_canonical(values: &[String]) -> String {
+    let mut sorted: Vec<&String> = values.iter().collect();
+    sorted.sort_by(|left, right| left.chars().count().cmp(&right.chars().count()).then_with(|| left.cmp(right)));
+    sorted.first().map(|value| (*value).clone()).unwrap_or_default()
+}
+
+fn review_canonicalize_alias(value: &str, aliases: &[String], canonical: &str) -> String {
+    let source = value.trim().trim_start_matches('#').to_owned();
+    let matches = aliases.iter().any(|alias| review_normalize_taxonomy(alias) == review_normalize_taxonomy(&source));
+    if matches { canonical.to_owned() } else { source }
+}
+
+/// 文本归一：小写 + 去空白/标点/符号（无 NFKC，偏差见块注释）。
+fn review_normalize_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace() && !is_punctuation_or_symbol(*character))
+        .collect()
+}
+
+fn is_punctuation_or_symbol(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r' | '，' | '。' | '、' | '；' | '：' | '「' | '」' | '（' | '）' | '！' | '？' | '·')
+        || character.is_ascii_punctuation()
+}
+
+/// 分类/标签归一：小写 + 去空白与分隔符。
+fn review_normalize_taxonomy(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace() && !matches!(character, '_' | '-' | '/' | '\\'))
+        .collect()
+}
+
+/// 正文指纹（≥8 字符才参与重复检测）。
+fn review_body_fingerprint(content: &str) -> String {
+    let normalized = review_normalize_text(content);
+    if normalized.chars().count() < 8 {
+        return String::new();
+    }
+    fc_sha256_hex(normalized.as_bytes())
+}
+
+/// ISO-8601 UTC → 毫秒（仅支持本项目的 `YYYY-MM-DDTHH:MM:SS.mmmZ` 口径）。
+fn health_parse_iso_millis(value: Option<&str>) -> Option<i64> {
+    let value = value?;
+    let digits: Vec<i64> = value.chars().filter_map(|character| character.to_digit(10).map(|digit| digit as i64)).collect();
+    if digits.len() < 14 {
+        return None;
+    }
+    let year = digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3];
+    let month = digits[4] * 10 + digits[5];
+    let day = digits[6] * 10 + digits[7];
+    let hour = digits[8] * 10 + digits[9];
+    let minute = digits[10] * 10 + digits[11];
+    let second = digits[12] * 10 + digits[13];
+    let millisecond = digits.get(14).copied().unwrap_or(0) * 100
+        + digits.get(15).copied().unwrap_or(0) * 10
+        + digits.get(16).copied().unwrap_or(0);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Howard Hinnant days_from_civil
+    let year_adjusted = if month <= 2 { year - 1 } else { year };
+    let era = if year_adjusted >= 0 { year_adjusted } else { year_adjusted - 399 } / 400;
+    let year_of_era = year_adjusted - era * 400;
+    let month_prime = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second) * 1000 + millisecond)
+}
+
+/// 线索排序：priority 降序 → updatedAt 升序 → id 升序。
+fn review_compare_findings(left: &serde_json::Value, right: &serde_json::Value) -> std::cmp::Ordering {
+    right["priority"].as_i64().unwrap_or(0).cmp(&left["priority"].as_i64().unwrap_or(0))
+        .then_with(|| left["updatedAt"].as_str().unwrap_or_default().cmp(right["updatedAt"].as_str().unwrap_or_default()))
+        .then_with(|| left["id"].as_str().unwrap_or_default().cmp(right["id"].as_str().unwrap_or_default()))
+}
+
 /// 附件条目（对齐 Express listAttachments，camelCase 序列化）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4037,5 +4989,65 @@ mod tests {
         assert_eq!(missing.code, "NOT_FOUND");
         // 内置技能不受影响
         assert!(service.skill_get("vault-search").is_ok());
+    }
+
+    #[test]
+    fn review_health_scan_reports_findings_and_score() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        // Inbox 未处理 → error 级；无链接无标签 → candidate 级
+        service
+            .write(
+                "inbox/待处理.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234568\ntitle: 待处理\ntype: inbox\nstatus: captured\n---\n\n正文\n",
+                None,
+                "test",
+            )
+            .unwrap();
+        let report = service.review_health(90, 100).unwrap();
+        assert_eq!(report["noteCount"], serde_json::json!(1));
+        assert_eq!(report["summary"]["hardTotal"], serde_json::json!(1), "Inbox 未处理应为 error");
+        assert!(report["summary"]["healthScore"].as_i64().unwrap() < 100);
+        let isolated = report["categories"]["isolated"].as_array().unwrap();
+        assert_eq!(isolated.len(), 1);
+        // 未知 finding id 生成计划必须被拒
+        let rejected = service.review_plan(vec!["not-exist".into()], 90, 100).unwrap_err();
+        assert_eq!(rejected.code, "VALIDATION");
+    }
+
+    #[test]
+    fn review_plan_executes_metadata_repair_with_hash_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        service
+            .write(
+                "notes/a.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234569\ntitle: 缺来源\ncreated_at: 2026-10-13T00:00:00.000Z\nupdated_at: 2026-10-13T00:00:00.000Z\n---\n\n[[目标]]\n",
+                None,
+                "test",
+            )
+            .unwrap();
+        let report = service.review_health(90, 100).unwrap();
+        let metadata = report["categories"]["metadata"].as_array().unwrap();
+        assert!(!metadata.is_empty(), "缺来源/标签应有 metadata 线索");
+        let finding_ids: Vec<String> = metadata.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect();
+        let plan = service.review_plan(finding_ids, 90, 100).unwrap();
+        let plan_hash = plan["planHash"].as_str().unwrap().to_owned();
+        assert_eq!(plan["confirmation"]["required"], serde_json::json!(true));
+
+        // planHash 不符必须被拒
+        let mismatch = service.review_execute(plan["id"].as_str().unwrap(), "0".repeat(64).as_str(), true, true).unwrap_err();
+        assert_eq!(mismatch.code, "CONFLICT");
+        // 未确认必须被拒
+        let unconfirmed = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, false, true).unwrap_err();
+        assert_eq!(unconfirmed.code, "CONFIRMATION_REQUIRED");
+
+        let executed = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true).unwrap();
+        assert_eq!(executed["completed"], serde_json::json!(1), "缺来源应自动补全 source");
+        let detail = service.index.find_note_detail(Some("019501a2-3b4c-4c5d-89ab-cdef01234569"), None).unwrap().unwrap();
+        assert!(detail.properties_json.unwrap_or_default().contains("vault:notes/a.md"));
+        // 计划执行后即删除
+        let again = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true).unwrap_err();
+        assert_eq!(again.code, "CONFLICT");
     }
 }

@@ -369,6 +369,107 @@ impl Index {
             .map_err(|error| format!("无法读取笔记索引行：{error}"))
     }
 
+    /// review 健康扫描数据（对齐 notesRepository.listForHealth）：全量笔记含正文/属性。
+    pub fn list_for_health(&self) -> Result<Vec<HealthNote>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT COALESCE(note_id, path), title, content, path, folder_id, updated_at,
+                 created_at, word_count, content_hash, properties_json
+                 FROM notes ORDER BY path ASC",
+            )
+            .map_err(|error| format!("无法查询健康扫描数据：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(HealthNote {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    file_path: row.get(3)?,
+                    folder_id: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    created_at: row.get(6)?,
+                    word_count: row.get::<_, i64>(7)?,
+                    content_hash: row.get(8)?,
+                    properties: row
+                        .get::<_, Option<String>>(9)?
+                        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                        .filter(|value| value.is_object())
+                        .unwrap_or_else(|| serde_json::json!({})),
+                })
+            })
+            .map_err(|error| format!("无法查询健康扫描数据：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取健康扫描数据：{error}"))
+    }
+
+    /// 每篇笔记的标签名列表（note_id → names，对齐 tagsRepository.findTagsForNotes）。
+    pub fn tags_for_notes(&self) -> Result<HashMap<String, Vec<String>>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT COALESCE(n.note_id, n.path), t.name FROM note_tags nt
+                 JOIN notes n ON n.path = nt.note_path
+                 JOIN tags t ON t.id = nt.tag_id",
+            )
+            .map_err(|error| format!("无法查询笔记标签：{error}"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|error| format!("无法查询笔记标签：{error}"))?;
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for row in rows {
+            let (note_id, name) = row.map_err(|error| format!("无法读取笔记标签：{error}"))?;
+            map.entry(note_id).or_default().push(name);
+        }
+        Ok(map)
+    }
+
+    /// 出链/入链计数（note_id → 条数，对齐 linksService.countsForNotes）。
+    pub fn link_counts(&self) -> Result<LinkCountPair, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let count_by = |sql: &str| -> Result<HashMap<String, i64>, String> {
+            let mut statement = connection.prepare(sql).map_err(|error| format!("无法统计链接：{error}"))?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .map_err(|error| format!("无法统计链接：{error}"))?;
+            let mut map = HashMap::new();
+            for row in rows {
+                let (key, count) = row.map_err(|error| format!("无法读取链接计数：{error}"))?;
+                map.insert(key, count);
+            }
+            Ok(map)
+        };
+        let outgoing = count_by("SELECT source_note_id, COUNT(*) FROM links GROUP BY source_note_id")?;
+        let incoming = count_by("SELECT target_note_id, COUNT(*) FROM links WHERE target_note_id IS NOT NULL GROUP BY target_note_id")?;
+        Ok((outgoing, incoming))
+    }
+
+    /// 悬空链接明细（对齐 linksRepository.listDanglingDetails）。
+    pub fn dangling_link_details(&self) -> Result<Vec<DanglingLinkDetail>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT l.target_title, l.source_note_id, COALESCE(n.title, ''), COALESCE(n.path, '')
+                 FROM links l
+                 LEFT JOIN notes n ON COALESCE(n.note_id, n.path) = l.source_note_id
+                 WHERE l.target_note_id IS NULL
+                 ORDER BY l.target_title COLLATE NOCASE ASC",
+            )
+            .map_err(|error| format!("无法查询悬空链接：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(DanglingLinkDetail {
+                    target_title: row.get(0)?,
+                    source_id: row.get(1)?,
+                    source_title: row.get(2)?,
+                    source_path: row.get(3)?,
+                })
+            })
+            .map_err(|error| format!("无法查询悬空链接：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取悬空链接：{error}"))
+    }
+
     /// 目录树（契约 GET /api/folders 对应命令 folder_tree）：
     /// 以磁盘目录为准派生（含空目录），id 为确定性投影 id，
     /// noteCount 为直属笔记数。sortOrder 恒 0（用户排序随 folders 表批次）。
@@ -626,6 +727,31 @@ pub struct NoteDetail {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
+
+/// 健康扫描笔记（review scan 数据源；properties 为解析后的对象）。
+pub struct HealthNote {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub file_path: String,
+    pub folder_id: Option<String>,
+    pub updated_at: Option<String>,
+    pub created_at: Option<String>,
+    pub word_count: i64,
+    pub content_hash: Option<String>,
+    pub properties: serde_json::Value,
+}
+
+/// 悬空链接明细行（review brokenLinks 数据源）。
+pub struct DanglingLinkDetail {
+    pub target_title: String,
+    pub source_id: String,
+    pub source_title: String,
+    pub source_path: String,
+}
+
+/// 出链/入链计数对（note_id → 条数）。
+pub type LinkCountPair = (HashMap<String, i64>, HashMap<String, i64>);
 
 /// 轻量索引条目（对齐 Express listIndex，camelCase 序列化）。
 #[derive(Serialize)]

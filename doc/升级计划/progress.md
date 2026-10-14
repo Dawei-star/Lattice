@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 ｜ experts/skills 批完成（内置资源嵌入 + 工作区层 9 命令，P1-04 仅余 review 3）
+> **最后更新**：2026-10-14 ｜ review 批完成，**P1-04 非 AI 命令面迁移全部完成**（61 项 Rust 测试全绿）
 
 ## 总进度（按计划工期加权：29 周基准）
 
@@ -21,7 +21,7 @@
 - [x] P1-01 WorkspaceService 统一写入边界（锁/审计/快照/错误模型）
 - [x] P1-02 SQLite 恢复/迁移事务化/迁移前备份
 - [x] P1-03 watcher reconcile + 持久化 jobs 队列
-- [ ] P1-04 非 AI 命令面迁移 ← **当前**
+- [ ] P1-04 非 AI 命令面迁移 ✅ 完成
   - [x] tags 投影（`tag_list`）
   - [x] notes 模型地基（frontmatter 解析/字数口径/迁移 004-005/`note_index`）
   - [x] `note_create`（confirmed 闸门/id 幂等/路径递增分配）
@@ -38,7 +38,8 @@
   - [x] attachments 剩余（`vault_files_list`/`vault_attachment_validate`/`vault_attachment_cleanup`/`vault_download`；cleanup 双确认 + 被引用保护）
   - [x] files 全套 7（`file_read`/`file_find`/`file_grep`/`file_preview`/`file_execute`/`file_undo`/`file_log`；planHash 校验→.fc 快照→原子落盘→审计→undo 还原，delete 双确认）
   - [x] experts/skills 全套 9（`expert_list/get/save/delete/route` + `skill_list/get/save/delete`；内置 7 专家 9 技能编译期嵌入，工作区层 `.lattice/experts|skills`，workspace 覆盖 builtin、保存/删除双确认闸门）
-  - [ ] review（health/plan/execute 3）
+  - [x] review 3（`review_health`/`review_plan`/`review_execute`；9 类线索扫描 + 健康分，修复计划内存 TTL 15min + planHash + contentHash 重校验）
+- [x] **P1-04 非 AI 命令面迁移全部完成**（96 端点中非 AI/MCP 侧 59 个全部迁移）
 - [ ] P1-05~07 前端 TS 化
 - [ ] P1-08 功能对齐验证（契约快照对照）
 - [ ] P1-09 删除 Express 回落
@@ -46,8 +47,8 @@
 
 ## IPC 命令核销（契约清单 96 端点）
 
-**已迁移 56 个**（vault 9 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folders 4 + meta_overview + canvas 5 + attachments 8 + files 7 + experts/skills 9）
-**剩余 40 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围；引用正则为常见形态近似，P1-08 契约对齐时校准）
+**已迁移 59 个**（vault 9 + jobs 3 + tag_list + note_index + note CRUD 3 + search_query + history 3 + graph_build + folders 4 + meta_overview + canvas 5 + attachments 8 + files 7 + experts/skills 9 + review 3 + vault_download 等计入 vault 侧）
+**剩余 37 个**（含 P3 AI 22 个、P4 MCP 3 个、⛔ 废弃 4 个不在迁移范围；引用正则为常见形态近似，P1-08 契约对齐时校准）
 
 ## 关键问题点（活跃）
 
@@ -57,6 +58,6 @@
 
 ## 下一步
 
-1. review 3（`review_health`/`review_plan`/`review_execute`，plan/planHash 语义）→ P1-04 收尾
-2. P1-05~07 前端 TS 化
-3. P1-08 契约对齐验证
+1. P1-05~07 前端 TS 化（api→store/lib→组件，strict 渐进开启）
+2. P1-08 功能对齐验证（契约快照对照）
+3. P1-09 删除 Express（含 Δ9 内置资源迁移）

@@ -128,7 +128,10 @@ pub fn run() {
             skill_list,
             skill_get,
             skill_save,
-            skill_delete
+            skill_delete,
+            review_health,
+            review_plan,
+            review_execute
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -727,6 +730,38 @@ fn skill_delete(
     second_confirmed: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     with_workspace(state, |workspace| workspace.skill_delete(&id, confirmed.unwrap_or(false), second_confirmed.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn review_health(
+    state: State<'_, WorkspaceState>,
+    stale_days: Option<u64>,
+    limit: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.review_health(stale_days.unwrap_or(90), limit.unwrap_or(100)))
+}
+
+#[tauri::command]
+fn review_plan(
+    state: State<'_, WorkspaceState>,
+    finding_ids: Vec<String>,
+    stale_days: Option<u64>,
+    limit: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.review_plan(finding_ids, stale_days.unwrap_or(90), limit.unwrap_or(100)))
+}
+
+#[tauri::command]
+fn review_execute(
+    state: State<'_, WorkspaceState>,
+    plan_id: String,
+    plan_hash: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| {
+        workspace.review_execute(&plan_id, &plan_hash, confirmed.unwrap_or(false), second_confirmed.unwrap_or(false))
+    })
 }
 
 /// 后台扫描执行器：领取 `vault-scan` 任务 → 取消检查 → 增量 reconcile →

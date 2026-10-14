@@ -176,9 +176,9 @@
 
 | 方法 | 路径 | 请求 | 响应 | 服务层 | 未来 Rust 命令 | 状态 |
 |---|---|---|---|---|---|---|
-| GET | `/api/review/health` | query: `staleDays≥7, limit` | 健康扫描 | knowledge-health | `review_health_scan` | ⬜ |
-| POST | `/api/review/health/plan` | body: `findingIds≤100, staleDays?, limit?` | 修复计划（planId/planHash） | knowledge-health | `review_health_plan` | ⬜ |
-| POST | `/api/review/health/execute` | body: `planId, planHash, confirmed, secondConfirmed` | 执行结果 | knowledge-health | `review_health_execute` | ⬜ |
+| GET | `/api/review/health` | query: `staleDays≥7, limit` | 健康扫描 | knowledge-health | `review_health`（实现命令名） | ✅ |
+| POST | `/api/review/health/plan` | body: `findingIds≤100, staleDays?, limit?` | 修复计划（planId/planHash） | knowledge-health | `review_plan`（实现命令名） | ✅ |
+| POST | `/api/review/health/execute` | body: `planId, planHash, confirmed, secondConfirmed` | 执行结果 | knowledge-health | `review_execute`（实现命令名） | ✅ |
 
 ## 3. scripts/ Node 工作区盘点（P4 sidecar 评估输入）
 
