@@ -1,0 +1,4 @@
+# 契约 fixtures 的价值建立在「可逐字节复现」上：
+# record-fixtures 用 LF 写盘，normalisation 也按字节比对，因此禁止 Git 在签出时
+# 把行尾改写成 CRLF（否则全新克隆下 fixtures/ 目录哈希与「两次录制一致」的结论都会失真）。
+src-tauri/tests/fixtures/** text eol=lf
