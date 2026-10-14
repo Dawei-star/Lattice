@@ -246,3 +246,12 @@
 - 未覆盖的 9 个命令：7 个 Rust 内部 `vault_*`（Express 无对应端点）、`job_get`/`job_cancel`（job 仅由 P3 端点创建，无法确定性播种）
 - **实测新增待对齐项**：Express 对**行首 `#标签`** 有 heading 启发式（该标签会被当作标题吃掉），播种标签须内联；Rust 侧标签解析若不一致，`tag_list`/`note_*` 的 fixture 会对不上，需在 P1-08 对齐
 - 注意：命令经 F2 修复后是 crate 私有 `fn`，故第 2 步的 Rust 断言须落在 `src/` 内的 `#[cfg(test)]`；`src-tauri/tests/` 目录调不到命令
+
+### 5.6 双通道对齐断言与差异基线（P1-08 第 2 步，`6555003`）
+
+- **静态参数契约**：`web/test/ipc-args-contract.test.mjs` —— 逐命令断言「映射表 args 构造器产出的键 ⊆ Rust 形参」且「Rust 必填形参都被提供」（多传键会被 invoke 拒绝、少传必填参数会运行时报错）。34 条路由全覆盖。
+- **运行时结构对齐**：`src-tauri/src/parity_tests.rs` —— 重建 `seed/vault` 后按 fixture 时序回放，逐字段 diff。
+- **差异基线**：`src-tauri/tests/fixtures/divergence.json`，当前 **27 个命令 / 99 条**。清单可收缩：Rust 侧补齐一处 → 实际差异少一条 → 测试失败并点名要删的条目。
+- 差异种类：`missing-in-rust`（Express 有、Rust 无）/ `extra-in-rust` / `type-mismatch` / `error`（Rust 直接报错）。
+- 当前**唯一** `error` 类：`vault_read_asset`（`read_asset` 白名单窄于 Express，见 Δ14，待产品定夺；**不可**为消除它而擅自放宽安全边界）。
+- 已知的若干条差异已是 5.2 各条结论的实测映射，例如：`note_index` 缺 `properties`(object)、`vault_info` 多 `path` 且缺 `vaultDir`/`profile`/`mode`、`canvas_list` 元素 `string` vs `object`、`folder_update` 返回 `array`（全树）vs `object`（单节点）。

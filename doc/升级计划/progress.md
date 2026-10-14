@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 17:40 ｜ P1-08 第 1 步（正式）完成：Express 契约快照录制完成，50 个 case + 确定性 seed vault 落地 `src-tauri/tests/fixtures/`，幂等与自检均通过
+> **最后更新**：2026-10-14 20:10 ｜ P1-08 第 2 步完成：静态参数契约 + Rust 结构对齐断言落地，差异基线 **27 命令 / 99 条**；暴露 1 处安全姿态差异（已记录待决，未擅自放宽）
 
 ## 本轮变更（2026-10-14）
 
@@ -11,8 +11,9 @@
 | P1-07 组件层 TS 化 | ✅ 完成 | `d2a7a9a` | 34 文件 `.jsx`→`.tsx`，strict 错误 1343→0；顺修 1 处既有 bug（Δ12） |
 | P1-05 收尾：api 层 invoke 双轨 | ✅ 完成（入口切换暂缓） | `9271e2e` | 映射表 34/58 可对齐，24 条排除并出清单（Δ13） |
 | 看板刷新 | ✅ 完成 | `c0e178a` | 三口径拆分 + M1 自查清单 |
-| P1-08 第 1 步（前置）：契约一致性校验 | ✅ 完成 | `b678f4c` | 映射表 ↔ Rust 注册表防漂移；**修正 1 处落表错误**（`GET /notes/:id/history` 误收） |
+| P1-08 第 1 步（前置）：契约一致性校验 | ✅ 完成 | `b678f4c` | 映射表 ↔ Rust 注册表防漂移；修正 1 处落表错误 |
 | P1-08 第 1 步（正式）：录制契约快照 | ✅ 完成 | `30e90e0` | 50 case + seed vault + 递归 schema；幂等验证通过；新增 fixtures 自检器 |
+| **P1-08 第 2 步：双通道对齐断言** | ✅ 完成 | `6555003` | 静态参数契约（34 路由全覆盖）+ Rust 结构对齐；差异基线 27 命令 / 99 条 |
 
 > 验证口径：`tsc --noEmit` 0 错 · `npm --prefix web run test` **EXIT=0**（含 154 项集成检查）· `vite build` 通过（1986 modules）
 
@@ -61,6 +62,9 @@
   - [x] **第 1 步（前置）：契约一致性校验 ✅**（`b678f4c`）`web/test/ipc-routes-contract.test.mjs` 解析 `generate_handler!` 并断言：进表命令必已注册、同 method 无重复路由、静态路由必须排在会吞掉它的动态路由之前、进表项与排除项互斥、`IPC_PENDING_COMMANDS` 确实未注册（**排除清单变成可执行断言**：将来实现其中之一会测试失败并提示回收进表）、34 + 24 = 58 口径自洽；顺带**修正 1 处落表错误**（`GET /notes/:id/history` 被误收，实为结构不兼容）；测试另打印「已注册但前端两通道都未引用」的 **18 个命令**作为本步待办视野（`job_list/get/cancel`、`note_index`、`note_create`、`note_update`、`search_query`、`note_history_list/get`、`folder_create/update/delete`、`canvas_list`、`vault_attachment_upload`、`vault_download`、`file_read/find/grep`）
   - [x] **第 1 步（正式）：录制 Express 契约快照 ✅**（`30e90e0`）`src-tauri/tests/tools/record-fixtures.mjs` 起临时 Express + **确定性 seed vault**，驱动 59 个已注册命令中的 **50 个**，产出 `src-tauri/tests/fixtures/`：`cases/<command>.json`（请求 + 响应 data + **由 data 递归推导的 schema** + volatilePaths）、`seed/manifest.json` + `seed/vault/**`（Rust 侧据此重建同一 Vault）、`index.json`（覆盖统计）。归一化保证字节级可复现（时间戳/64-hex/临时路径/耗时 → 占位符；**播种锚点 id 不归一**，供两通道对齐）；**幂等已独立验证**（连续两次运行目录哈希一致 `1e3c7d04…`）。跳过 9 个：7 个 Rust 内部 `vault_*`（Express 无对应端点）+ `job_get`/`job_cancel`（job 仅由 P3 端点创建，无法确定性播种）。另加 `src-tauri/tests/tools/validate-fixtures.mjs`（`npm run verify:fixtures`，已接入根 `verify` 链）守住基准自身：索引与 case 数一致、必需字段齐备、command 与文件名一致、**schema 必须等于由 data 重算的 schema**、无残留未归一时间戳/哈希；**已反向验证**（故意改坏一个 case → exit 1 且精确报出，恢复后归 0）
   - [ ] 第 2 步：Rust 侧逐命令加载 fixture 断言结构/语义一致（注意命令是 crate 私有 `fn`，测试须落在 `src/` 内的 `#[cfg(test)]`，`tests/` 目录调不到）
+  - [x] **第 2 步：双通道对齐断言 ✅**（`6555003`）两条腿：
+    - **静态参数契约**（`web/test/ipc-args-contract.test.mjs`，已进 web `test` 链）：解析 `lib.rs` 每个 `#[tauri::command]` 形参并转 camelCase，再用**万能 Proxy ctx 实际调用映射表的 `args` 构造器**收集键集合，断言「不多传键 + 必填形参都被提供」——34 条路由全覆盖、0 跳过。这是 invoke 最高频失效模式（参数名漂移）的守门人
+    - **运行时结构对齐**（`src-tauri/src/parity_tests.rs`，crate 内 `#[cfg(test)]`；命令经 F2 后是私有 `fn` 且 `with_workspace` 需要 `State`，单测只能测**服务层**）：重建 seed Vault → 按 fixture 时序回放 → 算 schema → 与 Express 逐字段 diff → 与期望清单 `src-tauri/tests/fixtures/divergence.json` 比对。**基线：27 个命令 / 99 条差异**（其中 1 条 `error` 类）。清单**设计成可收缩**：修好一处即失败并点名要删的条目；服务调用统一走 `capture()`，出错记成差异而不是 panic 掉整份基线
   - [ ] 第 3 步：前端 mock invoke 验证 UI 消费层行为不变
 - [ ] P1-09 删除 Express 回落
 - [ ] P1-10 验收发布 v0.2.0
@@ -99,11 +103,15 @@
   - 语义差异：`folder_delete` 对非空目录返回 CONFLICT 拒绝，Express 语义是「笔记移到未分类」；前端读的 `affectedNoteCount` 命令也没有
   - **结论**：入口切全功能 App 必须先补齐这些（尤其 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参），否则桌面态会静默丢功能。完整清单与行号证据见 `web/src/api/ipc-routes.ts` 文件末尾「排除清单」
 - 其余仍挂着的：Δ5 契约「第二人抽查 10 项」单人环境无法满足 · Δ6 远端 main 落后 v0.1.5（待 Gate Review 后合回）· Δ7 gh CLI 不可用（CI 由 push 触发）· Δ9 experts/skills 内置资源仍 `include_str` 自 `server/`，**P1-09 删 Express 前必须迁到 src-tauri**（Δ1/Δ8 已解决，全量清单见 [execution-log.md](execution-log.md)）
+- **Δ14（新增，待产品决策）** `vault_read_asset` 的白名单与 Express **刻意不同**：Rust 只认 png/jpg/jpeg/gif/webp（并显式拒绝 SVG），Express 的 `/api/vault/attachment` 能返回任意白名单附件（fixture 用的就是 `.txt`）。**这条差异已如实记入 `divergence.json`（唯一一条 `error` 类），没有去改 Rust**。原因：曾把 `read_asset` 改成复用全量白名单（`vault_file_mime`），结果打破既存测试 `vault::tests::attachments_are_limited_to_safe_image_files`（断言 `read_asset("attachments/test.svg").is_err()`），而契约 §5.2/§1 也写明 SVG 必须强制 attachment 防 XSS——**这是有意为之的安全姿态，不能为了让 parity 变绿而放宽**。需在 P1-08 定夺：是保持 Rust 的窄白名单（则契约需注明桌面态不支持内联预览非图片附件），还是放宽并同步补 XSS 防护（例如仅允许非可执行类型、SVG 走 `<img>` 且禁脚本）。判定依据可参考：SVG 作为 `<img src="data:...">` 通常不可执行脚本，但作为导航/内联文档可以
 
 ## M1 达成条件（P1 收口自查）
 
-- [ ] P1-08 契约快照对照三部分全绿（Express 录制 fixtures + Rust 集成测试 + 前端 mock invoke）
+- [x] P1-08 第 1 步：契约快照基线（50 case）+ fixtures 自检器（`npm run verify:fixtures`）
+- [x] P1-08 第 2 步：双通道对齐断言（静态参数契约 + Rust 结构对齐，差异清单 27 命令 / 99 条）
+- [ ] P1-08 第 3 步：前端 mock invoke 验证 UI 消费层行为不变
 - [ ] **Δ13 补齐**：至少 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参、folder 系 id 寻址；补齐前**不得**把桌面入口切到全功能 App（计划 §5.3-5 的顺序约束）
+- [ ] **Δ14 定夺**：`vault_read_asset` 白名单口径（保持窄白名单并写进契约，或放宽并补 XSS 防护）
 - [ ] Δ11 api 契约类型收紧（去掉组件侧 `as unknown as` / `: any` 断言）
 - [ ] Δ10 server-test 基线重采，并写明「本机符号链接可创建」这一口径
 - [ ] Δ9 builtin 资源迁出 `server/`（P1-09 前置）
@@ -111,8 +119,8 @@
 
 ## 下一步
 
-1. **P1-08 第 2 步**：Rust 侧逐命令加载 fixture 断言结构/语义一致——命令是 crate 私有 `fn`，断言须落在 `src/` 内的 `#[cfg(test)]`；复用 `seed/vault` 重建同一 Vault，按 `path` 寻址
-2. **P1-08 第 3 步**：前端在 web 测试中 mock invoke，验证 UI 消费层行为不变
-3. **Δ13 处置（M1 前必做）**：按 `ipc-routes.ts` 末尾排除清单补 Rust 形参/命令；优先处理 18 个「已注册但无人引用」的命令，且 fixtures 已把 4 处结构差异钉成可对照的基准（`/notes/index` 的 `propertiesJson`+`properties` 双字段、`/canvas/files` 对象数组、`/vault/info` 的 `vaultDir`+`profile`、`DELETE /folders/:id` 的 `affectedNoteCount`）
+1. **P1-08 第 3 步**：前端在 web 测试中 mock invoke，验证 UI 消费层行为不变
+2. **Δ13 处置（M1 前必做）**：按 `ipc-routes.ts` 排除清单 + `divergence.json` 的 99 条差异补 Rust 形参/命令；优先 note 系与 folder 系
+3. **Δ14 定夺**：`vault_read_asset` 白名单（需产品/安全口径拍板，不是纯技术选择）
 4. Δ11 收紧 api 契约类型；Δ10 复核 Rust `vault_download` 对符号链接/点目录的返回码
-5. **新增待对齐项**：Express 对行首 `#标签` 有 heading 启发式（标签会被吃掉），播种标签须内联；Rust 侧标签解析若不同需在 P1-08 对齐
+5. **待对齐项**：Express 对行首 `#标签` 有 heading 启发式（会被当标题吃掉），播种须内联；Rust 标签解析口径需核对
