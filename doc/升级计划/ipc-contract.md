@@ -235,3 +235,14 @@
 2. 横向共性问题：note 系命令统一以 `propertiesJson: Option<String>` 过线缆，而前端 `NoteDetail`/`NoteIndexEntry` 的 `properties` 是对象——建议在 Rust 侧直接发对象或在 IPC 层统一反序列化，否则每个 note 系命令都要各自适配。
 3. folder 系命令以**路径**寻址，前端以 **id** 寻址——需在 P1-08 决定统一口径（新增 id→path 解析命令，或前端改传路径）。
 4. 错误形状仍不一致：命令是 `Result<T, String>`（裸字符串，无 code），契约 §1 的目标是 `{error:{code,message,requestId}}`。双轨阶段已在 `client.ts` 归一为 `ApiError(code='IPC_ERROR')`，但 `ServiceError.code` 的枚举值目前**未过线缆**，`ApiError.code` 在桌面态无法细分——建议 P1-08 一并改为 `Result<T, ServiceError>`。
+
+### 5.5 契约快照基准（P1-08 第 1 步，`src-tauri/tests/fixtures/`）
+
+来自 Express 的**真实**请求/响应快照，是 §5.2 各条差异的实测证据来源，也是 Rust 侧断言的唯一基准。
+
+- 生成：`npm run record:fixtures`（`src-tauri/tests/tools/record-fixtures.mjs`）——临时 Express + 确定性 seed vault，驱动 59 个命令中的 50 个；**幂等**（连续两次运行目录哈希一致）
+- 自检：`npm run verify:fixtures`（`validate-fixtures.mjs`，已接入根 `verify` 链）——schema 必须等于由 data 重算的 schema、无残留未归一值、索引与 case 数一致
+- 结构：`cases/<command>.json`（请求 + `data` + 递归 `schema` + `volatilePaths`）、`seed/manifest.json` + `seed/vault/**`（重建同一 Vault）、`index.json`（覆盖：50 录得 / 9 跳过 / 20 条端点无命令）
+- 未覆盖的 9 个命令：7 个 Rust 内部 `vault_*`（Express 无对应端点）、`job_get`/`job_cancel`（job 仅由 P3 端点创建，无法确定性播种）
+- **实测新增待对齐项**：Express 对**行首 `#标签`** 有 heading 启发式（该标签会被当作标题吃掉），播种标签须内联；Rust 侧标签解析若不一致，`tag_list`/`note_*` 的 fixture 会对不上，需在 P1-08 对齐
+- 注意：命令经 F2 修复后是 crate 私有 `fn`，故第 2 步的 Rust 断言须落在 `src/` 内的 `#[cfg(test)]`；`src-tauri/tests/` 目录调不到命令
