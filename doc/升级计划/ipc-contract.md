@@ -194,3 +194,44 @@
 3. 乐观锁三处：notes/canvas `expectedHash`→409，review `planHash` 校验。
 4. 附件上传为 raw 字节流（≤25MB），IPC 改字节数组参数。
 5. 特例必须逐条保留：PATCH notes 仅 title/folderId 需确认；PUT canvas 仅新建需确认；DELETE tags 免确认；files/preview 对 viewer 返回 blocked 不抛错。
+
+## 5. 双轨映射核销（P1-05 收尾，2026-10-14）
+
+> 问题：P1-04 交付了 59 个 Rust 命令，但**命令存在 ≠ 前端路由能用**。为写「HTTP 路由 → 命令」映射表，对前端 81 个 `http.*` 调用点归并出的 58 条非 AI/MCP 路由逐条比对入参与返回结构。
+> **结果：34 条可对齐进表（31 直接 + 3 需适配），24 条排除**（11 缺命令 / 13 结构不兼容）。
+> 权威清单与行号证据：`web/src/api/ipc-routes.ts` 末尾「排除清单」；执行侧登记见 execution-log.md Δ13。
+
+### 5.1 已可对齐（34）
+
+- 直读类：`/vault/attachments`→`vault_attachments_list`、`/vault/files`→`vault_files_list`、`/tags`→`tag_list`、`/graph`→`graph_build`、`/meta/overview`→`meta_overview`、`/folders`→`folder_tree`、`/canvas`→`canvas_read`、`/files/log`→`file_log`、`/experts`→`expert_list`、`/experts/skills`→`skill_list`
+- 带参与动态段：`/vault/attachments/references`、`/vault/attachments/validate`、`/vault/attachments/cleanup`、`DELETE /vault/attachments`、`/review/health`、`/experts/:id`、`/experts/skills/:id`、`POST /experts`、`PUT /experts/:id`、`DELETE /experts/:id`、`POST/PUT/DELETE /experts/skills*`、`/files/undo`、`DELETE /notes/:id`、`POST /notes/:id/history/:version/restore`、`PATCH /canvas/file`、`DELETE /canvas/file`、`/review/health/plan`、`/review/health/execute`
+- 需适配（3）：`PUT /canvas` 的文档体拆 `nodes`/`edges`；`POST /files/preview` 与 `/files/execute` 的 `action`/`actions` 二态
+
+### 5.2 结构不兼容（13，比缺命令更危险——接上去会静默改行为）
+
+| 路由 | 不兼容点 |
+|---|---|
+| `GET /vault/info` | 命令只回 `{path}`，前端消费 `vaultDir` + `profile` |
+| `POST /vault/attachments` | 命令无 `folder` 形参；返回裸 String 而前端读 `uploaded.path/name` |
+| `GET /vault/download` | 前端直接 `fetch`+`blob()`；命令返回 base64 JSON |
+| `GET /notes/index` | 命令发 `propertiesJson`(string)，前端当对象消费 |
+| `POST /notes` | `note_create` 无 `folder_id` 形参 |
+| `PATCH /notes/:id` | `note_update` 无 `folder_id` 形参（移动笔记无法表达） |
+| `GET /notes/:id/history` | 前端期望 `{items,currentHash}`，命令回数组 |
+| `GET /notes/:id/history/:version` | 前端期望 `{version,createdAt,title,content,isPinned,properties}`，命令只给 `{version,raw,hash}` |
+| `POST /folders` | 命令收父目录**路径** `parent_path`，前端传 `parentId` |
+| `PATCH /folders/:id` | 命令收 `new_parent_path`，前端传 `parentId`；且命令回全树而前端类型是单节点 |
+| `DELETE /folders/:id` | 前端读 `affectedNoteCount`（命令无）；Rust 对非空目录 CONFLICT 拒绝 vs Express「笔记移到未分类」 |
+| `GET /search` | `search_query` 仅 `(q,limit)`，无法表达 `folderId`/`inboxStatus`；返回信封不同 |
+| `GET /canvas/files` | `canvas_list` 回 `Vec<String>`，前端消费 `path/name/folderPath` 对象 |
+
+### 5.3 缺命令（11）
+
+`vault_profile_set`、`vault_migrate_sqlite`、`vault_assets_list`、`note_list`、`note_get`、`note_duplicate`、`note_templates_list`、`note_create_from_template`、`note_create_daily`、`tag_delete`（均为契约 ⬜），以及 ⛔ 的 `/health`。
+
+### 5.4 对 P1-08 / P1-09 的约束
+
+1. **在 5.2/5.3 补齐前，不得把桌面入口切到全功能 App**（计划 §5.3-5 的顺序约束由此获得实证依据）。
+2. 横向共性问题：note 系命令统一以 `propertiesJson: Option<String>` 过线缆，而前端 `NoteDetail`/`NoteIndexEntry` 的 `properties` 是对象——建议在 Rust 侧直接发对象或在 IPC 层统一反序列化，否则每个 note 系命令都要各自适配。
+3. folder 系命令以**路径**寻址，前端以 **id** 寻址——需在 P1-08 决定统一口径（新增 id→path 解析命令，或前端改传路径）。
+4. 错误形状仍不一致：命令是 `Result<T, String>`（裸字符串，无 code），契约 §1 的目标是 `{error:{code,message,requestId}}`。双轨阶段已在 `client.ts` 归一为 `ApiError(code='IPC_ERROR')`，但 `ServiceError.code` 的枚举值目前**未过线缆**，`ApiError.code` 在桌面态无法细分——建议 P1-08 一并改为 `Result<T, ServiceError>`。

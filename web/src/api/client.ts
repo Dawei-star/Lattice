@@ -15,6 +15,7 @@
 // import.meta.env 由 Vite 在构建时注入；用可选链兜底，
 // 这样同一份代码在非 Vite 环境（如 Node 冒烟测试）里也能安全降级到 /api
 import { workspaceHeaders } from './workspace-auth.ts';
+import { dispatchViaIpc, IpcError } from './ipc.ts';
 
 const RAW_BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? '/api';
 const BASE_URL = RAW_BASE_URL.replace(/\/+$/, '');
@@ -204,6 +205,35 @@ interface RequestRawOptions extends RequestOptions {
   rawBody?: BodyInit;
 }
 
+/**
+ * 桌面通道（Tauri IPC）优先分发。
+ *
+ * 返回 `null` 表示「本请求不走桌面通道」，调用方继续走 HTTP：
+ * 非桌面形态、未命中映射表、或映射表自述表达不了该请求。
+ *
+ * 放在重试循环之外——invoke 是进程内调用，重试/超时/离线判定都不适用。
+ */
+async function dispatchFromIpc(
+  method: string,
+  path: string,
+  ctx: { query?: Record<string, unknown>; body?: unknown; rawBody?: BodyInit },
+): Promise<unknown | null> {
+  try {
+    const result = await dispatchViaIpc(method, path, {
+      query: ctx.query ?? {},
+      body: ctx.body,
+      rawBody: ctx.rawBody,
+    });
+    return result.handled ? result.payload : null;
+  } catch (error) {
+    // Rust 命令错误是裸字符串（无 code）；统一转成 ApiError，让 UI 只面对一种错误形状
+    if (error instanceof IpcError) {
+      throw new ApiError(error.message, { code: 'IPC_ERROR', status: 0, cause: error });
+    }
+    throw error;
+  }
+}
+
 async function requestRaw(path: string, options: RequestRawOptions = {}): Promise<unknown> {
   const {
     method = 'GET',
@@ -216,6 +246,9 @@ async function requestRaw(path: string, options: RequestRawOptions = {}): Promis
     headers,
     rawBody,
   } = options;
+
+  const viaIpc = await dispatchFromIpc(method, path, { query, body, rawBody });
+  if (viaIpc !== null) return viaIpc;
 
   const url = new URL(`${base}${path}`, window.location.origin);
   if (query) {
