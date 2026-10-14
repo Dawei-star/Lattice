@@ -48,7 +48,15 @@ try {
 } finally {
   backend.kill();
   await once(backend, 'exit').catch(() => {});
-  await fs.rm(runtimeRoot, { recursive: true, force: true });
+  // 清理临时目录不应决定验收结论：本环境的删除保护 shim（由 NODE_OPTIONS 注入）在单轮
+  // 删除数超过配额后会拒绝递归删除，使这个 finally reject → 整条链以非 0 退出，而
+  // **没有任何断言失败**（输出里既无断言报错也无 server 日志），极易被误读成产品回归。
+  // 检查全部通过时，清理失败只告警。
+  await fs.rm(runtimeRoot, { recursive: true, force: true }).catch((error) => {
+    console.warn(
+      `[integration] 临时目录清理失败（不影响验收结论，可忽略环境删除配额）：${error.code ?? error.message} ${runtimeRoot}`,
+    );
+  });
 }
 
 /**
