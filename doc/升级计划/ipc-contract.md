@@ -255,3 +255,19 @@
 - 差异种类：`missing-in-rust`（Express 有、Rust 无）/ `extra-in-rust` / `type-mismatch` / `error`（Rust 直接报错）。
 - 当前**唯一** `error` 类：`vault_read_asset`（`read_asset` 白名单窄于 Express，见 Δ14，待产品定夺；**不可**为消除它而擅自放宽安全边界）。
 - 已知的若干条差异已是 5.2 各条结论的实测映射，例如：`note_index` 缺 `properties`(object)、`vault_info` 多 `path` 且缺 `vaultDir`/`profile`/`mode`、`canvas_list` 元素 `string` vs `object`、`folder_update` 返回 `array`（全树）vs `object`（单节点）。
+
+### 5.7 消费层一致性（P1-08 第 3 步，`5585a04`）
+
+`web/test/ipc-parity-consumption.test.mjs`（已进 web `test` 链）——数据驱动，把 50 个 fixture 的同一份 `data` 分别经 ①HTTP（fetch 桩返回 `{data}` 信封）与 ②IPC（invoke 桩直接返回数据本身）走一遍 `api` 层，断言**两条通道交付给消费层的值逐字节相同**（50/50），即双轨封装（信封还原 / 错误归一 / 参数传递）在消费缝上没有引入偏差。
+
+同时钉住「实际走了哪条通道」，这也是对 §5.1/§5.2 划分的运行时复核：
+
+| 情形 | 期望 | 实测 |
+|---|---|---|
+| 路由在 `IPC_ROUTES` 内 | 走 invoke，且**不得**回落 HTTP | 30/30 ✅ |
+| 路由被排除（§5.2/§5.3） | 必须回落 HTTP | 20/20 ✅ |
+| 路由匹配上但 `args` 自述表达不了 | **不得静默回落**（真实桌面端无 Express 兜底） | 0 例 ✅ |
+
+错误路径：HTTP 400 `{error:{message}}` 与 IPC 抛出同一文案时，两通道的**用户可见 message 一致**；`code` 不同（HTTP 保留服务端 code，IPC 为裸字符串只能标 `IPC_ERROR`）——即 §5.4-4 待改进项，此处以断言形式记录在案。
+
+该测试做过三种破坏的反向验证（删表内路由 / IPC 侧不套信封 / 强制 `args` 返回 undefined），全部被拦并点名具体命令——「能过」不等于「有效」。

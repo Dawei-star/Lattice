@@ -2,7 +2,7 @@
 
 > **刷新规则**：每完成一个执行任务立即更新本文件（用户要求）。
 > 详细逐节点记录见 [execution-log.md](execution-log.md)；基线数据见 [baseline.md](baseline.md)；契约核销见 [ipc-contract.md](ipc-contract.md)。
-> **最后更新**：2026-10-14 20:10 ｜ P1-08 第 2 步完成：静态参数契约 + Rust 结构对齐断言落地，差异基线 **27 命令 / 99 条**；暴露 1 处安全姿态差异（已记录待决，未擅自放宽）
+> **最后更新**：2026-10-14 20:20 ｜ **P1-08 三步全部完成**：契约快照基线 + 双通道结构对齐（99 条差异清单）+ 消费层一致性断言；M1 门禁只剩 Δ13/Δ14 处置
 
 ## 本轮变更（2026-10-14）
 
@@ -14,17 +14,18 @@
 | P1-08 第 1 步（前置）：契约一致性校验 | ✅ 完成 | `b678f4c` | 映射表 ↔ Rust 注册表防漂移；修正 1 处落表错误 |
 | P1-08 第 1 步（正式）：录制契约快照 | ✅ 完成 | `30e90e0` | 50 case + seed vault + 递归 schema；幂等验证通过；新增 fixtures 自检器 |
 | **P1-08 第 2 步：双通道对齐断言** | ✅ 完成 | `6555003` | 静态参数契约（34 路由全覆盖）+ Rust 结构对齐；差异基线 27 命令 / 99 条 |
+| **P1-08 第 3 步：消费层一致性断言** | ✅ 完成 | `5585a04` | 50 fixture 双通道回放，交付给 UI 的值逐字节一致；表内 0 静默回落 |
 
 > 验证口径：`tsc --noEmit` 0 错 · `npm --prefix web run test` **EXIT=0**（含 154 项集成检查）· `vite build` 通过（1986 modules）
 
 ## 总进度（按计划工期加权：29 周基准）
 
-**总体 ≈ 29%**（P0 全部 1 周 + P1 约 8.75/11 周）
+**总体 ≈ 34%**（P0 全部 1 周 + P1 约 9/11 周）
 
 | 阶段 | 工期 | 进度 | 状态 | Gate |
 |---|---|---|---|---|
 | P0 准备与基线冻结 | 1 周 | 100% | ✅ 完成 | **M0 达成**（CI 四 job 全绿） |
-| P1 原生核心与写入边界 | 11 周 | ≈80% | 🔄 进行中 | M1 待达成 |
+| P1 原生核心与写入边界 | 11 周 | ≈82% | 🔄 进行中 | M1 待达成（仅差 Δ13/Δ14 处置） |
 | P2 编辑器投影（BlockSuite） | 5 周 | 0% | ⬜ | M2 |
 | P3 AI 本地化与向量索引 | 7 周 | 0% | ⬜ | M3 |
 | P4 MCP/插件与发布 | 5 周 | 0% | ⬜ | M4 |
@@ -58,15 +59,15 @@
 - [x] P1-07 components/shell/settings 全量 .jsx → .tsx（34 文件 git mv；**strict 错误 1343→0**：CanvasView 328 / SettingsModal 252 / FolderTree 199 / AIAssistantPanel 175 / EditorPane 167 / ExpertsCenter 118 / ModelCenter 98 / Sidebar 5 / App 1；顺修 1 处既有 bug：McpServerSettings 作用域引用失效（组件内引用不存在的外层 `onConfirmFileOperation`/`vaultPath`，一旦开启项目级 MCP 必抛 ReferenceError）；`test/ai-motion.test.mjs` 源路径 .jsx→.tsx）
 - [x] **P1-05 收尾（api 层 invoke 双轨）✅**：`api/ipc.ts`（分发机制）+ `api/ipc-routes.ts`（映射表）+ `client.ts` 单一分发点（置于重试循环之外）；58 条路由逐条审计 → **34 条进表**（31 直接映射 + 3 需适配）、**24 条带行号证据排除**（11 缺命令 / 13 结构不兼容）；错误归一（Rust 裸字符串 → `ApiError(code='IPC_ERROR')`）、信封还原（命令返回 → `{data}`/`{data,meta}`）；`web/test/ipc-dual-track.test.mjs` 13 组断言（含静态优先于动态、args 表达不了则回落、不重试）
 - [ ] P1-05 收尾（批次 2 未闭环）：**入口切全功能 App 暂缓**——24 条未映射路由意味着桌面态仍缺功能（见 Δ13），先补齐 Rust 形参/命令再切
-- [ ] P1-08 功能对齐验证（契约快照对照）← **当前**
+- [x] **P1-08 功能对齐验证（契约快照对照）✅ 三步全部完成**
   - [x] **第 1 步（前置）：契约一致性校验 ✅**（`b678f4c`）`web/test/ipc-routes-contract.test.mjs` 解析 `generate_handler!` 并断言：进表命令必已注册、同 method 无重复路由、静态路由必须排在会吞掉它的动态路由之前、进表项与排除项互斥、`IPC_PENDING_COMMANDS` 确实未注册（**排除清单变成可执行断言**：将来实现其中之一会测试失败并提示回收进表）、34 + 24 = 58 口径自洽；顺带**修正 1 处落表错误**（`GET /notes/:id/history` 被误收，实为结构不兼容）；测试另打印「已注册但前端两通道都未引用」的 **18 个命令**作为本步待办视野（`job_list/get/cancel`、`note_index`、`note_create`、`note_update`、`search_query`、`note_history_list/get`、`folder_create/update/delete`、`canvas_list`、`vault_attachment_upload`、`vault_download`、`file_read/find/grep`）
   - [x] **第 1 步（正式）：录制 Express 契约快照 ✅**（`30e90e0`）`src-tauri/tests/tools/record-fixtures.mjs` 起临时 Express + **确定性 seed vault**，驱动 59 个已注册命令中的 **50 个**，产出 `src-tauri/tests/fixtures/`：`cases/<command>.json`（请求 + 响应 data + **由 data 递归推导的 schema** + volatilePaths）、`seed/manifest.json` + `seed/vault/**`（Rust 侧据此重建同一 Vault）、`index.json`（覆盖统计）。归一化保证字节级可复现（时间戳/64-hex/临时路径/耗时 → 占位符；**播种锚点 id 不归一**，供两通道对齐）；**幂等已独立验证**（连续两次运行目录哈希一致 `1e3c7d04…`）。跳过 9 个：7 个 Rust 内部 `vault_*`（Express 无对应端点）+ `job_get`/`job_cancel`（job 仅由 P3 端点创建，无法确定性播种）。另加 `src-tauri/tests/tools/validate-fixtures.mjs`（`npm run verify:fixtures`，已接入根 `verify` 链）守住基准自身：索引与 case 数一致、必需字段齐备、command 与文件名一致、**schema 必须等于由 data 重算的 schema**、无残留未归一时间戳/哈希；**已反向验证**（故意改坏一个 case → exit 1 且精确报出，恢复后归 0）
   - [ ] 第 2 步：Rust 侧逐命令加载 fixture 断言结构/语义一致（注意命令是 crate 私有 `fn`，测试须落在 `src/` 内的 `#[cfg(test)]`，`tests/` 目录调不到）
   - [x] **第 2 步：双通道对齐断言 ✅**（`6555003`）两条腿：
     - **静态参数契约**（`web/test/ipc-args-contract.test.mjs`，已进 web `test` 链）：解析 `lib.rs` 每个 `#[tauri::command]` 形参并转 camelCase，再用**万能 Proxy ctx 实际调用映射表的 `args` 构造器**收集键集合，断言「不多传键 + 必填形参都被提供」——34 条路由全覆盖、0 跳过。这是 invoke 最高频失效模式（参数名漂移）的守门人
     - **运行时结构对齐**（`src-tauri/src/parity_tests.rs`，crate 内 `#[cfg(test)]`；命令经 F2 后是私有 `fn` 且 `with_workspace` 需要 `State`，单测只能测**服务层**）：重建 seed Vault → 按 fixture 时序回放 → 算 schema → 与 Express 逐字段 diff → 与期望清单 `src-tauri/tests/fixtures/divergence.json` 比对。**基线：27 个命令 / 99 条差异**（其中 1 条 `error` 类）。清单**设计成可收缩**：修好一处即失败并点名要删的条目；服务调用统一走 `capture()`，出错记成差异而不是 panic 掉整份基线
-  - [ ] 第 3 步：前端 mock invoke 验证 UI 消费层行为不变
-- [ ] P1-09 删除 Express 回落
+  - [x] **第 3 步：消费层一致性断言 ✅**（`5585a04`）`web/test/ipc-parity-consumption.test.mjs`（已进 web `test` 链）——**数据驱动**：把 50 个 fixture 的同一份 `data` 分别经 ①HTTP（fetch 桩返回 `{data}` 信封）与 ②IPC（invoke 桩直接返回数据本身）走一遍 `http.*`，断言两条通道交付给消费层的值逐字节相同（**50/50 一致**）；同时钉住「实际走的通道」——**表内 30 条全部走 invoke、表外 20 条必须回落 HTTP、表内 0 条静默回落**（静默回落是真 hazard：路由匹配上了但 `args` 自述表达不了会回落，而真实桌面端没有 Express 兜底）。另覆盖错误路径：HTTP 400 `{error:{message}}` 与 IPC 抛出同一文案，两条通道的用户可见 message 一致（`code` 不同属已知差异：HTTP 保留服务端 code，IPC 为裸字符串只能标 `IPC_ERROR`）。**反向验证三种破坏全部被拦**：删表内路由 / IPC 侧不套信封（点名 30 个命令）/ 强制 args 返回 undefined（点名静默回落路由）
+- [ ] P1-09 删除 Express 回落 ← **当前（前置：Δ13/Δ14 处置）**
 - [ ] P1-10 验收发布 v0.2.0
 
 ## IPC 命令核销（契约清单 96 端点）
@@ -109,7 +110,7 @@
 
 - [x] P1-08 第 1 步：契约快照基线（50 case）+ fixtures 自检器（`npm run verify:fixtures`）
 - [x] P1-08 第 2 步：双通道对齐断言（静态参数契约 + Rust 结构对齐，差异清单 27 命令 / 99 条）
-- [ ] P1-08 第 3 步：前端 mock invoke 验证 UI 消费层行为不变
+- [x] P1-08 第 3 步：消费层一致性断言（50 fixture 双通道回放，值逐字节一致；表内 0 静默回落）
 - [ ] **Δ13 补齐**：至少 note 系 `propertiesJson`↔`properties` 与 `folderId` 形参、folder 系 id 寻址；补齐前**不得**把桌面入口切到全功能 App（计划 §5.3-5 的顺序约束）
 - [ ] **Δ14 定夺**：`vault_read_asset` 白名单口径（保持窄白名单并写进契约，或放宽并补 XSS 防护）
 - [ ] Δ11 api 契约类型收紧（去掉组件侧 `as unknown as` / `: any` 断言）
@@ -119,8 +120,8 @@
 
 ## 下一步
 
-1. **P1-08 第 3 步**：前端在 web 测试中 mock invoke，验证 UI 消费层行为不变
-2. **Δ13 处置（M1 前必做）**：按 `ipc-routes.ts` 排除清单 + `divergence.json` 的 99 条差异补 Rust 形参/命令；优先 note 系与 folder 系
-3. **Δ14 定夺**：`vault_read_asset` 白名单（需产品/安全口径拍板，不是纯技术选择）
-4. Δ11 收紧 api 契约类型；Δ10 复核 Rust `vault_download` 对符号链接/点目录的返回码
-5. **待对齐项**：Express 对行首 `#标签` 有 heading 启发式（会被当标题吃掉），播种须内联；Rust 标签解析口径需核对
+1. **Δ13 处置（M1 前必做，主战场）**：按 `ipc-routes.ts` 排除清单 + `divergence.json` 的 99 条差异补 Rust 形参/命令——优先 note 系（`propertiesJson`↔`properties`、`folderId` 形参）与 folder 系（id 寻址、`affectedNoteCount`），再补 10 个 ⬜ 命令
+2. **Δ14 定夺**：`vault_read_asset` 白名单口径（需产品/安全拍板，不是纯技术选择）
+3. Δ11 收紧 api 契约类型；Δ10 复核 Rust `vault_download` 对符号链接/点目录的返回码
+4. **待对齐项**：Express 对行首 `#标签` 有 heading 启发式（会被当标题吃掉），播种须内联；Rust 标签解析口径需核对
+5. Δ13/Δ14 清零且 `divergence.json` 收缩到可接受范围后，才进入 **P1-09 删除 Express 回落**（计划 §5.3-5 顺序约束）
