@@ -53,7 +53,13 @@
               "resolved": true
             }
           ],
-          "backlinks": []
+          "backlinks": [
+            {
+              "sourceNoteId": "f1a00000-0000-4000-8000-000000000012",
+              "sourceTitle": "Beta 笔记",
+              "sourceUpdatedAt": "<timestamp>"
+            }
+          ]
         }
       }
     ],
@@ -192,8 +198,21 @@
                 },
                 "backlinks": {
                   "type": "array",
-                  "element": null,
-                  "length": 0
+                  "element": {
+                    "type": "object",
+                    "fields": {
+                      "sourceNoteId": {
+                        "type": "string"
+                      },
+                      "sourceTitle": {
+                        "type": "string"
+                      },
+                      "sourceUpdatedAt": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "length": 1
                 }
               }
             }
@@ -240,6 +259,7 @@
     "$.data.results[0].result.contentHash",
     "$.data.results[0].result.createdAt",
     "$.data.results[0].result.updatedAt",
-    "$.data.results[0].result.tags[0].id"
+    "$.data.results[0].result.tags[0].id",
+    "$.data.results[0].result.backlinks[0].sourceUpdatedAt"
   ]
 }

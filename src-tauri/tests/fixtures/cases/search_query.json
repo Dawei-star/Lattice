@@ -21,6 +21,17 @@
       "propertiesJson": "{\"status\":\"captured\",\"type\":\"inbox\"}",
       "updatedAt": "<timestamp>",
       "excerpt": "Alpha 的正文 标签 #tag-alpha 引用 Beta 笔记"
+    },
+    {
+      "id": "f1a00000-0000-4000-8000-000000000012",
+      "title": "Beta 笔记",
+      "folderId": "<uuid>",
+      "filePath": "项目/Beta 笔记.md",
+      "isPinned": false,
+      "contentHash": "<hash>",
+      "propertiesJson": "{}",
+      "updatedAt": "<timestamp>",
+      "excerpt": "Beta 的正文 attachments/att-referenced.txt 标签 #tag-beta 回到 Alpha 笔记"
     }
   ],
   "schema": {
@@ -57,11 +68,14 @@
         }
       }
     },
-    "length": 1
+    "length": 2
   },
   "volatilePaths": [
     "$.data[0].contentHash",
-    "$.data[0].updatedAt"
+    "$.data[0].updatedAt",
+    "$.data[1].folderId",
+    "$.data[1].contentHash",
+    "$.data[1].updatedAt"
   ],
   "note": "响应 data 为命中数组，meta.strategy/count 未进 case。"
 }

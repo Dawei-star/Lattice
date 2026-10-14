@@ -5,7 +5,7 @@
     "path": "/api/notes/f1a00000-0000-4000-8000-000000000011",
     "query": {},
     "body": {
-      "content": "Alpha 的正文（已更新）\n\n标签 #tag-alpha\n",
+      "content": "Alpha 的正文（已更新）\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n",
       "confirmed": true
     },
     "status": 200
@@ -13,11 +13,11 @@
   "data": {
     "id": "f1a00000-0000-4000-8000-000000000011",
     "title": "Alpha 笔记",
-    "content": "Alpha 的正文（已更新）\n\n标签 #tag-alpha\n",
+    "content": "Alpha 的正文（已更新）\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n",
     "folderId": null,
     "filePath": "Alpha 笔记.md",
     "isPinned": false,
-    "wordCount": 10,
+    "wordCount": 15,
     "contentHash": "<hash>",
     "propertiesJson": "{\"status\":\"captured\",\"type\":\"inbox\"}",
     "createdAt": "<timestamp>",
@@ -32,8 +32,21 @@
         "name": "tag-alpha"
       }
     ],
-    "outgoing": [],
-    "backlinks": []
+    "outgoing": [
+      {
+        "targetTitle": "Beta 笔记",
+        "targetNoteId": "f1a00000-0000-4000-8000-000000000012",
+        "resolvedTitle": "Beta 笔记",
+        "resolved": true
+      }
+    ],
+    "backlinks": [
+      {
+        "sourceNoteId": "f1a00000-0000-4000-8000-000000000012",
+        "sourceTitle": "Beta 笔记",
+        "sourceUpdatedAt": "<timestamp>"
+      }
+    ]
   },
   "schema": {
     "type": "object",
@@ -99,13 +112,42 @@
       },
       "outgoing": {
         "type": "array",
-        "element": null,
-        "length": 0
+        "element": {
+          "type": "object",
+          "fields": {
+            "targetTitle": {
+              "type": "string"
+            },
+            "targetNoteId": {
+              "type": "string"
+            },
+            "resolvedTitle": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "boolean"
+            }
+          }
+        },
+        "length": 1
       },
       "backlinks": {
         "type": "array",
-        "element": null,
-        "length": 0
+        "element": {
+          "type": "object",
+          "fields": {
+            "sourceNoteId": {
+              "type": "string"
+            },
+            "sourceTitle": {
+              "type": "string"
+            },
+            "sourceUpdatedAt": {
+              "type": "string"
+            }
+          }
+        },
+        "length": 1
       }
     }
   },
@@ -113,7 +155,8 @@
     "$.data.contentHash",
     "$.data.createdAt",
     "$.data.updatedAt",
-    "$.data.tags[0].id"
+    "$.data.tags[0].id",
+    "$.data.backlinks[0].sourceUpdatedAt"
   ],
   "note": "改正文（不触发确认闸门）；写前快照供 history 用例。"
 }

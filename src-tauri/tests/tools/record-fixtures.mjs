@@ -234,8 +234,12 @@ function describeBody(response) {
 
 // 注意：行首的 `#标签` 会被服务端 heading 启发式吃掉，标签需内联在文字之后。
 const ALPHA_CONTENT = 'Alpha 的正文\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n';
-const ALPHA_UPDATED_CONTENT = 'Alpha 的正文（已更新）\n\n标签 #tag-alpha\n';
-const BETA_CONTENT = 'Beta 的正文\n\n![[attachments/att-referenced.txt]]\n\n标签 #tag-beta\n';
+// 更新后的正文**保留** wiki 链接：这样 note_update 的响应里 `outgoing` 非空，
+// 给 NoteDetail 的 outgoing 元素形状留下实测基准（否则只有空数组，形状无从核销）。
+const ALPHA_UPDATED_CONTENT = 'Alpha 的正文（已更新）\n\n标签 #tag-alpha\n\n引用 [[Beta 笔记]]\n';
+// Beta 反指 Alpha：使 Alpha 同时具备出链（自己指向 Beta）与反链（Beta 指向自己），
+// 一个用例即可覆盖 NoteDetail 的 outgoing 与 backlinks 两种元素形状。
+const BETA_CONTENT = 'Beta 的正文\n\n![[attachments/att-referenced.txt]]\n\n标签 #tag-beta\n\n回到 [[Alpha 笔记]]\n';
 const MOVED_CONTENT = '待移动的正文\n';
 const DELETE_CONTENT = '待删除的正文 标签 #tag-archive\n';
 const SEED_CANVAS_PATH = 'seed-canvas.canvas';

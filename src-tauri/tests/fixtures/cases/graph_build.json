@@ -15,15 +15,15 @@
         "folderId": null,
         "isPinned": false,
         "wordCount": 12,
-        "degree": 1
+        "degree": 2
       },
       {
         "id": "f1a00000-0000-4000-8000-000000000012",
         "title": "Beta 笔记",
         "folderId": "<uuid>",
         "isPinned": false,
-        "wordCount": 10,
-        "degree": 2
+        "wordCount": 15,
+        "degree": 3
       },
       {
         "id": "f1a00000-0000-4000-8000-000000000013",
@@ -46,6 +46,10 @@
       {
         "source": "f1a00000-0000-4000-8000-000000000011",
         "target": "f1a00000-0000-4000-8000-000000000012"
+      },
+      {
+        "source": "f1a00000-0000-4000-8000-000000000012",
+        "target": "f1a00000-0000-4000-8000-000000000011"
       }
     ],
     "dangling": [
@@ -56,7 +60,7 @@
     ],
     "stats": {
       "nodeCount": 4,
-      "edgeCount": 1,
+      "edgeCount": 2,
       "isolatedCount": 2
     }
   },
@@ -103,7 +107,7 @@
             }
           }
         },
-        "length": 1
+        "length": 2
       },
       "dangling": {
         "type": "array",

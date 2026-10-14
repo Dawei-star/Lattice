@@ -226,28 +226,10 @@
     ],
     "note_create": [
       {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.backlinks",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.outgoing",
-        "rust": "absent"
-      },
-      {
         "express": "string",
         "kind": "type-mismatch",
         "path": "$.data.propertiesJson",
         "rust": "null"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.tags",
-        "rust": "absent"
       }
     ],
     "note_delete": [
@@ -328,65 +310,7 @@
         "rust": "absent"
       }
     ],
-    "note_history_restore": [
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.backlinks",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.outgoing",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.tags",
-        "rust": "absent"
-      }
-    ],
-    "note_update": [
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.backlinks",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.outgoing",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.tags",
-        "rust": "absent"
-      }
-    ],
     "review_execute": [
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.results[0].result.backlinks",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.results[0].result.outgoing",
-        "rust": "absent"
-      },
-      {
-        "express": "array",
-        "kind": "missing-in-rust",
-        "path": "$.data.results[0].result.tags",
-        "rust": "absent"
-      },
       {
         "express": "string",
         "kind": "type-mismatch",

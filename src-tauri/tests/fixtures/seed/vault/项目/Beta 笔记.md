@@ -10,3 +10,5 @@ Beta 的正文
 ![[attachments/att-referenced.txt]]
 
 标签 #tag-beta
+
+回到 [[Alpha 笔记]]

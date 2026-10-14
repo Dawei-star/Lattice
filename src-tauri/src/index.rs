@@ -599,11 +599,25 @@ impl Index {
                     properties_json,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
+                    // 关系字段需要额外查询，先占位、拿到行之后再填
+                    tags: Vec::new(),
+                    outgoing: Vec::new(),
+                    backlinks: Vec::new(),
                 })
             })
             .optional()
             .map_err(|error| format!("无法读取笔记详情：{error}"))?;
-        Ok(detail)
+        let Some(mut detail) = detail else {
+            return Ok(None);
+        };
+        let path = detail.file_path.clone().unwrap_or_default();
+        detail.tags = query_note_tags(&connection, &path)
+            .map_err(|error| format!("无法读取笔记标签：{error}"))?;
+        detail.outgoing = query_outgoing_links(&connection, &detail.id)
+            .map_err(|error| format!("无法读取出链：{error}"))?;
+        detail.backlinks = query_backlinks(&connection, &detail.id)
+            .map_err(|error| format!("无法读取反链：{error}"))?;
+        Ok(Some(detail))
     }
 
     /// 文件路径占用检查（create 分配路径用）：投影 file_path 是否已被其它行占用。
@@ -745,6 +759,93 @@ pub struct NoteDetail {
     pub properties: serde_json::Value,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    /// 关系字段（Express `mapNote` 同形状）：
+    /// 标签、出链、反链。由 `find_note_detail` 单独查询后填充。
+    pub tags: Vec<NoteTag>,
+    pub outgoing: Vec<NoteOutgoingLink>,
+    pub backlinks: Vec<NoteBacklink>,
+}
+
+/// 详情里的标签（对齐 Express `findTagsForNotes`：只发 id 与 name）。
+#[derive(Serialize, Debug)]
+pub struct NoteTag {
+    pub id: String,
+    pub name: String,
+}
+
+/// 出链（对齐 Express `listOutgoing`）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteOutgoingLink {
+    pub target_title: String,
+    pub target_note_id: Option<String>,
+    /// 目标笔记的真实标题；未解析（悬空链接）时为 null
+    pub resolved_title: Option<String>,
+    /// 是否已解析到具体笔记，即 `target_note_id.is_some()`
+    pub resolved: bool,
+}
+
+/// 反链（对齐 Express `listBacklinks`）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteBacklink {
+    pub source_note_id: String,
+    pub source_title: String,
+    pub source_updated_at: Option<String>,
+}
+
+/// 按笔记取标签。排序与 Express 一致（`t.name` NOCASE 升序）。
+fn query_note_tags(connection: &Connection, note_path: &str) -> Result<Vec<NoteTag>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT t.id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+          WHERE nt.note_path = ?1 ORDER BY t.name COLLATE NOCASE ASC",
+    )?;
+    let rows = statement.query_map(params![note_path], |row| {
+        Ok(NoteTag {
+            id: row.get(0)?,
+            name: row.get(1)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 出链。`LEFT JOIN` 保留悬空链接（`resolvedTitle` 为 null、`resolved` 为 false），
+/// 与 Express `listOutgoing` 的 LEFT JOIN 语义一致。
+fn query_outgoing_links(connection: &Connection, note_id: &str) -> Result<Vec<NoteOutgoingLink>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT l.target_title, l.target_note_id, n.title
+           FROM links l LEFT JOIN notes n ON n.note_id = l.target_note_id
+          WHERE l.source_note_id = ?1 ORDER BY l.target_title COLLATE NOCASE ASC",
+    )?;
+    let rows = statement.query_map(params![note_id], |row| {
+        let target_title: String = row.get(0)?;
+        let target_note_id: Option<String> = row.get(1)?;
+        let resolved_title: Option<String> = row.get(2)?;
+        Ok(NoteOutgoingLink {
+            resolved: target_note_id.is_some(),
+            target_title,
+            target_note_id,
+            resolved_title,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 反链。排序与 Express 一致（来源笔记 `updated_at` 降序）。
+fn query_backlinks(connection: &Connection, note_id: &str) -> Result<Vec<NoteBacklink>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT l.source_note_id, n.title, n.updated_at
+           FROM links l JOIN notes n ON n.note_id = l.source_note_id
+          WHERE l.target_note_id = ?1 ORDER BY n.updated_at DESC",
+    )?;
+    let rows = statement.query_map(params![note_id], |row| {
+        Ok(NoteBacklink {
+            source_note_id: row.get(0)?,
+            source_title: row.get(1)?,
+            source_updated_at: row.get(2)?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// 健康扫描笔记（review scan 数据源；properties 为解析后的对象）。
