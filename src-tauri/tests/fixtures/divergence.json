@@ -1,0 +1,653 @@
+{
+  "commands": {
+    "canvas_delete": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "boolean"
+      },
+      {
+        "express": "boolean",
+        "kind": "missing-in-rust",
+        "path": "$.data.deleted",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.path",
+        "rust": "absent"
+      }
+    ],
+    "canvas_list": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data[0]",
+        "rust": "string"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].folderPath",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].name",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].path",
+        "rust": "absent"
+      }
+    ],
+    "canvas_move": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "boolean"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.fromPath",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.toPath",
+        "rust": "absent"
+      }
+    ],
+    "canvas_write": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "string"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.edges",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.nodes",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.revision",
+        "rust": "absent"
+      }
+    ],
+    "file_log": [
+      {
+        "express": "null",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].action.path",
+        "rust": "absent"
+      },
+      {
+        "express": "null",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].action.targetPath",
+        "rust": "absent"
+      }
+    ],
+    "file_preview": [
+      {
+        "express": "boolean",
+        "kind": "missing-in-rust",
+        "path": "$.data.plan.actions[0].all",
+        "rust": "absent"
+      }
+    ],
+    "folder_create": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.children",
+        "rust": "array"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.createdAt",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.noteCount",
+        "rust": "number"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.updatedAt",
+        "rust": "absent"
+      }
+    ],
+    "folder_delete": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "array"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.affectedNoteCount",
+        "rust": "absent"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.deletedFolderCount",
+        "rust": "absent"
+      }
+    ],
+    "folder_tree": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data[0].children[0]",
+        "rust": "empty"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].createdAt",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].updatedAt",
+        "rust": "absent"
+      }
+    ],
+    "folder_update": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "array"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.createdAt",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.id",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.name",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.parentId",
+        "rust": "absent"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.sortOrder",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.updatedAt",
+        "rust": "absent"
+      }
+    ],
+    "note_create": [
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.backlinks",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.outgoing",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.properties",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.propertiesJson",
+        "rust": "null"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.tags",
+        "rust": "absent"
+      }
+    ],
+    "note_delete": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "boolean"
+      },
+      {
+        "express": "boolean",
+        "kind": "missing-in-rust",
+        "path": "$.data.deleted",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.id",
+        "rust": "absent"
+      }
+    ],
+    "note_history_get": [
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.content",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.createdAt",
+        "rust": "absent"
+      },
+      {
+        "express": "boolean",
+        "kind": "missing-in-rust",
+        "path": "$.data.isPinned",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.properties",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.raw",
+        "rust": "string"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.title",
+        "rust": "absent"
+      }
+    ],
+    "note_history_list": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "array"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.currentHash",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.items",
+        "rust": "absent"
+      }
+    ],
+    "note_history_restore": [
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.backlinks",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.outgoing",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.properties",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.tags",
+        "rust": "absent"
+      }
+    ],
+    "note_index": [
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].properties",
+        "rust": "absent"
+      }
+    ],
+    "note_update": [
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.backlinks",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.outgoing",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.properties",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.propertiesJson",
+        "rust": "null"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.tags",
+        "rust": "absent"
+      }
+    ],
+    "review_execute": [
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.results[0].result.backlinks",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.results[0].result.outgoing",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.results[0].result.properties",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.results[0].result.tags",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.results[0].summary",
+        "rust": "array"
+      }
+    ],
+    "review_health": [
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.categories.incomplete[0].folderId",
+        "rust": "null"
+      },
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.categories.metadata[0].folderId",
+        "rust": "null"
+      }
+    ],
+    "review_plan": [
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.actions[0].summary",
+        "rust": "array"
+      },
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data.changes[0].summary",
+        "rust": "array"
+      }
+    ],
+    "search_query": [
+      {
+        "express": "array",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "object"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.items",
+        "rust": "array"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.strategy",
+        "rust": "string"
+      }
+    ],
+    "vault_attachment_delete": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "boolean"
+      },
+      {
+        "express": "boolean",
+        "kind": "missing-in-rust",
+        "path": "$.data.deleted",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.path",
+        "rust": "absent"
+      }
+    ],
+    "vault_attachment_upload": [
+      {
+        "express": "object",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "string"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.mimeType",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.modifiedAt",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.name",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.path",
+        "rust": "absent"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.size",
+        "rust": "absent"
+      }
+    ],
+    "vault_attachments_list": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data[0].mime",
+        "rust": "string"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].mimeType",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].modifiedAt",
+        "rust": "absent"
+      }
+    ],
+    "vault_download": [
+      {
+        "express": "string",
+        "kind": "type-mismatch",
+        "path": "$.data",
+        "rust": "object"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.base64",
+        "rust": "string"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.mimeType",
+        "rust": "string"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.name",
+        "rust": "string"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.path",
+        "rust": "string"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.size",
+        "rust": "number"
+      }
+    ],
+    "vault_info": [
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.mode",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.path",
+        "rust": "string"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.profile",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.profilePath",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.profileStatus",
+        "rust": "absent"
+      },
+      {
+        "express": "null",
+        "kind": "missing-in-rust",
+        "path": "$.data.profileWarning",
+        "rust": "absent"
+      },
+      {
+        "express": "string",
+        "kind": "missing-in-rust",
+        "path": "$.data.vaultDir",
+        "rust": "absent"
+      }
+    ],
+    "vault_read_asset": [
+      {
+        "express": "string",
+        "kind": "error",
+        "path": "$",
+        "rust": "Unsupported attachment format"
+      }
+    ]
+  },
+  "note": "P1-08 结构对齐差异清单（由 src-tauri/src/parity_tests.rs 生成）。每条含 command/path/kind/express/rust。Rust 侧修好一处后该条会消失，测试会失败并提示删除。"
+}

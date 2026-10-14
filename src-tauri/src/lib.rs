@@ -15,6 +15,8 @@ mod db;
 mod index;
 mod jobs;
 mod markdown;
+#[cfg(test)]
+mod parity_tests;
 mod time;
 mod vault;
 mod watcher;
