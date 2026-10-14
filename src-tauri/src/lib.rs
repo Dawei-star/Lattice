@@ -477,7 +477,7 @@ fn canvas_write(
     edges: serde_json::Value,
     expected_hash: Option<String>,
     confirmed: Option<bool>,
-) -> Result<String, String> {
+) -> Result<crate::workspace::CanvasWriteResult, String> {
     with_workspace(state, |workspace| {
         workspace.canvas_write(
             &path,
@@ -490,7 +490,7 @@ fn canvas_write(
 }
 
 #[tauri::command]
-fn canvas_move(state: State<'_, WorkspaceState>, from_path: String, to_path: String, confirmed: Option<bool>) -> Result<bool, String> {
+fn canvas_move(state: State<'_, WorkspaceState>, from_path: String, to_path: String, confirmed: Option<bool>) -> Result<crate::workspace::CanvasMoveResult, String> {
     with_workspace(state, |workspace| {
         workspace.canvas_move(&from_path, &to_path, confirmed.unwrap_or(false))
     })
@@ -502,7 +502,7 @@ fn canvas_delete(
     path: String,
     confirmed: Option<bool>,
     second_confirmed: Option<bool>,
-) -> Result<bool, String> {
+) -> Result<crate::workspace::CanvasDeleteResult, String> {
     with_workspace(state, |workspace| {
         workspace.canvas_delete(
             &path,

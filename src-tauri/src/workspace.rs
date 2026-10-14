@@ -872,7 +872,7 @@ impl WorkspaceService {
         edges: serde_json::Value,
         expected_hash: Option<&str>,
         confirmed: bool,
-    ) -> Result<String, ServiceError> {
+    ) -> Result<CanvasWriteResult, ServiceError> {
         let file = self.canvas_path(path)?;
         let exists = file.exists();
         if !exists && !confirmed {
@@ -881,8 +881,17 @@ impl WorkspaceService {
                 "新建画布需要 confirmed=true",
             ));
         }
-        let raw = serde_json::to_string_pretty(&serde_json::json!({ "nodes": nodes, "edges": edges }))
-            .map_err(|error| ServiceError::new("VALIDATION", format!("画布序列化失败：{error}")))?;
+        // 磁盘格式对齐 Express canvas.write：`{...payload, version: 1}` + 结尾换行
+        // （此前 Rust 写的画布文件缺 version 字段，两个通道写同一 Vault 时格式不一致）
+        let document = serde_json::json!({ "nodes": nodes, "edges": edges, "version": 1 });
+        let raw = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&document)
+                .map_err(|error| ServiceError::new("VALIDATION", format!("画布序列化失败：{error}")))?
+        );
+        // 对齐 Express assertWritablePath：写盘前拒绝穿越符号链接
+        fc_assert_no_symlink(self.vault.root(), &file)
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
         if exists {
             let current_raw = std::fs::read_to_string(&file)
                 .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
@@ -913,11 +922,21 @@ impl WorkspaceService {
             std::fs::write(&file, &raw).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
         }
         self.audit.record("canvas_write", &[("path", path), ("actor", "ui")]);
-        Ok(checksum(raw.as_bytes()))
+        Ok(CanvasWriteResult {
+            nodes: document
+                .get("nodes")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(Vec::new())),
+            edges: document
+                .get("edges")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(Vec::new())),
+            revision: checksum(raw.as_bytes()),
+        })
     }
 
     /// 移动/重命名画布（契约 PATCH /api/canvas/file → canvas_move）。
-    pub fn canvas_move(&self, from: &str, to: &str, confirmed: bool) -> Result<bool, ServiceError> {
+    pub fn canvas_move(&self, from: &str, to: &str, confirmed: bool) -> Result<CanvasMoveResult, ServiceError> {
         if !confirmed {
             return Err(ServiceError::new("CONFIRMATION_REQUIRED", "移动画布需要 confirmed=true"));
         }
@@ -926,20 +945,39 @@ impl WorkspaceService {
         if !source.exists() {
             return Err(ServiceError::new("NOT_FOUND", "画布不存在"));
         }
-        if target.exists() {
+        // Windows 文件系统大小写不敏感：仅改大小写的重命名（画板.canvas → 画板.Canvas）
+        // 会被 exists() 误判为「目标已存在」，与 Express canvas.move 一致，用同路径判定豁免
+        let same_file = if cfg!(windows) {
+            source.to_string_lossy().to_ascii_lowercase() == target.to_string_lossy().to_ascii_lowercase()
+        } else {
+            source == target
+        };
+        if !same_file && target.exists() {
             return Err(ServiceError::new("CONFLICT", "目标画布已存在"));
         }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
+        // 对齐 Express assertWritablePath：source 与 target 都要查
+        fc_assert_no_symlink(self.vault.root(), &source)
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
+        fc_assert_no_symlink(self.vault.root(), &target)
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
+        if !same_file {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&source, &target)
+                .map_err(|error| ServiceError::new("IO_ERROR", format!("无法移动画布：{error}")))?;
         }
-        std::fs::rename(&source, &target)
-            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法移动画布：{error}")))?;
         self.audit.record("canvas_move", &[("from", from), ("to", to), ("actor", "ui")]);
-        Ok(true)
+        Ok(CanvasMoveResult {
+            from_path: from.to_string(),
+            to_path: to.to_string(),
+        })
     }
 
     /// 删除画布（契约 DELETE /api/canvas/file → canvas_delete）：destructive 双确认。
-    pub fn canvas_delete(&self, path: &str, confirmed: bool, second_confirmed: bool) -> Result<bool, ServiceError> {
+    /// 幂等：文件已不在磁盘（被外部删除、树列表过期）时按成功处理，让前端能清掉过期条目
+    /// （对齐 Express canvas.remove）。
+    pub fn canvas_delete(&self, path: &str, confirmed: bool, second_confirmed: bool) -> Result<CanvasDeleteResult, ServiceError> {
         if !confirmed || !second_confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
@@ -948,12 +986,14 @@ impl WorkspaceService {
         }
         let file = self.canvas_path(path)?;
         if !file.exists() {
-            return Err(ServiceError::new("NOT_FOUND", "画布不存在"));
+            return Ok(CanvasDeleteResult { path: path.to_string(), deleted: true });
         }
+        fc_assert_no_symlink(self.vault.root(), &file)
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
         std::fs::remove_file(&file)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除画布：{error}")))?;
         self.audit.record("canvas_delete", &[("path", path), ("actor", "ui")]);
-        Ok(true)
+        Ok(CanvasDeleteResult { path: path.to_string(), deleted: true })
     }
 }
 
@@ -4499,6 +4539,31 @@ pub struct CanvasDocument {
     pub nodes: serde_json::Value,
     pub edges: serde_json::Value,
     pub revision: Option<String>,
+}
+
+/// 画布写入结果（对齐 Express `canvas.write`：回显 payload + revision）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasWriteResult {
+    pub nodes: serde_json::Value,
+    pub edges: serde_json::Value,
+    pub revision: String,
+}
+
+/// 画布移动结果（对齐 Express `canvas.move`）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasMoveResult {
+    pub from_path: String,
+    pub to_path: String,
+}
+
+/// 画布删除结果（对齐 Express `canvas.remove`）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasDeleteResult {
+    pub path: String,
+    pub deleted: bool,
 }
 
 #[cfg(test)]
