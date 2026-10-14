@@ -743,6 +743,16 @@ fn properties_value(raw: Option<&str>) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
+
+/// 库中 NULL 表示「无属性」，而 Express 在**线缆上始终发字符串**（无属性时为 `{}`）。
+/// 用自定义序列化在线缆层归一，避免改动 Rust 内部类型（`workspace.rs` 仍按 Option 读取）。
+fn serialize_properties_json<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(value.as_deref().unwrap_or("{}"))
+}
+
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteDetail {
@@ -754,6 +764,7 @@ pub struct NoteDetail {
     pub is_pinned: bool,
     pub word_count: u64,
     pub content_hash: Option<String>,
+    #[serde(serialize_with = "serialize_properties_json")]
     pub properties_json: Option<String>,
     /// 解析后的属性对象（与 Express 同名字段对齐；`properties_json` 保留兼容既有消费方）
     pub properties: serde_json::Value,
@@ -884,6 +895,7 @@ pub struct NoteIndexEntry {
     pub file_path: String,
     pub word_count: u64,
     pub content_hash: Option<String>,
+    #[serde(serialize_with = "serialize_properties_json")]
     pub properties_json: Option<String>,
     /// 解析后的属性对象（见 `properties_value`）
     pub properties: serde_json::Value,
@@ -990,6 +1002,7 @@ pub struct SearchItem {
     pub file_path: String,
     pub is_pinned: bool,
     pub content_hash: Option<String>,
+    #[serde(serialize_with = "serialize_properties_json")]
     pub properties_json: Option<String>,
     /// 解析后的属性对象（见 `properties_value`）
     pub properties: serde_json::Value,

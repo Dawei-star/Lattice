@@ -224,14 +224,6 @@
         "rust": "absent"
       }
     ],
-    "note_create": [
-      {
-        "express": "string",
-        "kind": "type-mismatch",
-        "path": "$.data.propertiesJson",
-        "rust": "null"
-      }
-    ],
     "note_delete": [
       {
         "express": "object",
