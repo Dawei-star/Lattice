@@ -119,7 +119,16 @@ pub fn run() {
             file_preview,
             file_execute,
             file_undo,
-            file_log
+            file_log,
+            expert_list,
+            expert_get,
+            expert_save,
+            expert_delete,
+            expert_route,
+            skill_list,
+            skill_get,
+            skill_save,
+            skill_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -653,6 +662,71 @@ fn file_undo(
 #[tauri::command]
 fn file_log(state: State<'_, WorkspaceState>, limit: Option<u64>) -> Result<Vec<serde_json::Value>, String> {
     with_workspace(state, |workspace| workspace.file_log(limit))
+}
+
+#[tauri::command]
+fn expert_list(state: State<'_, WorkspaceState>) -> Result<Vec<serde_json::Value>, String> {
+    with_workspace(state, |workspace| workspace.expert_list())
+}
+
+#[tauri::command]
+fn expert_get(state: State<'_, WorkspaceState>, id: String) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.expert_get(&id))
+}
+
+#[tauri::command]
+fn expert_save(
+    state: State<'_, WorkspaceState>,
+    expert: serde_json::Value,
+    id: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.expert_save(expert, id, confirmed.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn expert_delete(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.expert_delete(&id, confirmed.unwrap_or(false), second_confirmed.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn expert_route(state: State<'_, WorkspaceState>, message: String, exclude_id: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    with_workspace(state, |workspace| workspace.expert_route(&message, exclude_id))
+}
+
+#[tauri::command]
+fn skill_list(state: State<'_, WorkspaceState>) -> Result<Vec<serde_json::Value>, String> {
+    with_workspace(state, |workspace| workspace.skill_list())
+}
+
+#[tauri::command]
+fn skill_get(state: State<'_, WorkspaceState>, id: String) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.skill_get(&id))
+}
+
+#[tauri::command]
+fn skill_save(
+    state: State<'_, WorkspaceState>,
+    skill: serde_json::Value,
+    id: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.skill_save(skill, id, confirmed.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn skill_delete(
+    state: State<'_, WorkspaceState>,
+    id: String,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.skill_delete(&id, confirmed.unwrap_or(false), second_confirmed.unwrap_or(false)))
 }
 
 /// 后台扫描执行器：领取 `vault-scan` 任务 → 取消检查 → 增量 reconcile →

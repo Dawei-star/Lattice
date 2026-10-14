@@ -120,17 +120,17 @@
 
 | 方法 | 路径 | 请求 | 响应 | 服务层 | 未来 Rust 命令 | 状态 |
 |---|---|---|---|---|---|---|
-| GET | `/api/experts` | — | 专家列表 | experts.registry | `expert_list` | ⬜ |
-| GET | `/api/experts/:id` | — | 专家详情 | experts.registry | `expert_get` | ⬜ |
-| POST | `/api/experts` | body: expert + `confirmed…` | 201 | experts.registry | `expert_save` | ⬜ |
-| PUT | `/api/experts/:id` | 同上 | 专家 | experts.registry | `expert_save`（复用） | ⬜ |
-| DELETE | `/api/experts/:id` | body: `confirmed, secondConfirmed` | 删除结果 | experts.registry | `expert_delete` | ⬜ |
-| POST | `/api/experts/route` | body: `message, excludeId?` | 推荐专家 | experts.registry | `expert_route` | ⬜ |
-| GET | `/api/experts/skills` | — | 技能列表 | experts.registry | `skill_list` | ⬜ |
-| GET | `/api/experts/skills/:id` | — | 技能详情（含 content） | experts.registry | `skill_get` | ⬜ |
-| POST | `/api/experts/skills` | body: skill + `confirmed…` | 201 | experts.registry | `skill_save` | ⬜ |
-| PUT | `/api/experts/skills/:id` | 同上 | 技能 | experts.registry | `skill_save`（复用） | ⬜ |
-| DELETE | `/api/experts/skills/:id` | body: `confirmed, secondConfirmed` | 删除结果 | experts.registry | `skill_delete` | ⬜ |
+| GET | `/api/experts` | — | 专家列表 | experts.registry | `expert_list` | ✅ |
+| GET | `/api/experts/:id` | — | 专家详情 | experts.registry | `expert_get` | ✅ |
+| POST | `/api/experts` | body: expert + `confirmed…` | 201 | experts.registry | `expert_save` | ✅ |
+| PUT | `/api/experts/:id` | 同上 | 专家 | experts.registry | `expert_save`（复用） | ✅ |
+| DELETE | `/api/experts/:id` | body: `confirmed, secondConfirmed` | 删除结果 | experts.registry | `expert_delete` | ✅ |
+| POST | `/api/experts/route` | body: `message, excludeId?` | 推荐专家 | experts.registry | `expert_route` | ✅ |
+| GET | `/api/experts/skills` | — | 技能列表 | experts.registry | `skill_list` | ✅ |
+| GET | `/api/experts/skills/:id` | — | 技能详情（含 content） | experts.registry | `skill_get` | ✅ |
+| POST | `/api/experts/skills` | body: skill + `confirmed…` | 201 | experts.registry | `skill_save` | ✅ |
+| PUT | `/api/experts/skills/:id` | 同上 | 技能 | experts.registry | `skill_save`（复用） | ✅ |
+| DELETE | `/api/experts/skills/:id` | body: `confirmed, secondConfirmed` | 删除结果 | experts.registry | `skill_delete` | ✅ |
 
 ### 2.8 jobs（3）/ workspace（1）/ update（1）/ mcp（3）
 

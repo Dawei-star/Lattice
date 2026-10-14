@@ -2644,6 +2644,572 @@ pub struct FileState {
     pub sha256: Option<String>,
 }
 
+// ===========================================================================
+// experts/skills 注册表（契约 /api/experts/* → 9 命令；对齐 experts.registry.js）
+// 内置资源编译期嵌入（P1-09 删 Express 时需把 builtin 资源迁至 src-tauri，Δ9）；
+// 工作区层 <vault>/.lattice/experts/*.json 与 .lattice/skills/<id>/{skill.json,SKILL.md}，
+// 读取 workspace 优先于 builtin；保存/删除走 confirmed（删除另需 secondConfirmed）。
+// ===========================================================================
+
+/// 内置专家（目录字典序，与 Express readdirSync 一致）。
+const BUILTIN_EXPERTS: &[&str] = &[
+    include_str!("../../server/src/modules/experts/builtin/experts/decision-archivist.json"),
+    include_str!("../../server/src/modules/experts/builtin/experts/general.json"),
+    include_str!("../../server/src/modules/experts/builtin/experts/inbox-organizer.json"),
+    include_str!("../../server/src/modules/experts/builtin/experts/knowledge-curator.json"),
+    include_str!("../../server/src/modules/experts/builtin/experts/knowledge-researcher.json"),
+    include_str!("../../server/src/modules/experts/builtin/experts/note-editor.json"),
+    include_str!("../../server/src/modules/experts/builtin/experts/task-executor.json"),
+];
+
+/// 内置技能（skill.json, SKILL.md），目录字典序。
+const BUILTIN_SKILLS: &[(&str, &str)] = &[
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/decision-capture/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/decision-capture/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/inbox-triage/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/inbox-triage/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/link-graph-analysis/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/link-graph-analysis/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/note-structure-audit/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/note-structure-audit/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/operation-plan/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/operation-plan/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/task-batch-planner/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/task-batch-planner/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/task-round-discipline/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/task-round-discipline/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/vault-health-check/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/vault-health-check/SKILL.md"),
+    ),
+    (
+        include_str!("../../server/src/modules/experts/builtin/skills/vault-search/skill.json"),
+        include_str!("../../server/src/modules/experts/builtin/skills/vault-search/SKILL.md"),
+    ),
+];
+
+impl WorkspaceService {
+    /// 契约 GET /api/experts：内置 + 工作区（同 id 工作区覆盖），无效条目跳过。
+    pub fn expert_list(&self) -> Result<Vec<serde_json::Value>, ServiceError> {
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        for raw in BUILTIN_EXPERTS {
+            if let Ok(document) = serde_json::from_str::<serde_json::Value>(raw)
+                && let Ok(expert) = expert_normalize(&document, &expert_file_stem(raw), "builtin")
+            {
+                entries.push(expert);
+            }
+        }
+        for path in expert_list_json_files(&self.experts_dir()) {
+            if let Ok(document) = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&path).unwrap_or_default())
+                && let Ok(expert) = expert_normalize(&document, &path.file_stem().unwrap_or_default().to_string_lossy(), "workspace")
+            {
+                if let Some(slot) = entries.iter_mut().find(|entry| entry["id"] == expert["id"]) {
+                    *slot = expert;
+                } else {
+                    entries.push(expert);
+                }
+            }
+        }
+        for expert in entries.iter_mut() {
+            let enabled_count = expert["skills"]
+                .as_array()
+                .map(|skills| skills.iter().filter(|skill| skill["enabled"] == serde_json::json!(true)).count())
+                .unwrap_or(0);
+            expert["skillCount"] = serde_json::json!(enabled_count);
+            if let Some(skills) = expert["skills"].as_array_mut() {
+                for skill in skills.iter_mut() {
+                    skill["available"] = serde_json::json!(self.skill_exists(skill["id"].as_str().unwrap_or_default()));
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    /// 契约 GET /api/experts/:id：详情（绑定技能嵌入定义摘要）。
+    pub fn expert_get(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
+        let mut expert = self.read_expert(id)?;
+        if let Some(skills) = expert["skills"].as_array_mut() {
+            for skill in skills.iter_mut() {
+                skill["skill"] = self
+                    .read_skill(skill["id"].as_str().unwrap_or_default(), false)
+                    .unwrap_or(serde_json::Value::Null);
+            }
+        }
+        Ok(expert)
+    }
+
+    /// 契约 POST /api/experts 与 PUT /api/experts/:id（save 复用；新建禁覆盖内置专家）。
+    pub fn expert_save(&self, input: serde_json::Value, existing_id: Option<String>, confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+        }
+        let id = match &existing_id {
+            Some(existing) => expert_assert_id(existing).map_err(|error| ServiceError::new("VALIDATION", error))?,
+            None => {
+                let requested = expert_assert_id(input.get("id").and_then(|value| value.as_str()).unwrap_or(""))
+                    .map_err(|error| ServiceError::new("VALIDATION", error))?;
+                if BUILTIN_EXPERTS.iter().any(|raw| {
+                    serde_json::from_str::<serde_json::Value>(raw)
+                        .ok()
+                        .and_then(|document| document.get("id").and_then(|value| value.as_str()).map(|value| value == requested))
+                        .unwrap_or(false)
+                }) {
+                    return Err(ServiceError::new("CONFLICT", "内置专家不可直接覆盖，请先复制为工作区版本"));
+                }
+                requested
+            }
+        };
+        let document = expert_normalize(&input, &id, "workspace").map_err(|error| ServiceError::new("VALIDATION", error))?;
+        expert_write_json(&self.experts_dir().join(format!("{id}.json")), &document)?;
+        self.expert_get(&id)
+    }
+
+    /// 契约 DELETE /api/experts/:id：仅删除工作区版本（双确认）。
+    pub fn expert_delete(&self, id: &str, confirmed: bool, second_confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+        }
+        if !second_confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "删除操作必须完成二次确认"));
+        }
+        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let path = self.experts_dir().join(format!("{resolved}.json"));
+        if !path.exists() {
+            return Err(ServiceError::new("NOT_FOUND", format!("工作区专家「{resolved}」不存在")));
+        }
+        fs::remove_file(&path).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        Ok(serde_json::json!({ "id": resolved, "deleted": true }))
+    }
+
+    /// 契约 POST /api/experts/route：关键词命中数 ≥ ceil(threshold×2) 即建议，score = 命中×100 + priority。
+    pub fn expert_route(&self, message: &str, exclude_id: Option<String>) -> Result<Vec<serde_json::Value>, ServiceError> {
+        let text = message.to_lowercase();
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut candidates = Vec::new();
+        for expert in self.expert_list()? {
+            let id = expert["id"].as_str().unwrap_or_default();
+            if id == "general" || Some(id) == exclude_id.as_deref() || expert["enabled"] != serde_json::json!(true) {
+                continue;
+            }
+            let mut keywords: Vec<String> = expert["routing"]["keywords"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .map(|item| item.trim().to_lowercase())
+                        .filter(|item| !item.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            keywords.sort();
+            keywords.dedup();
+            if keywords.is_empty() {
+                continue;
+            }
+            let matched: Vec<&str> = keywords.iter().filter(|keyword| text.contains(keyword.as_str())).map(String::as_str).collect();
+            let threshold = expert["routing"]["confidenceThreshold"].as_f64().unwrap_or(0.72);
+            let required = ((threshold * 2.0).ceil() as usize).max(1);
+            if matched.len() < required {
+                continue;
+            }
+            let priority = expert["routing"]["priority"].as_i64().unwrap_or(50);
+            candidates.push((
+                matched.len() as i64 * 100 + priority,
+                expert["name"].as_str().unwrap_or_default().to_owned(),
+                serde_json::json!({
+                    "id": id,
+                    "name": expert["name"],
+                    "description": expert["description"],
+                    "icon": expert["icon"],
+                    "matched": matched,
+                }),
+            ));
+        }
+        candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        candidates.truncate(3);
+        Ok(candidates.into_iter().map(|(_, _, candidate)| candidate).collect())
+    }
+
+    /// 契约 GET /api/experts/skills：技能目录（builtin + workspace 覆盖；filePath + contentHash，不含 content）。
+    pub fn skill_list(&self) -> Result<Vec<serde_json::Value>, ServiceError> {
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        for (manifest, body) in BUILTIN_SKILLS {
+            if let Ok(document) = serde_json::from_str::<serde_json::Value>(manifest)
+                && let Some(skill) = skill_document(&document, body, "builtin")
+            {
+                if let Some(slot) = entries.iter_mut().find(|entry| entry["id"] == skill["id"]) {
+                    *slot = skill.clone();
+                } else {
+                    entries.push(skill.clone());
+                }
+            }
+        }
+        if let Ok(directories) = fs::read_dir(self.skills_dir()) {
+            for entry in directories.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Some(skill) = self.read_skill_dir(&entry.path(), "workspace") {
+                    if let Some(slot) = entries.iter_mut().find(|existing| existing["id"] == skill["id"]) {
+                        *slot = skill.clone();
+                    } else {
+                        entries.push(skill);
+                    }
+                }
+            }
+        }
+        for skill in entries.iter_mut() {
+            let skill_id = skill["id"].as_str().unwrap_or_default().to_owned();
+            if let Some(object) = skill.as_object_mut() {
+                object.remove("content");
+                object.remove("path");
+                object.insert("filePath".into(), self.skills_dir().join(&skill_id).display().to_string().into());
+            }
+        }
+        Ok(entries)
+    }
+
+    /// 契约 GET /api/experts/skills/:id：详情（含 content）。
+    pub fn skill_get(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
+        self.read_skill(id, true)
+    }
+
+    /// 契约 POST /api/experts/skills 与 PUT /api/experts/skills/:id（save 复用；新建禁覆盖内置技能）。
+    pub fn skill_save(&self, input: serde_json::Value, existing_id: Option<String>, confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+        }
+        let id = match &existing_id {
+            Some(existing) => expert_assert_id(existing).map_err(|error| ServiceError::new("VALIDATION", error))?,
+            None => {
+                let requested = expert_assert_id(input.get("id").and_then(|value| value.as_str()).unwrap_or(""))
+                    .map_err(|error| ServiceError::new("VALIDATION", error))?;
+                if BUILTIN_SKILLS.iter().any(|(manifest, _)| {
+                    serde_json::from_str::<serde_json::Value>(manifest)
+                        .ok()
+                        .and_then(|document| document.get("id").and_then(|value| value.as_str()).map(|value| value == requested))
+                        .unwrap_or(false)
+                }) {
+                    return Err(ServiceError::new("CONFLICT", "内置Skill不可直接覆盖，请先复制为工作区版本"));
+                }
+                requested
+            }
+        };
+        let content = input.get("content").and_then(|value| value.as_str()).unwrap_or_default().trim().to_owned();
+        if content.is_empty() {
+            return Err(ServiceError::new("VALIDATION", "Skill 内容不能为空"));
+        }
+        if content.chars().count() > SKILL_MAX_CHARS {
+            return Err(ServiceError::new("VALIDATION", format!("Skill 内容不能超过 {SKILL_MAX_CHARS} 个字符")));
+        }
+        let document = skill_normalize(&input, &id, "workspace").map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let directory = self.skills_dir().join(&id);
+        fs::create_dir_all(&directory).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        expert_write_json(&directory.join("skill.json"), &document)?;
+        fs::write(directory.join("SKILL.md"), format!("{content}\n"))
+            .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        self.read_skill(&id, true)
+    }
+
+    /// 契约 DELETE /api/experts/skills/:id：仅删除工作区目录（双确认）。
+    pub fn skill_delete(&self, id: &str, confirmed: bool, second_confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+        }
+        if !second_confirmed {
+            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "删除操作必须完成二次确认"));
+        }
+        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let directory = self.skills_dir().join(&resolved);
+        if !directory.exists() {
+            return Err(ServiceError::new("NOT_FOUND", format!("工作区 Skill「{resolved}」不存在")));
+        }
+        fs::remove_dir_all(&directory).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        Ok(serde_json::json!({ "id": resolved, "deleted": true }))
+    }
+
+    fn experts_dir(&self) -> PathBuf {
+        self.vault.root().join(".lattice").join("experts")
+    }
+
+    fn skills_dir(&self) -> PathBuf {
+        self.vault.root().join(".lattice").join("skills")
+    }
+
+    fn skill_exists(&self, id: &str) -> bool {
+        self.read_skill(id, false).is_ok()
+    }
+
+    /// 读专家文档：工作区优先，回落内置（对齐 readExpert）。
+    fn read_expert(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
+        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let workspace = self.experts_dir().join(format!("{resolved}.json"));
+        let raw = if workspace.exists() {
+            fs::read_to_string(&workspace).ok()
+        } else {
+            BUILTIN_EXPERTS
+                .iter()
+                .find(|raw| {
+                    serde_json::from_str::<serde_json::Value>(raw)
+                        .ok()
+                        .and_then(|document| document.get("id").and_then(|value| value.as_str()).map(|value| value == resolved))
+                        .unwrap_or(false)
+                })
+                .map(|raw| raw.to_string())
+        };
+        let Some(raw) = raw else {
+            return Err(ServiceError::new("NOT_FOUND", format!("专家「{resolved}」不存在")));
+        };
+        let document: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|error| ServiceError::new("VALIDATION", format!("无法读取配置文件：{error}")))?;
+        let source = if workspace.exists() { "workspace" } else { "builtin" };
+        expert_normalize(&document, &resolved, source).map_err(|error| ServiceError::new("VALIDATION", error))
+    }
+
+    /// 读技能文档（对齐 readSkill：workspace 优先；include_content 控制正文与 path 字段）。
+    fn read_skill(&self, id: &str, include_content: bool) -> Result<serde_json::Value, ServiceError> {
+        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let workspace_dir = self.skills_dir().join(&resolved);
+        let workspace = self.read_skill_dir(&workspace_dir, "workspace");
+        let builtin = BUILTIN_SKILLS
+            .iter()
+            .find_map(|(manifest, body)| {
+                let document = serde_json::from_str::<serde_json::Value>(manifest).ok()?;
+                let candidate = skill_document(&document, body, "builtin")?;
+                (candidate["id"].as_str() == Some(resolved.as_str())).then_some(candidate)
+            });
+        let skill = workspace.or(builtin).ok_or_else(|| ServiceError::new("NOT_FOUND", format!("Skill「{resolved}」不存在")))?;
+        if include_content {
+            return Ok(skill);
+        }
+        let mut summary = skill;
+        if let Some(object) = summary.as_object_mut() {
+            object.remove("content");
+            object.remove("path");
+        }
+        Ok(summary)
+    }
+
+    /// 读工作区技能目录（skill.json + SKILL.md 缺一不可；损坏条目返回 None 由目录剔除）。
+    fn read_skill_dir(&self, directory: &Path, source: &str) -> Option<serde_json::Value> {
+        let manifest_path = directory.join("skill.json");
+        let body_path = directory.join("SKILL.md");
+        if !manifest_path.exists() || !body_path.exists() {
+            return None;
+        }
+        let body = fs::read_to_string(&body_path).ok()?;
+        let body: String = body.chars().take(SKILL_MAX_CHARS).collect();
+        let document = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(manifest_path).ok()?).ok()?;
+        skill_document(&document, &body, source)
+    }
+}
+
+const SKILL_MAX_CHARS: usize = 30_000;
+const EXPERT_MAX_PROMPT_CHARS: usize = 12_000;
+
+fn expert_id_regex() -> &'static regex::Regex {
+    static REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    REGEX.get_or_init(|| regex::Regex::new(r"^[a-z0-9][a-z0-9-_]{1,79}$").unwrap())
+}
+
+fn expert_assert_id(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if !expert_id_regex().is_match(trimmed) {
+        return Err("ID 只能包含小写字母、数字、连字符和下划线".into());
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn expert_file_stem(raw: &str) -> String {
+    // include_str 路径仅用于 id 兜底；取最后一个 / 与 .json 之间的段
+    let path = raw;
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.strip_suffix(".json").unwrap_or(name).to_owned()
+}
+
+fn expert_list_json_files(directory: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(directory) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().map(|extension| extension == "json").unwrap_or(false))
+        .collect();
+    files.sort();
+    files
+}
+
+fn expert_write_json(path: &Path, value: &serde_json::Value) -> Result<(), ServiceError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+    }
+    fs::write(path, format!("{}\n", serde_json::to_string_pretty(value).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?))
+        .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))
+}
+
+/// 字符串归一：trim + 按 Unicode 码点截断（JS slice(0, N) 的 BMP 等价）。
+fn expert_clean_string(value: Option<&str>, fallback: &str, max: usize) -> String {
+    let trimmed = value.map(str::trim).filter(|value| !value.is_empty()).unwrap_or(fallback);
+    trimmed.chars().take(max).collect()
+}
+
+fn expert_string_array(value: Option<&Vec<serde_json::Value>>, fallback: Vec<String>, max: usize) -> Vec<String> {
+    match value {
+        Some(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(|item| item.trim().to_owned()))
+            .filter(|item| !item.is_empty())
+            .take(max)
+            .collect(),
+        None => fallback,
+    }
+}
+
+fn expert_string_array_strict(value: Option<&Vec<serde_json::Value>>, max: usize) -> Vec<String> {
+    match value {
+        Some(items) => items.iter().filter_map(|item| item.as_str().map(str::to_owned)).take(max).collect(),
+        None => Vec::new(),
+    }
+}
+
+fn expert_clamp(value: Option<f64>, fallback: f64, min: f64, max: f64) -> f64 {
+    match value {
+        Some(value) if value.is_finite() => value.clamp(min, max),
+        _ => fallback,
+    }
+}
+
+/// 专家文档归一（对齐 normalizeExpert：默认值/截断/绑定收敛）。
+fn expert_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> Result<serde_json::Value, String> {
+    let id = expert_assert_id(value.get("id").and_then(|item| item.as_str()).unwrap_or(id_hint))?;
+    let bindings = value
+        .get("skills")
+        .and_then(|item| item.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .take(40)
+                .filter_map(|item| {
+                    let (skill_id, enabled, priority, config) = if let Some(text) = item.as_str() {
+                        (text, true, 50, serde_json::json!({}))
+                    } else {
+                        (
+                            item.get("id").and_then(|value| value.as_str()).unwrap_or_default(),
+                            item.get("enabled").and_then(|value| value.as_bool()).unwrap_or(true),
+                            expert_clamp(item.get("priority").and_then(|value| value.as_f64()), 50.0, 0.0, 100.0) as i64,
+                            item.get("config").filter(|value| value.is_object()).cloned().unwrap_or_else(|| serde_json::json!({})),
+                        )
+                    };
+                    expert_assert_id(skill_id).ok().map(|skill_id| {
+                        serde_json::json!({
+                            "id": skill_id,
+                            "enabled": enabled,
+                            "priority": priority,
+                            "config": config,
+                        })
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let capabilities = value.get("capabilities").filter(|item| item.is_object());
+    let routing = value.get("routing").filter(|item| item.is_object());
+    let write_policy = capabilities
+        .and_then(|item| item.get("writePolicy"))
+        .and_then(|item| item.as_str())
+        .map(str::to_owned)
+        .filter(|policy| ["disabled", "confirm", "auto"].contains(&policy.as_str()))
+        .unwrap_or_else(|| "confirm".into());
+    Ok(serde_json::json!({
+        "id": id,
+        "version": value.get("version").and_then(|item| item.as_str()).unwrap_or("1.0.0").chars().take(40).collect::<String>(),
+        "name": expert_clean_string(value.get("name").and_then(|item| item.as_str()), &id, 120),
+        "description": expert_clean_string(value.get("description").and_then(|item| item.as_str()), "", 500),
+        "icon": expert_clean_string(value.get("icon").and_then(|item| item.as_str()), "sparkles", 40),
+        "enabled": value.get("enabled").and_then(|item| item.as_bool()).unwrap_or(true),
+        "systemPrompt": value.get("systemPrompt").and_then(|item| item.as_str()).unwrap_or_default().chars().take(EXPERT_MAX_PROMPT_CHARS).collect::<String>(),
+        "scope": {
+            "include": expert_string_array_strict(value.get("scope").and_then(|item| item.get("include")).and_then(|item| item.as_array()), 40),
+            "exclude": expert_string_array_strict(value.get("scope").and_then(|item| item.get("exclude")).and_then(|item| item.as_array()), 40),
+        },
+        "skills": bindings,
+        "capabilities": {
+            "context": expert_string_array(capabilities.and_then(|item| item.get("context")).and_then(|item| item.as_array()), vec!["current-note".into(), "project".into(), "vault".into()], 20),
+            "tools": expert_string_array(capabilities.and_then(|item| item.get("tools")).and_then(|item| item.as_array()), vec!["read".into(), "search".into()], 60),
+            "writePolicy": write_policy,
+            "maxRounds": expert_clamp(capabilities.and_then(|item| item.get("maxRounds")).and_then(|item| item.as_f64()), 6.0, 1.0, 12.0) as i64,
+        },
+        "routing": {
+            "keywords": expert_string_array_strict(routing.and_then(|item| item.get("keywords")).and_then(|item| item.as_array()), 40),
+            "priority": expert_clamp(routing.and_then(|item| item.get("priority")).and_then(|item| item.as_f64()), 50.0, 0.0, 100.0) as i64,
+            "confidenceThreshold": expert_clamp(routing.and_then(|item| item.get("confidenceThreshold")).and_then(|item| item.as_f64()), 0.72, 0.0, 1.0),
+        },
+        "source": source,
+    }))
+}
+
+/// 技能文档（manifest + content/contentHash/path，对齐 readSkillFromDir）。
+fn skill_document(manifest: &serde_json::Value, body: &str, source: &str) -> Option<serde_json::Value> {
+    let normalized = skill_normalize(manifest, manifest.get("id").and_then(|item| item.as_str()).unwrap_or(""), source).ok()?;
+    Some(serde_json::json!({
+        "id": normalized["id"],
+        "version": normalized["version"],
+        "name": normalized["name"],
+        "description": normalized["description"],
+        "triggers": normalized["triggers"],
+        "tools": normalized["tools"],
+        "permissions": normalized["permissions"],
+        "inputSchema": normalized["inputSchema"],
+        "outputSchema": normalized["outputSchema"],
+        "enabled": normalized["enabled"],
+        "source": source,
+        "content": body,
+        "contentHash": fc_sha256_hex(body.as_bytes()),
+        "path": format!("<builtin>/skills/{}/SKILL.md", normalized["id"].as_str().unwrap_or_default()),
+    }))
+}
+
+/// 技能清单归一（对齐 normalizeSkillManifest）。
+fn skill_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> Result<serde_json::Value, String> {
+    let id = expert_assert_id(value.get("id").and_then(|item| item.as_str()).unwrap_or(id_hint))?;
+    let schema = |key: &str| {
+        value
+            .get(key)
+            .filter(|item| item.is_object())
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object" }))
+    };
+    Ok(serde_json::json!({
+        "id": id,
+        "version": value.get("version").and_then(|item| item.as_str()).unwrap_or("1.0.0").chars().take(40).collect::<String>(),
+        "name": expert_clean_string(value.get("name").and_then(|item| item.as_str()), &id, 120),
+        "description": expert_clean_string(value.get("description").and_then(|item| item.as_str()), "", 500),
+        "triggers": expert_string_array(value.get("triggers").and_then(|item| item.as_array()), Vec::new(), 30),
+        "tools": expert_string_array(value.get("tools").and_then(|item| item.as_array()), Vec::new(), 40),
+        "permissions": expert_string_array(value.get("permissions").and_then(|item| item.as_array()), vec!["read".into()], 20),
+        "inputSchema": schema("inputSchema"),
+        "outputSchema": schema("outputSchema"),
+        "enabled": value.get("enabled").and_then(|item| item.as_bool()).unwrap_or(true),
+        "source": source,
+    }))
+}
+
 /// 附件条目（对齐 Express listAttachments，camelCase 序列化）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3360,5 +3926,116 @@ mod tests {
         assert_eq!(log[0]["type"], serde_json::json!("write"));
         assert_eq!(log[0]["status"], serde_json::json!("completed"));
         assert_eq!(log[0]["source"], serde_json::json!("files-api"));
+    }
+
+    #[test]
+    fn expert_list_contains_builtin_and_supports_workspace_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let listed = service.expert_list().unwrap();
+        assert!(listed.iter().any(|expert| expert["id"] == serde_json::json!("general") && expert["source"] == serde_json::json!("builtin")));
+        let builtin_count = listed.len();
+
+        // 更新内置专家：写入工作区版本（读取时覆盖视图，builtin 原件不动）
+        let updated = service
+            .expert_save(
+                serde_json::json!({ "name": "通用助手", "description": "工作区覆盖版" }),
+                Some("general".into()),
+                true,
+            )
+            .unwrap();
+        assert_eq!(updated["source"], serde_json::json!("workspace"));
+        assert_eq!(updated["description"], serde_json::json!("工作区覆盖版"));
+        let listed = service.expert_list().unwrap();
+        assert_eq!(listed.len(), builtin_count, "同 id 覆盖不新增条目");
+        let general = listed.iter().find(|expert| expert["id"] == serde_json::json!("general")).unwrap();
+        assert_eq!(general["source"], serde_json::json!("workspace"));
+    }
+
+    #[test]
+    fn expert_save_and_skill_save_enforce_confirmation_and_builtin_protection() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+
+        let rejected = service.expert_save(serde_json::json!({ "name": "x" }), Some("my-expert".into()), false).unwrap_err();
+        assert_eq!(rejected.code, "CONFIRMATION_REQUIRED");
+        let bad_id = service.expert_save(serde_json::json!({ "name": "x" }), Some("Bad_ID".into()), true).unwrap_err();
+        assert_eq!(bad_id.code, "VALIDATION");
+        let builtin_conflict =
+            service.expert_save(serde_json::json!({ "id": "general", "name": "自定义 general" }), None, true).unwrap_err();
+        assert_eq!(builtin_conflict.code, "CONFLICT");
+
+        let created = service
+            .expert_save(serde_json::json!({ "id": "my-expert", "name": "我的专家", "skills": ["vault-search"] }), None, true)
+            .unwrap();
+        assert_eq!(created["source"], serde_json::json!("workspace"));
+        assert_eq!(created["skills"][0]["id"], serde_json::json!("vault-search"));
+        assert!(created["skills"][0]["skill"].is_object(), "详情应嵌入技能定义摘要");
+        // available 只在列表口径出现（对齐 listExperts）
+        let listed = service.expert_list().unwrap();
+        let mine = listed.iter().find(|expert| expert["id"] == serde_json::json!("my-expert")).unwrap();
+        assert_eq!(mine["skills"][0]["available"], serde_json::json!(true));
+
+        let skill_conflict = service
+            .skill_save(
+                serde_json::json!({ "id": "vault-search", "name": "x", "content": "覆盖内置" }),
+                None,
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(skill_conflict.code, "CONFLICT");
+
+        let empty = service
+            .skill_save(serde_json::json!({ "id": "my-skill", "name": "x", "content": "  " }), None, true)
+            .unwrap_err();
+        assert_eq!(empty.code, "VALIDATION");
+
+        let skill = service
+            .skill_save(serde_json::json!({ "id": "my-skill", "name": "我的技能", "content": "技能正文" }), None, true)
+            .unwrap();
+        // SKILL.md 落盘带尾换行（对齐 Express `${content}\n`），读回即含 \n
+        assert_eq!(skill["content"], serde_json::json!("技能正文\n"));
+        let detail = service.skill_get("my-skill").unwrap();
+        assert_eq!(detail["contentHash"], skill["contentHash"]);
+        assert!(directory.path().join(".lattice/skills/my-skill/SKILL.md").exists());
+    }
+
+    #[test]
+    fn expert_route_ranks_keyword_matches_and_excludes_general() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let message = "帮我整理收件箱并归档决策";
+        let suggestions = service.expert_route(message, None).unwrap();
+        // general 永不参与；命中关键词的专家按 score 排序
+        assert!(suggestions.iter().all(|item| item["id"] != serde_json::json!("general")));
+        let excluded = service.expert_route(message, suggestions.first().and_then(|item| item["id"].as_str()).map(str::to_owned)).unwrap();
+        assert!(excluded.iter().all(|item| Some(item["id"].as_str().unwrap_or_default()) != suggestions.first().and_then(|item| item["id"].as_str())));
+        assert!(suggestions.len() <= 3);
+    }
+
+    #[test]
+    fn expert_delete_and_skill_delete_only_remove_workspace_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        service
+            .expert_save(serde_json::json!({ "id": "temp-expert", "name": "临时" }), None, true)
+            .unwrap();
+        service
+            .skill_save(serde_json::json!({ "id": "temp-skill", "name": "临时", "content": "正文" }), None, true)
+            .unwrap();
+
+        let no_second = service.expert_delete("temp-expert", true, false).unwrap_err();
+        assert_eq!(no_second.code, "CONFIRMATION_REQUIRED");
+        let deleted = service.expert_delete("temp-expert", true, true).unwrap();
+        assert_eq!(deleted["deleted"], serde_json::json!(true));
+        assert!(!directory.path().join(".lattice/experts/temp-expert.json").exists());
+        assert!(service.expert_list().unwrap().iter().any(|expert| expert["id"] == serde_json::json!("general")));
+
+        let skill_deleted = service.skill_delete("temp-skill", true, true).unwrap();
+        assert_eq!(skill_deleted["deleted"], serde_json::json!(true));
+        let missing = service.skill_delete("temp-skill", true, true).unwrap_err();
+        assert_eq!(missing.code, "NOT_FOUND");
+        // 内置技能不受影响
+        assert!(service.skill_get("vault-search").is_ok());
     }
 }
