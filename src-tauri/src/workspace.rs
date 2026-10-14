@@ -1412,6 +1412,1238 @@ impl WorkspaceService {
     }
 }
 
+// ===========================================================================
+// files 命令面（契约 /api/files/* → file_read/find/grep/preview/execute/undo/log）
+// 语义对齐 scripts/fc-core.mjs：读/查/搜直接读盘；写入走「预览 planHash →
+// 快照快照目录 .fc/trash → 原子落盘 → 审计 .fc/audit.jsonl → undo 还原」闭环。
+// 已知口径偏差（P1-08 契约对齐时校准）：文件列表排序为码点序（Express 为 locale）；
+// read 的 offset/limit 按 Unicode 码点切片（JS 为 UTF-16 码元，BMP 内一致）。
+// ===========================================================================
+
+impl WorkspaceService {
+    /// 契约 GET /api/files/read：按字符切片读取文件内容。
+    pub fn file_read(&self, path: &str, offset: u64, limit: Option<u64>) -> Result<FileReadOutcome, ServiceError> {
+        fc_guard(|| {
+            let safe = fc_normalize_relative(path)?;
+            let file_path = self.fc_resolve(&safe)?;
+            fc_assert_regular_file(&file_path, &safe)?;
+            let meta = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+            if meta.len() > FC_MAX_READ_INPUT_BYTES {
+                return Err(format!("File too large for read ({} bytes, limit {FC_MAX_READ_INPUT_BYTES}): {safe}", meta.len()));
+            }
+            let raw = fs::read(&file_path).map_err(|error| error.to_string())?;
+            // JS toString('utf8') 等价：非法字节替换为 U+FFFD，不失败
+            let content = String::from_utf8_lossy(&raw);
+            let characters: Vec<char> = content.chars().collect();
+            let max = limit.unwrap_or(FC_MAX_READ_BYTES).clamp(1, FC_MAX_READ_BYTES);
+            let slice = if offset >= characters.len() as u64 {
+                String::new()
+            } else {
+                let end = (offset + max).min(characters.len() as u64);
+                characters[offset as usize..end as usize].iter().collect()
+            };
+            let consumed = offset + slice.chars().count() as u64;
+            Ok(FileReadOutcome {
+                path: safe,
+                size: raw.len() as u64,
+                offset,
+                limit: max,
+                eof: consumed >= characters.len() as u64,
+                content: slice,
+            })
+        })
+    }
+
+    /// 契约 GET /api/files/find：glob 匹配 + 可选扩展名过滤，直接走文件系统。
+    pub fn file_find(&self, pattern: Option<String>, dir: Option<String>, file_type: Option<String>) -> Result<FileFindOutcome, ServiceError> {
+        fc_guard(|| {
+            let base = self.fc_resolve_directory(dir.as_deref().unwrap_or(""))?;
+            let normalized_pattern = pattern.as_deref().unwrap_or("**/*");
+            let matcher = fc_glob_regex(normalized_pattern)?;
+            let extension = file_type.as_deref().map(fc_normalize_extension);
+            let mut items = Vec::new();
+            for file_path in fc_list_files(self.vault.root(), &base) {
+                let relative_path = file_path
+                    .strip_prefix(self.vault.root())
+                    .map_err(|_| format!("Path escapes root: {}", file_path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let match_path = file_path
+                    .strip_prefix(&base)
+                    .map_err(|_| format!("Path escapes root: {}", file_path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !matcher.is_match(&match_path) {
+                    continue;
+                }
+                if let Some(expected) = &extension {
+                    let actual = Path::new(&relative_path)
+                        .extension()
+                        .map(|part| format!(".{}", part.to_string_lossy().to_lowercase()))
+                        .unwrap_or_default();
+                    if &actual != expected {
+                        continue;
+                    }
+                }
+                let meta = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+                items.push(FileInfo {
+                    path: relative_path,
+                    size: meta.len(),
+                    modified_at: iso8601_utc(fc_millis(meta.modified())),
+                });
+            }
+            let total = items.len();
+            Ok(FileFindOutcome { pattern: normalized_pattern.to_owned(), items, total })
+        })
+    }
+
+    /// 契约 GET /api/files/grep：逐行匹配（regex 大小写不敏感；普通文本 to_lowercase 包含）。
+    pub fn file_grep(&self, query: String, dir: Option<String>, regex_flag: bool, file_type: Option<String>) -> Result<FileGrepOutcome, ServiceError> {
+        fc_guard(move || {
+            if query.is_empty() {
+                return Err("A grep query is required".into());
+            }
+            let base = self.fc_resolve_directory(dir.as_deref().unwrap_or(""))?;
+            let extension = file_type.as_deref().map(fc_normalize_extension);
+            let matcher = if regex_flag {
+                Some(
+                    regex::RegexBuilder::new(&query)
+                        .case_insensitive(true)
+                        .build()
+                        .map_err(|error| format!("Invalid regular expression: {error}"))?,
+                )
+            } else {
+                None
+            };
+            let needle = query.to_lowercase();
+            let mut items = Vec::new();
+            for file_path in fc_list_files(self.vault.root(), &base) {
+                let relative_path = file_path
+                    .strip_prefix(self.vault.root())
+                    .map_err(|_| format!("Path escapes root: {}", file_path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if let Some(expected) = &extension {
+                    let actual = Path::new(&relative_path)
+                        .extension()
+                        .map(|part| format!(".{}", part.to_string_lossy().to_lowercase()))
+                        .unwrap_or_default();
+                    if &actual != expected {
+                        continue;
+                    }
+                }
+                let meta = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+                if meta.len() > FC_MAX_GREP_BYTES {
+                    continue;
+                }
+                let raw = fs::read(&file_path).map_err(|error| error.to_string())?;
+                let content = String::from_utf8_lossy(&raw);
+                for (index, line) in content.lines().enumerate() {
+                    let matched = match &matcher {
+                        Some(pattern) => pattern.is_match(line),
+                        None => line.to_lowercase().contains(&needle),
+                    };
+                    if matched {
+                        items.push(GrepItem { path: relative_path.clone(), line: index + 1, text: line.to_owned() });
+                    }
+                }
+            }
+            let total = items.len();
+            Ok(FileGrepOutcome { query, regex: regex_flag, items, total })
+        })
+    }
+
+    /// 契约 POST /api/files/preview：预览 + plan/planHash + 确认要求
+    /// （单动作与 actions[]≤30 批量二态；桌面单机恒为 editor，blocked 恒 false）。
+    pub fn file_preview(&self, action: Option<FileAction>, actions: Option<Vec<FileAction>>) -> Result<serde_json::Value, ServiceError> {
+        fc_guard(|| {
+            let (normalized, is_batch) = fc_normalize_actions(action, actions)?;
+            let mut data = if is_batch {
+                self.fc_preview_batch(&normalized)?
+            } else {
+                self.fc_preview_mutation(&normalized[0])?
+            };
+            let plan = self.fc_plan(&normalized, None);
+            let delete_count = normalized.iter().filter(|item| item.action_type == "delete").count();
+            let paths: Vec<serde_json::Value> = match data.get("operations").and_then(|operations| operations.as_array()) {
+                Some(operations) => operations
+                    .iter()
+                    .flat_map(|operation| operation["changes"].as_array().cloned().unwrap_or_default())
+                    .filter_map(|change| change.get("fullPath").cloned())
+                    .collect(),
+                None => data["changes"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|change| change.get("fullPath").cloned())
+                    .collect(),
+            };
+            data["plan"] = plan;
+            data["actor"] = serde_json::json!("local-user");
+            data["role"] = serde_json::json!("editor");
+            data["blocked"] = serde_json::json!(false);
+            data["confirmation"] = serde_json::json!({
+                "required": normalized.iter().any(|item| FC_MUTATION_TYPES.contains(&item.action_type.as_str())),
+                "secondConfirmationRequired": delete_count > 0,
+                "deleteCount": delete_count,
+                "itemCount": normalized.len(),
+                "paths": paths,
+            });
+            Ok(data)
+        })
+    }
+
+    /// 契约 POST /api/files/execute：confirmed + planHash（delete 另需 secondConfirmed）闸门
+    /// 后执行；快照失败回滚、审计落盘、可 undo。
+    pub fn file_execute(
+        &self,
+        action: Option<FileAction>,
+        actions: Option<Vec<FileAction>>,
+        confirmed: bool,
+        second_confirmed: bool,
+        plan_id: Option<String>,
+        plan_hash: Option<String>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        fc_guard(|| {
+            if !confirmed {
+                return Err("File changes require explicit confirmation".into());
+            }
+            let plan_hash = plan_hash.ok_or("File changes require a preview plan")?;
+            let (normalized, is_batch) = fc_normalize_actions(action, actions)?;
+            if normalized.iter().any(|item| item.action_type == "delete") && !second_confirmed {
+                return Err("Delete operations require a second confirmation".into());
+            }
+            if is_batch {
+                self.fc_mutate_batch(&normalized, plan_id.as_deref(), Some(&plan_hash))
+            } else {
+                self.fc_mutate_single(&normalized[0], plan_id.as_deref(), Some(&plan_hash), None, None)
+            }
+        })
+    }
+
+    /// 契约 POST /api/files/undo：按 manifest 快照逆序还原；force 跳过状态一致性校验。
+    pub fn file_undo(&self, operation_id: Option<String>, force: bool) -> Result<serde_json::Value, ServiceError> {
+        fc_guard(|| self.fc_undo(operation_id.as_deref(), force))
+    }
+
+    /// 契约 GET /api/files/log：审计日志尾部 N 条（最新在前），损坏行跳过。
+    pub fn file_log(&self, limit: Option<u64>) -> Result<Vec<serde_json::Value>, ServiceError> {
+        fc_guard(|| {
+            let audit = self.vault.root().join(FC_INTERNAL_DIR).join("audit.jsonl");
+            if !audit.exists() {
+                return Ok(Vec::new());
+            }
+            let count = limit.unwrap_or(40).clamp(1, 500) as usize;
+            let content = fs::read_to_string(&audit).map_err(|error| error.to_string())?;
+            let lines: Vec<&str> = content.lines().filter(|line| !line.trim().is_empty()).collect();
+            let start = lines.len().saturating_sub(count);
+            let mut entries = Vec::new();
+            for line in lines[start..].iter().rev() {
+                if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                    entries.push(entry);
+                }
+            }
+            Ok(entries)
+        })
+    }
+
+    /// 解析相对路径：normalize + 根内 + 符号链接链校验（对齐 FileStore.resolve）。
+    fn fc_resolve(&self, relative: &str) -> Result<PathBuf, String> {
+        let safe = fc_normalize_relative(relative)?;
+        let resolved = self.vault.root().join(&safe);
+        resolved
+            .strip_prefix(self.vault.root())
+            .map_err(|_| format!("Path escapes root: {}", resolved.display()))?;
+        fc_assert_no_symlink(self.vault.root(), &resolved)?;
+        Ok(resolved)
+    }
+
+    /// 解析目录相对路径（空串 = 根），存在时必须是目录（对齐 resolveDirectory）。
+    fn fc_resolve_directory(&self, value: &str) -> Result<PathBuf, String> {
+        let safe = if value.is_empty() || value == "." { String::new() } else { fc_normalize_relative(value)? };
+        let resolved = if safe.is_empty() { self.vault.root().to_path_buf() } else { self.vault.root().join(&safe) };
+        resolved
+            .strip_prefix(self.vault.root())
+            .map_err(|_| format!("Path escapes root: {}", resolved.display()))?;
+        fc_assert_no_symlink(self.vault.root(), &resolved)?;
+        if resolved.exists() {
+            let meta = fs::symlink_metadata(&resolved).map_err(|error| error.to_string())?;
+            if meta.file_type().is_symlink() {
+                return Err(format!("Symbolic links are not supported: {}", if safe.is_empty() { "." } else { &safe }));
+            }
+            if !meta.is_dir() {
+                return Err(format!("Not a directory: {safe}"));
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// 单动作预览：changes 状态、摘要/影响文案、diff（写类）、planHash。
+    fn fc_preview_mutation(&self, action: &FileAction) -> Result<serde_json::Value, String> {
+        // delete 在预览时即校验目标存在（与执行同一断言），避免确认卡片整批失败看不出原因
+        if action.action_type == "delete" {
+            let target = self.fc_resolve(&action.path)?;
+            fc_assert_regular_file(&target, &action.path)?;
+        }
+        let preview_paths: Vec<&str> = match action.action_type.as_str() {
+            "move" | "copy" => vec![&action.path, action.target_path.as_deref().unwrap_or(&action.path)],
+            _ => vec![&action.path],
+        };
+        let mut changes = Vec::new();
+        for relative in &preview_paths {
+            let absolute = self.fc_resolve(relative)?;
+            let before = fc_state_for(&absolute)?;
+            changes.push(serde_json::json!({
+                "path": relative,
+                "fullPath": absolute.display().to_string(),
+                "directory": absolute.parent().map(|parent| parent.display().to_string()).unwrap_or_default(),
+                "before": serde_json::to_value(&before).map_err(|error| error.to_string())?,
+            }));
+        }
+        let plan_hash = {
+            let action_value = serde_json::to_value(action).map_err(|error| error.to_string())?;
+            let payload = serde_json::json!({ "version": 1, "action": action_value, "changes": changes });
+            fc_sha256_hex(serde_json::to_string(&payload).map_err(|error| error.to_string())?.as_bytes())
+        };
+        let source = self.fc_resolve(&action.path)?;
+        let source_missing = !changes[0]["before"]["exists"].as_bool().unwrap_or(false);
+        let summary = format!(
+            "{} {}{}{}",
+            action.action_type,
+            action.path,
+            action.target_path.as_ref().map(|target| format!(" -> {target}")).unwrap_or_default(),
+            if source_missing { " (source missing)" } else { "" },
+        );
+        let existing = changes.iter().filter(|change| change["before"]["exists"].as_bool().unwrap_or(false)).count();
+        let destination = action.target_path.as_ref().map(|target| format!("，目标 {target}")).unwrap_or_default();
+        let scope = if changes.len() > 1 { format!("影响 {} 个路径", changes.len()) } else { "影响 1 个路径".to_owned() };
+        let state = if existing > 0 { format!("，其中 {existing} 个路径已有内容") } else { "，目标目前不存在".to_owned() };
+        let verb = match action.action_type.as_str() {
+            "delete" => "移除内容",
+            "move" => "改变路径并移除原位置",
+            "copy" => "新增副本",
+            _ => "写入或更新内容",
+        };
+        let mut preview = serde_json::json!({
+            "type": action.action_type,
+            "path": action.path,
+            "summary": summary,
+            "impact": format!("{verb}{destination}；{scope}{state}"),
+            "fullPath": source.display().to_string(),
+            "directory": source.parent().map(|parent| parent.display().to_string()).unwrap_or_default(),
+            "reversible": true,
+            "requiresSecondConfirmation": action.action_type == "delete",
+            "changes": changes,
+            "planHash": plan_hash,
+        });
+        if let Some(target) = &action.target_path {
+            preview["targetPath"] = serde_json::json!(target);
+        }
+        if matches!(action.action_type.as_str(), "create" | "write" | "append" | "edit") {
+            let current = fc_read_text_if_present(&source)?;
+            let next = fc_next_text(action, current.as_deref())?;
+            preview["diff"] = serde_json::json!(fc_unified_diff(&action.path, current.as_deref().unwrap_or(""), &next));
+            preview["after"] = serde_json::to_value(fc_state_for_text(&next)).map_err(|error| error.to_string())?;
+        }
+        Ok(preview)
+    }
+
+    /// 批量预览：逐动作单预览 + 批量 planHash（actions + before 状态）。
+    fn fc_preview_batch(&self, actions: &[FileAction]) -> Result<serde_json::Value, String> {
+        let mut operations = Vec::new();
+        for action in actions {
+            operations.push(self.fc_preview_mutation(action)?);
+        }
+        let mut counts = std::collections::BTreeMap::new();
+        for operation in &operations {
+            *counts.entry(operation["type"].as_str().unwrap_or_default().to_owned()).or_insert(0u64) += 1;
+        }
+        let before: Vec<serde_json::Value> = operations
+            .iter()
+            .map(|operation| {
+                serde_json::json!({
+                    "type": operation["type"],
+                    "path": operation["path"],
+                    "targetPath": operation.get("targetPath"),
+                    "changes": operation["changes"],
+                })
+            })
+            .collect();
+        let plan_hash = {
+            let payload = serde_json::json!({ "actions": actions, "before": before });
+            fc_sha256_hex(serde_json::to_string(&payload).map_err(|error| error.to_string())?.as_bytes())
+        };
+        let total = operations.len();
+        let breakdown = counts.iter().map(|(kind, count)| format!("{count} {kind}")).collect::<Vec<_>>().join(", ");
+        let summary = if breakdown.is_empty() {
+            format!("{total} file operation{}", if total == 1 { "" } else { "s" })
+        } else {
+            format!("{total} file operation{} ({breakdown})", if total == 1 { "" } else { "s" })
+        };
+        Ok(serde_json::json!({
+            "planHash": plan_hash,
+            "total": total,
+            "counts": counts,
+            "summary": summary,
+            "operations": operations,
+        }))
+    }
+
+    /// 操作计划（对齐 createOperationPlan：version/id/actor/role/source/createdAt/actions）。
+    fn fc_plan(&self, actions: &[FileAction], plan_id: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "version": 1,
+            "id": plan_id.map(str::to_owned).unwrap_or_else(|| Uuid::new_v4().to_string()),
+            "actor": "local-user",
+            "role": "editor",
+            "source": "files-api",
+            "createdAt": iso8601_utc(now_millis()),
+            "actions": actions.iter().enumerate().map(fc_plan_action).collect::<Vec<serde_json::Value>>(),
+        })
+    }
+
+    /// 单动作执行：planHash 校验 → 快照 → 应用 → manifest + 审计 → 可 undo 结果。
+    fn fc_mutate_single(
+        &self,
+        action: &FileAction,
+        plan_id: Option<&str>,
+        plan_hash: Option<&str>,
+        batch_id: Option<&str>,
+        action_id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let preview = self.fc_preview_mutation(action)?;
+        let preview_hash = preview["planHash"].as_str().unwrap_or_default().to_owned();
+        if let Some(expected) = plan_hash
+            && expected != preview_hash
+        {
+            return Err(format!("Operation plan hash mismatch: expected {expected}, current {preview_hash}"));
+        }
+        let operation_id = format!("{}-{}", now_millis(), &Uuid::new_v4().simple().to_string()[..8]);
+        let plan = self.fc_plan(std::slice::from_ref(action), plan_id);
+        let plan_action_id = plan["actions"][0]["id"].as_str().unwrap_or("op-1").to_owned();
+        let plan_id_value = plan["id"].clone();
+        let created_at = iso8601_utc(now_millis());
+        let operation_dir = self.vault.root().join(FC_INTERNAL_DIR).join("trash").join(&operation_id);
+        let snapshot_dir = operation_dir.join("files");
+        fs::create_dir_all(&snapshot_dir).map_err(|error| error.to_string())?;
+        let change_paths: Vec<String> = match action.action_type.as_str() {
+            "move" => vec![action.path.clone(), action.target_path.clone().unwrap_or_else(|| action.path.clone())],
+            "copy" => vec![action.target_path.clone().unwrap_or_else(|| action.path.clone())],
+            _ => vec![action.path.clone()],
+        };
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        let mut applied = false;
+        let apply_result = (|| -> Result<serde_json::Value, String> {
+            for (index, relative) in change_paths.iter().enumerate() {
+                entries.push(self.fc_capture_entry(relative, &snapshot_dir, index)?);
+            }
+            let result = self.fc_apply_action(action)?;
+            applied = true;
+            for entry in entries.iter_mut() {
+                let absolute = self.vault.root().join(entry["path"].as_str().unwrap_or_default());
+                entry["after"] = serde_json::to_value(fc_state_for(&absolute)?).map_err(|error| error.to_string())?;
+            }
+            Ok(result)
+        })();
+        let result = match apply_result {
+            Ok(result) => result,
+            Err(error) => {
+                // 动作尚未落盘才清场；已落盘则保留快照目录（撤销与审计依赖它）
+                if !applied {
+                    let _ = fs::remove_dir_all(&operation_dir);
+                }
+                return Err(error);
+            }
+        };
+        let mut manifest = serde_json::json!({
+            "id": operation_id,
+            "type": action.action_type,
+            "path": action.path,
+            "planVersion": plan["version"],
+            "planId": plan_id_value,
+            "createdAt": created_at,
+            "entries": entries,
+        });
+        if let Some(target) = &action.target_path {
+            manifest["targetPath"] = serde_json::json!(target);
+        }
+        fs::write(
+            operation_dir.join("manifest.json"),
+            format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?),
+        )
+        .map_err(|error| error.to_string())?;
+        let mut audit = serde_json::json!({
+            "id": operation_id,
+            "at": created_at,
+            "planVersion": plan["version"],
+            "planId": plan_id_value,
+            "actor": "local-user",
+            "role": "editor",
+            "source": "files-api",
+            "status": "completed",
+            "type": action.action_type,
+            "path": action.path,
+            "targetPath": action.target_path,
+            "action": fc_audit_action(action, action_id.unwrap_or(&plan_action_id)),
+            "operationId": operation_id,
+        });
+        if let Some(batch) = batch_id {
+            audit["batchId"] = serde_json::json!(batch);
+        }
+        self.fc_audit_append(audit)?;
+        let mut outcome = serde_json::json!({
+            "operationId": operation_id,
+            "planId": plan_id_value,
+            "planVersion": plan["version"],
+            "undoable": true,
+            "preview": preview,
+        });
+        if let serde_json::Value::Object(fields) = result {
+            for (key, value) in fields {
+                outcome[key] = value;
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// 批量执行：共享一个 plan，逐动作走 fc_mutate_single；中途失败终止（对齐 BATCH_PARTIAL_FAILURE 的 HTTP 语义：透传失败消息）。
+    fn fc_mutate_batch(&self, actions: &[FileAction], plan_id: Option<&str>, plan_hash: Option<&str>) -> Result<serde_json::Value, String> {
+        let preview = self.fc_preview_batch(actions)?;
+        let preview_hash = preview["planHash"].as_str().unwrap_or_default().to_owned();
+        if let Some(expected) = plan_hash
+            && expected != preview_hash
+        {
+            return Err(format!("Batch plan hash mismatch: expected {expected}, current {preview_hash}"));
+        }
+        let batch_id = format!("{}-{}", now_millis(), &Uuid::new_v4().simple().to_string()[..8]);
+        let plan = self.fc_plan(actions, plan_id);
+        let plan_id_value = plan["id"].clone();
+        let mut operation_ids = Vec::new();
+        for (index, action) in actions.iter().enumerate() {
+            let action_id = plan["actions"][index]["id"].as_str().unwrap_or("op-1").to_owned();
+            let result = self.fc_mutate_single(action, Some(plan_id_value.as_str().unwrap_or_default()), None, Some(&batch_id), Some(&action_id))?;
+            operation_ids.push(result["operationId"].clone());
+        }
+        Ok(serde_json::json!({
+            "batchId": batch_id,
+            "planId": plan_id_value,
+            "planVersion": plan["version"],
+            "planHash": preview_hash,
+            "total": actions.len(),
+            "operationIds": operation_ids,
+            "preview": preview,
+        }))
+    }
+
+    /// 撤销：找到 manifest → 状态一致性校验（force 跳过）→ 逆序还原 → 标记 undone + 审计。
+    fn fc_undo(&self, operation_id: Option<&str>, force: bool) -> Result<serde_json::Value, String> {
+        let manifest = self.fc_find_manifest(operation_id)?;
+        let Some(mut manifest) = manifest else {
+            return Err(match operation_id {
+                Some(id) => format!("Operation not found: {id}"),
+                None => "There is no operation to undo".into(),
+            });
+        };
+        let id = manifest["id"].as_str().unwrap_or_default().to_owned();
+        if manifest.get("undoneAt").is_some_and(|value| value.is_string()) {
+            return Err(format!("Operation already undone: {id}"));
+        }
+        let entries = manifest["entries"].as_array().cloned().unwrap_or_default();
+        if !force {
+            for entry in &entries {
+                let relative = entry["path"].as_str().unwrap_or_default();
+                let absolute = self.fc_resolve(relative)?;
+                let current = serde_json::to_value(fc_state_for(&absolute)?).map_err(|error| error.to_string())?;
+                if !fc_same_state(&current, &entry["after"]) {
+                    return Err(format!("Cannot undo {id}: file changed after the operation ({relative})"));
+                }
+            }
+        }
+        let operation_dir = self.vault.root().join(FC_INTERNAL_DIR).join("trash").join(&id);
+        for entry in entries.iter().rev() {
+            self.fc_restore_entry(entry, &operation_dir)?;
+        }
+        let undone_at = iso8601_utc(now_millis());
+        manifest["undoneAt"] = serde_json::json!(undone_at);
+        fs::write(
+            operation_dir.join("manifest.json"),
+            format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?),
+        )
+        .map_err(|error| error.to_string())?;
+        self.fc_audit_append(serde_json::json!({
+            "id": Uuid::new_v4().to_string(),
+            "at": undone_at,
+            "planVersion": manifest["planVersion"].as_i64().unwrap_or(1),
+            "planId": manifest["planId"].as_str().unwrap_or(&id),
+            "actor": "local-user",
+            "role": "editor",
+            "source": "files-api",
+            "status": "completed",
+            "type": "undo",
+            "path": serde_json::Value::Null,
+            "targetPath": serde_json::Value::Null,
+            "action": { "id": serde_json::Value::Null, "type": "undo" },
+            "operationId": id,
+        }))?;
+        Ok(serde_json::json!({
+            "operationId": id,
+            "planId": manifest["planId"].as_str().unwrap_or(&id),
+            "undone": true,
+        }))
+    }
+
+    /// 快照单个受影响路径：文件复制到快照目录，目录/缺失只记状态。
+    fn fc_capture_entry(&self, relative: &str, snapshot_dir: &Path, index: usize) -> Result<serde_json::Value, String> {
+        let absolute = self.vault.root().join(relative);
+        let before = fc_state_for(&absolute)?;
+        let mut entry = serde_json::json!({
+            "path": relative,
+            "before": serde_json::to_value(&before).map_err(|error| error.to_string())?,
+        });
+        if before.kind == "file" {
+            let snapshot = format!("{index}.bin");
+            fs::copy(&absolute, snapshot_dir.join(&snapshot)).map_err(|error| error.to_string())?;
+            entry["snapshot"] = serde_json::json!(snapshot);
+        }
+        Ok(entry)
+    }
+
+    /// 逆序还原单个条目：缺失→删除现物、目录→重建、文件→从快照原子写回。
+    fn fc_restore_entry(&self, entry: &serde_json::Value, operation_dir: &Path) -> Result<(), String> {
+        let relative = entry["path"].as_str().ok_or("manifest entry missing path")?;
+        let absolute = self.vault.root().join(relative);
+        absolute
+            .strip_prefix(self.vault.root())
+            .map_err(|_| format!("Path escapes root: {}", absolute.display()))?;
+        fc_assert_no_symlink(self.vault.root(), &absolute)?;
+        let before = &entry["before"];
+        if before["exists"] != serde_json::json!(true) {
+            if absolute.exists() {
+                let meta = fs::symlink_metadata(&absolute).map_err(|error| error.to_string())?;
+                if meta.is_dir() {
+                    if let Err(error) = fs::remove_dir(&absolute) {
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                        ) {
+                            return Err(format!("Cannot undo: directory is not empty ({relative})"));
+                        }
+                        return Err(error.to_string());
+                    }
+                } else {
+                    match fs::remove_file(&absolute) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                        Err(_) => {
+                            let _ = fs::remove_file(&absolute);
+                        }
+                    }
+                    if absolute.exists() {
+                        return Err(format!("Cannot undo: file could not be removed ({relative})"));
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if before["type"] == serde_json::json!("directory") {
+            fs::create_dir_all(&absolute).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        let snapshot = entry["snapshot"].as_str().ok_or_else(|| format!("Undo snapshot is missing: {relative}"))?;
+        let snapshot_path = operation_dir.join("files").join(snapshot);
+        if !snapshot_path.exists() {
+            return Err(format!("Undo snapshot is missing: {relative}"));
+        }
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fc_write_atomic_from_file(&absolute, &snapshot_path)
+    }
+
+    /// 查 manifest：指定 id 或最近一条未撤销的（缺失/损坏一律视为没有可撤销操作）。
+    fn fc_find_manifest(&self, operation_id: Option<&str>) -> Result<Option<serde_json::Value>, String> {
+        let trash = self.vault.root().join(FC_INTERNAL_DIR).join("trash");
+        if let Some(id) = operation_id {
+            return Ok(fc_read_manifest(&trash.join(id).join("manifest.json")));
+        }
+        if !trash.exists() {
+            return Ok(None);
+        }
+        let mut manifests: Vec<serde_json::Value> = fs::read_dir(&trash)
+            .map_err(|error| error.to_string())?
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| fc_read_manifest(&entry.path().join("manifest.json")))
+            .filter(|manifest| !manifest.get("undoneAt").is_some_and(|value| value.is_string()))
+            .collect();
+        manifests.sort_by(|left, right| {
+            left["createdAt"].as_str().unwrap_or_default().cmp(right["createdAt"].as_str().unwrap_or_default())
+        });
+        Ok(manifests.pop())
+    }
+
+    /// 应用动作到磁盘（对齐 applyAction：存在性/类型断言 + 原子写入）。
+    fn fc_apply_action(&self, action: &FileAction) -> Result<serde_json::Value, String> {
+        let source = self.fc_resolve(&action.path)?;
+        let target = match &action.target_path {
+            Some(target) => Some(self.fc_resolve(target)?),
+            None => None,
+        };
+        match action.action_type.as_str() {
+            "mkdir" => {
+                if source.exists() {
+                    return Err(format!("Path already exists: {}", action.path));
+                }
+                fs::create_dir_all(&source).map_err(|error| error.to_string())?;
+                Ok(serde_json::json!({ "path": action.path }))
+            }
+            "create" | "write" | "append" | "edit" => {
+                if action.action_type == "create" && source.exists() {
+                    return Err(format!("Path already exists: {}", action.path));
+                }
+                if !matches!(action.action_type.as_str(), "create" | "write") {
+                    fc_assert_regular_file(&source, &action.path)?;
+                }
+                let current = fc_read_text_if_present(&source)?;
+                let content = fc_next_text(action, current.as_deref())?;
+                if let Some(parent) = source.parent() {
+                    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                fc_write_atomic(&source, &content)?;
+                let mut result = serde_json::json!({ "path": action.path, "size": content.len() });
+                if action.action_type == "edit" {
+                    let replaced = current
+                        .as_deref()
+                        .map(|text| text.split(action.replace.as_deref().unwrap_or("")).count() - 1)
+                        .unwrap_or(0);
+                    result["replaced"] = serde_json::json!(replaced);
+                }
+                Ok(result)
+            }
+            "delete" | "copy" | "move" => {
+                fc_assert_regular_file(&source, &action.path)?;
+                if action.action_type == "delete" {
+                    fs::remove_file(&source).map_err(|error| error.to_string())?;
+                    return Ok(serde_json::json!({ "path": action.path }));
+                }
+                let target = target.ok_or_else(|| format!("{} requires a target path", action.action_type))?;
+                if target.exists() {
+                    return Err(format!("Target already exists: {}", action.target_path.clone().unwrap_or_default()));
+                }
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                if action.action_type == "copy" {
+                    fs::copy(&source, &target).map_err(|error| error.to_string())?;
+                } else {
+                    fs::rename(&source, &target).map_err(|error| error.to_string())?;
+                }
+                Ok(serde_json::json!({ "fromPath": action.path, "toPath": action.target_path }))
+            }
+            other => Err(format!("Unsupported mutation: {other}")),
+        }
+    }
+
+    /// files 审计日志：JSONL 追加到 .fc/audit.jsonl（失败即错：undo 链路依赖完整审计）。
+    fn fc_audit_append(&self, entry: serde_json::Value) -> Result<(), String> {
+        let audit = self.vault.root().join(FC_INTERNAL_DIR).join("audit.jsonl");
+        if let Some(parent) = audit.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let mut file = OpenOptions::new().create(true).append(true).open(&audit).map_err(|error| error.to_string())?;
+        writeln!(file, "{}", serde_json::to_string(&entry).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// files 限额与内部目录（对齐 scripts/fc-core.mjs；.lattice 为 Rust 版新增内部目录，一并隐藏）。
+const FC_INTERNAL_DIR: &str = ".fc";
+const FC_HIDDEN_ROOT_DIRS: [&str; 2] = [".fc", ".lattice"];
+const FC_MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
+const FC_MAX_READ_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const FC_MAX_GREP_BYTES: u64 = 4 * 1024 * 1024;
+const FC_MUTATION_TYPES: [&str; 8] = ["create", "write", "append", "edit", "copy", "move", "delete", "mkdir"];
+
+/// files 错误守卫：按消息短语映射契约错误码（对齐 files.service guarded）。
+fn fc_guard<T>(task: impl FnOnce() -> Result<T, String>) -> Result<T, ServiceError> {
+    task().map_err(|message| {
+        let lower = message.to_lowercase();
+        let conflict_phrases = [
+            "changed after",
+            "already exists",
+            "already undone",
+            "operation not found",
+            "no operation to undo",
+            "plan hash mismatch",
+            "cannot undo",
+        ];
+        let code = if conflict_phrases.iter().any(|phrase| lower.contains(phrase)) {
+            "CONFLICT"
+        } else if lower.contains("does not exist") || lower.starts_with("not a file:") || lower.starts_with("not a directory:") {
+            "NOT_FOUND"
+        } else {
+            "VALIDATION"
+        };
+        ServiceError::new(code, message)
+    })
+}
+
+/// 归一 actions 输入：单动作与批量二态（批量 1..=30）。
+fn fc_normalize_actions(action: Option<FileAction>, actions: Option<Vec<FileAction>>) -> Result<(Vec<FileAction>, bool), String> {
+    if let Some(actions) = actions {
+        if actions.is_empty() || actions.len() > 30 {
+            return Err("Batch requires between 1 and 30 actions".into());
+        }
+        let normalized = actions.into_iter().map(fc_normalize_action).collect::<Result<Vec<_>, _>>()?;
+        Ok((normalized, true))
+    } else {
+        Ok((vec![fc_normalize_action(action.ok_or("A file action is required")?)?], false))
+    }
+}
+
+/// 动作归一（对齐 normalizeAction：类型小写校验 + 按类型裁剪字段）。
+fn fc_normalize_action(raw: FileAction) -> Result<FileAction, String> {
+    let kind = raw.action_type.trim().to_lowercase();
+    if !FC_MUTATION_TYPES.contains(&kind.as_str()) {
+        let display = if kind.is_empty() { "(empty)" } else { kind.as_str() };
+        return Err(format!("Unsupported mutation: {display}"));
+    }
+    let mut action = FileAction {
+        action_type: kind.clone(),
+        path: fc_normalize_relative(&raw.path)?,
+        target_path: None,
+        content: None,
+        replace: None,
+        with: None,
+        all: None,
+    };
+    if matches!(kind.as_str(), "copy" | "move") {
+        let target = raw.target_path.as_deref().ok_or("A relative path is required")?;
+        action.target_path = Some(fc_normalize_relative(target)?);
+    }
+    if matches!(kind.as_str(), "create" | "write" | "append") {
+        action.content = Some(raw.content.ok_or_else(|| format!("{kind} requires --content"))?);
+    }
+    if kind == "edit" {
+        let replace = raw.replace.ok_or("edit requires --replace")?;
+        if replace.is_empty() {
+            return Err("edit requires --replace".into());
+        }
+        action.replace = Some(replace);
+        action.with = Some(raw.with.ok_or("edit requires --with")?);
+        action.all = Some(raw.all.unwrap_or(false));
+    }
+    Ok(action)
+}
+
+/// 相对路径归一：拒绝绝对路径/穿越/内部目录（对齐 normalizeRelativePath）。
+fn fc_normalize_relative(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("A relative path is required".into());
+    }
+    let portable = trimmed.replace('\\', "/");
+    if portable.starts_with('/') || (portable.len() >= 2 && portable.as_bytes()[1] == b':') {
+        return Err(format!("Absolute paths are not allowed: {value}"));
+    }
+    if portable.split('/').any(|part| part == "..") {
+        return Err(format!("Path traversal is not allowed: {value}"));
+    }
+    let normalized = portable
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        return Err(format!("Invalid relative path: {value}"));
+    }
+    // Windows 大小写不敏感且剥离段尾点/空格（'.FC.' 与 '.fc' 指向同一目录）
+    let first = normalized.split('/').next().unwrap_or_default().to_lowercase();
+    if first.trim_end_matches(['.', ' ']) == FC_INTERNAL_DIR {
+        return Err(format!("The {FC_INTERNAL_DIR} directory is reserved"));
+    }
+    Ok(normalized)
+}
+
+/// 沿父链到根做符号链接检查（对齐 assertNoSymlink）。
+fn fc_assert_no_symlink(root: &Path, resolved: &Path) -> Result<(), String> {
+    let mut current = resolved.to_path_buf();
+    loop {
+        if let Ok(meta) = fs::symlink_metadata(&current)
+            && meta.file_type().is_symlink()
+        {
+            let display = current.strip_prefix(root).unwrap_or(current.as_path()).display();
+            return Err(format!("Symbolic links are not supported: {display}"));
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+/// 常规文件断言（对齐 assertRegularFile）。
+fn fc_assert_regular_file(path: &Path, display: &str) -> Result<(), String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(format!("File does not exist: {display}")),
+        Err(error) => return Err(error.to_string()),
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(format!("Not a regular file: {display}"));
+    }
+    Ok(())
+}
+
+/// 磁盘路径状态（对齐 stateFor：missing/directory/other/file + sha256）。
+fn fc_state_for(path: &Path) -> Result<FileState, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FileState { exists: false, kind: "missing".into(), size: None, sha256: None })
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!("Symbolic links are not supported: {}", path.display()));
+    }
+    if meta.is_dir() {
+        return Ok(FileState { exists: true, kind: "directory".into(), size: None, sha256: None });
+    }
+    if !meta.is_file() {
+        return Ok(FileState { exists: true, kind: "other".into(), size: None, sha256: None });
+    }
+    let data = fs::read(path).map_err(|error| error.to_string())?;
+    Ok(FileState {
+        exists: true,
+        kind: "file".into(),
+        size: Some(data.len() as u64),
+        sha256: Some(fc_sha256_hex(&data)),
+    })
+}
+
+/// 文本内容状态（对齐 stateForText）。
+fn fc_state_for_text(content: &str) -> FileState {
+    FileState {
+        exists: true,
+        kind: "file".into(),
+        size: Some(content.len() as u64),
+        sha256: Some(fc_sha256_hex(content.as_bytes())),
+    }
+}
+
+/// 读取已有文本（>2MB 拒绝；目录/缺失按语义区分，对齐 readTextIfPresent）。
+fn fc_read_text_if_present(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let meta = fs::metadata(path).map_err(|error| error.to_string())?;
+    if !meta.is_file() {
+        return Err(format!("Not a file: {}", path.display()));
+    }
+    if meta.len() > FC_MAX_READ_BYTES {
+        return Err(format!("File is too large: {}", path.display()));
+    }
+    Ok(Some(String::from_utf8_lossy(&fs::read(path).map_err(|error| error.to_string())?).into_owned()))
+}
+
+/// 计算写入后的文本（对齐 nextText：create/write 直接覆盖、append 追加、edit 计数替换）。
+fn fc_next_text(action: &FileAction, current: Option<&str>) -> Result<String, String> {
+    match action.action_type.as_str() {
+        "create" | "write" => Ok(action.content.clone().unwrap_or_default()),
+        "append" => {
+            let current = current.ok_or_else(|| format!("Source file does not exist: {}", action.path))?;
+            Ok(format!("{current}{}", action.content.clone().unwrap_or_default()))
+        }
+        _ => {
+            let current = current.ok_or_else(|| format!("Source file does not exist: {}", action.path))?;
+            let replace = action.replace.as_deref().unwrap_or_default();
+            let matches = current.split(replace).count() - 1;
+            if matches == 0 {
+                return Err(format!("Text to replace was not found in {}", action.path));
+            }
+            if matches > 1 && action.all != Some(true) {
+                return Err(format!("Text to replace occurs {matches} times; use --all to replace all"));
+            }
+            Ok(current.split(replace).collect::<Vec<_>>().join(action.with.as_deref().unwrap_or_default()))
+        }
+    }
+}
+
+/// 行级 unified diff（对齐 unifiedDiff：逐行比较，变化行 -旧 +新）。
+fn fc_unified_diff(file_path: &str, before: &str, after: &str) -> String {
+    if before == after {
+        return String::new();
+    }
+    let left: Vec<&str> = before.split('\n').map(|line: &str| line.strip_suffix('\r').unwrap_or(line)).collect();
+    let right: Vec<&str> = after.split('\n').map(|line: &str| line.strip_suffix('\r').unwrap_or(line)).collect();
+    let mut lines = vec![format!("--- {file_path}"), format!("+++ {file_path}")];
+    for index in 0..left.len().max(right.len()) {
+        let old = left.get(index);
+        let new = right.get(index);
+        if old == new {
+            continue;
+        }
+        if let Some(line) = old {
+            lines.push(format!("-{line}"));
+        }
+        if let Some(line) = new {
+            lines.push(format!("+{line}"));
+        }
+    }
+    lines.join("\n")
+}
+
+/// glob → 大小写不敏感正则（对齐 globToRegExp：** / → (?:.*/)?，* → [^/]*，? → [^/]）。
+fn fc_glob_regex(pattern: &str) -> Result<regex::Regex, String> {
+    let portable = pattern.replace('\\', "/");
+    if portable.starts_with('/') || (portable.len() >= 2 && portable.as_bytes()[1] == b':') || portable.split('/').any(|part| part == "..") {
+        return Err(format!("Invalid search pattern: {pattern}"));
+    }
+    let portable = portable.strip_prefix("./").unwrap_or(&portable);
+    let mut source = String::from("^");
+    let characters: Vec<char> = portable.chars().collect();
+    let mut index = 0;
+    while index < characters.len() {
+        let character = characters[index];
+        if character == '*' && index + 1 < characters.len() && characters[index + 1] == '*' {
+            if index + 2 < characters.len() && characters[index + 2] == '/' {
+                source.push_str("(?:.*/)?");
+                index += 3;
+                continue;
+            }
+            source.push_str(".*");
+            index += 2;
+        } else if character == '*' {
+            source.push_str("[^/]*");
+            index += 1;
+        } else if character == '?' {
+            source.push_str("[^/]");
+            index += 1;
+        } else {
+            if "|\\{}()[]^$+?.".contains(character) {
+                source.push('\\');
+            }
+            source.push(character);
+            index += 1;
+        }
+    }
+    source.push('$');
+    regex::RegexBuilder::new(&source).case_insensitive(true).build().map_err(|error| error.to_string())
+}
+
+/// 递归列文件：跳过根下内部目录与符号链接，码点序排序。
+fn fc_list_files(root: &Path, base: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    fc_walk(root, base, base, &mut files);
+    files.sort();
+    files
+}
+
+fn fc_walk(root: &Path, base: &Path, directory: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if base == root
+            && path.file_name().and_then(|name| name.to_str()).map(|name| FC_HIDDEN_ROOT_DIRS.contains(&name)).unwrap_or(false)
+        {
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            fc_walk(root, base, &path, out);
+        } else if meta.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+/// 读 manifest（缺失/损坏一律 None，对齐 readManifest）。
+fn fc_read_manifest(path: &Path) -> Option<serde_json::Value> {
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// 原子写文本：临时文件 → rename（Windows 目标已存在时回退 rm+rename）。
+fn fc_write_atomic(target: &Path, content: &str) -> Result<(), String> {
+    let temporary = fc_temporary_path(target);
+    let result = (|| -> Result<(), String> {
+        fs::write(&temporary, content).map_err(|error| error.to_string())?;
+        fc_replace_file(&temporary, target)
+    })();
+    if temporary.exists() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// 原子复制写回（undo 恢复快照用）。
+fn fc_write_atomic_from_file(target: &Path, source: &Path) -> Result<(), String> {
+    let temporary = fc_temporary_path(target);
+    let result = (|| -> Result<(), String> {
+        fs::copy(source, &temporary).map_err(|error| error.to_string())?;
+        fc_replace_file(&temporary, target)
+    })();
+    if temporary.exists() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn fc_temporary_path(target: &Path) -> PathBuf {
+    let name = target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    target.parent().unwrap_or(target).join(format!("{name}.{}.tmp", Uuid::new_v4()))
+}
+
+fn fc_replace_file(source: &Path, target: &Path) -> Result<(), String> {
+    match fs::rename(source, target) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if target.exists() {
+                fs::remove_file(target).map_err(|fallback| fallback.to_string())?;
+                fs::rename(source, target).map_err(|fallback| fallback.to_string())
+            } else {
+                Err(error.to_string())
+            }
+        }
+    }
+}
+
+/// plan 里的动作形状（对齐 normalizePlanActions：id + 透传字段）。
+fn fc_plan_action((index, action): (usize, &FileAction)) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    object.insert("id".into(), serde_json::json!(format!("op-{}", index + 1)));
+    if let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(action) {
+        for (key, value) in fields {
+            object.insert(key, value);
+        }
+    }
+    serde_json::Value::Object(object)
+}
+
+/// 审计里的动作摘要（对齐 auditAction：id/type/path/targetPath）。
+fn fc_audit_action(action: &FileAction, action_id: &str) -> serde_json::Value {
+    let mut object = serde_json::json!({ "id": action_id, "type": action.action_type, "path": action.path });
+    if let Some(target) = &action.target_path {
+        object["targetPath"] = serde_json::json!(target);
+    }
+    object
+}
+
+/// 状态一致性比较（对齐 sameState：exists/type/文件 sha256）。
+fn fc_same_state(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    left["exists"] == right["exists"]
+        && left["type"] == right["type"]
+        && (left["exists"].as_bool() != Some(true)
+            || left["type"].as_str() != Some("file")
+            || left["sha256"] == right["sha256"])
+}
+
+fn fc_sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+fn fc_millis(modified: std::io::Result<std::time::SystemTime>) -> i64 {
+    modified
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn fc_normalize_extension(file_type: &str) -> String {
+    if file_type.starts_with('.') {
+        file_type.to_lowercase()
+    } else {
+        format!(".{}", file_type.to_lowercase())
+    }
+}
+
+/// files 动作输入（HTTP body 形状；type 为关键字以 action_type 承载）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAction {
+    #[serde(rename = "type")]
+    pub action_type: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
+}
+
+/// files 读取结果（字符切片口径）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FileReadOutcome {
+    pub path: String,
+    pub size: u64,
+    pub offset: u64,
+    pub limit: u64,
+    pub eof: bool,
+    pub content: String,
+}
+
+/// files find 命中条目。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileInfo {
+    pub path: String,
+    pub size: u64,
+    pub modified_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileFindOutcome {
+    pub pattern: String,
+    pub items: Vec<FileInfo>,
+    pub total: usize,
+}
+
+/// files grep 命中行。
+#[derive(Serialize)]
+pub struct GrepItem {
+    pub path: String,
+    pub line: usize,
+    pub text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileGrepOutcome {
+    pub query: String,
+    pub regex: bool,
+    pub items: Vec<GrepItem>,
+    pub total: usize,
+}
+
+/// 路径状态（preview changes / undo 一致性校验共用）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileState {
+    pub exists: bool,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 /// 附件条目（对齐 Express listAttachments，camelCase 序列化）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1730,12 +2962,13 @@ pub struct CanvasDocument {
 
 #[cfg(test)]
 mod tests {
-    use super::{ServiceError, SNAPSHOT_LIMIT, WorkspaceService};
+    use super::{FileAction, ServiceError, SNAPSHOT_LIMIT, WorkspaceService};
 
     fn open_service(directory: &Path) -> WorkspaceService {
         WorkspaceService::open(directory.to_path_buf()).unwrap()
     }
 
+    use std::fs;
     use std::path::Path;
 
     const NOTE_ID: &str = "019501a2-3b4c-4c5d-89ab-cdef01234567";
@@ -1976,5 +3209,156 @@ mod tests {
         assert_eq!(traversal.code, "VALIDATION");
         let missing = service.vault_download("attachments/missing.png").unwrap_err();
         assert_eq!(missing.code, "NOT_FOUND");
+    }
+
+    #[test]
+    fn file_read_slices_by_characters_and_reports_eof() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "docs/note.md", "你好世界，hello".as_bytes());
+
+        let first = service.file_read("docs/note.md", 0, Some(5)).unwrap();
+        assert_eq!(first.content, "你好世界，");
+        assert!(!first.eof);
+        assert_eq!(first.size, "你好世界，hello".len() as u64);
+
+        let second = service.file_read("docs/note.md", 5, Some(50)).unwrap();
+        assert_eq!(second.content, "hello");
+        assert!(second.eof);
+
+        let missing = service.file_read("docs/missing.md", 0, None).unwrap_err();
+        assert_eq!(missing.code, "NOT_FOUND");
+    }
+
+    #[test]
+    fn file_find_and_grep_cover_glob_type_and_regex() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "docs/a.md", "第一行 TARGETS\n第二行\n".as_bytes());
+        write_file(directory.path(), "docs/b.txt", "plain".as_bytes());
+        write_file(directory.path(), "c.md", "root targets".as_bytes());
+
+        let all_md = service.file_find(Some("**/*.md".into()), None, None).unwrap();
+        assert_eq!(all_md.total, 2);
+        let typed = service.file_find(Some("**/*".into()), Some("docs".into()), Some("txt".into())).unwrap();
+        assert_eq!(typed.total, 1);
+        assert_eq!(typed.items[0].path, "docs/b.txt");
+
+        // 普通文本大小写不敏感
+        let plain = service.file_grep("targets".into(), None, false, None).unwrap();
+        assert_eq!(plain.total, 2);
+        let regexed = service.file_grep("^第二行$".into(), Some("docs".into()), true, None).unwrap();
+        assert_eq!(regexed.total, 1);
+        assert_eq!(regexed.items[0].line, 2);
+    }
+
+    #[test]
+    fn file_edit_roundtrip_previews_executes_and_undoes() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "doc.md", "hello world\n".as_bytes());
+
+        let action = FileAction {
+            action_type: "edit".into(),
+            path: "doc.md".into(),
+            target_path: None,
+            content: None,
+            replace: Some("world".into()),
+            with: Some("rust".into()),
+            all: None,
+        };
+        let preview = service.file_preview(Some(action.clone()), None).unwrap();
+        let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
+        assert_eq!(preview["requiresSecondConfirmation"], serde_json::json!(false));
+        assert!(preview["diff"].as_str().unwrap().contains("+hello rust"));
+        assert_eq!(preview["confirmation"]["required"], serde_json::json!(true));
+
+        let executed = service.file_execute(Some(action), None, true, false, None, Some(plan_hash)).unwrap();
+        assert_eq!(executed["replaced"], serde_json::json!(1));
+        assert_eq!(executed["undoable"], serde_json::json!(true));
+        assert_eq!(fs::read_to_string(directory.path().join("doc.md")).unwrap(), "hello rust\n");
+        let operation_id = executed["operationId"].as_str().unwrap().to_owned();
+
+        // planHash 与当前状态不符必须被拒
+        let stale = FileAction {
+            action_type: "edit".into(),
+            path: "doc.md".into(),
+            target_path: None,
+            content: None,
+            replace: Some("rust".into()),
+            with: Some("world".into()),
+            all: None,
+        };
+        let rejected = service
+            .file_execute(Some(stale), None, true, false, None, Some("0".repeat(64)))
+            .unwrap_err();
+        assert_eq!(rejected.code, "CONFLICT");
+
+        let undone = service.file_undo(Some(operation_id.clone()), false).unwrap();
+        assert_eq!(undone["undone"], serde_json::json!(true));
+        assert_eq!(fs::read_to_string(directory.path().join("doc.md")).unwrap(), "hello world\n");
+        let again = service.file_undo(Some(operation_id), false).unwrap_err();
+        assert_eq!(again.code, "CONFLICT");
+    }
+
+    #[test]
+    fn file_delete_requires_second_confirmation_and_undo_restores() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "gone.txt", b"delete me");
+
+        let action = FileAction {
+            action_type: "delete".into(),
+            path: "gone.txt".into(),
+            target_path: None,
+            content: None,
+            replace: None,
+            with: None,
+            all: None,
+        };
+        let preview = service.file_preview(Some(action.clone()), None).unwrap();
+        assert_eq!(preview["confirmation"]["secondConfirmationRequired"], serde_json::json!(true));
+        let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
+
+        // 闸门顺序：confirmed → planHash → delete 的 secondConfirmed
+        let no_confirmation = service.file_execute(Some(action.clone()), None, false, true, None, Some(plan_hash.clone())).unwrap_err();
+        assert_eq!(no_confirmation.code, "VALIDATION");
+        let no_plan = service.file_execute(Some(action.clone()), None, true, true, None, None).unwrap_err();
+        assert_eq!(no_plan.code, "VALIDATION");
+        let no_second = service.file_execute(Some(action.clone()), None, true, false, None, Some(plan_hash.clone())).unwrap_err();
+        assert_eq!(no_second.code, "VALIDATION");
+
+        let executed = service.file_execute(Some(action), None, true, true, None, Some(plan_hash)).unwrap();
+        assert!(!directory.path().join("gone.txt").exists());
+        let undone = service.file_undo(Some(executed["operationId"].as_str().unwrap().to_owned()), false).unwrap();
+        assert_eq!(undone["undone"], serde_json::json!(true));
+        assert_eq!(fs::read_to_string(directory.path().join("gone.txt")).unwrap(), "delete me");
+    }
+
+    #[test]
+    fn file_log_lists_recent_audit_entries_newest_first() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        assert!(service.file_log(None).unwrap().is_empty());
+
+        write_file(directory.path(), "a.txt", b"1");
+        let action = FileAction {
+            action_type: "write".into(),
+            path: "a.txt".into(),
+            target_path: None,
+            content: Some("2".into()),
+            replace: None,
+            with: None,
+            all: None,
+        };
+        let preview = service.file_preview(Some(action.clone()), None).unwrap();
+        let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
+        service.file_execute(Some(action), None, true, false, None, Some(plan_hash)).unwrap();
+
+        let log = service.file_log(None).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0]["type"], serde_json::json!("write"));
+        assert_eq!(log[0]["status"], serde_json::json!("completed"));
+        assert_eq!(log[0]["source"], serde_json::json!("files-api"));
     }
 }

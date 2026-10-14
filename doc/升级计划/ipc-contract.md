@@ -108,13 +108,13 @@
 
 | 方法 | 路径 | 请求 | 响应 | 服务层 | 未来 Rust 命令 | 状态 |
 |---|---|---|---|---|---|---|
-| GET | `/api/files/read` | query: `path, offset, limit≤2MB` | 文件内容 | files.service | `file_read` | ⬜ |
-| GET | `/api/files/find` | query: `pattern(glob), dir, type?` | 匹配文件 | files.service | `file_find` | ⬜ |
-| GET | `/api/files/grep` | query: `query, dir, regex, type?` | 命中结果 | files.service | `file_grep` | ⬜ |
-| POST | `/api/files/preview` | 单动作或 `actions[]≤30` | 预览+plan（viewer 置 `blocked` 不抛错） | files.service | `file_preview` | ⬜ |
-| POST | `/api/files/execute` | 同上 + `confirmed, secondConfirmed, planId, planHash` | 执行结果 | files.service | `file_execute` | ⬜ |
-| POST | `/api/files/undo` | body: `operationId?, force` | 撤销结果 | files.service | `file_undo` | ⬜ |
-| GET | `/api/files/log` | query: `limit≤500` | 操作日志 | files.service | `file_log` | ⬜ |
+| GET | `/api/files/read` | query: `path, offset, limit≤2MB` | 文件内容 | files.service | `file_read` | ✅ |
+| GET | `/api/files/find` | query: `pattern(glob), dir, type?` | 匹配文件 | files.service | `file_find` | ✅ |
+| GET | `/api/files/grep` | query: `query, dir, regex, type?` | 命中结果 | files.service | `file_grep` | ✅ |
+| POST | `/api/files/preview` | 单动作或 `actions[]≤30` | 预览+plan（viewer 置 `blocked` 不抛错） | files.service | `file_preview` | ✅ |
+| POST | `/api/files/execute` | 同上 + `confirmed, secondConfirmed, planId, planHash` | 执行结果 | files.service | `file_execute` | ✅ |
+| POST | `/api/files/undo` | body: `operationId?, force` | 撤销结果 | files.service | `file_undo` | ✅ |
+| GET | `/api/files/log` | query: `limit≤500` | 操作日志 | files.service | `file_log` | ✅ |
 
 ### 2.7 experts（11）
 

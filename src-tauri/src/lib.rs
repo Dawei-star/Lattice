@@ -29,8 +29,8 @@ use tauri::{Emitter, Manager, State};
 use vault::{NoteContents, NoteFile, VaultInfo};
 use workspace::{
     AttachmentCleanup, AttachmentEntry, AttachmentReferences, AttachmentValidation,
-    CanvasDocument, HistoryEntry, HistorySnapshot, ServiceError, VaultDownload, VaultFileEntry,
-    WorkspaceService,
+    CanvasDocument, FileAction, FileFindOutcome, FileGrepOutcome, FileReadOutcome, HistoryEntry, HistorySnapshot,
+    ServiceError, VaultDownload, VaultFileEntry, WorkspaceService,
 };
 
 pub struct WorkspaceState(pub RwLock<WorkspaceService>);
@@ -112,7 +112,14 @@ pub fn run() {
             vault_files_list,
             vault_attachment_validate,
             vault_attachment_cleanup,
-            vault_download
+            vault_download,
+            file_read,
+            file_find,
+            file_grep,
+            file_preview,
+            file_execute,
+            file_undo,
+            file_log
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -570,6 +577,82 @@ fn vault_download(
     path: String,
 ) -> Result<VaultDownload, String> {
     with_workspace(state, |workspace| workspace.vault_download(&path))
+}
+
+#[tauri::command]
+fn file_read(
+    state: State<'_, WorkspaceState>,
+    path: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> Result<FileReadOutcome, String> {
+    with_workspace(state, |workspace| workspace.file_read(&path, offset.unwrap_or(0), limit))
+}
+
+#[tauri::command]
+fn file_find(
+    state: State<'_, WorkspaceState>,
+    pattern: Option<String>,
+    dir: Option<String>,
+    file_type: Option<String>,
+) -> Result<FileFindOutcome, String> {
+    with_workspace(state, |workspace| workspace.file_find(pattern, dir, file_type))
+}
+
+#[tauri::command]
+fn file_grep(
+    state: State<'_, WorkspaceState>,
+    query: String,
+    dir: Option<String>,
+    regex: Option<bool>,
+    file_type: Option<String>,
+) -> Result<FileGrepOutcome, String> {
+    with_workspace(state, |workspace| workspace.file_grep(query, dir, regex.unwrap_or(false), file_type))
+}
+
+#[tauri::command]
+fn file_preview(
+    state: State<'_, WorkspaceState>,
+    action: Option<FileAction>,
+    actions: Option<Vec<FileAction>>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.file_preview(action, actions))
+}
+
+#[tauri::command]
+fn file_execute(
+    state: State<'_, WorkspaceState>,
+    action: Option<FileAction>,
+    actions: Option<Vec<FileAction>>,
+    confirmed: Option<bool>,
+    second_confirmed: Option<bool>,
+    plan_id: Option<String>,
+    plan_hash: Option<String>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| {
+        workspace.file_execute(
+            action,
+            actions,
+            confirmed.unwrap_or(false),
+            second_confirmed.unwrap_or(false),
+            plan_id,
+            plan_hash,
+        )
+    })
+}
+
+#[tauri::command]
+fn file_undo(
+    state: State<'_, WorkspaceState>,
+    operation_id: Option<String>,
+    force: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.file_undo(operation_id, force.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn file_log(state: State<'_, WorkspaceState>, limit: Option<u64>) -> Result<Vec<serde_json::Value>, String> {
+    with_workspace(state, |workspace| workspace.file_log(limit))
 }
 
 /// 后台扫描执行器：领取 `vault-scan` 任务 → 取消检查 → 增量 reconcile →
