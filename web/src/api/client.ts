@@ -100,7 +100,7 @@ interface ApiPayloadError {
 
 function resolveMessage(status: number, code: string | undefined, serverMessage: string | undefined): string {
   if (code === 'OFFLINE') return '当前处于离线状态，请检查网络连接';
-  if (code === 'NETWORK') return '无法连接后端服务，请确认服务已启动（默认 http://localhost:5177）';
+  if (code === 'NETWORK') return '无法连接 HTTP 兼容服务；桌面端请确认应用已通过 Tauri 启动，浏览器端请配置 VITE_API_BASE_URL';
   if (code === 'TIMEOUT') return '请求超时，后端可能未响应，请稍后重试';
   if (status === 0) return '网络请求失败，请稍后重试';
   // 4xx 的文案由后端提供，本身就是面向用户的；5xx 一律用兜底文案
@@ -208,10 +208,8 @@ interface RequestRawOptions extends RequestOptions {
 /**
  * 桌面通道（Tauri IPC）优先分发。
  *
- * 返回 `null` 表示「本请求不走桌面通道」，调用方继续走 HTTP：
- * 非桌面形态、未命中映射表、或映射表自述表达不了该请求。
- *
- * 放在重试循环之外——invoke 是进程内调用，重试/超时/离线判定都不适用。
+ * invoke 是进程内调用，不应进入 HTTP 的超时、重试和离线逻辑；未命中
+ * 桌面映射时返回 null，浏览器环境继续使用原有 HTTP 通道。
  */
 async function dispatchFromIpc(
   method: string,
@@ -224,9 +222,12 @@ async function dispatchFromIpc(
       body: ctx.body,
       rawBody: ctx.rawBody,
     });
-    return result.handled ? result.payload : null;
+    if (result.handled) return result.payload;
+    if (result.reason !== 'not-desktop') {
+      throw new ApiError('桌面端暂未接入该能力', { code: 'IPC_UNAVAILABLE', status: 0 });
+    }
+    return null;
   } catch (error) {
-    // Rust 命令错误是裸字符串（无 code）；统一转成 ApiError，让 UI 只面对一种错误形状
     if (error instanceof IpcError) {
       throw new ApiError(error.message, { code: 'IPC_ERROR', status: 0, cause: error });
     }

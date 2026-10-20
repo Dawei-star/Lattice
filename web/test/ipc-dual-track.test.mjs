@@ -6,8 +6,8 @@
  *  2. 桌面形态 + 命中映射：走 invoke，命令名与参数**逐键精确**（含 camelCase 转换、
  *     动态段 decodeURIComponent、body/query 的来源区分）；
  *  3. 路由优先级：静态路径不被动态路径吞掉（/experts/skills vs /experts/:id）；
- *  4. args 自述表达不了（缺必填参数）→ 回落 HTTP，而不是发出半成品命令；
- *  5. 未映射路由（Rust 缺命令/结构不兼容）→ 回落 HTTP；
+ *  4. args 自述表达不了（缺必填参数）→ 桌面端明确报告能力未接入，而不是发出半成品命令；
+ *  5. 未映射路由（Rust 缺命令/结构不兼容）→ 桌面端明确报告能力未接入；
  *  6. 信封还原：http.get 解包 .data，http.getFull 拿得到 .data；
  *  7. 命令错误是裸字符串 → 归一为 ApiError(code='IPC_ERROR')，且**不触发重试**。
  *
@@ -64,6 +64,14 @@ const expectHttpOnly = (label) => {
   assert.equal(invokeCalls.length, 0, `${label}：不应触发 invoke`);
   assert.equal(fetchCalls.length, 1, `${label}：应回落到 HTTP`);
 };
+const expectUnavailable = async (label, request) => {
+  await assert.rejects(request, (error) => {
+    assert.equal(error.code, 'IPC_UNAVAILABLE', `${label}：应报告 IPC_UNAVAILABLE`);
+    return true;
+  });
+  assert.equal(invokeCalls.length, 0, `${label}：不应触发 invoke`);
+  assert.equal(fetchCalls.length, 0, `${label}：桌面端不应回落 HTTP`);
+};
 
 const checks = [];
 function check(name) {
@@ -113,26 +121,24 @@ assert.equal(lastInvoke().cmd, 'note_delete');
 assert.deepEqual(lastInvoke().args, { id: 'n-1', confirmed: true, secondConfirmed: true });
 check('DELETE 的 body 确认参数映射到命令形参');
 
-// 6. 缺必填参数 → 回落 HTTP（不发半成品命令）
+// 6. 缺必填参数 → 明确报告桌面能力未接入（不发半成品命令）
 reset();
-await http.get('/canvas');
-expectHttpOnly('GET /canvas 缺 path');
+await expectUnavailable('GET /canvas 缺 path', () => http.get('/canvas'));
 reset();
 await http.get('/canvas', { query: { path: '画板.canvas' } });
 assert.equal(lastInvoke().cmd, 'canvas_read');
 assert.deepEqual(lastInvoke().args, { path: '画板.canvas' });
-check('args 表达不了时回落 HTTP，参数齐全时走 invoke');
+check('args 无法表达时拒绝桌面请求，参数齐全时走 invoke');
 
-// 7. 未映射路由（Rust 缺命令 / 结构不兼容）→ 回落 HTTP
+// 7. 未映射路由（Rust 缺命令 / 结构不兼容）→ 明确报告桌面能力未接入
 //    注意：`/notes/index`、`/canvas/files` 曾在列，已于 P1-08 第 2 步回收进映射表
 //    （Rust 分别补上 properties 对象、canvas 对象数组后对齐），这里改用仍然排除的路径。
 //    谁回收了一条，就从本列表删掉它。
-for (const path of ['/notes/templates', '/notes/n-1', '/vault/info', '/vault/assets', '/tags/t1']) {
+for (const path of ['/not-mapped', '/health']) {
   reset();
-  await http.get(path).catch(() => {});
-  expectHttpOnly(`未映射路由 ${path}`);
+  await expectUnavailable(`未映射路由 ${path}`, () => http.get(path));
 }
-check('缺命令/不兼容路由在桌面形态下仍走 HTTP');
+check('缺命令/不兼容路由在桌面形态下明确拒绝，不回落 HTTP');
 
 // 8. 信封还原：get 解包 .data，getFull 保留 .data
 reset();
@@ -142,6 +148,25 @@ assert.deepEqual(overview, { noteCount: 3, folderCount: 1 });
 const full = await http.getFull('/meta/overview');
 assert.deepEqual(full, { data: { noteCount: 3, folderCount: 1 } });
 check('命令返回值按 {data} 信封还原，get/getFull 语义不变');
+
+// 8.1 /search：命令结果带 strategy/items，IPC 侧必须还原 Express 的 data/meta
+reset();
+invokeImpl = async () => ({
+  strategy: 'like-fallback',
+  items: [{ id: 'n1', title: '命中', excerpt: '正文', folderId: null, updatedAt: '2026-01-01' }],
+});
+const search = await http.getFull('/search', {
+  query: { q: '命中', limit: 10, folderId: '__none__', inboxStatus: 'all' },
+});
+assert.equal(lastInvoke().cmd, 'search_query');
+assert.deepEqual(lastInvoke().args, {
+  q: '命中', limit: 10, folderId: '__none__', inboxStatus: 'all',
+});
+assert.deepEqual(search, {
+  data: [{ id: 'n1', title: '命中', excerpt: '正文', folderId: null, updatedAt: '2026-01-01' }],
+  meta: { strategy: 'like-fallback', count: 1 },
+});
+check('search_query 过滤参数与 strategy/items envelope 对齐 Express');
 
 // 9. PUT /canvas：body 拆成 nodes/edges，且不多带键
 reset();
@@ -158,12 +183,28 @@ check('PUT /canvas 的文档体按 nodes/edges 拆分且参数键精确');
 
 // 10. /files/preview 的 action/actions 二态
 reset();
-await http.post('/files/preview', { type: 'create', path: 'a.md', content: 'x' });
-assert.deepEqual(lastInvoke().args, { action: { type: 'create', path: 'a.md', content: 'x' } });
+await http.post('/files/preview', { type: 'create', path: 'a.md', content: 'x', actor: 'local-user', role: 'editor', allowedPaths: ['a.md'] });
+assert.deepEqual(lastInvoke().args, { action: { type: 'create', path: 'a.md', content: 'x', actor: 'local-user', role: 'editor', allowedPaths: ['a.md'] }, actor: 'local-user', role: 'editor', allowedPaths: ['a.md'] });
 reset();
 await http.post('/files/preview', { actions: [{ type: 'delete', path: 'a.md' }] });
 assert.deepEqual(lastInvoke().args, { actions: [{ type: 'delete', path: 'a.md' }] });
 check('file_preview 按单动作/批量二态构造形参');
+
+reset();
+await http.post('/files/execute', {
+  type: 'write', path: 'a.md', content: 'x', confirmed: true, planHash: 'hash',
+  actor: 'local-user', role: 'editor', allowedPaths: ['a.md'], idempotencyKey: 'run-1:op-1',
+});
+assert.equal(lastInvoke().cmd, 'file_execute');
+assert.deepEqual(lastInvoke().args, {
+  action: {
+    type: 'write', path: 'a.md', content: 'x', confirmed: true, planHash: 'hash',
+    actor: 'local-user', role: 'editor', allowedPaths: ['a.md'], idempotencyKey: 'run-1:op-1',
+  },
+  confirmed: true, secondConfirmed: false, planId: null, planHash: 'hash',
+  actor: 'local-user', role: 'editor', allowedPaths: ['a.md'], idempotencyKey: 'run-1:op-1',
+});
+check('file_execute 将角色、授权路径和幂等键传入桌面内核');
 
 // 11. cleanup 的 dryRun 必须显式回传（Rust 默认 true，前端默认 false）
 reset();
@@ -172,13 +213,33 @@ assert.equal(lastInvoke().cmd, 'vault_attachment_cleanup');
 assert.deepEqual(lastInvoke().args, { dryRun: false, confirmed: true, secondConfirmed: true });
 check('cleanup 显式回传 dryRun，避免默认值反转');
 
-// 12. 必填形参缺失的写操作也回落 HTTP
+// 12. AI 本地检索：完整 body 原样进入 Rust request，权限路径不能在前端丢失
 reset();
-await http.post('/review/health/execute', { confirmed: true });
-expectHttpOnly('review execute 缺 planId/planHash');
-check('必填形参缺失的写操作回落 HTTP');
+await http.post('/ai/retrieval/preview', {
+  query: '权限测试',
+  limit: 8,
+  allowedPaths: ['allowed.md'],
+  folderId: null,
+  inboxStatus: null,
+});
+assert.equal(lastInvoke().cmd, 'ai_retrieve');
+assert.deepEqual(lastInvoke().args, {
+  request: {
+    query: '权限测试',
+    limit: 8,
+    allowedPaths: ['allowed.md'],
+    folderId: null,
+    inboxStatus: null,
+  },
+});
+check('AI 检索先在 Rust 权限过滤，再返回块级引用');
 
-// 13. 命令错误是裸字符串 → ApiError(code=IPC_ERROR)，且不重试
+// 13. 必填形参缺失的写操作也明确拒绝
+reset();
+await expectUnavailable('review execute 缺 planId/planHash', () => http.post('/review/health/execute', { confirmed: true }));
+check('必填形参缺失的写操作明确拒绝');
+
+// 14. 命令错误是裸字符串 → ApiError(code=IPC_ERROR)，且不重试
 reset();
 invokeImpl = async () => {
   throw '目标笔记不存在';

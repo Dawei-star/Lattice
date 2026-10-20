@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::index::stable_folder_id;
-use crate::vault::VaultInfo;
+use crate::time::{iso8601_utc, now_millis};
 use crate::workspace::{FileAction, WorkspaceService};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -70,8 +70,14 @@ fn rebuild_seed_vault(target: &Path) {
     ];
     for (relative, offset) in ordered {
         let path = target.join(relative);
+        let raw = fs::read_to_string(&path).unwrap();
+        // 录制快照把真实时间归一成占位符；回放时恢复到“现在附近”的有效值，
+        // 这样健康扫描不会把确定性 fixture 误判成超过 staleDays 的旧笔记。
+        let timestamp = iso8601_utc(now_millis() - offset as i64 * 1_000);
+        fs::write(&path, raw.replace("<timestamp>", &timestamp)).unwrap();
         let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_modified(base + Duration::from_secs(offset)).unwrap();
+        file.set_modified(base + Duration::from_secs(offset))
+            .unwrap();
     }
 }
 
@@ -116,12 +122,20 @@ fn nth_segment(path: &str, index: usize) -> String {
 
 fn query(case: &Value, key: &str) -> Option<Value> {
     let value = &case["http"]["query"][key];
-    if value.is_null() { None } else { Some(value.clone()) }
+    if value.is_null() {
+        None
+    } else {
+        Some(value.clone())
+    }
 }
 
 fn body(case: &Value, key: &str) -> Option<Value> {
     let value = &case["http"]["body"][key];
-    if value.is_null() { None } else { Some(value.clone()) }
+    if value.is_null() {
+        None
+    } else {
+        Some(value.clone())
+    }
 }
 
 fn q_str(case: &Value, key: &str) -> Option<String> {
@@ -164,7 +178,9 @@ fn capture<T: Serialize, E: std::fmt::Display>(result: Result<T, E>) -> Value {
 
 /// 若值是错误标记，取出其中的错误消息。
 fn error_message(value: &Value) -> Option<&str> {
-    value.as_str().and_then(|text| text.strip_prefix(ERROR_MARKER))
+    value
+        .as_str()
+        .and_then(|text| text.strip_prefix(ERROR_MARKER))
 }
 
 // ───────────────────────────── 回放 ─────────────────────────────
@@ -191,12 +207,7 @@ fn run_replay() -> Vec<(String, Value)> {
     // ── vault（10）：与 record-fixtures 同序 ─────────────────────────────
     {
         let case = load_case("vault_info");
-        push(
-            "vault_info",
-            to_value(VaultInfo {
-                path: service.path().to_string_lossy().into_owned(),
-            }),
-        );
+        push("vault_info", to_value(service.vault_info()));
         let _ = case;
     }
     {
@@ -205,14 +216,23 @@ fn run_replay() -> Vec<(String, Value)> {
         let confirmed = q_str(&case, "confirmed").as_deref() == Some("true");
         push(
             "vault_attachment_upload",
-            capture(service.attachment_upload(
-                &name,
-                b"attachment fixture\n".to_vec(),
-                confirmed,
-            )),
+            capture(
+                service
+                    .attachment_upload(
+                        &name,
+                        Some("text/plain"),
+                        None,
+                        b"attachment fixture\n".to_vec(),
+                        confirmed,
+                    )
+                    .map(|value| value),
+            ),
         );
     }
-    push("vault_attachments_list", capture(service.attachments_list()));
+    push(
+        "vault_attachments_list",
+        capture(service.attachments_list()),
+    );
     push("vault_files_list", capture(service.vault_files_list()));
     {
         let case = load_case("vault_attachment_references");
@@ -233,9 +253,15 @@ fn run_replay() -> Vec<(String, Value)> {
     }
     {
         let case = load_case("vault_attachment_cleanup");
-        let dry_run = body(&case, "dryRun").and_then(|value| value.as_bool()).unwrap_or(true);
-        let confirmed = body(&case, "confirmed").and_then(|value| value.as_bool()).unwrap_or(false);
-        let second = body(&case, "secondConfirmed").and_then(|value| value.as_bool()).unwrap_or(false);
+        let dry_run = body(&case, "dryRun")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let confirmed = body(&case, "confirmed")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let second = body(&case, "secondConfirmed")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
         push(
             "vault_attachment_cleanup",
             capture(service.attachment_cleanup(dry_run, confirmed, second)),
@@ -244,12 +270,18 @@ fn run_replay() -> Vec<(String, Value)> {
     {
         let case = load_case("vault_read_asset");
         let path = q_str(&case, "path").unwrap_or_default();
-        push("vault_read_asset", capture(service.vault().read_asset(&path)));
+        push(
+            "vault_read_asset",
+            capture(service.vault().read_asset(&path)),
+        );
     }
     {
         let case = load_case("vault_download");
         let path = q_str(&case, "path").unwrap_or_default();
-        push("vault_download", capture(service.vault_download(&path)));
+        push(
+            "vault_download",
+            capture(service.vault_download(&path).map(|value| value.base64)),
+        );
     }
     {
         let case = load_case("vault_attachment_delete");
@@ -269,28 +301,39 @@ fn run_replay() -> Vec<(String, Value)> {
         let id = b_str(&case, "id");
         let title = b_str(&case, "title");
         let content = b_str(&case, "content").unwrap_or_default();
+        let folder_id = b_str(&case, "folderId");
         let properties = body(&case, "properties")
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default();
         push(
             "note_create",
-            capture(service.create_note(id, title, &content, &properties, true)),
+            capture(service.create_note(id, title, &content, folder_id, &properties, true)),
         );
     }
     {
         let case = load_case("note_update");
         let id = nth_segment(&http_path(&case), 3);
         let content = b_str(&case, "content");
+        let folder_id = body(&case, "folderId").map(|value| {
+            if value.is_null() {
+                None
+            } else {
+                value.as_str().map(str::to_owned)
+            }
+        });
         push(
             "note_update",
-            capture(service.update_note(&id, None, content, None, None, None, true)),
+            capture(service.update_note(&id, None, content, folder_id, None, None, None, true)),
         );
     }
     let alpha_version = {
         let case = load_case("note_history_list");
         let id = nth_segment(&http_path(&case), 3);
         let history = capture(service.history_list(&id));
-        let version = history[0]["version"].as_str().map(str::to_owned).unwrap_or_default();
+        let version = history["items"][0]["version"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
         push("note_history_list", history);
         version
     };
@@ -321,11 +364,16 @@ fn run_replay() -> Vec<(String, Value)> {
     {
         let case = load_case("search_query");
         let q = q_str(&case, "q").unwrap_or_default();
-        let limit = q_u64(&case, "limit").unwrap_or(20) as usize;
-        push(
-            "search_query",
-            capture(service.index().search_query(&q, limit)),
+        let limit = q_u64(&case, "limit").unwrap_or(30) as usize;
+        let folder_id = case["http"]["query"]["folderId"].as_str();
+        let inbox_status = case["http"]["query"]["inboxStatus"].as_str();
+        let result = capture(
+            service
+                .index()
+                .search_query(&q, limit, folder_id, inbox_status),
         );
+        let items = result.get("items").cloned().unwrap_or(result);
+        push("search_query", items);
     }
     push("graph_build", capture(service.index().build_graph()));
     push(
@@ -343,8 +391,12 @@ fn run_replay() -> Vec<(String, Value)> {
         // 按 seed 清单映射为「项目」（seed.folders[0]）。
         let case = load_case("folder_create");
         let name = b_str(&case, "name").unwrap_or_default();
-        let node = service.folder_create(&name, Some("项目"), true);
-        let id = node.as_ref().ok().map(|node| node.id.clone()).unwrap_or_default();
+        let node = service.folder_create(&name, Some(&stable_folder_id("项目")), Some(1), true);
+        let id = node
+            .as_ref()
+            .ok()
+            .map(|node| node.id.clone())
+            .unwrap_or_default();
         push("folder_create", capture(node));
         id
     };
@@ -353,14 +405,17 @@ fn run_replay() -> Vec<(String, Value)> {
         let name = b_str(&case, "name");
         push(
             "folder_update",
-            capture(service.folder_update(&created_folder_id, name, None, true)),
+            capture(service.folder_update(&created_folder_id, name, None, None, true)),
         );
     }
     {
         let case = load_case("folder_delete");
         let id = stable_folder_id("项目/新目录改名");
         let _ = case;
-        push("folder_delete", capture(service.folder_delete(&id, true, true)));
+        push(
+            "folder_delete",
+            capture(service.folder_delete(&id, true, true)),
+        );
     }
 
     // ── canvas（5） ────────────────────────────────────────────────────
@@ -384,12 +439,18 @@ fn run_replay() -> Vec<(String, Value)> {
         let case = load_case("canvas_move");
         let from = b_str(&case, "fromPath").unwrap_or_default();
         let to = b_str(&case, "toPath").unwrap_or_default();
-        push("canvas_move", capture(service.canvas_move(&from, &to, true)));
+        push(
+            "canvas_move",
+            capture(service.canvas_move(&from, &to, true)),
+        );
     }
     {
         let case = load_case("canvas_delete");
         let path = q_str(&case, "path").unwrap_or_default();
-        push("canvas_delete", capture(service.canvas_delete(&path, true, true)));
+        push(
+            "canvas_delete",
+            capture(service.canvas_delete(&path, true, true)),
+        );
     }
 
     // ── files（7） ─────────────────────────────────────────────────────
@@ -407,20 +468,14 @@ fn run_replay() -> Vec<(String, Value)> {
         let case = load_case("file_find");
         let pattern = q_str(&case, "pattern");
         let dir = q_str(&case, "dir");
-        push(
-            "file_find",
-            capture(service.file_find(pattern, dir, None)),
-        );
+        push("file_find", capture(service.file_find(pattern, dir, None)));
     }
     {
         let case = load_case("file_grep");
         let q = q_str(&case, "query").unwrap_or_default();
         let dir = q_str(&case, "dir");
         let regex = q_str(&case, "regex").as_deref() == Some("true");
-        push(
-            "file_grep",
-            capture(service.file_grep(q, dir, regex, None)),
-        );
+        push("file_grep", capture(service.file_grep(q, dir, regex, None)));
     }
     {
         let case = load_case("file_preview");
@@ -437,14 +492,8 @@ fn run_replay() -> Vec<(String, Value)> {
         let preview = capture(service.file_preview(Some(action.clone()), None));
         let plan_id = preview["plan"]["id"].as_str().map(str::to_owned);
         let plan_hash = preview["planHash"].as_str().map(str::to_owned);
-        let executed = capture(service.file_execute(
-            Some(action),
-            None,
-            true,
-            false,
-            plan_id,
-            plan_hash,
-        ));
+        let executed =
+            capture(service.file_execute(Some(action), None, true, false, plan_id, plan_hash));
         let operation_id = executed["operationId"]
             .as_str()
             .map(str::to_owned)
@@ -472,7 +521,10 @@ fn run_replay() -> Vec<(String, Value)> {
     {
         let case = load_case("expert_save");
         let input = case["http"]["body"].clone();
-        push("expert_save", capture(service.expert_save(input, None, true)));
+        push(
+            "expert_save",
+            capture(service.expert_save(input, None, true)),
+        );
     }
     {
         let case = load_case("expert_delete");
@@ -522,7 +574,10 @@ fn run_replay() -> Vec<(String, Value)> {
             .collect::<Vec<_>>();
         let plan = capture(service.review_plan(finding_ids, 90, 100));
         let id = plan["id"].as_str().map(str::to_owned).unwrap_or_default();
-        let hash = plan["planHash"].as_str().map(str::to_owned).unwrap_or_default();
+        let hash = plan["planHash"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
         push("review_plan", plan);
         (id, hash)
     };
@@ -532,19 +587,15 @@ fn run_replay() -> Vec<(String, Value)> {
     );
 
     // ── jobs（1） ──────────────────────────────────────────────────────
-    push(
-        "job_list",
-        capture(service.jobs().list(None, None, 50)),
-    );
+    push("job_list", capture(service.jobs().list(None, None, 50)));
 
     out
 }
 
 fn load_case(command: &str) -> Value {
     let path = cases_dir().join(format!("{command}.json"));
-    let raw = fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("读取 fixture {} 失败：{error}", path.display())
-    });
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("读取 fixture {} 失败：{error}", path.display()));
     serde_json::from_str(&raw).unwrap()
 }
 
@@ -569,7 +620,9 @@ impl Schema {
             Value::Bool(_) => Schema::Boolean,
             Value::Number(_) => Schema::Number,
             Value::String(_) => Schema::String,
-            Value::Array(items) => Schema::Array(items.first().map(|item| Box::new(Schema::of(item)))),
+            Value::Array(items) => {
+                Schema::Array(items.first().map(|item| Box::new(Schema::of(item))))
+            }
             Value::Object(fields) => Schema::Object(
                 fields
                     .iter()
@@ -782,10 +835,14 @@ fn rust_express_structural_parity() {
     if !path.exists() {
         let document = serde_json::json!({
             "note": "P1-08 结构对齐差异清单（由 src-tauri/src/parity_tests.rs 生成）。\
-每条含 command/path/kind/express/rust。Rust 侧修好一处后该条会消失，测试会失败并提示删除。",
+        每条含 command/path/kind/express/rust。Rust 侧修好一处后该条会消失，测试会失败并提示删除。",
             "commands": actual,
         });
-        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&document).unwrap())).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string_pretty(&document).unwrap()),
+        )
+        .unwrap();
         panic!(
             "首次运行：已生成差异清单基线 {}。请核对后提交，再重跑测试。",
             path.display()
@@ -798,8 +855,9 @@ fn rust_express_structural_parity() {
         for (command, list) in commands {
             expected.insert(
                 command.clone(),
-                serde_json::from_value(list.clone())
-                    .unwrap_or_else(|error| panic!("解析 divergence.json 中 {command} 失败：{error}")),
+                serde_json::from_value(list.clone()).unwrap_or_else(|error| {
+                    panic!("解析 divergence.json 中 {command} 失败：{error}")
+                }),
             );
         }
     }
@@ -825,7 +883,9 @@ fn rust_express_structural_parity() {
             }
         }
         if !appeared.is_empty() {
-            message.push_str("\n以下差异实际出现、但未记录在期望清单里（请补充进 divergence.json）：\n");
+            message.push_str(
+                "\n以下差异实际出现、但未记录在期望清单里（请补充进 divergence.json）：\n",
+            );
             for (command, item) in &appeared {
                 message.push_str(&format!(
                     "  - [{command}] {} {} (express={}, rust={})\n",
@@ -836,5 +896,8 @@ fn rust_express_structural_parity() {
         panic!("{message}");
     }
 
-    println!("实际差异与 divergence.json 完全一致（{} 条）", actual_flat.len());
+    println!(
+        "实际差异与 divergence.json 完全一致（{} 条）",
+        actual_flat.len()
+    );
 }

@@ -8,7 +8,7 @@
 
 use crate::db;
 use crate::time::{iso8601_utc, now_millis};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 pub const STATUS_QUEUED: &str = "queued";
 pub const STATUS_RUNNING: &str = "running";
+pub const STATUS_WAITING_CONFIRMATION: &str = "waiting_confirmation";
 #[allow(dead_code)] // P1-04 命令面（契约测试）接线前仅测试使用
 pub const STATUS_COMPLETED: &str = "completed";
 #[allow(dead_code)] // P1-04 命令面（契约测试）接线前仅测试使用
@@ -37,8 +38,19 @@ pub struct Job {
     pub attempts: i64,
     pub max_attempts: i64,
     pub cancel_requested: bool,
+    pub checkpoint: Option<Value>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRunEventRecord {
+    pub run_id: String,
+    pub sequence: i64,
+    pub event_type: String,
+    pub payload: Value,
+    pub created_at: String,
 }
 
 pub struct JobsQueue {
@@ -49,7 +61,9 @@ impl JobsQueue {
     /// 与 Index 共用同一 SQLite 文件（WAL 模式支持多连接）。
     pub fn open(database: &Path) -> Result<Self, String> {
         let connection = db::open(database)?;
-        Ok(Self { connection: Mutex::new(connection) })
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
     }
 
     /// 入队。同 `type + key` 的活跃任务（queued/running）直接返回现有任务（活跃幂等）；
@@ -67,7 +81,8 @@ impl JobsQueue {
                 .optional()
                 .map_err(|error| format!("查询幂等任务失败：{error}"))?;
             if let Some(id) = existing {
-                return self.get_locked(&connection, &id)?
+                return self
+                    .get_locked(&connection, &id)?
                     .ok_or_else(|| "幂等任务刚刚消失，请重试".to_string());
             }
             // 终态同 key：重置重跑
@@ -83,7 +98,8 @@ impl JobsQueue {
                 connection
                     .execute(
                         "UPDATE jobs SET status = 'queued', payload = ?2, result = NULL,
-                         error = NULL, attempts = 0, cancel_requested = 0, updated_at = ?3
+                         error = NULL, attempts = 0, cancel_requested = 0, checkpoint = NULL,
+                         updated_at = ?3
                          WHERE id = ?1",
                         params![id, payload.to_string(), iso8601_utc(now_millis())],
                     )
@@ -104,6 +120,7 @@ impl JobsQueue {
             attempts: 0,
             max_attempts: 3,
             cancel_requested: false,
+            checkpoint: None,
             created_at: iso8601_utc(now_millis()),
             updated_at: iso8601_utc(now_millis()),
         };
@@ -126,11 +143,16 @@ impl JobsQueue {
     }
 
     /// 按状态/类型列出任务（created_at 正序，契约 job_list）。
-    pub fn list(&self, status: Option<&str>, kind: Option<&str>, limit: usize) -> Result<Vec<Job>, String> {
+    pub fn list(
+        &self,
+        status: Option<&str>,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Job>, String> {
         let connection = self.lock()?;
         let mut sql = String::from(
             "SELECT id, type, key, status, payload, result, error, attempts, max_attempts,
-             cancel_requested, created_at, updated_at FROM jobs WHERE 1=1",
+             cancel_requested, checkpoint, created_at, updated_at FROM jobs WHERE 1=1",
         );
         let mut args: Vec<String> = Vec::new();
         if let Some(status) = status {
@@ -141,12 +163,18 @@ impl JobsQueue {
             args.push(kind.to_owned());
             sql.push_str(&format!(" AND type = ?{}", args.len()));
         }
-        sql.push_str(&format!(" ORDER BY created_at LIMIT {}", limit.clamp(1, 500)));
-        let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
+        sql.push_str(&format!(
+            " ORDER BY created_at LIMIT {}",
+            limit.clamp(1, 500)
+        ));
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map(rusqlite::params_from_iter(args.iter()), row_to_job)
             .map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Job>, String> {
@@ -154,15 +182,36 @@ impl JobsQueue {
         self.get_locked(&connection, id)
     }
 
+    pub fn get_by_kind_key(&self, kind: &str, key: &str) -> Result<Option<Job>, String> {
+        let connection = self.lock()?;
+        let id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM jobs WHERE type = ?1 AND key = ?2 LIMIT 1",
+                params![kind, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        id.map(|id| self.get_locked(&connection, &id))
+            .transpose()
+            .map(|value| value.flatten())
+    }
+
     /// 取消：queued 直接 cancelled；running/cancelling 置取消标记，
     /// 由执行器在检查点结束为 cancelled（与 Express "finish as cancelled" 一致）。
     pub fn cancel(&self, id: &str) -> Result<Option<Job>, String> {
         let connection = self.lock()?;
         let status: Option<String> = connection
-            .query_row("SELECT status FROM jobs WHERE id = ?1", params![id], |row| row.get(0))
+            .query_row(
+                "SELECT status FROM jobs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|error| error.to_string())?;
-        let Some(status) = status else { return Ok(None) };
+        let Some(status) = status else {
+            return Ok(None);
+        };
         if status == STATUS_QUEUED {
             connection
                 .execute(
@@ -209,7 +258,11 @@ impl JobsQueue {
     pub fn checkpoint_cancelled(&self, id: &str) -> Result<bool, String> {
         let connection = self.lock()?;
         let cancelled: Option<bool> = connection
-            .query_row("SELECT cancel_requested FROM jobs WHERE id = ?1", params![id], |row| row.get(0))
+            .query_row(
+                "SELECT cancel_requested FROM jobs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|error| error.to_string())?;
         if cancelled == Some(true) {
@@ -231,6 +284,157 @@ impl JobsQueue {
                 "UPDATE jobs SET status = 'completed', result = ?2, error = NULL, updated_at = ?3
                  WHERE id = ?1",
                 params![id, result.to_string(), iso8601_utc(now_millis())],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// AI worker finished model generation but returned tool calls that still
+    /// require frontend Gateway execution or user confirmation.
+    pub fn wait_for_confirmation(&self, id: &str, result: &Value) -> Result<(), String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "UPDATE jobs SET status = 'waiting_confirmation', result = ?2, error = NULL, updated_at = ?3
+                 WHERE id = ?1",
+                params![id, result.to_string(), iso8601_utc(now_millis())],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// 保存可恢复的阶段元数据。不得写入 API Key、完整请求或流式正文。
+    pub fn set_checkpoint(&self, id: &str, checkpoint: &Value) -> Result<Option<Job>, String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "UPDATE jobs SET checkpoint = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, checkpoint.to_string(), iso8601_utc(now_millis())],
+            )
+            .map_err(|error| format!("保存任务检查点失败：{error}"))?;
+        self.get_locked(&connection, id)
+    }
+
+    /// 将可恢复的失败/取消 Run 重新排队。已完成任务不可隐式重跑。
+    pub fn resume(&self, id: &str) -> Result<Option<Job>, String> {
+        let connection = self.lock()?;
+        let status: Option<String> = connection
+            .query_row(
+                "SELECT status FROM jobs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(status) = status else {
+            return Ok(None);
+        };
+        if matches!(status.as_str(), STATUS_FAILED | STATUS_CANCELLED) {
+            connection
+                .execute(
+                    "UPDATE jobs SET status = 'queued', result = NULL, error = NULL,
+                     attempts = 0, cancel_requested = 0, updated_at = ?2 WHERE id = ?1",
+                    params![id, iso8601_utc(now_millis())],
+                )
+                .map_err(|error| error.to_string())?;
+        } else if !matches!(status.as_str(), STATUS_QUEUED | STATUS_RUNNING) {
+            return Err("只有失败、取消或进行中的任务可以恢复".to_owned());
+        }
+        self.get_locked(&connection, id)
+    }
+
+    /// 追加 AI Run 事件。sequence 是客户端可用的断点，重复写入保持幂等。
+    pub fn append_ai_event(
+        &self,
+        run_id: &str,
+        sequence: i64,
+        payload: &Value,
+    ) -> Result<(), String> {
+        let connection = self.lock()?;
+        let event_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        connection
+            .execute(
+                "INSERT INTO ai_run_events (run_id, sequence, type, payload, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(run_id, sequence) DO NOTHING",
+                params![
+                    run_id,
+                    sequence,
+                    event_type,
+                    payload.to_string(),
+                    iso8601_utc(now_millis())
+                ],
+            )
+            .map_err(|error| format!("AI Run 事件落盘失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn ai_events(
+        &self,
+        run_id: &str,
+        after_sequence: i64,
+        limit: usize,
+    ) -> Result<Vec<AiRunEventRecord>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT run_id, sequence, type, payload, created_at
+                 FROM ai_run_events
+                 WHERE run_id = ?1 AND sequence > ?2
+                 ORDER BY sequence LIMIT ?3",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(
+                params![run_id, after_sequence, limit.clamp(1, 1000) as i64],
+                |row| {
+                    let payload: String = row.get(3)?;
+                    Ok(AiRunEventRecord {
+                        run_id: row.get(0)?,
+                        sequence: row.get(1)?,
+                        event_type: row.get(2)?,
+                        payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn ai_event_count(&self, run_id: &str) -> Result<i64, String> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM ai_run_events WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn fail_permanently(&self, id: &str, error: &str) -> Result<Job, String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "UPDATE jobs SET status = 'failed', error = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, error, iso8601_utc(now_millis())],
+            )
+            .map_err(|error| error.to_string())?;
+        self.get_locked(&connection, id)?
+            .ok_or_else(|| "任务不存在".to_string())
+    }
+
+    pub fn finish_cancelled(&self, id: &str) -> Result<(), String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "UPDATE jobs SET status = 'cancelled', updated_at = ?2 WHERE id = ?1",
+                params![id, iso8601_utc(now_millis())],
             )
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -272,7 +476,7 @@ impl JobsQueue {
         connection
             .query_row(
                 "SELECT id, type, key, status, payload, result, error, attempts, max_attempts,
-                 cancel_requested, created_at, updated_at FROM jobs WHERE id = ?1",
+                 cancel_requested, checkpoint, created_at, updated_at FROM jobs WHERE id = ?1",
                 params![id],
                 row_to_job,
             )
@@ -284,6 +488,7 @@ impl JobsQueue {
 fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     let payload: Option<String> = row.get(4)?;
     let result: Option<String> = row.get(5)?;
+    let checkpoint: Option<String> = row.get(10)?;
     Ok(Job {
         id: row.get(0)?,
         kind: row.get(1)?,
@@ -297,14 +502,18 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         attempts: row.get(7)?,
         max_attempts: row.get(8)?,
         cancel_requested: row.get::<_, i64>(9)? != 0,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        checkpoint: checkpoint.and_then(|text| serde_json::from_str(&text).ok()),
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{JobsQueue, STATUS_CANCELLED, STATUS_COMPLETED, STATUS_FAILED, STATUS_QUEUED, STATUS_RUNNING};
+    use super::{
+        JobsQueue, STATUS_CANCELLED, STATUS_COMPLETED, STATUS_FAILED, STATUS_QUEUED,
+        STATUS_RUNNING, STATUS_WAITING_CONFIRMATION,
+    };
     use serde_json::json;
 
     fn open_queue() -> (JobsQueue, tempfile::TempDir) {
@@ -318,7 +527,9 @@ mod tests {
     #[test]
     fn job_lifecycle_persists_progress_and_result() {
         let (queue, _guard) = open_queue();
-        let job = queue.enqueue("scan", None, &json!({"trigger": "manual"})).unwrap();
+        let job = queue
+            .enqueue("scan", None, &json!({"trigger": "manual"}))
+            .unwrap();
         assert_eq!(job.status, STATUS_QUEUED);
 
         let claimed = queue.claim_next("scan").unwrap().unwrap();
@@ -346,27 +557,42 @@ mod tests {
         for round in 2..=3 {
             queue.claim_next("scan").unwrap();
             let failed = queue.fail(&job.id, &format!("boom-{round}")).unwrap();
-            let expected = if round < 3 { STATUS_QUEUED } else { STATUS_FAILED };
-            assert_eq!(failed.status, expected, "第 {round} 次失败后应为 {expected}");
+            let expected = if round < 3 {
+                STATUS_QUEUED
+            } else {
+                STATUS_FAILED
+            };
+            assert_eq!(
+                failed.status, expected,
+                "第 {round} 次失败后应为 {expected}"
+            );
         }
     }
 
     #[test]
     fn active_jobs_with_same_key_are_idempotent() {
         let (queue, _guard) = open_queue();
-        let first = queue.enqueue("scan", Some("vault-scan"), &json!(null)).unwrap();
-        let second = queue.enqueue("scan", Some("vault-scan"), &json!(null)).unwrap();
+        let first = queue
+            .enqueue("scan", Some("vault-scan"), &json!(null))
+            .unwrap();
+        let second = queue
+            .enqueue("scan", Some("vault-scan"), &json!(null))
+            .unwrap();
         assert_eq!(first.id, second.id, "活跃任务同 key 幂等");
     }
 
     #[test]
     fn terminal_job_with_same_key_resets_and_reruns() {
         let (queue, _guard) = open_queue();
-        let first = queue.enqueue("scan", Some("vault-scan"), &json!(null)).unwrap();
+        let first = queue
+            .enqueue("scan", Some("vault-scan"), &json!(null))
+            .unwrap();
         queue.claim_next("scan").unwrap();
         queue.complete(&first.id, &json!({"added": 9})).unwrap();
 
-        let rerun = queue.enqueue("scan", Some("vault-scan"), &json!({"v": 2})).unwrap();
+        let rerun = queue
+            .enqueue("scan", Some("vault-scan"), &json!({"v": 2}))
+            .unwrap();
         assert_eq!(rerun.id, first.id, "复用同一行");
         assert_eq!(rerun.status, STATUS_QUEUED);
         assert_eq!(rerun.attempts, 0, "attempts 重置");
@@ -388,7 +614,10 @@ mod tests {
         assert!(requested.cancel_requested);
         // 执行器检查点发现取消 → finish as cancelled
         assert!(queue.checkpoint_cancelled(&running.id).unwrap());
-        assert_eq!(queue.get(&running.id).unwrap().unwrap().status, STATUS_CANCELLED);
+        assert_eq!(
+            queue.get(&running.id).unwrap().unwrap().status,
+            STATUS_CANCELLED
+        );
     }
 
     #[test]
@@ -416,9 +645,86 @@ mod tests {
         let queued = queue.list(Some(STATUS_QUEUED), None, 50).unwrap();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].kind, "scan");
-        let completed = queue.list(Some(STATUS_COMPLETED), Some("links"), 50).unwrap();
+        let completed = queue
+            .list(Some(STATUS_COMPLETED), Some("links"), 50)
+            .unwrap();
         assert_eq!(completed.len(), 1);
         let all = queue.list(None, None, 50).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn ai_events_are_append_only_and_resume_is_idempotent() {
+        let (queue, _guard) = open_queue();
+        let run = queue
+            .enqueue("ai-run", Some("run-1"), &json!({"message": "hello"}))
+            .unwrap();
+        queue
+            .append_ai_event("run-1", 1, &json!({"type": "status", "status": "queued"}))
+            .unwrap();
+        queue
+            .append_ai_event("run-1", 1, &json!({"type": "status", "status": "wrong"}))
+            .unwrap();
+        let events = queue.ai_events("run-1", 0, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["status"], "queued");
+        assert_eq!(
+            queue
+                .get_by_kind_key("ai-run", "run-1")
+                .unwrap()
+                .unwrap()
+                .id,
+            run.id
+        );
+        queue.claim_next("ai-run").unwrap();
+        queue.fail(&run.id, "temporary").unwrap();
+        assert_eq!(
+            queue.resume(&run.id).unwrap().unwrap().status,
+            STATUS_QUEUED
+        );
+        assert_eq!(
+            queue.resume(&run.id).unwrap().unwrap().status,
+            STATUS_QUEUED
+        );
+    }
+
+    #[test]
+    fn checkpoints_survive_cancel_and_resume_without_storing_request_data() {
+        let (queue, _guard) = open_queue();
+        let run = queue
+            .enqueue(
+                "ai-run",
+                Some("run-checkpoint"),
+                &json!({"message": "hello"}),
+            )
+            .unwrap();
+        queue
+            .set_checkpoint(&run.id, &json!({"stage": "generating", "sequence": 4}))
+            .unwrap();
+        queue.claim_next("ai-run").unwrap();
+        queue.cancel(&run.id).unwrap();
+        queue.checkpoint_cancelled(&run.id).unwrap();
+
+        let cancelled = queue.get(&run.id).unwrap().unwrap();
+        assert_eq!(cancelled.checkpoint.unwrap()["stage"], "generating");
+
+        let resumed = queue.resume(&run.id).unwrap().unwrap();
+        assert_eq!(resumed.status, STATUS_QUEUED);
+        assert_eq!(resumed.checkpoint.unwrap()["sequence"], 4);
+    }
+
+    #[test]
+    fn ai_run_can_wait_for_tool_confirmation_without_becoming_completed() {
+        let (queue, _guard) = open_queue();
+        let job = queue
+            .enqueue("ai-run", Some("run-wait"), &json!({"message":"task"}))
+            .unwrap();
+        queue.claim_next("ai-run").unwrap();
+        queue
+            .wait_for_confirmation(&job.id, &json!({"toolCalls":[{"id":"call-1"}]}))
+            .unwrap();
+        let waiting = queue.get(&job.id).unwrap().unwrap();
+        assert_eq!(waiting.status, STATUS_WAITING_CONFIRMATION);
+        assert_eq!(waiting.result.unwrap()["toolCalls"][0]["id"], "call-1");
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "lattice"
-version = "0.1.5"
+version = "0.2.0"
 description = "Local-first knowledge workspace"
 license = "MulanPSL-2.0"
 repository = "https://github.com/Dawei-star/Lattice"
@@ -41,3 +41,5 @@ regex = "1"
 # bundled：把 SQLite 源码一起编进来，自带 FTS5 + trigram 分词器，
 # 不依赖系统 sqlite3.dll，符合「零外部依赖」的本地优先目标。
 rusqlite = { version = "0.40", features = ["bundled"] }
+# OpenAI-compatible desktop streaming; API keys are used in memory only.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "default-tls"] }

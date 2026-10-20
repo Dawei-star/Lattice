@@ -19,7 +19,6 @@ const webRoot = path.dirname(here);
 const repoRoot = path.dirname(webRoot);
 
 const rust = readFileSync(path.join(repoRoot, 'src-tauri/src/lib.rs'), 'utf8');
-const nativeVault = readFileSync(path.join(webRoot, 'src/api/native-vault.ts'), 'utf8');
 
 const handlerBlock = rust.match(/generate_handler!\[([\s\S]*?)\]/);
 assert.ok(handlerBlock, 'lib.rs 里找不到 generate_handler! 注册块');
@@ -89,8 +88,8 @@ for (const command of IPC_PENDING_COMMANDS) {
 
 // --- 5. 口径自洽 -------------------------------------------------------------
 expect(
-  IPC_ROUTES.length + IPC_EXCLUDED_ROUTES.length === 58,
-  `进表 ${IPC_ROUTES.length} + 排除 ${IPC_EXCLUDED_ROUTES.length} ≠ 58（P1-05 审计口径）`,
+  IPC_ROUTES.length + IPC_EXCLUDED_ROUTES.length === 76,
+  `进表 ${IPC_ROUTES.length} + 排除 ${IPC_EXCLUDED_ROUTES.length} ≠ 76（MCP 项目配置已纳入；sidecar 信息/启动仍待 P4）`,
 );
 
 if (failure.length) {
@@ -98,11 +97,9 @@ if (failure.length) {
 }
 
 // --- 覆盖报告（非断言） ------------------------------------------------------
-const invokedByNative = [...nativeVault.matchAll(/invoke<[^>]*>\(\s*'([a-z_]+)'/g)].map((match) => match[1]);
 const referenced = new Set([
   ...IPC_ROUTES.map((route) => route.command),
   ...IPC_PENDING_COMMANDS,
-  ...invokedByNative,
 ]);
 const unreferenced = [...registered].filter((command) => !referenced.has(command));
 

@@ -1,3 +1,5 @@
+import { isTauri } from '@tauri-apps/api/core';
+
 /** 注册回调：安装提示可用 / 更新可用时通知调用方。 */
 export interface PwaRegistrationOptions {
   onInstallAvailable?: (available: boolean) => void;
@@ -21,8 +23,30 @@ function inactiveRegistration(): PwaRegistration {
   });
 }
 
+/**
+ * Tauri 桌面端已经有自己的资源协议和更新生命周期。
+ * Service Worker 在 WebView 中接管导航后，刷新可能重新请求 localhost，
+ * 进而落到本机其它 HTTP 服务（例如 Nginx），所以桌面端必须清理旧注册。
+ */
+async function clearDesktopServiceWorkers(): Promise<void> {
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+    if ('caches' in window) {
+      const cacheNames = await caches.keys();
+      await Promise.all(cacheNames.map((cacheName) => caches.delete(cacheName)));
+    }
+  } catch {
+    // 清理失败不应阻断应用启动；后续刷新仍会再次尝试清理。
+  }
+}
+
 export function registerPwa({ onInstallAvailable, onUpdateAvailable }: PwaRegistrationOptions = {}): PwaRegistration {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return inactiveRegistration();
+  if (isTauri()) {
+    void clearDesktopServiceWorkers();
+    return inactiveRegistration();
+  }
   // 开发模式绝不注册：SW 的 cache-first 会把 Vite 的 /src 模块永久缓存，
   // 热更新全部失效，且新旧模块 ESM 导出对不上时整页白屏（生产构建资源
   // 带内容哈希，才适合 SW 缓存）。import.meta.env 仅在 Vite 构建时存在。

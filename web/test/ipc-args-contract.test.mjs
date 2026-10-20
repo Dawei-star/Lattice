@@ -138,9 +138,9 @@ function bodyProxy() {
 }
 
 /** 构造器实际产出的键集合；返回 undefined 表示该路由对此 ctx 不适用。 */
-function collectKeys(route, ctx) {
+async function collectKeys(route, ctx) {
   if (typeof route.args !== 'function') return new Set();
-  const args = route.args(ctx);
+  const args = await route.args(ctx);
   if (args === undefined || args === null) return undefined;
   // Object.keys 口径：值为 null 的键也算「已提供」
   return new Set(Object.keys(args));
@@ -165,7 +165,7 @@ const skipped = [];
 const covered = new Map(); // command -> { routes: number }
 
 for (const route of IPC_ROUTES) {
-  const keys = collectKeys(route, ctx);
+  const keys = await collectKeys(route, ctx);
   const label = routeLabel(route);
   if (keys === undefined) {
     skipped.push({ label, command: route.command, reason: '构造器对该万能 ctx 返回 undefined' });

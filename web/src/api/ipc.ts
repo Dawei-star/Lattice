@@ -1,12 +1,12 @@
 /**
- * 桌面通道（Tauri IPC）与 HTTP 通道的双轨分发 —— 升级计划 P1-05 收尾项。
+ * 桌面通道（Tauri IPC）分发 —— 升级计划 P1-09 收口项。
  *
  * 设计要点：
  *  1. **分发点唯一**：只有 `client.ts` 的 `requestRaw` 调用本模块，api 业务模块
  *     （vault/resources/canvas/files/experts/review...）保持不动，避免 81 个调用点二次改造。
- *  2. **缺命令不致命**：桌面形态下命中 `IPC_ROUTES` 的路由走 `invoke`，未命中或
- *     本轨道表达不了的请求一律回落 HTTP。迁移期两条通道并存，不会因为 Rust 侧
- *     还有 ⬜ 未实现的命令而中断功能（见 `ipc-routes.ts` 的排除清单）。
+ *  2. **桌面无 HTTP 回落**：命中 `IPC_ROUTES` 的路由走 `invoke`；未命中或本轨道
+ *     表达不了的请求由 client.ts 转为明确的本地能力错误。Express 已在 P1-09
+ *     删除，不能把失效的 `/api` 请求伪装成可用回落。
  *  3. **信封还原**：Rust 命令返回的是「数据本身」，HTTP 轨是 `{data, meta}`。
  *     本模块把命令返回值包装回信封，使 `http.get`（解包 `.data`）与
  *     `http.getFull`（读 `.meta`）两种用法语义不变。
@@ -18,7 +18,7 @@
  *     因此分发发生在 `requestRaw` 的重试循环之外。
  *
  * 不覆盖的形态（保持原样，登记为后续项）：SSE 流（`ai.ts` 的 postSse）、
- * 二进制下载（`vault-files.ts` 的 download）、URL 构造（assetUrl/attachmentUrl）、
+ * 二进制下载（`vault-files.ts` 的 download）、浏览器态 URL 构造（assetUrl/attachmentUrl）、
  * 桌面桥（`window.latticeDesktop.*`）、SSE 票据换取（`workspace-auth.ts`）。
  */
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -53,7 +53,7 @@ export interface IpcRoute {
   command: string;
   /**
    * 构造 invoke 参数。返回 `undefined` 表示「本请求在桌面通道上表达不了」，
-   * 交回 HTTP 轨处理（例如 rawBody 不是 File）。
+   * 非桌面开发环境可交回 HTTP 轨；桌面环境由 client.ts 报告不可用能力。
    */
   args?: (ctx: IpcCallContext) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
   /** 命令返回值 → 信封；缺省为 `{ data: value }` */
@@ -135,7 +135,7 @@ export function matchIpcRoute(method: string, path: string): MatchedRoute | null
 /**
  * 尝试走桌面通道。
  *
- * - 非桌面形态、无匹配路由、或路由自述表达不了 → `{ handled: false }`，调用方回落 HTTP；
+ * - 非桌面形态、无匹配路由、或路由自述表达不了 → `{ handled: false }`；桌面端不回落 HTTP；
  * - 命中并成功 → `{ handled: true, payload }`，payload 是 `{data, meta?}` 信封；
  * - 命令报错 → 抛 `IpcError`。
  */

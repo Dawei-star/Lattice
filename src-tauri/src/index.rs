@@ -6,12 +6,17 @@
 //! - 检索优先 FTS5 `MATCH`（trigram 分词，中文子串可命中），
 //!   短于 3 字符的查询以及 FTS 未命中时走 `LIKE` 兜底 —— 与原项目两条路径一致。
 
+use crate::ai::embeddings;
 use crate::db;
-use crate::markdown::{compute_word_count, extract_note_tags, extract_wiki_links, parse_frontmatter, strip_frontmatter};
+use crate::markdown::{
+    compute_word_count, extract_note_tags, extract_wiki_links, parse_frontmatter, strip_frontmatter,
+};
 use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteFile, Vault, title_from_markdown};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::types::ToSql;
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -26,6 +31,62 @@ const EXCERPT_WINDOW: usize = 60;
 pub struct Index {
     connection: Mutex<Connection>,
     database: PathBuf,
+}
+
+struct NoteListRow {
+    id: String,
+    title: String,
+    content: String,
+    folder_id: Option<String>,
+    is_pinned: bool,
+    file_path: String,
+    word_count: u64,
+    content_hash: Option<String>,
+    properties_json: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
+fn note_properties(raw: Option<&str>) -> Value {
+    raw.and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+fn note_tags(connection: &Connection, path: &str) -> Vec<Value> {
+    let Ok(mut statement) = connection.prepare(
+        "SELECT t.id, t.name, COUNT(nt2.note_path) FROM note_tags nt
+         JOIN tags t ON t.id = nt.tag_id
+         LEFT JOIN note_tags nt2 ON nt2.tag_id = t.id
+         WHERE nt.note_path = ?1 GROUP BY t.id, t.name ORDER BY t.name COLLATE NOCASE ASC",
+    ) else {
+        return Vec::new();
+    };
+    statement
+        .query_map(params![path], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "noteCount": row.get::<_, i64>(2)?,
+            }))
+        })
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .collect()
+}
+
+fn relation_count(connection: &Connection, column: &str, id: &str) -> u64 {
+    let sql = format!("SELECT COUNT(*) FROM links WHERE {column} = ?1");
+    connection
+        .query_row(&sql, params![id], |row| row.get::<_, i64>(0))
+        .unwrap_or(0) as u64
+}
+
+fn excerpt(content: &str) -> String {
+    let text = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    text.chars().take(140).collect()
 }
 
 #[derive(Serialize)]
@@ -63,6 +124,7 @@ impl Index {
     pub fn open(root: &Path) -> Result<Self, String> {
         let database = root.join(".lattice").join("lattice.db");
         let connection = db::open(&database)?;
+        embeddings::backfill(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             database,
@@ -133,6 +195,7 @@ impl Index {
                     transaction
                         .execute("DELETE FROM note_tags WHERE note_path = ?1", params![path])
                         .map_err(|error| format!("无法清理标签关联：{error}"))?;
+                    embeddings::remove_note_embedding(&transaction, path)?;
                     transaction
                         .execute("DELETE FROM notes WHERE path = ?1", params![path])
                         .map_err(|error| format!("无法清理索引：{error}"))?;
@@ -205,7 +268,7 @@ impl Index {
 
         let mut matches = Vec::new();
         if query.chars().count() >= TRIGRAM_MIN_CHARS {
-            match full_text_search(&connection, query, limit) {
+            match full_text_search(&connection, query, limit, None, None) {
                 Ok(found) => matches = found,
                 // FTS 异常（短语语法、索引损坏）不该让搜索整体失败，
                 // 降级到 LIKE 仍然能给出结果。
@@ -213,7 +276,7 @@ impl Index {
             }
         }
         if matches.is_empty() {
-            matches = like_search(&connection, query, limit)?;
+            matches = like_search(&connection, query, limit, None, None)?;
         }
         Ok(matches)
     }
@@ -236,12 +299,47 @@ impl Index {
     /// 契约 GET /api/search 的对应命令 search_query：
     /// `{strategy, items}`，strategy ∈ fts/like/like-fallback（对齐 Express 语义），
     /// items 为 mapRow 形状。与既有 vault_search（NativeWorkspace 契约）互不影响。
-    pub fn search_query(&self, query: &str, limit: usize) -> Result<SearchOutcome, String> {
+    pub fn search_query(
+        &self,
+        query: &str,
+        limit: usize,
+        folder_id: Option<&str>,
+        inbox_status: Option<&str>,
+    ) -> Result<SearchOutcome, String> {
+        self.search_query_with_allowed_paths(query, limit, folder_id, inbox_status, None)
+    }
+
+    /// AI 专用检索入口：允许调用方在 SQL 召回阶段提供已授权路径集合。
+    /// `Some(&[])` 表示没有可见路径，必须返回空结果，而不是退化为全库搜索。
+    pub fn search_query_with_allowed_paths(
+        &self,
+        query: &str,
+        limit: usize,
+        folder_id: Option<&str>,
+        inbox_status: Option<&str>,
+        allowed_paths: Option<&[String]>,
+    ) -> Result<SearchOutcome, String> {
         let query = query.trim();
         if query.is_empty() || query.chars().count() > 200 {
             return Err("Search query must contain 1-200 characters".into());
         }
-        let limit = limit.clamp(1, 200) as i64;
+        if folder_id.is_some_and(|value| value.len() > 64) {
+            return Err("Folder ID must contain at most 64 characters".into());
+        }
+        if inbox_status
+            .is_some_and(|value| !matches!(value, "all" | "captured" | "processing" | "processed"))
+        {
+            return Err("Invalid inbox status".into());
+        }
+        if allowed_paths.is_some_and(|paths| paths.iter().any(|path| path.len() > 1024)) {
+            return Err("Allowed path must contain at most 1024 characters".into());
+        }
+        let limit = limit.clamp(1, 100);
+        let search_limit = if inbox_status.is_some() {
+            limit.saturating_mul(6).clamp(100, 200)
+        } else {
+            limit
+        } as i64;
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
 
         let mut strategy = "like";
@@ -249,13 +347,13 @@ impl Index {
         let mut fts_attempted = false;
         if query.chars().count() >= TRIGRAM_MIN_CHARS {
             fts_attempted = true;
-            match full_text_search(&connection, query, limit) {
+            match full_text_search(&connection, query, search_limit, folder_id, allowed_paths) {
                 Ok(found) => matches = found,
                 Err(error) => log::warn!("FTS5 检索失败，回退 LIKE 兜底：{error}"),
             }
         }
         if matches.is_empty() {
-            matches = like_search(&connection, query, limit)?;
+            matches = like_search(&connection, query, search_limit, folder_id, allowed_paths)?;
             if fts_attempted {
                 strategy = "like-fallback";
             }
@@ -283,7 +381,17 @@ impl Index {
                 )
                 .optional()
                 .map_err(|error| format!("无法读取检索行：{error}"))?;
-            if let Some((id, folder_id, is_pinned, content_hash, properties_json, updated_at)) = detail {
+            if let Some((id, folder_id, is_pinned, content_hash, properties_json, updated_at)) =
+                detail
+            {
+                let properties = properties_value(properties_json.as_deref());
+                let is_inbox_match = inbox_status.is_none_or(|status| {
+                    properties["type"] == serde_json::json!("inbox")
+                        && (status == "all" || properties["status"] == serde_json::json!(status))
+                });
+                if !is_inbox_match {
+                    continue;
+                }
                 items.push(SearchItem {
                     id,
                     title: note_match.title,
@@ -291,14 +399,352 @@ impl Index {
                     file_path: note_match.path,
                     is_pinned,
                     content_hash,
-                    properties: properties_value(properties_json.as_deref()),
                     properties_json,
                     updated_at,
                     excerpt: note_match.excerpt,
                 });
+                if items.len() >= limit {
+                    break;
+                }
             }
         }
         Ok(SearchOutcome { strategy, items })
+    }
+
+    /// AI 混合检索使用的双路召回：FTS5 和 LIKE 都在权限路径与结构化条件
+    /// 已生效后执行，交给上层做 RRF 融合。普通 `/search` 仍保持单路策略语义。
+    pub fn search_query_sources_with_allowed_paths(
+        &self,
+        query: &str,
+        limit: usize,
+        folder_id: Option<&str>,
+        inbox_status: Option<&str>,
+        allowed_paths: Option<&[String]>,
+    ) -> Result<SearchRecall, String> {
+        let query = query.trim();
+        if query.is_empty() || query.chars().count() > 200 {
+            return Err("Search query must contain 1-200 characters".into());
+        }
+        if folder_id.is_some_and(|value| value.len() > 64) {
+            return Err("Folder ID must contain at most 64 characters".into());
+        }
+        if inbox_status
+            .is_some_and(|value| !matches!(value, "all" | "captured" | "processing" | "processed"))
+        {
+            return Err("Invalid inbox status".into());
+        }
+        if allowed_paths.is_some_and(|paths| paths.iter().any(|path| path.len() > 1024)) {
+            return Err("Allowed path must contain at most 1024 characters".into());
+        }
+
+        let limit = limit.clamp(1, 100);
+        // 每路多取一些候选，避免结构化过滤、去重或融合后结果不足。
+        let search_limit = limit.saturating_mul(4).clamp(20, 200) as i64;
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let fts_attempted = query.chars().count() >= TRIGRAM_MIN_CHARS;
+        let fts = if fts_attempted {
+            match full_text_search(&connection, query, search_limit, folder_id, allowed_paths) {
+                Ok(matches) => {
+                    collect_search_items(&connection, matches, search_limit as usize, inbox_status)?
+                }
+                Err(error) => {
+                    log::warn!("AI FTS5 召回失败，仍保留 LIKE 召回：{error}");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let like = like_search(&connection, query, search_limit, folder_id, allowed_paths)
+            .and_then(|matches| {
+                collect_search_items(&connection, matches, search_limit as usize, inbox_status)
+            })?;
+        let vector = vector_search(&connection, query, search_limit, folder_id, allowed_paths)
+            .and_then(|matches| {
+                collect_search_items(&connection, matches, search_limit as usize, inbox_status)
+            })
+            .unwrap_or_else(|error| {
+                log::warn!("AI 向量召回失败，保留 FTS/LIKE 结果：{error}");
+                Vec::new()
+            });
+
+        Ok(SearchRecall {
+            fts,
+            like,
+            vector,
+            fts_attempted,
+        })
+    }
+
+    /// 读取索引中的正文副本，为 AI 块级引用提供精确来源；不绕过 Vault 写入边界。
+    pub fn note_content(&self, path: &str) -> Result<Option<(String, String, String)>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        connection
+            .query_row(
+                "SELECT COALESCE(note_id, path), title, content FROM notes WHERE path = ?1",
+                params![path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| format!("无法读取 AI 检索正文：{error}"))
+    }
+
+    /// 相关笔记：复用本地 FTS/LIKE/向量投影，返回笔记级结果，不返回正文。
+    ///
+    /// 当前桌面端没有独立的 embedding provider 会话，因此查询使用标题作为稳定
+    /// 的本地召回锚点；向量投影可用时会自然参与同一轮召回，失败则退回关键词。
+    pub fn related_notes(&self, note_id: &str, limit: usize) -> Result<Vec<AiRelatedNote>, String> {
+        let (title, content) = {
+            let connection = self.connection.lock().map_err(|error| error.to_string())?;
+            connection
+                .query_row(
+                    "SELECT title, content FROM notes
+                     WHERE note_id = ?1 OR (note_id IS NULL AND path = ?1)",
+                    params![note_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|error| format!("无法读取相关笔记源：{error}"))?
+                .ok_or_else(|| "笔记不存在".to_owned())?
+        };
+        let mut queries = suggestion_terms(&title).into_iter().take(4).collect::<Vec<_>>();
+        if queries.is_empty() {
+            queries = content
+                .split_whitespace()
+                .take(12)
+                .map(str::to_owned)
+                .collect();
+        }
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut candidates: HashMap<String, (SearchItem, f32)> = HashMap::new();
+        for query in queries {
+            let recall = self.search_query_sources_with_allowed_paths(
+                &query,
+                limit.saturating_mul(4).clamp(12, 100),
+                None,
+                None,
+                None,
+            )?;
+            for (items, weight) in [
+                (recall.vector, 1.0_f32),
+                (recall.fts, 0.82_f32),
+                (recall.like, 0.64_f32),
+            ] {
+                for (rank, item) in items.into_iter().enumerate() {
+                if item.id == note_id {
+                    continue;
+                }
+                    let score = weight / (rank as f32 + 1.0);
+                    candidates
+                        .entry(item.id.clone())
+                        .and_modify(|(_, current)| *current += score)
+                        .or_insert((item, score));
+                }
+            }
+        }
+        let mut values = candidates.into_values().collect::<Vec<_>>();
+        values.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.title.to_lowercase().cmp(&right.0.title.to_lowercase()))
+        });
+        Ok(values
+            .into_iter()
+            .take(limit.clamp(1, 12))
+            .map(|(item, score)| AiRelatedNote {
+                id: item.id,
+                title: item.title,
+                file_path: item.file_path,
+                score: score.min(1.0),
+                anchor: Some(item.excerpt),
+            })
+            .collect())
+    }
+
+    /// 双链与标签建议。所有候选均来自本地索引中的既有标题和标签词表，
+    /// 接受建议仍由前端追加到草稿，不在此处写入笔记。
+    pub fn ai_suggestions(&self, note_id: &str, limit: usize) -> Result<Value, String> {
+        let (title, content, excluded_ids, excluded_titles, existing_tags, tag_candidates) = {
+            let connection = self.connection.lock().map_err(|error| error.to_string())?;
+            let note = connection
+                .query_row(
+                    "SELECT COALESCE(note_id, path), path, title, content FROM notes
+                     WHERE note_id = ?1 OR (note_id IS NULL AND path = ?1)",
+                    params![note_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| format!("无法读取建议源笔记：{error}"))?
+                .ok_or_else(|| "笔记不存在".to_owned())?;
+            let mut excluded_ids = HashSet::from([note.0.clone()]);
+            let mut excluded_titles = HashSet::from([note.2.to_lowercase()]);
+            let mut link_statement = connection
+                .prepare("SELECT target_title, target_note_id FROM links WHERE source_note_id = ?1")
+                .map_err(|error| format!("无法读取笔记出链：{error}"))?;
+            let mut links = link_statement.query_map(params![note.0.clone()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(|error| format!("无法读取笔记出链：{error}"))?;
+            while let Some(row) = links.next().transpose().map_err(|error| format!("无法读取笔记出链：{error}"))? {
+                let (target_title, target_id) = row;
+                excluded_titles.insert(target_title.to_lowercase());
+                if let Some(target_id) = target_id {
+                    excluded_ids.insert(target_id);
+                }
+            }
+            let mut backlink_statement = connection
+                .prepare("SELECT source_note_id FROM links WHERE target_note_id = ?1")
+                .map_err(|error| format!("无法读取笔记反链：{error}"))?;
+            let mut backlinks = backlink_statement
+                .query_map(params![note.0.clone()], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("无法读取笔记反链：{error}"))?;
+            while let Some(source_id) = backlinks
+                .next()
+                .transpose()
+                .map_err(|error| format!("无法读取笔记反链：{error}"))?
+            {
+                excluded_ids.insert(source_id);
+            }
+            let mut existing_tag_statement = connection
+                .prepare(
+                    "SELECT t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+                     WHERE nt.note_path = ?1",
+                )
+                .map_err(|error| format!("无法读取笔记标签：{error}"))?;
+            let existing_tags = existing_tag_statement
+                .query_map(params![note.1.clone()], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("无法读取笔记标签：{error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("无法读取笔记标签：{error}"))?
+                .into_iter()
+                .map(|name| name.to_lowercase())
+                .collect::<HashSet<_>>();
+            let mut tag_statement = connection
+                .prepare(
+                    "SELECT t.name, COUNT(nt.note_path) AS usage FROM tags t
+                     LEFT JOIN note_tags nt ON nt.tag_id = t.id
+                     GROUP BY t.id, t.name ORDER BY usage DESC, t.name COLLATE NOCASE ASC
+                     LIMIT 200",
+                )
+                .map_err(|error| format!("无法读取标签词表：{error}"))?;
+            let tag_candidates = tag_statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))
+                .map_err(|error| format!("无法读取标签词表：{error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("无法读取标签词表：{error}"))?;
+            (
+                note.2,
+                note.3,
+                excluded_ids,
+                excluded_titles,
+                existing_tags,
+                tag_candidates,
+            )
+        };
+        let limit = limit.clamp(1, 10);
+        let mut links = Vec::new();
+        let mut seen = HashSet::new();
+        let mut semantic_available = false;
+        for term in suggestion_terms(&title).into_iter().take(4) {
+            if links.len() >= limit {
+                break;
+            }
+            let recall = self.search_query_sources_with_allowed_paths(&term, limit * 3, None, None, None)?;
+            semantic_available |= !recall.vector.is_empty();
+            let mut items = recall.vector;
+            items.extend(recall.fts);
+            items.extend(recall.like);
+            for item in items {
+                if links.len() >= limit || excluded_ids.contains(&item.id) || seen.contains(&item.id) {
+                    continue;
+                }
+                if excluded_titles.contains(&item.title.to_lowercase()) {
+                    continue;
+                }
+                seen.insert(item.id.clone());
+                links.push(json!({
+                    "id": item.id,
+                    "title": item.title,
+                    "filePath": item.file_path,
+                    "score": 0.5,
+                    "reason": format!("标题词「{term}」命中"),
+                }));
+            }
+        }
+
+        let lower_title = title.to_lowercase();
+        let lower_content = content.to_lowercase();
+        let mut tags = tag_candidates
+            .into_iter()
+            .filter_map(|(name, usage)| {
+                let lower_name = name.to_lowercase();
+                if existing_tags.contains(&lower_name) {
+                    return None;
+                }
+                let in_title = lower_title.contains(&lower_name);
+                let in_content = lower_content.contains(&lower_name);
+                if !in_title && !in_content {
+                    return None;
+                }
+                let score = (if in_title { 3.0 } else { 0.0 })
+                    + (if in_content { 1.0 } else { 0.0 })
+                    + (usage.min(5) as f32 * 0.1);
+                Some(json!({
+                    "name": name,
+                    "score": (score * 100.0).round() / 100.0,
+                    "matchedIn": if in_title { "标题" } else { "正文" },
+                    "usage": usage,
+                }))
+            })
+            .collect::<Vec<_>>();
+        tags.sort_by(|left, right| {
+            right["score"]
+                .as_f64()
+                .partial_cmp(&left["score"].as_f64())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        tags.truncate(limit);
+        Ok(json!({ "links": links, "tags": tags, "semanticAvailable": semantic_available }))
+    }
+
+    /// 生成每日摘要所需的元数据和短摘录。正文只在本次调用内读取，调用方
+    /// 通过 WorkspaceService 写入最终笔记，不把摘要任务内容放入 jobs/checkpoint。
+    pub fn digest_notes(&self, date: &str, journal_prefix: &str) -> Result<Vec<DigestNote>, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let since = format!("{date}T00:00:00.000Z");
+        let escaped_prefix = escape_like(journal_prefix);
+        let mut statement = connection
+            .prepare(
+                "SELECT title, content, word_count, updated_at FROM notes
+                 WHERE updated_at >= ?1 AND path NOT LIKE ?2 ESCAPE '\\'
+                 ORDER BY updated_at DESC LIMIT 50",
+            )
+            .map_err(|error| format!("无法查询每日摘要来源：{error}"))?;
+        let rows = statement
+            .query_map(params![since, format!("{escaped_prefix}/每日摘要%")], |row| {
+                let content: String = row.get(1)?;
+                Ok(DigestNote {
+                    title: row.get(0)?,
+                    word_count: row.get::<_, i64>(2)? as u64,
+                    updated_at: row.get(3)?,
+                    excerpt: compact_digest_excerpt(&content),
+                })
+            })
+            .map_err(|error| format!("无法查询每日摘要来源：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取每日摘要来源：{error}"))
     }
 
     #[allow(dead_code)] // P1-04 删除/移动命令迁移接线前暂未使用
@@ -307,6 +753,7 @@ impl Index {
         connection
             .execute("DELETE FROM note_tags WHERE note_path = ?1", params![path])
             .map_err(|error| format!("无法清理标签关联：{error}"))?;
+        embeddings::remove_note_embedding(&connection, path)?;
         connection
             .execute("DELETE FROM notes WHERE path = ?1", params![path])
             .map_err(|error| format!("无法删除索引行：{error}"))?;
@@ -337,6 +784,25 @@ impl Index {
             .map_err(|error| format!("无法查询标签：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法读取标签行：{error}"))
+    }
+
+    pub fn delete_tag(&self, id: &str) -> Result<Value, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tags WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("无法查询标签：{error}"))?;
+        if exists == 0 {
+            return Ok(json!({ "id": id, "deleted": false }));
+        }
+        connection
+            .execute("DELETE FROM note_tags WHERE tag_id = ?1", params![id])
+            .and_then(|_| connection.execute("DELETE FROM tags WHERE id = ?1", params![id]))
+            .map_err(|error| format!("无法删除标签：{error}"))?;
+        Ok(json!({ "id": id, "deleted": true }))
     }
 
     /// 轻量笔记索引（契约 GET /api/notes/index 对应命令 note_index）：
@@ -370,6 +836,113 @@ impl Index {
             .map_err(|error| format!("无法查询笔记索引：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法读取笔记索引行：{error}"))
+    }
+
+    /// 分页笔记列表（契约 GET /api/notes）。列表只返回摘要，正文仍由 note_get 读取。
+    pub fn list_notes(
+        &self,
+        folder_id: Option<&str>,
+        tag_id: Option<&str>,
+        inbox_status: Option<&str>,
+        sort: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Value, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT COALESCE(note_id, path), title, content, folder_id, is_pinned, path, word_count,
+                 content_hash, properties_json, created_at, updated_at FROM notes",
+            )
+            .map_err(|error| format!("无法查询笔记列表：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(NoteListRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    folder_id: row.get(3)?,
+                    is_pinned: row.get::<_, i64>(4)? != 0,
+                    file_path: row.get(5)?,
+                    word_count: row.get::<_, i64>(6)? as u64,
+                    content_hash: row.get(7)?,
+                    properties_json: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })
+            .map_err(|error| format!("无法查询笔记列表：{error}"))?;
+        let mut notes = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取笔记列表：{error}"))?
+            .into_iter()
+            .filter(|note| {
+                let folder_matches = match folder_id {
+                    Some("__none__") => note.folder_id.is_none(),
+                    Some(value) => note.folder_id.as_deref() == Some(value),
+                    None => true,
+                };
+                let tag_matches = tag_id.is_none_or(|value| {
+                    connection
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM note_tags WHERE note_path = ?1 AND tag_id = ?2)",
+                            params![note.file_path, value],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap_or(0)
+                        != 0
+                });
+                let properties = note_properties(note.properties_json.as_deref());
+                let inbox_matches = match inbox_status {
+                    None => true,
+                    Some(status) => properties.get("type").and_then(Value::as_str) == Some("inbox")
+                        && (status == "all" || properties.get("status").and_then(Value::as_str) == Some(status)),
+                };
+                folder_matches && tag_matches && inbox_matches
+            })
+            .collect::<Vec<_>>();
+        notes.sort_by(|left, right| {
+            right
+                .is_pinned
+                .cmp(&left.is_pinned)
+                .then_with(|| match sort {
+                    "created" => right.created_at.cmp(&left.created_at),
+                    "title" => left.title.to_lowercase().cmp(&right.title.to_lowercase()),
+                    _ => right.updated_at.cmp(&left.updated_at),
+                })
+        });
+        let total = notes.len();
+        let items = notes
+            .into_iter()
+            .skip(offset)
+            .take(limit.clamp(1, 200))
+            .map(|note| {
+                let properties = note_properties(note.properties_json.as_deref());
+                let tags = note_tags(&connection, &note.file_path);
+                let outgoing_count = relation_count(&connection, "source_note_id", &note.id);
+                let backlink_count = relation_count(&connection, "target_note_id", &note.id);
+                json!({
+                    "id": note.id,
+                    "title": note.title,
+                    "folderId": note.folder_id,
+                    "filePath": note.file_path,
+                    "isPinned": note.is_pinned,
+                    "wordCount": note.word_count,
+                    "contentHash": note.content_hash,
+                    "propertiesJson": note.properties_json.unwrap_or_else(|| "{}".to_owned()),
+                    "properties": properties,
+                    "createdAt": note.created_at,
+                    "updatedAt": note.updated_at,
+                    "excerpt": excerpt(&note.content),
+                    "tags": tags,
+                    "outgoingCount": outgoing_count,
+                    "backlinkCount": backlink_count,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(
+            json!({ "items": items, "total": total, "limit": limit.clamp(1, 200), "offset": offset }),
+        )
     }
 
     /// review 健康扫描数据（对齐 notesRepository.listForHealth）：全量笔记含正文/属性。
@@ -417,7 +990,9 @@ impl Index {
             )
             .map_err(|error| format!("无法查询笔记标签：{error}"))?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|error| format!("无法查询笔记标签：{error}"))?;
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for row in rows {
@@ -431,9 +1006,13 @@ impl Index {
     pub fn link_counts(&self) -> Result<LinkCountPair, String> {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         let count_by = |sql: &str| -> Result<HashMap<String, i64>, String> {
-            let mut statement = connection.prepare(sql).map_err(|error| format!("无法统计链接：{error}"))?;
+            let mut statement = connection
+                .prepare(sql)
+                .map_err(|error| format!("无法统计链接：{error}"))?;
             let rows = statement
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
                 .map_err(|error| format!("无法统计链接：{error}"))?;
             let mut map = HashMap::new();
             for row in rows {
@@ -442,8 +1021,11 @@ impl Index {
             }
             Ok(map)
         };
-        let outgoing = count_by("SELECT source_note_id, COUNT(*) FROM links GROUP BY source_note_id")?;
-        let incoming = count_by("SELECT target_note_id, COUNT(*) FROM links WHERE target_note_id IS NOT NULL GROUP BY target_note_id")?;
+        let outgoing =
+            count_by("SELECT source_note_id, COUNT(*) FROM links GROUP BY source_note_id")?;
+        let incoming = count_by(
+            "SELECT target_note_id, COUNT(*) FROM links WHERE target_note_id IS NOT NULL GROUP BY target_note_id",
+        )?;
         Ok((outgoing, incoming))
     }
 
@@ -492,7 +1074,9 @@ impl Index {
             .filter(|directory| is_note_folder(directory, attachment_is_note_folder))
         {
             let name = directory.rsplit('/').next().unwrap_or(directory).to_owned();
-            let parent_path = directory.rsplit_once('/').map(|(parent, _)| parent.to_owned());
+            let parent_path = directory
+                .rsplit_once('/')
+                .map(|(parent, _)| parent.to_owned());
             let direct_count: i64 = connection
                 .query_row(
                     "SELECT COUNT(*) FROM notes WHERE folder_id = ?1",
@@ -562,14 +1146,24 @@ impl Index {
             .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get::<_, i64>(0))
             .map_err(|error| format!("无法统计标签：{error}"))? as u64;
         let link_count: u64 = connection
-            .query_row("SELECT COUNT(*) FROM links WHERE target_note_id IS NOT NULL", [], |row| row.get::<_, i64>(0))
-            .map_err(|error| format!("无法统计链接：{error}"))? as u64;
+            .query_row(
+                "SELECT COUNT(*) FROM links WHERE target_note_id IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("无法统计链接：{error}"))?
+            as u64;
         let dangling_count: u64 = connection
             .query_row("SELECT COUNT(DISTINCT target_title COLLATE NOCASE) FROM links WHERE target_note_id IS NULL", [], |row| row.get::<_, i64>(0))
             .map_err(|error| format!("无法统计悬空链接：{error}"))? as u64;
         let total_words: u64 = connection
-            .query_row("SELECT COALESCE(SUM(word_count), 0) FROM notes", [], |row| row.get::<_, i64>(0))
-            .map_err(|error| format!("无法统计字数：{error}"))? as u64;
+            .query_row(
+                "SELECT COALESCE(SUM(word_count), 0) FROM notes",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("无法统计字数：{error}"))?
+            as u64;
         let mut statement = connection
             .prepare(
                 "SELECT target_title, COUNT(DISTINCT source_note_id) FROM links
@@ -600,16 +1194,26 @@ impl Index {
     }
 
     /// 笔记详情（对齐 Express mapNote 形状）。
-    pub fn find_note_detail(&self, by_id: Option<&str>, by_path: Option<&str>) -> Result<Option<NoteDetail>, String> {
+    pub fn find_note_detail(
+        &self,
+        by_id: Option<&str>,
+        by_path: Option<&str>,
+    ) -> Result<Option<NoteDetail>, String> {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
-        let (column, value) = match (by_id, by_path) {
-            (Some(id), _) => ("note_id", id.to_owned()),
-            (None, Some(path)) => ("path", path.to_owned()),
+        let (predicate, value) = match (by_id, by_path) {
+            // Notes created outside Lattice may not have a frontmatter id. The
+            // list API exposes their path as the stable fallback id, so detail
+            // lookup must resolve that same identity.
+            (Some(id), _) => (
+                "(note_id = ?1 OR (note_id IS NULL AND path = ?1))",
+                id.to_owned(),
+            ),
+            (None, Some(path)) => ("path = ?1", path.to_owned()),
             _ => return Ok(None),
         };
         let sql = format!(
             "SELECT COALESCE(note_id, path), title, content, folder_id, is_pinned, path, word_count,
-             content_hash, properties_json, created_at, updated_at FROM notes WHERE {column} = ?1"
+             content_hash, properties_json, created_at, updated_at FROM notes WHERE {predicate}"
         );
         let mut statement = connection
             .prepare(&sql)
@@ -655,7 +1259,11 @@ impl Index {
     pub fn is_path_taken(&self, path: &str) -> Result<bool, String> {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         let taken: Option<String> = connection
-            .query_row("SELECT path FROM notes WHERE path = ?1", params![path], |row| row.get(0))
+            .query_row(
+                "SELECT path FROM notes WHERE path = ?1",
+                params![path],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|error| format!("无法检查路径占用：{error}"))?;
         Ok(taken.is_some())
@@ -674,7 +1282,9 @@ impl Index {
             .prepare("SELECT source_note_id, COUNT(*) FROM links GROUP BY source_note_id")
             .map_err(|error| format!("无法统计出链：{error}"))?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })
             .map_err(|error| format!("无法统计出链：{error}"))?;
         for row in rows {
             let (id, count) = row.map_err(|error| format!("无法读取出链：{error}"))?;
@@ -687,7 +1297,9 @@ impl Index {
             )
             .map_err(|error| format!("无法统计入链：{error}"))?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })
             .map_err(|error| format!("无法统计入链：{error}"))?;
         for row in rows {
             let (id, count) = row.map_err(|error| format!("无法读取入链：{error}"))?;
@@ -706,7 +1318,8 @@ impl Index {
                     + incoming.get(&note.id).copied().unwrap_or(0),
             })
             .collect();
-        let existing: std::collections::HashSet<String> = nodes.iter().map(|node| node.id.clone()).collect();
+        let existing: std::collections::HashSet<String> =
+            nodes.iter().map(|node| node.id.clone()).collect();
 
         let mut statement = connection
             .prepare(
@@ -774,7 +1387,6 @@ fn properties_value(raw: Option<&str>) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
-
 /// 库中 NULL 表示「无属性」，而 Express 在**线缆上始终发字符串**（无属性时为 `{}`）。
 /// 用自定义序列化在线缆层归一，避免改动 Rust 内部类型（`workspace.rs` 仍按 Option 读取）。
 fn serialize_properties_json<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
@@ -808,6 +1420,27 @@ pub struct NoteDetail {
     pub backlinks: Vec<NoteBacklink>,
 }
 
+/// AI 相关笔记结果：只返回可跳转的元数据和解释性分数，不返回正文。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRelatedNote {
+    pub id: String,
+    pub title: String,
+    pub file_path: String,
+    pub score: f32,
+    pub anchor: Option<String>,
+}
+
+/// 每日摘要的本地来源投影。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DigestNote {
+    pub title: String,
+    pub word_count: u64,
+    pub updated_at: Option<String>,
+    pub excerpt: String,
+}
+
 /// 详情里的标签（对齐 Express `findTagsForNotes`：只发 id 与 name）。
 #[derive(Serialize, Debug)]
 pub struct NoteTag {
@@ -837,7 +1470,10 @@ pub struct NoteBacklink {
 }
 
 /// 按笔记取标签。排序与 Express 一致（`t.name` NOCASE 升序）。
-fn query_note_tags(connection: &Connection, note_path: &str) -> Result<Vec<NoteTag>, rusqlite::Error> {
+fn query_note_tags(
+    connection: &Connection,
+    note_path: &str,
+) -> Result<Vec<NoteTag>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "SELECT t.id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
           WHERE nt.note_path = ?1 ORDER BY t.name COLLATE NOCASE ASC",
@@ -853,7 +1489,10 @@ fn query_note_tags(connection: &Connection, note_path: &str) -> Result<Vec<NoteT
 
 /// 出链。`LEFT JOIN` 保留悬空链接（`resolvedTitle` 为 null、`resolved` 为 false），
 /// 与 Express `listOutgoing` 的 LEFT JOIN 语义一致。
-fn query_outgoing_links(connection: &Connection, note_id: &str) -> Result<Vec<NoteOutgoingLink>, rusqlite::Error> {
+fn query_outgoing_links(
+    connection: &Connection,
+    note_id: &str,
+) -> Result<Vec<NoteOutgoingLink>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "SELECT l.target_title, l.target_note_id, n.title
            FROM links l LEFT JOIN notes n ON n.note_id = l.target_note_id
@@ -874,7 +1513,10 @@ fn query_outgoing_links(connection: &Connection, note_id: &str) -> Result<Vec<No
 }
 
 /// 反链。排序与 Express 一致（来源笔记 `updated_at` 降序）。
-fn query_backlinks(connection: &Connection, note_id: &str) -> Result<Vec<NoteBacklink>, rusqlite::Error> {
+fn query_backlinks(
+    connection: &Connection,
+    note_id: &str,
+) -> Result<Vec<NoteBacklink>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "SELECT l.source_note_id, n.title, n.updated_at
            FROM links l JOIN notes n ON n.note_id = l.source_note_id
@@ -888,6 +1530,42 @@ fn query_backlinks(connection: &Connection, note_id: &str) -> Result<Vec<NoteBac
         })
     })?;
     rows.collect()
+}
+
+fn suggestion_terms(title: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for value in title.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if value.len() >= 2 {
+            terms.push(value.to_lowercase());
+        }
+    }
+    let cjk = title
+        .chars()
+        .filter(|ch| ('\u{3400}'..='\u{4dbf}').contains(ch) || ('\u{4e00}'..='\u{9fff}').contains(ch))
+        .collect::<Vec<_>>();
+    for pair in cjk.windows(2) {
+        terms.push(pair.iter().collect());
+    }
+    let mut seen = HashSet::new();
+    terms.retain(|term| seen.insert(term.clone()));
+    terms
+}
+
+fn compact_digest_excerpt(content: &str) -> String {
+    content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(120)
+        .collect()
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// 健康扫描笔记（review scan 数据源；properties 为解析后的对象）。
@@ -1108,8 +1786,17 @@ pub struct SearchOutcome {
     pub items: Vec<SearchItem>,
 }
 
+/// 多路召回的结构化结果。字段保持为 `SearchItem`，因此融合不会绕过
+/// `folder_id`、`properties_json`、`updated_at` 等已经过滤和投影的元数据。
+pub struct SearchRecall {
+    pub fts: Vec<SearchItem>,
+    pub like: Vec<SearchItem>,
+    pub vector: Vec<SearchItem>,
+    pub fts_attempted: bool,
+}
+
 /// 检索条目（对齐 Express mapRow，camelCase 序列化）。
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchItem {
     pub id: String,
@@ -1120,8 +1807,6 @@ pub struct SearchItem {
     pub content_hash: Option<String>,
     #[serde(serialize_with = "serialize_properties_json")]
     pub properties_json: Option<String>,
-    /// 解析后的属性对象（见 `properties_value`）
-    pub properties: serde_json::Value,
     pub updated_at: Option<String>,
     pub excerpt: String,
 }
@@ -1171,16 +1856,22 @@ fn write_row(
                 modified_at,
                 indexed_at,
                 frontmatter.as_ref().and_then(|meta| meta.id.clone()),
-                frontmatter.as_ref().map_or(0, |meta| i64::from(meta.pinned)),
+                frontmatter
+                    .as_ref()
+                    .map_or(0, |meta| i64::from(meta.pinned)),
                 word_count,
-                frontmatter.as_ref().and_then(|meta| meta.created_at.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|meta| meta.created_at.clone()),
                 properties_json,
                 folder_id_for(path),
             ],
         )
         .map_err(|error| format!("无法写入索引：{error}"))?;
     // updated_at：frontmatter 业务时间戳优先，否则磁盘修改时间
-    let business_updated_at = frontmatter.as_ref().and_then(|meta| meta.updated_at.clone());
+    let business_updated_at = frontmatter
+        .as_ref()
+        .and_then(|meta| meta.updated_at.clone());
     connection
         .execute(
             "UPDATE notes SET updated_at = ?2 WHERE path = ?1",
@@ -1191,12 +1882,18 @@ fn write_row(
         )
         .map_err(|error| format!("无法写入更新时间：{error}"))?;
     sync_links(connection, path, raw, indexed_at)?;
-    sync_tags(connection, path, raw, indexed_at)
+    sync_tags(connection, path, raw, indexed_at)?;
+    embeddings::upsert_note_embedding(connection, path, hash, &title, body, indexed_at)
 }
 
 /// 同步一篇笔记的双向链接投影（对齐 rebuildForNote）：
 /// 目标按标题 NOCASE 解析归属（同名取最近更新），未解析即悬空。
-fn sync_links(connection: &Connection, path: &str, raw: &str, indexed_at: &str) -> Result<(), String> {
+fn sync_links(
+    connection: &Connection,
+    path: &str,
+    raw: &str,
+    indexed_at: &str,
+) -> Result<(), String> {
     let source_id: String = connection
         .query_row(
             "SELECT COALESCE(note_id, path) FROM notes WHERE path = ?1",
@@ -1205,7 +1902,10 @@ fn sync_links(connection: &Connection, path: &str, raw: &str, indexed_at: &str) 
         )
         .map_err(|error| format!("无法读取链接源：{error}"))?;
     connection
-        .execute("DELETE FROM links WHERE source_note_id = ?1", params![source_id])
+        .execute(
+            "DELETE FROM links WHERE source_note_id = ?1",
+            params![source_id],
+        )
         .map_err(|error| format!("无法清理链接：{error}"))?;
     for link in extract_wiki_links(raw) {
         let target_note_id: Option<String> = connection
@@ -1229,7 +1929,12 @@ fn sync_links(connection: &Connection, path: &str, raw: &str, indexed_at: &str) 
 }
 
 /// 同步一篇笔记的标签派生（保存/扫描时调用；标签是正文的投影，可重建）。
-fn sync_tags(connection: &Connection, path: &str, raw: &str, indexed_at: &str) -> Result<(), String> {
+fn sync_tags(
+    connection: &Connection,
+    path: &str,
+    raw: &str,
+    indexed_at: &str,
+) -> Result<(), String> {
     let names = extract_note_tags(raw);
     connection
         .execute("DELETE FROM note_tags WHERE note_path = ?1", params![path])
@@ -1273,8 +1978,11 @@ fn stable_id(text: &str) -> String {
 }
 
 /// 笔记目录部分的确定性 id（顶层目录笔记返回 None，对齐 Express folderId=null）。
-fn folder_id_for(path: &str) -> Option<String> {
-    let directory = std::path::Path::new(path).parent()?.to_string_lossy().replace('\\', "/");
+pub(crate) fn folder_id_for(path: &str) -> Option<String> {
+    let directory = std::path::Path::new(path)
+        .parent()?
+        .to_string_lossy()
+        .replace('\\', "/");
     if directory.is_empty() || directory == "." {
         return None;
     }
@@ -1324,33 +2032,126 @@ fn count_notes(connection: &Connection) -> Result<usize, String> {
         .map_err(|error| format!("无法统计索引：{error}"))
 }
 
+fn collect_search_items(
+    connection: &Connection,
+    matches: Vec<NoteMatch>,
+    limit: usize,
+    inbox_status: Option<&str>,
+) -> Result<Vec<SearchItem>, String> {
+    let mut items = Vec::with_capacity(matches.len().min(limit));
+    for note_match in matches {
+        let detail = connection
+            .query_row(
+                "SELECT COALESCE(note_id, path), folder_id, is_pinned, content_hash, properties_json, updated_at
+                 FROM notes WHERE path = ?1",
+                params![note_match.path],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("无法读取检索行：{error}"))?;
+        if let Some((id, folder_id, is_pinned, content_hash, properties_json, updated_at)) = detail
+        {
+            let properties = properties_value(properties_json.as_deref());
+            let is_inbox_match = inbox_status.is_none_or(|status| {
+                properties["type"] == serde_json::json!("inbox")
+                    && (status == "all" || properties["status"] == serde_json::json!(status))
+            });
+            if !is_inbox_match {
+                continue;
+            }
+            items.push(SearchItem {
+                id,
+                title: note_match.title,
+                folder_id,
+                file_path: note_match.path,
+                is_pinned,
+                content_hash,
+                properties_json,
+                updated_at,
+                excerpt: note_match.excerpt,
+            });
+            if items.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(items)
+}
+
 fn full_text_search(
     connection: &Connection,
     query: &str,
     limit: i64,
+    folder_id: Option<&str>,
+    allowed_paths: Option<&[String]>,
 ) -> Result<Vec<NoteMatch>, String> {
     // FTS5 短语查询：整体加引号，内部引号按 FTS5 规则双写转义。
     let phrase = format!("\"{}\"", query.replace('"', "\"\""));
+    let mut conditions = vec!["notes_fts MATCH ?1".to_owned()];
+    let mut bind: Vec<Box<dyn ToSql>> = vec![Box::new(phrase)];
+    let mut next_placeholder = 2;
+    if let Some(folder_id) = folder_id {
+        if folder_id == "__none__" {
+            conditions.push("n.folder_id IS NULL".to_owned());
+        } else {
+            conditions.push(format!("n.folder_id = ?{next_placeholder}"));
+            bind.push(Box::new(folder_id.to_owned()));
+            next_placeholder += 1;
+        }
+    }
+    if let Some(paths) = allowed_paths {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..paths.len())
+            .map(|index| format!("?{}", next_placeholder + index))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("n.path IN ({placeholders})"));
+        bind.extend(
+            paths
+                .iter()
+                .cloned()
+                .map(|path| Box::new(path) as Box<dyn ToSql>),
+        );
+        next_placeholder += paths.len();
+    }
+    let limit_placeholder = format!("?{next_placeholder}");
+    let sql = format!(
+        "SELECT n.path, n.title, n.size, n.modified_at
+           FROM notes_fts
+           JOIN notes n ON n.path = notes_fts.path
+          WHERE {}
+          ORDER BY bm25(notes_fts), n.modified_at DESC
+          LIMIT {limit_placeholder}",
+        conditions.join(" AND ")
+    );
     let mut statement = connection
-        .prepare(
-            "SELECT n.path, n.title, n.size, n.modified_at
-               FROM notes_fts
-               JOIN notes n ON n.path = notes_fts.path
-              WHERE notes_fts MATCH ?1
-              ORDER BY bm25(notes_fts), n.modified_at DESC
-              LIMIT ?2",
-        )
+        .prepare(&sql)
         .map_err(|error| format!("无法准备全文检索：{error}"))?;
+    bind.push(Box::new(limit));
     let rows = statement
-        .query_map(params![phrase, limit], |row| {
-            Ok(NoteMatch {
-                path: row.get(0)?,
-                title: row.get(1)?,
-                bytes: row.get::<_, i64>(2)? as u64,
-                modified_at: row.get(3)?,
-                excerpt: String::new(),
-            })
-        })
+        .query_map(
+            params_from_iter(bind.iter().map(|value| value.as_ref() as &dyn ToSql)),
+            |row| {
+                Ok(NoteMatch {
+                    path: row.get(0)?,
+                    title: row.get(1)?,
+                    bytes: row.get::<_, i64>(2)? as u64,
+                    modified_at: row.get(3)?,
+                    excerpt: String::new(),
+                })
+            },
+        )
         .map_err(|error| format!("全文检索失败：{error}"))?;
     let mut notes = Vec::new();
     for row in rows {
@@ -1364,34 +2165,156 @@ fn like_search(
     connection: &Connection,
     query: &str,
     limit: i64,
+    folder_id: Option<&str>,
+    allowed_paths: Option<&[String]>,
 ) -> Result<Vec<NoteMatch>, String> {
     let pattern = like_pattern(query);
+    let mut conditions = vec![
+        "(path LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\')"
+            .to_owned(),
+    ];
+    let mut bind: Vec<Box<dyn ToSql>> = vec![Box::new(pattern)];
+    let mut next_placeholder = 2;
+    if let Some(folder_id) = folder_id {
+        if folder_id == "__none__" {
+            conditions.push("folder_id IS NULL".to_owned());
+        } else {
+            conditions.push(format!("folder_id = ?{next_placeholder}"));
+            bind.push(Box::new(folder_id.to_owned()));
+            next_placeholder += 1;
+        }
+    }
+    if let Some(paths) = allowed_paths {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..paths.len())
+            .map(|index| format!("?{}", next_placeholder + index))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("path IN ({placeholders})"));
+        bind.extend(
+            paths
+                .iter()
+                .cloned()
+                .map(|path| Box::new(path) as Box<dyn ToSql>),
+        );
+        next_placeholder += paths.len();
+    }
+    let limit_placeholder = format!("?{next_placeholder}");
+    let sql = format!(
+        "SELECT path, title, size, modified_at, content
+           FROM notes
+          WHERE {}
+          ORDER BY modified_at DESC
+          LIMIT {limit_placeholder}",
+        conditions.join(" AND ")
+    );
     let mut statement = connection
-        .prepare(
-            "SELECT path, title, size, modified_at, content
-               FROM notes
-              WHERE path LIKE ?1 ESCAPE '\\'
-                 OR title LIKE ?1 ESCAPE '\\'
-                 OR content LIKE ?1 ESCAPE '\\'
-              ORDER BY modified_at DESC
-              LIMIT ?2",
-        )
+        .prepare(&sql)
         .map_err(|error| format!("无法准备兜底检索：{error}"))?;
+    bind.push(Box::new(limit));
     let rows = statement
-        .query_map(params![pattern, limit], |row| {
-            Ok(NoteMatch {
-                path: row.get(0)?,
-                title: row.get(1)?,
-                bytes: row.get::<_, i64>(2)? as u64,
-                modified_at: row.get(3)?,
-                excerpt: String::new(),
-            })
-        })
+        .query_map(
+            params_from_iter(bind.iter().map(|value| value.as_ref() as &dyn ToSql)),
+            |row| {
+                Ok(NoteMatch {
+                    path: row.get(0)?,
+                    title: row.get(1)?,
+                    bytes: row.get::<_, i64>(2)? as u64,
+                    modified_at: row.get(3)?,
+                    excerpt: String::new(),
+                })
+            },
+        )
         .map_err(|error| format!("兜底检索失败：{error}"))?;
     let mut notes = Vec::new();
     for row in rows {
         notes.push(row.map_err(|error| format!("兜底检索失败：{error}"))?);
     }
+    fill_excerpts(connection, &mut notes, query)?;
+    Ok(notes)
+}
+
+fn vector_search(
+    connection: &Connection,
+    query: &str,
+    limit: i64,
+    folder_id: Option<&str>,
+    allowed_paths: Option<&[String]>,
+) -> Result<Vec<NoteMatch>, String> {
+    let query_vector = embeddings::embed_text(query);
+    let mut conditions = Vec::new();
+    let mut bind: Vec<Box<dyn ToSql>> = Vec::new();
+    let mut next_placeholder = 1;
+    if let Some(folder_id) = folder_id {
+        if folder_id == "__none__" {
+            conditions.push("n.folder_id IS NULL".to_owned());
+        } else {
+            conditions.push(format!("n.folder_id = ?{next_placeholder}"));
+            bind.push(Box::new(folder_id.to_owned()));
+            next_placeholder += 1;
+        }
+    }
+    if let Some(paths) = allowed_paths {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..paths.len())
+            .map(|index| format!("?{}", next_placeholder + index))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("n.path IN ({placeholders})"));
+        bind.extend(
+            paths
+                .iter()
+                .cloned()
+                .map(|path| Box::new(path) as Box<dyn ToSql>),
+        );
+    }
+    let sql = format!(
+        "SELECT n.path, n.title, n.size, n.modified_at, e.embedding
+           FROM note_embeddings e
+           JOIN notes n ON n.path = e.note_path
+          WHERE {}",
+        conditions.join(" AND ")
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| format!("无法准备向量检索：{error}"))?;
+    let rows = statement
+        .query_map(
+            params_from_iter(bind.iter().map(|value| value.as_ref() as &dyn ToSql)),
+            |row| {
+                Ok((
+                    NoteMatch {
+                        path: row.get(0)?,
+                        title: row.get(1)?,
+                        bytes: row.get::<_, i64>(2)? as u64,
+                        modified_at: row.get(3)?,
+                        excerpt: String::new(),
+                    },
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("向量检索失败：{error}"))?;
+    let mut scored = Vec::new();
+    for row in rows {
+        let (note, embedding) = row.map_err(|error| format!("向量检索失败：{error}"))?;
+        let Ok(candidate) = serde_json::from_str::<Vec<f32>>(&embedding) else {
+            log::warn!("跳过无法解析的向量：{}", note.path);
+            continue;
+        };
+        let Some(score) = embeddings::cosine_similarity(&query_vector, &candidate) else {
+            log::warn!("跳过维度不匹配的向量：{}", note.path);
+            continue;
+        };
+        scored.push((score, note));
+    }
+    scored.sort_by(|left, right| right.0.total_cmp(&left.0));
+    scored.truncate(limit as usize);
+    let mut notes = scored.into_iter().map(|(_, note)| note).collect::<Vec<_>>();
     fill_excerpts(connection, &mut notes, query)?;
     Ok(notes)
 }
@@ -1461,10 +2384,7 @@ fn make_excerpt(content: &str, query: &str) -> String {
     if end < original.len() {
         excerpt.push('…');
     }
-    excerpt
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    excerpt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -1516,12 +2436,54 @@ mod tests {
     }
 
     #[test]
+    fn list_notes_filters_sorts_and_paginates() {
+        let (_directory, vault, index) = workspace();
+        vault
+            .write(
+                "项目/捕获.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234571\ntitle: 捕获\ntype: inbox\nstatus: captured\n---\n\n捕获正文\n",
+                None,
+            )
+            .unwrap();
+        vault
+            .write(
+                "项目/处理.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234572\ntitle: 处理\ntype: inbox\nstatus: processed\n---\n\n处理正文\n",
+                None,
+            )
+            .unwrap();
+        vault
+            .write(
+                "根.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234573\ntitle: 根\n---\n\n根正文\n",
+                None,
+            )
+            .unwrap();
+        index.scan(&vault).unwrap();
+
+        let folder_id = super::folder_id_for("项目/捕获.md").unwrap();
+        let filtered = index
+            .list_notes(Some(&folder_id), None, Some("captured"), "title", 20, 0)
+            .unwrap();
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["items"][0]["filePath"], "项目/捕获.md");
+        assert_eq!(filtered["items"][0]["properties"]["status"], "captured");
+
+        let page = index.list_notes(None, None, None, "title", 1, 1).unwrap();
+        assert_eq!(page["limit"], 1);
+        assert_eq!(page["offset"], 1);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn search_matches_chinese_substring_through_trigram() {
         let (_directory, vault, index) = workspace();
         vault
             .write("dl.md", "# 笔记\n这是一篇关于深度学习的笔记", None)
             .unwrap();
-        vault.write("other.md", "# 无关\n今天天气不错", None).unwrap();
+        vault
+            .write("other.md", "# 无关\n今天天气不错", None)
+            .unwrap();
         index.scan(&vault).unwrap();
 
         // 4 个字符 >= trigram 的 3 字符窗口，走 FTS5 MATCH 路径；
@@ -1564,6 +2526,51 @@ mod tests {
     }
 
     #[test]
+    fn search_query_applies_folder_and_inbox_filters_like_express() {
+        let (_directory, vault, index) = workspace();
+        vault
+            .write(
+                "项目/inbox.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234567\ntype: inbox\nstatus: captured\n---\n\n共同正文\n",
+                None,
+            )
+            .unwrap();
+        vault
+            .write(
+                "项目/plain.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234568\n---\n\n共同正文\n",
+                None,
+            )
+            .unwrap();
+        vault
+            .write(
+                "其他/inbox.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234569\ntype: inbox\nstatus: captured\n---\n\n共同正文\n",
+                None,
+            )
+            .unwrap();
+        index.scan(&vault).unwrap();
+
+        let folder_id = super::folder_id_for("项目/inbox.md").unwrap();
+        let result = index
+            .search_query("共同", 20, Some(&folder_id), Some("captured"))
+            .unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].file_path, "项目/inbox.md");
+        let properties: serde_json::Value =
+            serde_json::from_str(result.items[0].properties_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            properties,
+            serde_json::json!({"type": "inbox", "status": "captured"})
+        );
+        assert!(
+            index
+                .search_query("共同", 20, None, Some("invalid"))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn upsert_keeps_index_synced_without_a_rescan() {
         let (_directory, vault, index) = workspace();
         vault.write("n.md", "# 初稿\n内容", None).unwrap();
@@ -1577,7 +2584,13 @@ mod tests {
             .unwrap();
         let meta = vault.stat("n.md").unwrap();
         index
-            .upsert(&note.path, &note.raw, &note.sha256, meta.bytes, meta.modified_at)
+            .upsert(
+                &note.path,
+                &note.raw,
+                &note.sha256,
+                meta.bytes,
+                meta.modified_at,
+            )
             .unwrap();
 
         assert_eq!(index.search("改写后", 20).unwrap().len(), 1);
@@ -1612,6 +2625,63 @@ mod tests {
             .unwrap()
             .expect("按路径应找到");
         assert_eq!(by_path.id, "019501a2-3b4c-4c5d-89ab-cdef01234567");
+
+        // 无 frontmatter id 的外部 Markdown 会把路径作为列表 id；详情查询
+        // 必须接受这个 fallback id，保证点击列表后仍能打开正文。
+        vault
+            .write("external.md", "# 外部笔记\n正文", None)
+            .unwrap();
+        index.scan(&vault).unwrap();
+        let external = index
+            .find_note_detail(Some("external.md"), None)
+            .unwrap()
+            .expect("无 frontmatter id 时应按路径 fallback id 找到");
+        assert_eq!(external.id, "external.md");
+        assert_eq!(external.file_path.as_deref(), Some("external.md"));
+    }
+
+    #[test]
+    fn ai_related_and_suggestions_use_projection_boundaries() {
+        let (_directory, vault, index) = workspace();
+        vault
+            .write(
+                "source.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234576\ntitle: Rust 架构\n---\n\nRust 架构设计与索引工程\n",
+                None,
+            )
+            .unwrap();
+        vault
+            .write(
+                "target.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234577\ntitle: Rust 工程\n---\n\nRust 工程实践 #工程\n",
+                None,
+            )
+            .unwrap();
+        vault
+            .write(
+                "linked.md",
+                "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234578\ntitle: Rust 链接\n---\n\n[[Rust 工程]]\n",
+                None,
+            )
+            .unwrap();
+        index.scan(&vault).unwrap();
+
+        let source_id = "019501a2-3b4c-4c5d-89ab-cdef01234576";
+        let related = index.related_notes(source_id, 6).unwrap();
+        assert!(related.iter().all(|item| item.id != source_id));
+        assert!(related.iter().any(|item| item.id == "019501a2-3b4c-4c5d-89ab-cdef01234577"));
+
+        let suggestions = index.ai_suggestions(source_id, 6).unwrap();
+        assert!(suggestions["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["id"] != source_id));
+        assert!(suggestions["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "工程"));
     }
 
     #[test]
@@ -1622,5 +2692,88 @@ mod tests {
         assert!(excerpt.ends_with('…'));
         assert!(excerpt.contains("命中"));
         assert!(excerpt.chars().count() < 200);
+    }
+
+    #[test]
+    fn ai_search_filters_allowed_paths_before_fts_and_like_recall() {
+        let (_directory, vault, index) = workspace();
+        vault
+            .write("allowed.md", "# 允许\n\n权限测试内容", None)
+            .unwrap();
+        vault
+            .write("hidden.md", "# 隐藏\n\n权限测试内容", None)
+            .unwrap();
+        index.scan(&vault).unwrap();
+
+        let allowed = vec!["allowed.md".to_owned()];
+        let result = index
+            .search_query_with_allowed_paths("权限测试", 20, None, None, Some(&allowed))
+            .unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].file_path, "allowed.md");
+
+        let none: Vec<String> = Vec::new();
+        let empty = index
+            .search_query_with_allowed_paths("权限测试", 20, None, None, Some(&none))
+            .unwrap();
+        assert!(empty.items.is_empty());
+    }
+
+    #[test]
+    fn vector_projection_refreshes_with_content_and_is_removed_with_note() {
+        let (_directory, vault, index) = workspace();
+        vault
+            .write("allowed.md", "# 允许\n\n初始向量内容", None)
+            .unwrap();
+        vault
+            .write("hidden.md", "# 隐藏\n\n不应被向量检索看到", None)
+            .unwrap();
+        index.scan(&vault).unwrap();
+
+        let connection = index.connection.lock().unwrap();
+        let before: String = connection
+            .query_row(
+                "SELECT content_hash FROM note_embeddings WHERE note_path = ?1",
+                ["allowed.md"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let dimension: i64 = connection
+            .query_row(
+                "SELECT dimension FROM note_embeddings WHERE note_path = ?1",
+                ["allowed.md"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dimension, crate::ai::embeddings::VECTOR_DIMENSION as i64);
+        drop(connection);
+
+        let current = vault.read("allowed.md").unwrap();
+        vault
+            .write(
+                "allowed.md",
+                "# 允许\n\n更新后的向量检索内容",
+                Some(&current.sha256),
+            )
+            .unwrap();
+        index.scan(&vault).unwrap();
+        let connection = index.connection.lock().unwrap();
+        let after: String = connection
+            .query_row(
+                "SELECT content_hash FROM note_embeddings WHERE note_path = ?1",
+                ["allowed.md"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(before, after);
+        drop(connection);
+
+        std::fs::remove_file(vault.root().join("allowed.md")).unwrap();
+        index.scan(&vault).unwrap();
+        let connection = index.connection.lock().unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT COUNT(*) FROM note_embeddings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
     }
 }

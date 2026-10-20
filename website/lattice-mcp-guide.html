@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="格物 Lattice MCP Server 集成指南：连接 Claude Desktop 等 Agent，安全读取或写入本地 Markdown 知识库。" />
-    <title>Lattice MCP Server 集成指南：连接 Claude Desktop 与 Markdown 知识库 · 格物</title>
+    <meta name="description" content="格物 Lattice v0.1.5 外部 Node MCP Server 兼容指南；当前 0.2.0 Tauri 桌面端仅保存 MCP 配置，sidecar 尚未交付。" />
+    <title>旧版 Lattice MCP Server 集成指南（v0.1.5） · 格物</title>
     <link rel="canonical" href="https://dawei-star.github.io/Lattice/website/lattice-mcp-guide.html" />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="格物 Lattice" />
-    <meta property="og:title" content="Lattice MCP Server 集成指南：连接 Claude Desktop 与 Markdown 知识库" />
-    <meta property="og:description" content="通过 MCP Server 让 Claude Desktop 等 Agent 安全访问本地 Markdown Vault，默认只读并支持审计。" />
+    <meta property="og:title" content="旧版 Lattice MCP Server 集成指南（v0.1.5）" />
+    <meta property="og:description" content="本文只适用于 v0.1.5 外部 Node MCP Server；当前 0.2.0 Tauri 桌面端的 MCP sidecar 尚未交付。" />
     <meta property="og:url" content="https://dawei-star.github.io/Lattice/website/lattice-mcp-guide.html" />
     <meta property="og:image" content="https://dawei-star.github.io/Lattice/FILES/README.md/lattice-mcp-server.png" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Lattice MCP Server 集成指南：连接 Claude Desktop 与 Markdown 知识库" />
-    <meta name="twitter:description" content="通过 MCP Server 让 Claude Desktop 等 Agent 安全访问本地 Markdown Vault，默认只读并支持审计。" />
+    <meta name="twitter:title" content="旧版 Lattice MCP Server 集成指南（v0.1.5）" />
+    <meta name="twitter:description" content="本文只适用于 v0.1.5 外部 Node MCP Server；当前 0.2.0 Tauri 桌面端的 MCP sidecar 尚未交付。" />
     <meta name="twitter:image" content="https://dawei-star.github.io/Lattice/FILES/README.md/lattice-mcp-server.png" />
     <link rel="icon" href="../web/public/lattice-icon.svg" type="image/svg+xml" />
     <style>
@@ -359,8 +359,9 @@
 
           <section class="hero fade-in" id="overview" data-searchable="MCP Model Context Protocol 集成 stdio 外部 Agent 本地知识库">
             <p class="eyebrow">INTEGRATION / MCP</p>
-            <h1>把你的知识库交给 <em>MCP</em>。</h1>
-            <p class="hero-copy">通过标准的 Model Context Protocol，让 Claude Desktop 等 Agent 在不搬走 Markdown 的前提下搜索、阅读和维护 Lattice。默认只读，写入能力需要你显式打开。</p>
+            <h1>旧版 <em>MCP</em> 接入说明。</h1>
+            <p class="hero-copy">本文描述 Lattice v0.1.5 的外部 Node MCP Server，供仍在使用旧版服务的用户查阅。当前 0.2.0 Tauri 桌面端已支持 MCP 项目配置读写，但 MCP sidecar 尚未交付，不会按本文步骤自动启动外部进程。</p>
+            <div class="callout warning"><strong>版本边界</strong><p>如果你使用的是当前 Tauri 桌面构建，请只把本文当作历史兼容资料；请在设置页保存配置，等待后续 sidecar 版本提供实际连接能力。</p></div>
             <div class="signal-row" aria-label="MCP 特性">
               <span class="signal">transport: stdio</span>
               <span class="signal">default: read-only</span>

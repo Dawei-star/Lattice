@@ -22,6 +22,8 @@ export interface McpProjectDocument {
 
 /** 项目级 MCP 配置读取/保存结果。 */
 export interface McpProjectState {
+  path?: string;
+  status?: 'default' | 'loaded' | 'invalid' | string;
   servers?: McpServerEntry[];
   warning?: string;
   [key: string]: unknown;

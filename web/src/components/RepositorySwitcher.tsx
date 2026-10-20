@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronsUpDown, CircleHelp } from 'lucide-react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { open as openDirectoryDialog } from '@tauri-apps/plugin-dialog';
 import { createPortal } from 'react-dom';
 import { vaultApi } from '../api/vault.ts';
 import Modal from '../ui/Modal.tsx';
 import { useToast } from '../hooks/useToast.tsx';
+import type { LatticeDesktopVaultInfo } from '../api/vault-files.ts';
 import type { FileConfirmationResult, FileOperationInput } from '../hooks/useFileConfirmation.tsx';
 
 /** 记忆过的仓库条目（localStorage 持久化）。 */
@@ -44,6 +47,32 @@ function saveRepositories(items: SavedRepository[]) {
   } catch {
     // Private browsing can make localStorage unavailable; the current session still works.
   }
+}
+
+type VaultSelectionResult = { canceled?: boolean; path?: string } | null;
+
+/**
+ * The current desktop build is Tauri 2 and does not inject the legacy
+ * `window.latticeDesktop` bridge. Keep the bridge path for older shells, but
+ * use the native dialog and the already-registered Rust command when present.
+ */
+async function selectVaultWithTauri(_confirmation?: FileConfirmationResult | Record<string, unknown>): Promise<VaultSelectionResult> {
+  if (!isTauri()) return null;
+  const selected = await openDirectoryDialog({
+    directory: true,
+    multiple: false,
+    title: '选择知识库目录',
+  });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (typeof path !== 'string' || !path.trim()) return { canceled: true };
+  await invoke<LatticeDesktopVaultInfo>('vault_open', { path });
+  return { path };
+}
+
+async function openVaultPathWithTauri(path: string, _confirmation?: FileConfirmationResult | Record<string, unknown>): Promise<VaultSelectionResult> {
+  if (!isTauri()) return null;
+  await invoke<LatticeDesktopVaultInfo>('vault_open', { path });
+  return { path };
 }
 
 export default function RepositorySwitcher({ onConfirmFileOperation }: RepositorySwitcherProps) {
@@ -128,7 +157,8 @@ export default function RepositorySwitcher({ onConfirmFileOperation }: Repositor
     setMenuOpen(false);
     if (!repository?.path || normalizePath(repository.path) === normalizePath(currentPath)) return;
 
-    const selectPath = window.latticeDesktop?.selectVaultPath;
+    const legacySelectPath = window.latticeDesktop?.selectVaultPath;
+    const selectPath = legacySelectPath ?? (isTauri() ? openVaultPathWithTauri : undefined);
     if (typeof selectPath !== 'function') {
       toast.info('浏览器开发模式暂不支持切换本地仓库', { detail: repository.path });
       return;
@@ -148,7 +178,8 @@ export default function RepositorySwitcher({ onConfirmFileOperation }: Repositor
       const result = await selectPath(repository.path, confirmation as unknown as Record<string, unknown>);
       if (result?.canceled) return;
       rememberRepository(result?.path ?? repository.path);
-      toast.info('正在切换仓库，应用将自动重启');
+      toast.info('正在切换仓库，工作区即将刷新');
+      if (!legacySelectPath && isTauri()) window.setTimeout(() => window.location.reload(), 60);
     } catch (error) {
       toast.error((error as Error)?.message ?? '切换仓库失败');
     } finally {
@@ -158,7 +189,8 @@ export default function RepositorySwitcher({ onConfirmFileOperation }: Repositor
 
   const openRepositoryPicker = async () => {
     setMenuOpen(false);
-    const selectVault = window.latticeDesktop?.selectVault;
+    const legacySelectVault = window.latticeDesktop?.selectVault;
+    const selectVault = legacySelectVault ?? (isTauri() ? selectVaultWithTauri : undefined);
     if (typeof selectVault !== 'function') {
       toast.info('请在 Lattice 桌面版中打开本地仓库');
       return;
@@ -177,7 +209,8 @@ export default function RepositorySwitcher({ onConfirmFileOperation }: Repositor
       const result = await selectVault(confirmation as unknown as Record<string, unknown>);
       if (result?.canceled) return;
       if (result?.path) rememberRepository(result.path);
-      toast.info('正在打开仓库，应用将自动重启');
+      toast.info('正在打开仓库，工作区即将刷新');
+      if (!legacySelectVault && isTauri()) window.setTimeout(() => window.location.reload(), 60);
     } catch (error) {
       toast.error((error as Error)?.message ?? '打开仓库失败');
     } finally {

@@ -16,7 +16,7 @@ import { useFileConfirmation } from './hooks/useFileConfirmation.tsx';
 import Ribbon from './shell/Ribbon.tsx';
 import type { AppView } from './shell/Ribbon.tsx';
 import TabBar from './shell/TabBar.tsx';
-import type { WorkspaceTab, ExternalNoteRow } from './shell/TabBar.tsx';
+import type { AiWorkspaceTab, WorkspaceTab, ExternalNoteRow } from './shell/TabBar.tsx';
 import StatusBar from './shell/StatusBar.tsx';
 import StartupSplash from './components/StartupSplash.tsx';
 import Modal from './ui/Modal.tsx';
@@ -41,7 +41,7 @@ const ACTIVE_EXPERT_STORAGE_KEY = 'lattice-active-expert';
 const GraphView = lazy(() => import('./components/GraphView.tsx'));
 const CanvasView = lazy(() => import('./components/CanvasView.tsx'));
 const AIAssistantPanel = lazy(() => import('./components/AIAssistantPanel.tsx'));
-const ExpertsCenter = lazy(() => import('./components/ExpertsCenter.tsx'));
+const ExpertManager = lazy(() => import('./components/ExpertManager.tsx'));
 const KnowledgeHealthCenter = lazy(() => import('./components/KnowledgeHealthCenter.tsx'));
 const SettingsModal = lazy(() => import('./settings/SettingsModal.tsx'));
 
@@ -75,6 +75,14 @@ function captureTitle() {
     minute: '2-digit',
     hour12: false,
   }).format(new Date()).replaceAll('/', '-').replace(',', '')}`;
+}
+
+function createAiSessionId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `ai-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 }
 
 export default function App() {
@@ -160,7 +168,7 @@ export default function App() {
     }
   });
   const [expertsCenterOpen, setExpertsCenterOpen] = useState(false);
-  const [expertsCenterInitialTab, setExpertsCenterInitialTab] = useState('experts');
+  const [expertsCenterInitialTab, setExpertsCenterInitialTab] = useState<'experts' | 'skills' | 'mcp'>('experts');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState('about');
   const [panelOpen, setPanelOpen] = useState(true);
@@ -268,6 +276,13 @@ export default function App() {
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [renameSaving, setRenameSaving] = useState(false);
   const tabSeq = useRef(2);
+  const [aiTabs, setAiTabs] = useState<AiWorkspaceTab[]>([]);
+  const [activeAiTabId, setActiveAiTabId] = useState<number | null>(null);
+  const aiTabSeq = useRef(1);
+  const activeAiTab = useMemo(
+    () => aiTabs.find((tab) => tab.id === activeAiTabId) ?? null,
+    [activeAiTabId, aiTabs],
+  );
   // noteId → 连续缺失次数。noteIndex 会在 SSE 事件与轮询间被整体替换，
   // 单次快照里缺一条不代表笔记被删；连续多轮都缺失才关标签页
   const missingStrikesRef = useRef(new Map<string, number>());
@@ -565,24 +580,91 @@ export default function App() {
     return typeof unsubscribe === 'function' ? unsubscribe : undefined;
   }, []);
 
+  const handleAiSessionChange = useCallback((sessionId: string, title: string) => {
+    setAiTabs((current) => current.map((tab) => tab.id === activeAiTabId
+      ? { ...tab, sessionId, title: title || 'Lattice AI' }
+      : tab));
+  }, [activeAiTabId]);
+
+  const createAiTab = useCallback(({ expertId = activeExpertId, prompt = '' }: { expertId?: string; prompt?: string } = {}) => {
+    if (!confirmNavigation()) return null;
+    const tab: AiWorkspaceTab = {
+      id: aiTabSeq.current++,
+      sessionId: createAiSessionId(),
+      title: 'Lattice AI',
+      expertId,
+    };
+    setAiTabs((current) => [...current, tab]);
+    setActiveAiTabId(tab.id);
+    setActiveExpertId(expertId);
+    setAiInitialPrompt(prompt);
+    setAiOpen(true);
+    return tab;
+  }, [activeExpertId, confirmNavigation]);
+
+  const handleNewAiTab = useCallback(() => {
+    createAiTab();
+  }, [createAiTab]);
+
   const handleTabSelect = useCallback(
     (tabId: number) => {
-      if (tabId === activeTabId || !confirmNavigation()) return;
+      if (tabId === activeTabId && !aiOpen) return;
+      if (!confirmNavigation()) return;
       const tab = tabs.find((t) => t.id === tabId);
-      if (tab) activateTab(tab);
+      if (tab) {
+        setAiOpen(false);
+        activateTab(tab);
+      }
     },
-    [tabs, activeTabId, confirmNavigation, activateTab],
+    [tabs, activeTabId, aiOpen, confirmNavigation, activateTab],
   );
 
   const handleTabNew = useCallback(() => {
     const active = tabs.find((t) => t.id === activeTabId);
-    if (active && !active.noteId && !active.externalToken) return;
+    if (!aiOpen && active && !active.noteId && !active.externalToken) return;
     if (!confirmNavigation()) return;
     const tab = { id: tabSeq.current++, noteId: null };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
     setActiveNote(null);
-  }, [tabs, activeTabId, confirmNavigation, setActiveNote]);
+    setAiOpen(false);
+  }, [tabs, activeTabId, aiOpen, confirmNavigation, setActiveNote]);
+
+  const handleSelectAiTab = useCallback((tabId?: number) => {
+    const target = tabId == null
+      ? aiTabs.find((tab) => tab.id === activeAiTabId)
+      : aiTabs.find((tab) => tab.id === tabId);
+    if (!target) {
+      createAiTab();
+      return;
+    }
+    if (!confirmNavigation()) return;
+    setActiveAiTabId(target.id);
+    setActiveExpertId(target.expertId);
+    setAiInitialPrompt('');
+    setAiOpen(true);
+  }, [activeAiTabId, aiTabs, confirmNavigation, createAiTab]);
+
+  const handleCloseAiTab = useCallback((tabId: number) => {
+    const index = aiTabs.findIndex((tab) => tab.id === tabId);
+    if (index === -1) return;
+    const closingActive = aiOpen && tabId === activeAiTabId;
+    const closingSelected = tabId === activeAiTabId;
+    if (closingActive && !confirmNavigation()) return;
+    const remaining = aiTabs.filter((tab) => tab.id !== tabId);
+    setAiTabs(remaining);
+    if (!closingActive && !closingSelected) return;
+    setAiInitialPrompt('');
+    const next = remaining[Math.min(Math.max(0, index - 1), remaining.length - 1)];
+    if (next) {
+      setActiveAiTabId(next.id);
+      setActiveExpertId(next.expertId);
+      if (closingActive) setAiOpen(true);
+    } else {
+      setActiveAiTabId(null);
+      if (closingActive) setAiOpen(false);
+    }
+  }, [activeAiTabId, aiOpen, aiTabs, confirmNavigation]);
 
   const handleToggleTabLock = useCallback((tabId: number) => {
     setLockedTabIds((current) => {
@@ -819,14 +901,19 @@ export default function App() {
 
   const handleSelectExpert = useCallback((id: string) => {
     if (experts.length && !experts.some((expert) => expert.id === id)) return;
-    setActiveExpertId(id);
     setExpertsCenterOpen(false);
-    setAiOpen(true);
-  }, [experts]);
+    const current = aiTabs.find((tab) => tab.id === activeAiTabId);
+    if (current) {
+      setActiveExpertId(id);
+      setAiTabs((tabs) => tabs.map((tab) => tab.id === current.id ? { ...tab, expertId: id } : tab));
+      setAiOpen(true);
+      return;
+    }
+    createAiTab({ expertId: id });
+  }, [activeAiTabId, aiTabs, createAiTab, experts]);
 
   const handleOpenExpertsCenter = useCallback((tab: string = 'experts') => {
-    setAiOpen(false);
-    setExpertsCenterInitialTab(tab === 'skills' || tab === 'connectors' ? tab : 'experts');
+    setExpertsCenterInitialTab(tab === 'skills' ? 'skills' : tab === 'connectors' || tab === 'mcp' ? 'mcp' : 'experts');
     setExpertsCenterOpen(true);
   }, []);
 
@@ -837,18 +924,17 @@ export default function App() {
   }, []);
 
   const handleOpenInboxAi = useCallback(() => {
-    handleSelectExpert('inbox-organizer');
-    setAiInitialPrompt('请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。');
-    setAiOpen(true);
-  }, [handleSelectExpert]);
+    createAiTab({
+      expertId: 'inbox-organizer',
+      prompt: '请整理 Inbox 中待整理的收集内容：先读取 status 为 captured 或 processing 的 Inbox 笔记，判断它们最适合归入哪个现有项目目录；无法可靠判断的保留在 Inbox 并说明原因。对确认后的归档使用 archive 动作，path 填原 Inbox 文件，targetPath 填项目内的新文件路径，不要处理 status 为 processed 的内容。',
+    });
+  }, [createAiTab]);
 
   const handleOpenReviewAi = useCallback(({ expertId = 'knowledge-curator', prompt = '' }: { expertId?: string; prompt?: string } = {}) => {
     const resolvedExpertId = experts.some((expert) => expert.id === expertId) ? expertId : 'general';
-    setActiveExpertId(resolvedExpertId);
     setExpertsCenterOpen(false);
-    setAiInitialPrompt(prompt);
-    setAiOpen(true);
-  }, [experts]);
+    createAiTab({ expertId: resolvedExpertId, prompt });
+  }, [createAiTab, experts]);
 
   const handleOpenReviewInbox = useCallback(() => {
     selectInbox('all');
@@ -936,13 +1022,15 @@ export default function App() {
 
       if (meta && key === 'j') {
         event.preventDefault();
-        setAiOpen((value) => !value);
+        if (aiOpen) setAiOpen(false);
+        else handleSelectAiTab();
         return;
       }
 
       if (meta && key === 'o') {
         event.preventDefault();
-        setSwitcherOpen(true);
+        if (aiOpen) handleNewAiTab();
+        else setSwitcherOpen(true);
         return;
       }
 
@@ -985,7 +1073,7 @@ export default function App() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeTabId, handleCreateNote, handleTabClose, handleTabNew, settings.quickSwitcher, settingsOpen]);
+  }, [activeTabId, aiOpen, handleCreateNote, handleNewAiTab, handleSelectAiTab, handleTabClose, handleTabNew, settings.quickSwitcher, settingsOpen]);
 
   // ── 切到图谱视图时按需加载（数据被改动过才重新拉取） ───────
   useEffect(() => {
@@ -1000,7 +1088,9 @@ export default function App() {
 
   const handleOpenSwitcher = useCallback(() => setSwitcherOpen(true), []);
   const handleCloseSwitcher = useCallback(() => setSwitcherOpen(false), []);
-  const handleToggleAi = useCallback(() => setAiOpen((value) => !value), []);
+  const handleToggleAi = useCallback(() => {
+    if (!aiOpen) handleSelectAiTab();
+  }, [aiOpen, handleSelectAiTab]);
   const handleTogglePanel = useCallback(() => setPanelOpen((value) => !value), []);
 
   const copyText = useCallback(async (value: string, label: string) => {
@@ -1240,7 +1330,7 @@ export default function App() {
   }, [fileConfirmation.requestFileConfirmation, setActiveNote]);
 
   return (
-    <div className={`app app--${shellMode}`}>
+    <div className={`app app--${shellMode}${aiOpen ? ' app--ai' : ''}`}>
       {shellMode === 'obsidian' ? (
         <Ribbon
           view={view}
@@ -1278,7 +1368,10 @@ export default function App() {
 
       <TabBar
         tabs={tabs}
+        aiTabs={aiTabs}
         activeTabId={activeTabId}
+        activeAiTabId={activeAiTabId}
+        aiOpen={aiOpen}
         noteTitles={noteTitles}
         externalNotes={externalNotes}
         noteIndex={noteIndex}
@@ -1291,6 +1384,8 @@ export default function App() {
         onCloseToRight={(tabId) => handleCloseTabs(tabId, 'right')}
         onCloseOthers={(tabId) => handleCloseTabs(tabId, 'others')}
         onNew={handleTabNew}
+        onSelectAi={handleSelectAiTab}
+        onCloseAi={handleCloseAiTab}
         onToggleLock={handleToggleTabLock}
         onTogglePin={togglePin}
         onRename={handleRenameTab}
@@ -1566,11 +1661,10 @@ export default function App() {
           onVaultProfileSaved={handleVaultProfileSaved}
           onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
         /> : null}
-        {expertsCenterOpen ? <ExpertsCenter
+        {expertsCenterOpen ? <ExpertManager
           open
           initialTab={expertsCenterInitialTab}
           onClose={() => setExpertsCenterOpen(false)}
-          onOpenConnections={() => handleOpenSettings('mcp')}
           experts={experts}
           skills={expertSkills}
           activeExpertId={activeExpertId}
@@ -1579,7 +1673,8 @@ export default function App() {
           onConfirmFileOperation={fileConfirmation.requestFileConfirmation}
           vaultDir={vaultDir}
         /> : null}
-        {aiOpen ? <AIAssistantPanel
+        {aiOpen && activeAiTab ? <AIAssistantPanel
+          key={`ai-${activeAiTab.id}`}
           open
           onClose={() => setAiOpen(false)}
           noteIndex={noteIndex}
@@ -1590,11 +1685,16 @@ export default function App() {
           initialPrompt={aiInitialPrompt}
           initialPromptPreferModel
           onInitialPromptConsumed={() => setAiInitialPrompt('')}
-          expertId={activeExpertId}
+          initialSessionId={activeAiTab.sessionId}
+          onSessionChange={handleAiSessionChange}
+          onNewChat={handleNewAiTab}
+          expertId={activeAiTab.expertId}
+          workspaceIdentity={vaultDir}
           expert={activeExpert}
           experts={experts}
           onSelectExpert={handleSelectExpert}
-          onOpenExpertsCenter={handleOpenExpertsCenter}
+          onOpenExpertManager={handleOpenExpertsCenter}
+          onOpenSettings={handleOpenSettings}
         /> : null}
       </Suspense>
       <RenameDialog

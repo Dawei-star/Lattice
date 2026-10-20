@@ -213,7 +213,7 @@ export function serversToProjectDocument(servers: unknown): { mcpServers: Record
 }
 
 /**
- * 合并用户级与项目级 MCP Server（用于 AI 聊天请求）：key 相同时用户级优先——
+ * 合并用户级与项目级 MCP Server（用于整理 AI 请求中的配置）：key 相同时用户级优先——
  * 与「用户级配置覆盖项目级」的通用约定一致；总量仍受 8 个上限约束（用户级先占位）。
  * 传给后端前会裁掉界面专用字段（tools / requiresEnv 等），只留连接所需的最小集。
  */
@@ -240,13 +240,13 @@ export function mergeProjectServers(userServers: unknown, projectServers: unknow
 }
 
 /**
- * 挑出「配置完整且已启用」的外部 MCP Server，随 AI 聊天请求发给后端拉起，
- * 让应用内助手能调用这些工具（与导出配置给外部客户端的口径一致）。
+ * 挑出「配置完整且已启用」的外部 MCP Server，整理为 AI 请求中的连接配置。
+ * 当前 Rust AI 运行时不会据此启动外部进程；真正的工具调用需等待受控 MCP sidecar。
  *
  * 内置 Lattice Server 不带：助手对知识库的原生工具（检索/读取/写操作）与之完全重叠，
- * 没有必要再拉起一个进程走一遍同样的能力。
+ * 没有必要再为同样的能力记录一份外部进程配置。
  * args 里仍有未填占位符、缺启动命令或缺 URL 的条目直接跳过——
- * 「还没配好」的 Server 既不该导出，也不该被助手拉起。
+ * 「还没配好」的 Server 既不该导出，也不该出现在待执行配置中。
  */
 export function collectActiveMcpServers(settings: McpSettings | null = null): McpServerConnection[] {
   const source = settings ?? loadMcpSettings();

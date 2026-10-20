@@ -10,7 +10,8 @@
  * 数据驱动：直接拿 50 个 fixture 当输入，同一份 `data` 分别经
  * ①HTTP（fetch 桩返回 `{data}` 信封）与 ②IPC（invoke 桩直接返回数据本身）走一遍 `http.*`，
  * 断言两条通道返回值深度相等；并断言「实际走的通道」与映射表一致——
- * 表内的请求不许悄悄回落 fetch，表外的必须回落。
+ * 表内的请求不许悄悄回落 fetch，表外在桌面端必须明确报告未接入；HTTP
+ * 语义只在非桌面通道单独作为历史契约输入保留。
  */
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -65,6 +66,13 @@ const toApiPath = (httpPath) => httpPath.replace(/^\/api(?=\/)/, '');
 
 function callApi(method, apiPath, { query, body }) {
   if (method === 'GET') return http.get(apiPath, { query });
+  if (method === 'POST' && apiPath === '/vault/attachments') {
+    return http.postRaw(
+      apiPath,
+      new Blob(['attachment fixture\n'], { type: 'text/plain' }),
+      { query },
+    );
+  }
   if (method === 'POST') return http.post(apiPath, body, { query });
   if (method === 'PUT') return http.put(apiPath, body, { query });
   if (method === 'PATCH') return http.patch(apiPath, body, { query });
@@ -96,7 +104,19 @@ for (const entry of cases) {
   globalThis.isTauri = true;
   invokeCalls.length = 0;
   fetchCalls.length = 0;
-  invokeHandler = async () => COPY(entry.data);
+  invokeHandler = async () => entry.command === 'search_query'
+    ? { items: COPY(entry.data), strategy: 'fts' }
+    : COPY(entry.data);
+  if (!mapped) {
+    await assert.rejects(
+      () => callApi(method, apiPath, { query, body }),
+      (error) => error?.code === 'IPC_UNAVAILABLE',
+      `${entry.command}：桌面端未映射请求应明确报告 IPC_UNAVAILABLE`,
+    );
+    assert.equal(invokeCalls.length, 0, `${entry.command}：未映射不应触发 invoke`);
+    assert.equal(fetchCalls.length, 0, `${entry.command}：桌面端不应回落 HTTP`);
+    continue;
+  }
   const viaIpc = await callApi(method, apiPath, { query, body });
 
   if (mapped) {
@@ -106,11 +126,7 @@ for (const entry of cases) {
     } else {
       assert.equal(fetchCalls.length, 0, `${entry.command}：命中映射表不应回落 HTTP`);
     }
-  } else {
-    assert.equal(invokeCalls.length, 0, `${entry.command}：未映射不应触发 invoke`);
-    assert.equal(fetchCalls.length, 1, `${entry.command}：未映射必须回落 HTTP`);
   }
-
   // ③ 消费层拿到的值必须一致
   if (JSON.stringify(viaHttp) !== JSON.stringify(viaIpc)) {
     stats.mismatch.push(entry.command);
@@ -153,6 +169,6 @@ assert.equal(httpError.code, 'VALIDATION_ERROR');
 assert.equal(ipcError.code, 'IPC_ERROR');
 
 console.log('ipc parity (consumption) tests passed');
-console.log(`  ${stats.total} 个 fixture：映射表内 ${stats.mapped} 条走 invoke，表外 ${stats.unmapped} 条回落 HTTP`);
-console.log('  两通道交付给消费层的值全部一致；表内路由 0 回落、表外路由必回落');
+console.log(`  ${stats.total} 个 fixture：映射表内 ${stats.mapped} 条走 invoke，表外 ${stats.unmapped} 条在桌面端明确拒绝`);
+console.log('  已映射路由的 HTTP/IPC 消费值全部一致；桌面端无 Express 回落');
 console.log('  错误路径：两条通道用户可见文案一致（HTTP code=VALIDATION_ERROR ｜ IPC code=IPC_ERROR，已知差异已登记）');

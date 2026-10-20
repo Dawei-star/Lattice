@@ -1,13 +1,12 @@
-# 升级门禁（升级计划 P0-2）：四个 job 全绿才允许合并到 main / v0.1.5。
+# 升级门禁（升级计划 P1-10）：Tauri/Web 门禁全绿才允许合并到 main。
 # 依据：doc/升级计划/lattice-upgrade-plan.md 4.2 P0-2、4.5 验证标准。
-# 说明：P1 结束删除 Express 时，server-test job 随 server/ 一并移除（计划 4.2）。
 name: upgrade-gate
 
 on:
   pull_request:
-    branches: [main, v0.1.5]
+    branches: [main, v0.1.5, phase/p1-rust-ai]
   push:
-    branches: [main, v0.1.5]
+    branches: [main, v0.1.5, phase/p1-rust-ai]
     tags: ['v0.1.*-baseline']
   workflow_dispatch:
 
@@ -29,47 +28,12 @@ jobs:
           cache: npm
           cache-dependency-path: |
             web/package-lock.json
-            server/package-lock.json
-      - name: Install dependencies (web + server, 集成测试需起 Express)
+      - name: Install dependencies (web)
         run: |
-          npm --prefix server ci
           npm --prefix web ci
       - name: Web test suite
         run: npm --prefix web run test
 
-  server-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: server/package-lock.json
-      - name: Install dependencies (server)
-        run: npm --prefix server ci
-      - name: Server test suite
-        id: server-test
-        run: npm --prefix server run test 2>&1 | tee server-test-output.log
-      - name: Report failing tests (匿名可读的 check annotation)
-        if: failure() && steps.server-test.outcome == 'failure'
-        shell: bash
-        run: |
-          # node --test 的失败清单在 "✖ failing tests" 之后；截取前 40 行进 annotation
-          section=$(awk '/failing tests/{flag=1} flag{print; count++} count>=40{exit}' server-test-output.log)
-          if [ -n "$section" ]; then
-            {
-              echo "SERVER-TEST FAILURES"
-              echo '```'
-              echo "$section"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            escaped=$(echo "$section" | tail -n +2 | head -c 800 | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error::server-test failures: $escaped"
-          else
-            tail -n 60 server-test-output.log >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::server-test failed without a failing-tests section; see step summary"
-          fi
 
   rust-test:
     # Tauri 2 依赖 WebView2，Windows runner 无需额外系统包；
@@ -94,6 +58,33 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy -- -D warnings
+
+  desktop-build:
+    name: desktop-build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+      - name: Install web dependencies
+        run: npm --prefix web ci
+      - name: Build desktop bundle
+        run: npm run build:desktop
 
   typecheck:
     runs-on: ubuntu-latest

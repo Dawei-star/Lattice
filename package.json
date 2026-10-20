@@ -1,6 +1,6 @@
 {
   "name": "lattice",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "private": true,
   "description": "格物 Lattice —— 本地优先的双链笔记知识库（类 Obsidian 全栈实现）",
   "type": "module",
@@ -8,30 +8,24 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "setup": "npm --prefix server install && npm --prefix web install && npm --prefix scripts/mcp-server install && npm --prefix scripts/notion-calendar-mcp install",
-    "db:migrate": "npm --prefix server run db:migrate",
-    "db:seed": "npm --prefix server run db:seed",
+    "setup": "npm --prefix web install && npm --prefix scripts/notion-calendar-mcp install",
     "dev": "node scripts/dev.mjs",
-    "dev:server": "npm --prefix server run dev",
     "dev:web": "npm --prefix web run dev",
     "dev:desktop": "tauri dev",
     "build:desktop": "tauri build",
     "test:desktop": "cargo test --manifest-path src-tauri/Cargo.toml --release",
     "build": "npm --prefix web run build",
-    "start": "npm --prefix server run start",
-    "test": "npm --prefix server test",
-    "test:api": "node scripts/smoke.mjs",
-    "mcp": "npm --prefix scripts/mcp-server start",
-    "mcp:notion-calendar": "npm --prefix scripts/notion-calendar-mcp start",
-    "test:mcp": "npm --prefix scripts/mcp-server test && npm --prefix scripts/notion-calendar-mcp test && npm --prefix scripts/notion-calendar-mcp run e2e",
     "ai": "node scripts/lattice-ai.mjs",
     "fc": "node scripts/fc.mjs",
     "test:fc": "node --test scripts/fc.test.mjs",
     "test:fc:cli": "node scripts/fc-cli-smoke.mjs",
     "test:web": "npm --prefix web run test",
-    "record:fixtures": "node src-tauri/tests/tools/record-fixtures.mjs",
+    "p2:roundtrip": "node scripts/p2-roundtrip-scan.mjs",
+    "eval:golden:compare": "node src-tauri/eval/golden-regression.mjs",
+    "eval:quality-gate": "node src-tauri/eval/quality-gate.mjs",
     "verify:fixtures": "node src-tauri/tests/tools/validate-fixtures.mjs",
-    "verify": "npm run test:fc && npm --prefix server test && npm --prefix web run typecheck && npm --prefix web run test && npm run test:mcp && npm run verify:fixtures && npm run test:desktop"
+    "test": "npm --prefix web run test",
+    "verify": "npm run test:fc && npm --prefix web run typecheck && npm --prefix web run test && npm run verify:fixtures && npm run test:desktop"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2"

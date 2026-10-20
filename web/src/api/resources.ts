@@ -80,6 +80,25 @@ export interface NoteDetail {
   backlinks: NoteBacklink[];
 }
 
+/** 笔记历史版本列表项（GET /notes/:id/history）。 */
+export interface NoteHistoryEntry {
+  version: string;
+  hash: string;
+  createdAt?: string | null;
+  size: number;
+}
+
+/** 笔记历史版本内容（GET /notes/:id/history/:version）。 */
+export interface NoteHistoryVersion {
+  version: string;
+  hash: string;
+  createdAt?: string | null;
+  title: string;
+  content: string;
+  isPinned: boolean;
+  properties: NoteProperties;
+}
+
 /** 文件夹树节点。 */
 export interface FolderNode {
   id: string;
@@ -151,8 +170,10 @@ export const notesApi = {
 
   update: (id: string, patch: NoteUpdatePatch, options: RequestOptions = {}): Promise<NoteDetail> => http.patch<NoteDetail>(`/notes/${id}`, patch, options),
 
-  history: (id: string, options: RequestOptions = {}): Promise<unknown[]> => http.get<unknown[]>(`/notes/${id}/history`, options),
-  historyVersion: (id: string, version: string | number, options: RequestOptions = {}): Promise<unknown> => http.get(`/notes/${id}/history/${version}`, options),
+  history: (id: string, options: RequestOptions = {}): Promise<{ items: NoteHistoryEntry[]; currentHash: string }> =>
+    http.get<{ items: NoteHistoryEntry[]; currentHash: string }>(`/notes/${id}/history`, options),
+  historyVersion: (id: string, version: string | number, options: RequestOptions = {}): Promise<NoteHistoryVersion> =>
+    http.get<NoteHistoryVersion>(`/notes/${id}/history/${version}`, options),
   restoreHistory: (id: string, version: string | number, body: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<unknown> => http.post(`/notes/${id}/history/${version}/restore`, body, options),
   templates: (options: RequestOptions = {}): Promise<unknown[]> => http.get<unknown[]>('/notes/templates', options),
   createFromTemplate: (input: Record<string, unknown> = {}, options: RequestOptions = {}): Promise<NoteDetail> => http.post<NoteDetail>('/notes/from-template', input, { retries: 0, ...options }),

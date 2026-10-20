@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAiProvider, getActiveAiProvider, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.ts';
+import { createAiProvider, getActiveAiProvider, getAiProviderRouteRuntime, getSmallModelProviderRuntime, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.ts';
 import { isLocalOllamaEndpoint } from '../src/settings/aiProviders.ts';
 
 const values = new Map();
@@ -56,4 +56,36 @@ test('local Ollama works without storing a placeholder key', () => {
   assert.equal(hasExternalAi(settings), true);
   assert.equal(hasEmbeddingAi(settings), true);
   assert.equal(getActiveAiProvider(settings).apiKey, '');
+});
+
+test('small model reuses a configured provider key without persisting it', () => {
+  const provider = createAiProvider({ name: '远程主服务', endpoint: 'https://example.com/v1', model: 'large-model', apiKey: 'small-secret' });
+  const settings = saveAiSettings({
+    ...loadAiSettings(),
+    providers: [provider],
+    activeProviderId: provider.id,
+    smallModelEnabled: true,
+    smallModelProviderId: provider.id,
+    smallModelName: 'small-model',
+  });
+  const runtime = getSmallModelProviderRuntime(settings);
+  assert.equal(runtime.model, 'small-model');
+  assert.equal(runtime.apiKey, 'small-secret');
+  assert.doesNotMatch(values.get('lattice-ai-settings-v1'), /small-secret/);
+});
+
+test('runtime provider route prioritizes active providers and excludes unusable entries', () => {
+  const active = createAiProvider({ id: 'active', name: '活动服务', endpoint: 'https://active.example/v1', model: 'active-model', apiKey: 'active-secret' });
+  const fallback = createAiProvider({ id: 'fallback', name: '备用服务', endpoint: 'https://fallback.example/v1', model: 'fallback-model', apiKey: 'fallback-secret' });
+  const disabled = createAiProvider({ id: 'disabled', endpoint: 'https://disabled.example/v1', model: 'disabled-model', apiKey: 'disabled-secret', enabled: false });
+  const incomplete = createAiProvider({ id: 'incomplete', endpoint: 'https://incomplete.example/v1', model: '', apiKey: 'incomplete-secret' });
+  const settings = saveAiSettings({
+    ...loadAiSettings(),
+    providers: [fallback, disabled, active, incomplete],
+    activeProviderId: active.id,
+  });
+
+  assert.deepEqual(getAiProviderRouteRuntime(settings).map((provider) => provider.id), ['active', 'fallback']);
+  assert.equal(getAiProviderRouteRuntime(settings)[0].apiKey, 'active-secret');
+  assert.equal(getAiProviderRouteRuntime(settings)[1].apiKey, 'fallback-secret');
 });

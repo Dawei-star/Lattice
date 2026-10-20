@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent as ReactChangeEvent, type ClipboardEvent as ReactClipboardEvent, type FormEvent as ReactFormEvent, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent as ReactSyntheticEvent, type UIEvent as ReactUIEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent as ReactChangeEvent, type ClipboardEvent as ReactClipboardEvent, type FormEvent as ReactFormEvent, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent as ReactSyntheticEvent, type UIEvent as ReactUIEvent } from 'react';
 import MarkdownPreview from './MarkdownPreview.jsx';
 import { formatDateTime, formatNumber } from '../lib/format.ts';
-import { parseOutline, renderMarkdown, type OutlineEntry } from '../lib/markdown.ts';
+import { findMarkdownSourceMatch, headingAnchor, parseOutline, renderMarkdown, type OutlineEntry } from '../lib/markdown.ts';
 import ContextMenu from '../ui/ContextMenu.jsx';
 import Resizer from '../ui/Resizer.jsx';
 import { aiApi } from '../api/ai.ts';
-import { notesApi, type FolderNode, type NoteProperties } from '../api/resources.ts';
-import { loadAiSettings } from '../settings/aiSettings.js';
+import { notesApi, type FolderNode, type NoteHistoryEntry, type NoteHistoryVersion, type NoteProperties } from '../api/resources.ts';
+import { getActiveAiProviderRuntime, loadAiSettings } from '../settings/aiSettings.js';
 import { loadLayout, saveLayout } from '../lib/layout.ts';
-import { loadSettings, subscribeSettings, type LatticeSettings } from '../settings/settings.js';
+import { loadSettings, resolveEditorEngine, subscribeSettings, type LatticeSettings } from '../settings/settings.js';
 import Modal from '../ui/Modal.jsx';
 import { encodeMarkdownUrlReference, markdownLinkLabel, relativeAttachmentReference, resolveAttachmentPath, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
 import { buildStaticHtml, type StaticExportTitleResolver } from '../lib/static-export.ts';
@@ -28,10 +28,18 @@ export type EditorNoteRow = NoteDetailRow & {
 };
 
 /** 嵌入解析器签名（与 MarkdownPreview 的 props 对齐）。 */
-type ResolveEmbedProp = (title: string) => string | Promise<string | null | undefined> | null | undefined;
+type ResolveEmbedProp = (title: string, heading?: string) => string | Promise<string | null | undefined> | null | undefined;
+
+export interface PendingWikiHeading {
+  noteId: string;
+  heading?: string;
+  excerpt?: string;
+}
 
 /** 编辑器编辑模式。 */
 type EditorMode = LatticeSettings['editorMode'];
+
+const BlockSuiteEditor = lazy(() => import('../editor/BlockSuiteEditor.tsx'));
 
 /** AI 写作助手的加工模式。 */
 type AssistMode = 'rewrite' | 'create' | 'continue';
@@ -57,33 +65,11 @@ interface TemplateMeta {
 }
 
 /** 版本历史条目。 */
-interface NoteHistoryItem {
-  version: string | number;
-  createdAt: string;
-  size: number;
-}
-
-/** 单个历史版本内容。 */
-interface NoteHistoryVersion {
-  version: string | number;
-  createdAt: string;
-  title?: string;
-  content?: string;
-  isPinned?: boolean;
-  properties?: NoteProperties;
-}
-
-/** 版本历史接口响应（契约泛型为 unknown[]，运行时携带 items / currentHash）。 */
-interface NoteHistoryResponse {
-  items?: NoteHistoryItem[];
-  currentHash?: string;
-}
-
 /** 版本历史面板状态。 */
 interface EditorHistoryState {
   open: boolean;
   loading: boolean;
-  items: NoteHistoryItem[];
+  items: NoteHistoryEntry[];
   currentHash: string;
   selected: NoteHistoryVersion | null;
   error: string;
@@ -126,8 +112,10 @@ export interface EditorPaneProps {
   onDelete: (id: string) => unknown;
   onTogglePin: (note: { id: string; isPinned: boolean }) => unknown;
   onMove: (id: string, folderId: string | null) => unknown;
-  onOpenWikiLink: (title: string) => unknown;
-  onCreateWikiLink: (title: string) => unknown;
+  onOpenWikiLink: (title: string, heading?: string) => unknown;
+  onCreateWikiLink: (title: string, heading?: string) => unknown;
+  pendingWikiHeading?: PendingWikiHeading | null;
+  onWikiHeadingNavigated?: () => void;
   registerNavigationGuard?(guard: (() => boolean) | null): void;
   registerDirtyProbe?(probe: (() => boolean) | null): void;
   onCreateNote?: (folderId?: unknown) => unknown;
@@ -185,6 +173,8 @@ export default function EditorPane({
   onMove,
   onOpenWikiLink,
   onCreateWikiLink,
+  pendingWikiHeading = null,
+  onWikiHeadingNavigated,
   registerNavigationGuard,
   registerDirtyProbe,
   onCreateNote,
@@ -200,6 +190,7 @@ export default function EditorPane({
   const [draft, setDraft] = useState<EditorDraft>(() => ({ title: note?.title ?? '', content: note?.content ?? '', properties: note?.properties ?? {} }));
   const [settings, setSettings] = useState(() => loadSettings());
   const [mode, setMode] = useState<EditorMode>(() => loadSettings().editorMode);
+  const [editorEngine, setEditorEngine] = useState(() => resolveEditorEngine(loadSettings()));
   const [status, setStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
   // 乐观锁冲突：服务端返回 409（笔记已被其他窗口修改）时置位，
@@ -253,6 +244,7 @@ export default function EditorPane({
   useEffect(() => subscribeSettings((next) => {
     setSettings(next);
     setMode(next.editorMode);
+    setEditorEngine(resolveEditorEngine(next));
   }), []);
 
   useEffect(() => {
@@ -298,8 +290,8 @@ export default function EditorPane({
     if (!note || isExternal) return;
     setHistoryState((current) => ({ ...current, open: true, loading: true, error: '' }));
     try {
-      const result = await notesApi.history(note.id) as unknown as NoteHistoryResponse;
-      setHistoryState({ open: true, loading: false, items: result?.items ?? [], currentHash: result?.currentHash ?? '', selected: null, error: '' });
+      const result = await notesApi.history(note.id);
+      setHistoryState({ open: true, loading: false, items: result.items, currentHash: result.currentHash, selected: null, error: '' });
     } catch (error: any) {
       setHistoryState((current) => ({ ...current, loading: false, error: error?.message ?? '无法加载版本历史' }));
     }
@@ -308,7 +300,7 @@ export default function EditorPane({
   const selectHistoryVersion = useCallback(async (version: string | number) => {
     if (!note) return;
     try {
-      const selected = await notesApi.historyVersion(note.id, version) as NoteHistoryVersion;
+      const selected = await notesApi.historyVersion(note.id, version);
       setHistoryState((current) => ({ ...current, selected }));
     } catch (error: any) {
       setHistoryState((current) => ({ ...current, error: error?.message ?? '无法读取版本' }));
@@ -317,12 +309,12 @@ export default function EditorPane({
 
   const restoreSelectedHistory = useCallback(async () => {
     const selected = historyState.selected;
-    if (!note || !selected || !window.confirm(`确定恢复到 ${new Date(selected.createdAt).toLocaleString()} 吗？`)) return;
+    if (!note || !selected || !window.confirm(`确定恢复到 ${selected.createdAt ? new Date(selected.createdAt).toLocaleString() : '未知时间'} 吗？`)) return;
     try {
       const confirmation = await onConfirmFileOperation?.({
         type: 'update',
         path: note.filePath ?? `${note.id}.md`,
-        contentSummary: `将笔记恢复到 ${new Date(selected.createdAt).toLocaleString()} 的历史版本`,
+        contentSummary: `将笔记恢复到 ${selected.createdAt ? new Date(selected.createdAt).toLocaleString() : '未知时间'} 的历史版本`,
         impact: '覆盖 1 个 Markdown 文件，并新增 1 条历史快照',
       });
       if (!confirmation?.confirmed) return;
@@ -481,19 +473,57 @@ export default function EditorPane({
 
   const outline = useMemo(() => parseOutline(draft.content), [draft.content]);
 
-  const jumpToHeading = useCallback((heading: OutlineEntry) => {
+  const jumpToSource = useCallback((target: PendingWikiHeading) => {
+    const requested = target.heading?.trim() ?? '';
+    const heading = requested
+      ? outline.find((entry) => (
+        entry.text.trim().toLocaleLowerCase() === requested.toLocaleLowerCase()
+        || headingAnchor(entry.text) === headingAnchor(requested)
+      ))
+      : undefined;
+    const sourceMatch = heading ? null : findMarkdownSourceMatch(draft.content, target.excerpt);
     const textarea = textareaRef.current;
     if (textarea) {
-      const line = draft.content.slice(0, heading.start).split('\n').length - 1;
+      const start = heading?.start ?? sourceMatch?.start;
+      if (start === undefined) return false;
+      const end = heading ? heading.start + heading.text.length : sourceMatch?.end ?? start;
+      const line = draft.content.slice(0, start).split('\n').length - 1;
       const lineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || 24;
       textarea.focus();
-      textarea.setSelectionRange(heading.start, heading.start);
+      textarea.setSelectionRange(start, end);
       textarea.scrollTop = Math.max(0, line * lineHeight - textarea.clientHeight * 0.25);
     }
 
-    const previewHeading = previewRef.current?.querySelectorAll('h1, h2, h3, h4, h5, h6')?.[heading.index];
-    previewHeading?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [draft.content]);
+    const previewHeading = heading
+      ? previewRef.current?.querySelectorAll('h1, h2, h3, h4, h5, h6')?.[heading.index]
+      : [...(previewRef.current?.querySelectorAll('p, li, blockquote, pre, table') ?? [])]
+        .find((element) => {
+          const value = element.textContent?.replace(/\s+/g, ' ').trim().toLocaleLowerCase() ?? '';
+          const excerpt = target.excerpt?.replace(/…+$/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase() ?? '';
+          return Boolean(excerpt && (value.includes(excerpt) || excerpt.includes(value)));
+        });
+    if (previewHeading) {
+      previewHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      previewHeading.classList.remove('editor__citation-highlight');
+      void (previewHeading as HTMLElement).offsetWidth;
+      previewHeading.classList.add('editor__citation-highlight');
+      window.setTimeout(() => previewHeading.classList.remove('editor__citation-highlight'), 1800);
+    }
+    return true;
+  }, [draft.content, outline]);
+
+  useEffect(() => {
+    if (!note || !pendingWikiHeading || pendingWikiHeading.noteId !== note.id) return;
+    if (!pendingWikiHeading.heading && !pendingWikiHeading.excerpt) {
+      onWikiHeadingNavigated?.();
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      jumpToSource(pendingWikiHeading);
+      onWikiHeadingNavigated?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [jumpToSource, note, onWikiHeadingNavigated, pendingWikiHeading]);
 
   // ── AI 写作助手：选区加工（润色/摘要/翻译/续写）+ 无选区创作（全文/文案/构思）──
   const [selection, setSelection] = useState({ start: 0, end: 0, text: '' });
@@ -706,12 +736,18 @@ export default function EditorPane({
     setAssist({ label, mode: assistMode, streamText: '', error: '', done: false, result: '' });
     try {
       const accessToken = loadAiSettings().accessToken?.trim();
+      const provider = getActiveAiProviderRuntime(loadAiSettings());
+      if (!provider) {
+        setAssist((current) => (current ? { ...current, done: true, error: '请先在模型中心配置可用的 AI 模型' } : current));
+        return;
+      }
       const headers: Record<string, string> = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
       const payload = await aiApi.writeStream({
         instruction,
         text: source,
         mode: assistMode,
         title: draftRef.current.title,
+        provider,
       }, {
         headers,
         signal: controller.signal,
@@ -1074,7 +1110,7 @@ export default function EditorPane({
                 type="button"
                 className="editor__outline-item"
                 style={{ '--outline-level': heading.level } as CSSProperties}
-                onClick={() => jumpToHeading(heading)}
+                onClick={() => jumpToSource({ noteId: note?.id ?? '', heading: heading.text })}
               >
                 {heading.text}
               </button>
@@ -1083,7 +1119,7 @@ export default function EditorPane({
         </details>
       ) : null}
 
-      {mode !== 'preview' ? (
+      {mode !== 'preview' && editorEngine === 'legacy' ? (
         <div className="ai-write" aria-label="AI 写作助手">
           <div className="ai-write__bar">
             <span className="ai-write__mark">✦ AI 写作</span>
@@ -1165,6 +1201,23 @@ export default function EditorPane({
         style={mode === 'split' ? { gridTemplateColumns: `minmax(0, ${splitRatio}fr) minmax(0, ${100 - splitRatio}fr)` } : undefined}
       >
         {mode !== 'preview' ? (
+          editorEngine === 'blocksuite' ? (
+            <Suspense fallback={<div className="blocksuite-editor__loading">正在加载块编辑器…</div>}>
+              <BlockSuiteEditor
+                markdown={draft.content}
+                title={draft.title}
+                documentKey={`${note.id}:${note.externalRevision ?? ''}`}
+                readOnly={!canEdit}
+                onChange={(content) => {
+                  if (canEdit) setDraft((current) => ({ ...current, content }));
+                }}
+                resolveTitle={resolveTitle}
+                resolveEmbed={resolveEmbed}
+                onOpenWikiLink={onOpenWikiLink}
+                onCreateWikiLink={onCreateWikiLink}
+              />
+            </Suspense>
+          ) : (
           <textarea
             ref={textareaRef}
             className="editor__textarea"
@@ -1187,6 +1240,7 @@ export default function EditorPane({
             onSelect={syncSelection}
             onMouseUp={syncSelection}
           />
+          )
         ) : null}
 
         {mode === 'split' ? (
@@ -1237,7 +1291,7 @@ export default function EditorPane({
                 className={`history-modal__item ${historyState.selected?.version === item.version ? 'is-selected' : ''}`}
                 onClick={() => selectHistoryVersion(item.version)}
               >
-                <strong>{new Date(item.createdAt).toLocaleString()}</strong>
+                <strong>{item.createdAt ? new Date(item.createdAt).toLocaleString() : '未知时间'}</strong>
                 <small>{Math.ceil(item.size / 1024)} KB</small>
               </button>
             ))}

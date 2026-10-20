@@ -32,7 +32,11 @@ pub fn iso8601_utc(millis: i64) -> String {
 /// Howard Hinnant 的 `civil_from_days`：把「1970-01-01 起的天数」还原成公历年月日。
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
-    let era = if shifted >= 0 { shifted } else { shifted - 146_096 } / 146_097;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
     let day_of_era = (shifted - era * 146_097) as u64;
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;

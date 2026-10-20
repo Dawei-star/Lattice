@@ -1,5 +1,6 @@
 import ContextMenu from '../ui/ContextMenu.tsx';
 import type { MenuItemDef } from '../ui/Menu.tsx';
+import { Sparkles } from 'lucide-react';
 import type { FolderNode, NoteOutgoingLink } from '../api/resources.ts';
 import type { NoteDetailRow, NoteIndexRow } from '../hooks/useVault.ts';
 
@@ -8,6 +9,14 @@ export interface WorkspaceTab {
   id: number;
   noteId: string | null;
   externalToken?: string;
+}
+
+/** AI 标签页：一个标签对应一个可独立切换的 AI 会话。 */
+export interface AiWorkspaceTab {
+  id: number;
+  sessionId: string;
+  title: string;
+  expertId: string;
 }
 
 /** 外部 Markdown 文件在标签页中的投影（带桌面端写入授权标记）。 */
@@ -24,7 +33,10 @@ export type TabNote = ExternalNoteRow | NoteIndexRow;
 
 export interface TabBarProps {
   tabs: WorkspaceTab[];
+  aiTabs: AiWorkspaceTab[];
   activeTabId: number;
+  activeAiTabId: number | null;
+  aiOpen: boolean;
   noteTitles: Map<string, string>;
   externalNotes: Map<string, ExternalNoteRow>;
   noteIndex: NoteIndexRow[];
@@ -37,6 +49,8 @@ export interface TabBarProps {
   onCloseToRight: (tabId: number) => void;
   onCloseOthers: (tabId: number) => void;
   onNew: () => void;
+  onSelectAi: (tabId?: number) => void;
+  onCloseAi: (tabId: number) => void;
   onToggleLock: (tabId: number) => void;
   onTogglePin: (note: { id: string; isPinned: boolean }) => void;
   onRename: (tabId: number) => void;
@@ -52,7 +66,10 @@ export interface TabBarProps {
 
 export default function TabBar({
   tabs,
+  aiTabs,
   activeTabId,
+  activeAiTabId,
+  aiOpen,
   noteTitles,
   externalNotes,
   noteIndex = [],
@@ -65,6 +82,8 @@ export default function TabBar({
   onCloseToRight,
   onCloseOthers,
   onNew,
+  onSelectAi,
+  onCloseAi,
   onToggleLock,
   onTogglePin,
   onRename,
@@ -82,7 +101,7 @@ export default function TabBar({
   return (
     <div className="tabbar" role="tablist" aria-label="已打开笔记">
       {tabs.map((tab) => {
-        const active = tab.id === activeTabId;
+        const active = !aiOpen && tab.id === activeTabId;
         const tabIndex = tabs.findIndex((item) => item.id === tab.id);
         const externalNote = tab.externalToken ? externalNotes.get(tab.externalToken) : null;
         const title = tab.externalToken
@@ -173,6 +192,43 @@ export default function TabBar({
               </button>
             </div>
           </ContextMenu>
+        );
+      })}
+      {aiTabs.map((tab) => {
+        const active = aiOpen && tab.id === activeAiTabId;
+        const title = tab.title.trim() || 'Lattice AI';
+        return (
+          <div key={`ai-${tab.id}`} className="tabbar__context-target tabbar__context-target--ai">
+            <div
+              className={`tabbar__tab tabbar__tab--ai ${active ? 'is-active' : ''}`.trim()}
+              role="tab"
+              aria-selected={active}
+              aria-label={title}
+              tabIndex={active ? 0 : -1}
+              onClick={() => onSelectAi(tab.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onSelectAi(tab.id);
+                }
+              }}
+            >
+              <Sparkles className="tabbar__ai-icon" aria-hidden="true" />
+              <span className="tabbar__title">{title}</span>
+              <button
+                type="button"
+                className="tabbar__close"
+                aria-label={`关闭「${title}」`}
+                title={`关闭「${title}」`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseAi(tab.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
+          </div>
         );
       })}
       <button type="button" className="tabbar__new" onClick={onNew} aria-label="新标签页（Ctrl / Cmd + T）" title="新标签页（Ctrl / Cmd + T）">

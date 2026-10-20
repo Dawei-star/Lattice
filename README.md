@@ -1,478 +1,317 @@
 # 格物 Lattice
 
-> 语言切换 Language: [中文](./README.md) | [English](./docscc/README.en.md)
+> **当前代码版本：0.2.0** · Tauri 2 · Rust · React 18 · TypeScript · SQLite
 
-格物 Lattice 是一款面向 Windows 的**本地优先 Markdown 双链笔记知识库**，提供双向链接、全文搜索、关系图谱、Canvas 白板、可选 AI 助手和 MCP Server。笔记保存在本地 Vault 中，SQLite 仅作为可重建索引；默认无需联网，配置外部模型后只有 AI 对话会按配置发送到对应服务。
+格物 Lattice 是一款本地优先的 Markdown 双链知识库。笔记、Canvas 和附件以普通文件保存在用户自己的 Vault 中；SQLite 只保存可重建的索引与派生数据。当前仓库正在从旧版 Node / Electron 运行时迁移到 Tauri 2 原生桌面架构，本文以当前代码为准。
 
-Lattice is a local-first Windows desktop knowledge base for Markdown notes, with bidirectional links, full-text search, graph view, Canvas boards, an optional AI assistant, and MCP Server.
+[![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#开发环境)
+[![Node.js: >=22.5.0](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](package.json)
 
-所有数据都在你自己的机器上，不需要注册；不配置外部模型时可以离线使用。
-
----
+所有核心数据默认只留在本机，不需要注册或联网。当前桌面核心不启动独立 Express / Node 服务，也不监听本地 HTTP 端口；前端通过 Tauri IPC 调用 Rust 工作区服务。AI 云服务、Ollama、MCP 等属于可选外部能力，不能与本地文件存储混为一谈。
 
 ![Lattice logo](./FILES/README.md/lattice-icon.svg)
 
-[![License: Mulan PSL v2](https://img.shields.io/badge/License-Mulan%20PSL%20v2-1f6feb.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#发行版说明)
-[![Node.js: >=22.5.0](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-339933?logo=node.js&logoColor=white)](package.json)
-[![GitHub stars](https://img.shields.io/github/stars/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/issues)
-[![GitHub last commit](https://img.shields.io/github/last-commit/Dawei-star/Lattice?style=flat)](https://github.com/Dawei-star/Lattice/commits/main)
-
-## 网站入口
-
-**格物 Lattice 文档站**：[在线访问](https://dawei-star.github.io/Lattice/website/lattice-docs.html) · [`website/lattice-docs.html`](./website/lattice-docs.html)
-集中查看产品介绍、功能预览、隐私边界、技术构成和快速开始说明。
-
-**格物 Lattice 下载中心**：[在线访问](https://dawei-star.github.io/Lattice/website/lattice-download.html) · [`website/lattice-download.html`](./website/lattice-download.html)
-提供 Windows 安装版与绿色版的 GitHub Releases 入口；具体版本、文件名和校验信息以发布页为准。
-
-**源码与反馈**：[`Dawei-star/Lattice`](https://github.com/Dawei-star/Lattice)
-
-下载仓库后可以直接双击打开上述 HTML 页面；在线发布和正式安装包请以 GitHub Releases 为准。
-
 ## 界面预览
 
-### 知识库工作区
-
-<table>
-  <tr>
-    <td width="50%"><img src="./FILES/README.md/lattice-workspace-light.png" alt="Lattice 浅色工作区" /></td>
-    <td width="50%"><img src="./FILES/README.md/lattice-workspace-dark.png" alt="Lattice 深色工作区" /></td>
-  </tr>
-  <tr>
-    <td align="center">浅色主题</td>
-    <td align="center">深色主题</td>
-  </tr>
-</table>
-
-### 白板与 AI 助手
-
-<table>
-  <tr>
-    <td width="50%"><img src="./FILES/README.md/lattice-canvas.png" alt="Lattice 本地白板" /></td>
-    <td width="50%"><img src="./FILES/README.md/lattice-ai-assistant.png" alt="Lattice AI 知识库助手" /></td>
-  </tr>
-  <tr>
-    <td align="center">本地白板与关系连线</td>
-    <td align="center">AI 知识库助手</td>
-  </tr>
-</table>
-
-### MCP 集成
-
-![Lattice MCP Server 设置页](./FILES/README.md/lattice-mcp-server.png)
-
-<table>
-  <tr>
-    <td width="50%"><img src="./FILES/README.md/lattice-mcp-tools.png" alt="Lattice MCP 工具清单（读取 / 写入分组）" /></td>
-    <td width="50%"><img src="./FILES/README.md/lattice-mcp-market.png" alt="Lattice MCP 插件市场" /></td>
-  </tr>
-  <tr>
-    <td align="center">工具清单：读取 / 写入分组，写入工具标明未启用</td>
-    <td align="center">插件市场：12 款精选，支持详情与一键写入配置</td>
-  </tr>
-</table>
-
-## 文档
-
-| 文档 | 面向 | 内容 |
-| --- | --- | --- |
-| 本文 | 开发者 / 二次开发 | 架构、技术选型、API、数据模型、测试与开发运行 |
-| [`使用说明书.md`](使用说明书.md) | 发行版使用者 | 安装启动、界面导览、笔记、白板、设置、备份迁移、升级卸载与故障排查 |
-| [MCP 集成指南](website/lattice-mcp-guide.html) | 使用外部 Agent 的用户 | stdio 接入、工具清单、只读 / 写入边界、插件市场与排障 |
-
-两份文档的定位不同：本文面向代码维护与二次开发，说明书面向已经安装发行版的日常使用者。
-发行版安装包由发布版本直接提供，本文不重复介绍打包流程。
-
----
-
-## 功能
-
-| 能力 | 说明 |
+| 知识库工作区 | Canvas 与本地知识流 |
 | --- | --- |
-| Markdown 编辑 | 编辑 / 分栏 / 预览三种模式，900ms 静默自动保存，滚动同步 |
-| 双向链接 | `[[标题]]`、`[[标题\|别名]]`、`[[标题#小节]]`，自动解析并生成反向链接面板 |
-| 嵌入引用 | 独占一行的 `![[标题]]` 会展开为内嵌卡片，支持两级嵌套并检测循环引用 |
-| 关系图谱 | Canvas 手写力导向布局，按度数缩放节点，支持拖拽 / 缩放 / 点击跳转 |
-| 全文检索 | SQLite FTS5 + trigram 分词，中文可做子串匹配；结果带关键词高亮 |
-| Inbox 工作队列 | 快速收集临时内容，按待整理 / 整理中 / 已处理筛选，并可标记完成或归档到项目 |
-| 知识健康 / Review 中心 | 一次扫描 Inbox 待整理、悬空链接、孤立笔记、长期未更新、可能重复与结构不完整笔记；支持勾选问题生成限定范围的批量方案，AI 建议保持只读，写入仍须预览、确认、审计并可撤销 |
-| 标签 | 正文写 `#标签` 自动归类，支持 `#工程/前端` 嵌套写法 |
-| 目录树 | 任意层级嵌套、就地重命名、删除后笔记自动回到「未分类」 |
-| 多标签页 | 并行打开多篇笔记，支持锁定、收藏、重命名、移动，以及关闭左侧 / 右侧 / 其他标签 |
-| 本地白板 | 使用 `.canvas` 文件保存文本卡片、笔记卡片、Vault 图片和卡片连接，支持四边连接点、拖拽、缩放与对齐；Obsidian `.canvas` 可直接打开（边端点、`"1"`~`"6"`/hex 颜色、group/file/image 节点读取时自动归一化） |
-| 附件归组与灯箱 | 笔记中粘贴 / 拖入的图片按笔记标题存到 `attachments/<笔记标题>/` 子目录；预览中点击图片全屏查看（滚轮缩放、拖动平移、双击切换适配） |
-| Vault 文件浏览 | 侧栏显示 Markdown 与 Canvas 文件，可打开、移动、复制路径并通过右键菜单操作；「显示附件」开关打开后还可浏览任意文件夹中的非笔记文件 |
-| 确定性文件助手 fc | `npm run fc` 本地命令（read/stat/find/grep/create/write/append/edit/copy/move/delete/mkdir/batch/undo/log，以及 `serve` JSON-lines 长驻服务、`shell` 交互会话、`doctor` 体检、`--mode readonly` 只读预设）与 `GET/POST /api/files/*` 同一套核心：路径穿越 / 符号链接防护、原子写、`.fc/trash` 快照与审计、可撤销 |
-| AI 知识库助手 | 流式对话、带来源引用的知识库问答（FTS + 语义混合检索）、会话持久化、相关笔记推荐、Inbox 整理建议与安全归档、自然语言文件操作（任务模式可自主多轮执行并自动审计，失败动作回填模型自纠，操作可一键撤销）、编辑器写作助手（润色/摘要/翻译/续写/从标题创作全文/自定义指令，流式预览）、检索调试视图、CLI 任务模式 |
-| 每日摘要 | 手动生成当天修改笔记的 Journal 摘要；设置 `AI_DIGEST_HOUR` 后可按本地时区定时生成，并对同一天幂等更新 |
-| MCP Server | 通过 stdio 向 Claude 等外部 Agent 暴露笔记搜索、标签筛选、关系分析、统计与历史版本；默认只读，显式开启 `LATTICE_MCP_ALLOW_WRITES` 后才提供 `create_note`、`update_note`、`restore_note_version`，写入统一记录 MCP 审计；设置页按读取 / 写入分组列出全部工具并标明当前可用状态 |
-| MCP 插件市场 | 设置 → 集成 → MCP Server 内置 13 款精选 Server（含 Notion Calendar、文件、SQLite、Obsidian、联网搜索、记忆、Git、GitHub、时间等，七类可筛选可搜索，每款带真实品牌 logo——`web/public/mcp-logos/*.svg`，离线可用）；一键写入本机配置，Filesystem / SQLite 自动绑定当前 Vault 与 `lattice.db`，需要 API Key 的条目给出**按变量名拆分的密钥表单**、需要路径的条目（Git 仓库 / 允许访问的目录 / 数据库文件 / Notion MCP 脚本）给出**路径输入框**，两者未补齐前保持停用且不会被导出（配置里不残留 `{占位符}`）；卡片「详情」展示完整说明、全部工具、密钥获取途径与官方文档链接；已配置列表可编辑、启停与移除 |
-| 单篇 HTML 导出 | 从编辑区导出带 Lattice 品牌页眉、页脚、图片内联、双链可点击和嵌入展开的独立 HTML 文件 |
-| 静态站点导出 | 从设置中批量生成可部署的 `index.html`、按 Vault 路径组织的笔记页面、双链导航和 `assets/` 资源目录 |
-| PWA | Web 版提供 manifest、应用壳缓存、安装提示和更新提示；离线不写入知识库 |
-| Vault 备份与恢复 | 桌面版从「设置 → 备份与迁移」一键复制 Markdown、Canvas、附件、模板和历史快照到带时间戳的新目录；恢复时重新选择备份目录即可，AI API Key 不会写入备份 |
-| 快速切换 | `Ctrl / Cmd + K` 按标题模糊跳转，标题不存在时一键创建 |
-| 悬空链接 | 引用尚不存在的笔记时标记为悬空，一键补全 |
-| 个性化设置 | 浅色 / 深色主题、背景图片、自定义主题、界面密度、字号、内容宽度与编辑器偏好 |
+| ![浅色工作区](./FILES/README.md/lattice-workspace-light.png) | ![本地 Canvas](./FILES/README.md/lattice-canvas.png) |
+| ![深色工作区](./FILES/README.md/lattice-workspace-dark.png) | ![AI 助手界面](./FILES/README.md/lattice-ai-assistant.png) |
 
-快捷键：`Ctrl+K` 快速切换 · `Ctrl+N` 新建笔记 · `Ctrl+S` 立即保存 · `Ctrl+E` 切换编辑/预览
+旧版 MCP 设置页截图仍保留在 `FILES/README.md/`。当前 Tauri 桌面端已接入 MCP 项目配置读写 IPC，但完整 MCP sidecar 连接能力尚未交付；截图只用于展示目标交互，不代表当前桌面构建会启动外部 MCP Server。
 
----
+## 文档入口
 
-## 开发快速开始
-
-普通使用者直接运行已发布的 Windows 发行版即可，无需安装 Node.js 或执行下面的开发命令。
-下面内容仅供开发、调试和二次开发使用。
-
-```bash
-# 1. 安装依赖（后端 + 前端）
-npm run setup
-
-# 2. 初始化索引数据库（仅开发模式需要）
-npm run db:migrate
-
-# 3. 可选：写入一套互相关联的示例知识库
-npm run db:seed
-
-# 4. 开发模式（后端 5177，前端首选 5173；端口占用时 Vite 自动顺延）
-npm run dev
-```
-
-打开终端输出的前端地址即可使用，端口空闲时通常是 <http://localhost:5173>。
-
-### 生产模式（单进程）
-
-```bash
-npm run build     # 构建前端到 web/dist
-npm start         # 后端同时托管 API 与前端静态资源
-```
-
-访问 <http://127.0.0.1:5177>。这条路径下前端与 API 同源，不涉及任何 CORS。
-
-### 发行版说明
-
-发行版已经提供 Windows 安装版与绿色版，普通使用者无需准备 Node.js、数据库或开发环境。
-安装、首次选择 Vault、数据位置、升级和卸载方式请直接阅读 [`使用说明书.md`](使用说明书.md)。
-
-开发者只需要关注源码、测试和开发运行流程；发行版的具体文件名、下载地址与发布说明以对应版本
-的发行包为准。
-
-### 配置
-
-复制 `server/.env.example` 为 `server/.env` 后按需修改。所有配置在进程启动时集中校验，
-任何非法值都会让进程立即退出，而不是等到某个请求才暴露。
-
-| 变量 | 默认值 | 说明 |
+| 文档 | 面向对象 | 内容 |
 | --- | --- | --- |
-| `HOST` / `PORT` | `127.0.0.1` / `5177` | API 监听地址 |
-| `DB_FILE` | `./data/lattice.db` | SQLite 文件路径 |
-| `VAULT_DIR` | `./data/vault` | Markdown Vault 文件夹路径 |
-| `CORS_ORIGINS` | `http://localhost:5173,...` | 允许的前端来源，生产环境禁止写 `*` |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `AUTO_MIGRATE` | `true` | 启动时自动应用未执行的迁移 |
-| `WORKSPACE_ACCESS_TOKEN` | 空 | 非回环监听时必填；设置后所有 `/api` 要求 `X-Workspace-Token`，Bearer 作为 CLI 兼容回退 |
-| `WORKSPACE_ACCESS_ROLE` | `editor` | 工作区令牌认证后的服务端角色：`viewer` / `editor` / `admin` |
-| `AI_ACCESS_TOKEN` | 空 | 可选。在工作区认证之外，设置后 `/api/ai` 还要求 `Authorization: Bearer <token>` |
-| `AI_ACCESS_ROLE` | `editor` | 令牌认证后的服务端角色：`viewer` / `editor` / `admin` |
-| `LATTICE_MCP_ALLOW_WRITES` | `false` | MCP 默认只读；仅设置为 `true`、`1` 或 `yes` 时暴露 `create_note`、`update_note`、`restore_note_version` |
-| `AI_SETTINGS_ENCRYPTION_KEY` | 空 | 可选。独立服务使用 32 字节 hex/base64 密钥加密 SQLite 中的 AI 配置；桌面版自动使用 Windows `safeStorage` |
-| `AI_DIGEST_HOUR` | 空 | 可选。`0`-`23` 的本地小时；设置后服务端自动生成 `Journal/每日摘要 YYYY-MM-DD.md` |
-| `WEB_DIST_DIR` | `../web/dist` | 前端产物目录；桌面端打包后指向解包目录 |
+| [`产品文档.md`](产品文档.md) | 所有用户与维护者 | 产品介绍、快速上手、功能索引和版本主题 |
+| [`使用说明书.md`](使用说明书.md) | 发行版用户 | 安装启动、界面操作、快捷键、备份迁移和故障排查；该文档描述 v0.1.5 发行版 |
+| [`更新记录.md`](更新记录.md) | 发布与维护人员 | v0.1.1 至 v0.1.4 的逐版本、逐开发日变更事实记录 |
+| [`doc/升级计划/lattice-architecture.md`](doc/升级计划/lattice-architecture.md) | 架构设计与迁移 | Tauri、BlockSuite、AI、MCP 和插件系统的目标架构；其中标注为 Phase 2/3/4 的内容不代表当前已交付 |
+| [在线文档站](https://dawei-star.github.io/Lattice/website/lattice-docs.html) | 普通用户 | 产品介绍、隐私边界、界面预览和发布信息 |
+| [下载中心](https://dawei-star.github.io/Lattice/website/lattice-download.html) | 发行版用户 | Windows 安装包和绿色版入口；文件名与校验信息以发布页为准 |
 
-外部模型（对话与 embedding）配置在模型管理中心填写，保存后自动同步到本机服务端（SQLite `ai_settings` 表，桌面版密文存储），
-聊天、语义索引管道与 CLI 共用同一份配置；浏览器本地只保留界面缓存。CLI 使用同一套 API，
-可通过 `LATTICE_AI_ACCESS_TOKEN` 传递工作区令牌；服务端令牌启用后，角色以服务端配置为准。浏览器端会从 AI 设置中的访问令牌自动发送 `X-Workspace-Token`。
-语义索引在「设置 → 模型管理」配置 embedding 模型后自动增量进行；启用云端 embedding 时笔记分块内容会发往该服务商。
+源码与问题反馈：[Dawei-star/Lattice](https://github.com/Dawei-star/Lattice)。
 
-#### Vault profile（可选）
+## 当前状态
 
-Vault 根目录下可以手动创建 `.lattice/profile.json`，只保存非敏感的系统目录路径：
+### 已接入 Tauri 桌面核心
 
-```json
-{
-  "version": 1,
-  "paths": {
-    "inbox": "Inbox",
-    "daily": "Daily",
-    "journal": "Journal"
-  }
-}
-```
+- Vault 目录选择、Markdown 文件读取与安全写入；
+- 增量扫描、SQLite 索引、FTS5 `trigram` 中文子串检索和 `LIKE` 短词兜底；
+- 笔记创建、读取、更新、删除、复制、目录移动、标签和属性；
+- 双向链接、反向链接、悬空链接、关系图谱和 Inbox 状态筛选；
+- Canvas 文件读写、移动和删除；
+- 附件上传、列举、引用检查、校验、清理与下载；
+- 文件读取、查找、grep、预览、执行、撤销和审计日志；
+- Vault profile、模板、每日笔记、版本快照与恢复；
+- 专家 / Skill 配置、知识健康检查、修复方案预览与确认执行；
+- 单实例锁、路径穿越防护、原子写入、内容哈希冲突检测、迁移前索引备份。
 
-`inbox`、`daily`、`journal` 支持 Vault 内的多级相对目录，例如 `Work/Daily`。文件缺失时使用上述默认值；文件被修改后下次读取立即生效，不需要 patch 层或重启。格式错误或路径不安全时回退到默认值，`GET /api/vault/info` 会返回 `profileStatus` 和 `profileWarning`。profile 不存放密钥、模型配置或访问令牌。
+### 尚未完全收口的能力
 
-也可以在「设置 → 知识库位置」中编辑这三个目录并保存。设置页只接受 Vault 内的相对路径，会拒绝绝对路径、`.`、`..`、隐藏目录和 `_templates`；修改目录不会移动已有文件，只影响之后新建的 Inbox、Daily 和 Journal 内容。保存接口为 `PUT /api/vault/profile`。
+以下能力仍保留在前端契约或目标架构中，当前桌面端不会偷偷回落到已删除的 Express 服务：
 
-```bash
-npm run ai -- chat "搜索项目笔记"
-npm run ai -- preview --file plan.json
-npm run ai -- execute --confirm --file plan.json
-npm run ai -- history --limit 40
-```
+- AI 会话正文仍不写入桌面 SQLite、checkpoint 或 durable result，桌面继续使用浏览器本地会话索引；相关笔记、双链/标签建议和本地确定性每日摘要已经走 Tauri IPC；
+- MCP Server / MCP Client 的桌面 sidecar 接入；
+- 自动安装更新、签名校验和失败回滚；GitHub Release 只读检查已经走 `update_check` IPC；
+- `GET /health` HTTP 探针；
+- MCP/外部连接器的真实召回和授权闭环；Vault 内联图片、Canvas 图片和附件预览已走受限 Blob IPC。
 
-### MCP Server
+桌面端遇到尚未映射的请求会明确返回“该功能尚未接入桌面端”，而不是请求一个不存在的本地服务器。对应迁移状态见 [`web/src/api/ipc-routes.ts`](web/src/api/ipc-routes.ts) 和 [`doc/升级计划/progress.md`](doc/升级计划/progress.md)。
 
-```bash
-npm run setup       # 首次安装也会安装 MCP 依赖
-npm run mcp         # 以 stdio 启动 MCP Server
-npm run mcp:notion-calendar  # 直接启动 Notion Calendar MCP（需先配置环境变量）
-npm run test:mcp    # 运行 MCP 协议与读写 e2e
-```
+## 功能概览
 
-Claude Desktop 等客户端需要把 `scripts/mcp-server/server.mjs` 配置为 stdio command，并通过 `DB_FILE` / `VAULT_DIR` 指向与 Lattice 相同的数据目录。MCP 默认只读；如需允许外部 Agent 修改 Vault，在配置的 `env` 中显式加入 `LATTICE_MCP_ALLOW_WRITES: "true"`。写入工具只在该开关开启时注册，并统一记录 MCP 审计。
+| 能力 | 当前说明 |
+| --- | --- |
+| Markdown 笔记 | Markdown 文件是真源；支持标题、正文、frontmatter、标签、属性、双向链接和嵌入引用 |
+| 全文检索 | SQLite FTS5 `trigram` 支持中文子串匹配；查询少于 3 个字符或 FTS 无命中时使用 `LIKE` 兜底 |
+| 文件与目录 | 目录树、重命名、移动、复制、收藏、删除确认和外部 Markdown 打开；Vault 内路径严格校验 |
+| 图谱 | 根据双链生成节点、边、悬空链接、孤立节点和统计信息 |
+| Canvas | `.canvas` 文件独立保存，支持文本 / 笔记 / 图片卡片、连接、移动、缩放和删除 |
+| 附件 | 支持 Vault 内文件浏览、上传、引用检查和系统默认应用打开；原生 Vault 资产上限为 10 MiB |
+| 历史快照 | 每篇笔记最多保留 200 个快照；相同内容不重复写入，恢复会再次留下审计与快照记录 |
+| Inbox | 使用可配置的 Vault 相对目录保存 `captured`、`processing`、`processed` 状态的收集内容 |
+| 知识健康 | 检查 Inbox、悬空链接、孤立笔记、长期未更新、重复和结构问题；执行前生成带哈希的方案并要求确认 |
+| 文件助手 | 通过统一 WorkspaceService 提供只读读取 / 查找 / grep，以及带预览、审计和撤销的文件写操作 |
+| 专家与 Skill | 内置专家和 Skill 文件从受控目录读取，支持列表、详情、保存、删除和路由建议 |
+| Web 能力 | 保留静态导出、PWA、主题和部分 AI / MCP 设置界面；是否可用取决于对应后端或桌面 IPC 是否已接入 |
 
-#### Notion Calendar MCP
+旧版 v0.1.5 的完整用户功能说明仍见 [`使用说明书.md`](使用说明书.md)，但其中关于 Electron、独立 Node 服务和 25 MB 附件上限的内容不适用于当前 `0.2.0` 原生迁移分支。
 
-Notion Calendar MCP 操作的是一个已经被 Notion Calendar 展示的 Notion 数据库，不调用 Notion Calendar 的私有接口。先在 Notion 创建一个 Internal Integration，把日历数据库通过「Add connections」分享给它，并准备数据库 ID。数据库至少需要一个标题属性和一个日期属性；服务会自动识别，也可以通过 `NOTION_TITLE_PROPERTY` / `NOTION_DATE_PROPERTY` 指定。
+## 快速开始
+
+### 普通用户
+
+正式安装包、绿色版、首次选择 Vault、备份和升级方式见 [`使用说明书.md`](使用说明书.md)。当前仓库不是安装包下载入口，发布文件以 GitHub Releases 和下载中心为准。
+
+### 开发者
+
+#### 1. 安装工具链
+
+| 工具 | 要求 |
+| --- | --- |
+| Node.js | `>=22.5.0` |
+| npm | 与 Node.js 配套的 npm |
+| Rust | `rustup` 安装，最低版本由 `src-tauri/Cargo.toml` 的 `rust-version = "1.90"` 约束 |
+| Windows 构建环境 | MSVC C++ Build Tools、Windows SDK、WebView2 Runtime；Tauri 开发环境需要这些系统组件 |
+
+#### 2. 安装依赖
+
+在仓库根目录执行：
 
 ```powershell
-$env:NOTION_API_KEY = "secret_xxx"
-$env:NOTION_DATABASE_ID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-$env:NOTION_CALENDAR_ALLOW_WRITES = "true" # 可选；默认 false，只读
-npm run mcp:notion-calendar
+npm install
+npm run setup
 ```
 
-工具包括 `list_calendar_events`、`get_calendar_event`、`create_calendar_event`、`update_calendar_event` 和 `archive_calendar_event`。也可以在「设置 → 集成 → MCP Server → MCP 插件市场」添加 Notion Calendar，补齐 `NOTION_API_KEY` / `NOTION_DATABASE_ID` 后导出给 Claude Desktop 等客户端。`NOTION_DATA_SOURCE_ID` 是可选项：只有一个数据库包含多个 data source 且需要指定其中一个时才需要配置。
+`npm run setup` 会安装 `web` 前端依赖和 `scripts/notion-calendar-mcp` 的独立依赖。Rust 依赖由 Cargo 在首次构建时获取。
 
-服务端 `GET /api/mcp/info` 返回同一份**完整**工具清单（每条带 `write` / `enabled`，另附 `writesEnabled`、`writesEnvVar`、`enabledToolCount`），设置页据此把「现在可用」与「开启后可用」同时讲清楚，而不是把未启用的写入工具直接藏掉；它同时给出 `serverPath` / `notionCalendarServerPath` / `dbFile` / `vaultDir`，用于生成可复制的客户端配置。「MCP 插件市场」是纯前端的内置静态目录（`web/src/settings/mcpMarketplace.js`），添加条目只会写本机设置，不会自行拉起任何进程。Catalog 完整性与密钥清单由 `web/test/mcp-marketplace.test.mjs` 兜底，配置读写、`requiresEnv` 持久化与密钥字段辅助函数由 `web/test/mcp-settings.test.mjs` 覆盖，市场与设置页的交互链路由 `web/test/run-smoke.mjs` 在真实后端上端到端断言（安装 / 详情 / 密钥补齐自动启用 / 移除）。
+#### 3. 启动 Tauri 桌面开发模式
 
----
+```powershell
+npm run dev:desktop
+```
 
-## 技术选型与权衡
+Tauri 会先通过 `beforeDevCommand` 启动 Vite（固定使用 `http://localhost:5173`），再打开桌面窗口。桌面核心数据通过 Rust IPC 处理，不需要启动 Express 服务或配置 `server/.env`。
 
-| 决策 | 选择 | 理由 |
+#### 4. 仅启动 Web 前端
+
+```powershell
+npm run dev:web
+```
+
+该命令只启动 Vite。浏览器模式适合查看组件和静态页面；需要 Vault、SQLite 或写入能力时，请使用 Tauri 桌面模式，因为桌面端不会向已删除的 HTTP 后端回落。
+
+#### 5. 构建
+
+```powershell
+# 构建前端到 web/dist
+npm run build
+
+# 构建 Tauri 安装包 / 可执行产物
+npm run build:desktop
+```
+
+`src-tauri/tauri.conf.json` 将 `web/dist` 作为 `frontendDist`，桌面构建前会自动执行 `npm run build`。
+
+## 测试与验证
+
+当前迁移分支使用以下命令：
+
+```powershell
+# Web 纯函数、组件、静态导出、IPC 契约等测试
+npm run test:web
+
+# Rust 单元测试、Tauri 工作区、索引、文件系统和契约 parity 测试
+npm run test:desktop
+
+# 前端类型检查
+npm run --prefix web typecheck
+```
+
+发布前建议至少执行：
+
+```powershell
+npm run --prefix web typecheck
+npm run test:web
+npm run test:desktop
+npm run build:desktop
+```
+
+根 `package.json` 中仍有少量从旧 Node 版本迁移遗留的脚本入口；凡是引用已删除的 `scripts/fc.mjs`、`scripts/lattice-ai.mjs` 或旧 `server/` 目录的命令，都不属于当前 Tauri 开发流程。
+
+## 架构
+
+```mermaid
+flowchart LR
+    UI[React + TypeScript + Vite] --> IPC[Tauri IPC]
+    IPC --> WS[WorkspaceService\nRust 单写入协调器]
+    WS --> VAULT[Vault 文件\n.md / .canvas / attachments]
+    WS --> DB[SQLite 派生索引\nFTS5 trigram]
+    WS --> AUDIT[快照与审计\n.lattice/history + audit.jsonl]
+    WATCH[文件监听器] --> WS
+```
+
+### 前端
+
+- React 18 + TypeScript + Vite 5；
+- Zustand 管理界面状态；
+- `lucide-react` 提供图标；
+- BlockSuite 用于编辑器投影，`web/src/editor/markdown-bridge.ts` 负责 Markdown 与可编辑块之间的转换；
+- `web/src/api/client.ts` 统一处理请求，`web/src/api/ipc.ts` 和 `web/src/api/ipc-routes.ts` 负责桌面路由映射；
+- 桌面端匹配到的请求只走 `invoke`，未映射能力返回 `IPC_UNAVAILABLE`，不回落 HTTP。
+
+### Rust / Tauri
+
+- `src-tauri/src/lib.rs` 注册 Tauri 命令并持有 `WorkspaceState`；
+- `src-tauri/src/workspace.rs` 是唯一写入边界，统一处理路径校验、原子写、快照、审计、确认和撤销；
+- `src-tauri/src/vault.rs` 负责 Vault 文件系统与安全路径；
+- `src-tauri/src/index.rs` 负责 SQLite 投影、标签、双链、图谱和检索；
+- `src-tauri/src/watcher.rs` 监听外部文件变化并触发增量对齐；
+- `src-tauri/src/jobs.rs` 保存可重试、可取消的后台任务状态；
+- `src-tauri/src/markdown.rs` 负责 frontmatter、标题、标签、双链和 Markdown 清洗；
+- `rusqlite` 使用 `bundled`，SQLite 随 Rust 二进制构建，包含 FTS5，不依赖系统 `sqlite3.dll`。
+
+### 数据真源与派生数据
+
+| 数据 | 位置 / 责任 | 是否为真源 |
 | --- | --- | --- |
-| 数据库驱动 | Node 内置 `node:sqlite` | 数据库层零原生依赖，免去 Windows 上编译 better-sqlite3 的麻烦 |
-| 中文检索 | FTS5 `trigram` 分词器 | 默认的 `unicode61` 会把整串汉字当成一个词，搜「知识」匹配不到「知识管理」；trigram 按 3 字符滑窗建索引，天然支持中文子串匹配 |
-| 短词检索 | `LIKE` 兜底 | trigram 需要至少 3 个字符，两字查询（如「笔记」）必须回退；FTS 空结果时也会用 LIKE 复核一遍，避免分词边界漏召回 |
-| 图谱渲染 | 原生 Canvas，不用 d3 | 需求只有画点、画线、拖拽、缩放，一个图表库的体积与抽象成本高于收益 |
-| Markdown 消毒 | 自研白名单消毒器 | 正文可能来自剪藏网页，直接 `innerHTML` 是一条真实的 XSS 路径。用 DOMParser 解析后按白名单裁剪，省掉一个依赖 |
-| 实时协作 | 不实现 | 单机单用户场景没有协作需求，用自动保存 + 本地状态足够，不做过度设计 |
-| API 认证 | 工作区令牌 + 可选 AI 二次令牌 | 回环地址可保持单机本地模式；非回环监听必须配置 `WORKSPACE_ACCESS_TOKEN`，`AI_ACCESS_TOKEN` 可额外保护 AI 路由，角色均由服务端固定 |
-| 前端路由 | 不用 react-router | 只有「笔记 / 图谱」两个视图，内部状态即可，少一个依赖 |
+| Markdown 笔记 | `<Vault>/**/*.md` | 是 |
+| Canvas | `<Vault>/**/*.canvas` | 是 |
+| 附件 | Vault 内的图片、文档、音视频等文件 | 是 |
+| 索引数据库 | `<Vault>/.lattice/lattice.db` | 否，可重建 |
+| 历史快照 | `<Vault>/.lattice/history/<note-id>/` | 派生的恢复材料 |
+| 审计日志 | `<Vault>/.lattice/audit.jsonl` | 写入审计记录 |
+| Vault profile | `<Vault>/.lattice/profile.json` | 配置文件 |
+| 文件助手撤销数据 | `<Vault>/.fc/trash/` | 可撤销操作的快照 |
 
----
+Vault 中的 `.lattice`、`.fc` 和 `_templates` 是内部保留目录，不作为普通笔记目录处理。删除索引数据库不会删除 Markdown；下次扫描会重新建立索引。
 
-## 工程结构
+## 启动与 Vault 路径
 
-```
+Tauri 启动时按以下顺序选择 Vault：
+
+1. 如果设置了 `LATTICE_VAULT_DIR`，使用该环境变量指定的目录；
+2. 否则读取 Tauri `app_config_dir` 下的 `vault-path.txt`；
+3. 如果记录不存在或路径无效，使用 Tauri `app_data_dir/vault`；
+4. 应用启动后创建目录、打开 `<Vault>/.lattice/lattice.db`，应用迁移并启动扫描与 watcher。
+
+### 关键限制
+
+| 项目 | 当前值 / 行为 |
+| --- | --- |
+| 单实例 | 同一 Vault 默认只允许一个桌面实例写入；第二实例会收到占用错误 |
+| Markdown 单文件 | 最大 8 MiB |
+| Vault 资产读取 | 单个资产最大 10 MiB |
+| 历史快照 | 每篇笔记最多 200 个，相同内容不重复写入 |
+| FTS5 trigram | 至少 3 个字符适合走 trigram；短查询走 `LIKE` |
+| 文件助手普通读取 | 单次读取默认最多 2 MiB，输入文件上限 64 MiB |
+| 文件助手 grep | 单个输入文件最多 4 MiB |
+| Skill 内容 | 最多 30,000 个字符 |
+| Expert system prompt | 最多 12,000 个字符 |
+| SQLite schema | 当前原生索引版本为 7，通过 `PRAGMA user_version` 迁移 |
+
+这些是原生工作区实现的当前边界；不要用 v0.1.5 说明书中的 `%APPDATA%\Lattice\data\lattice.db`、25 MB 附件上限或独立 `PORT` 配置推断当前 Tauri 版本。
+
+## IPC 契约
+
+桌面端保留了前端原有资源路径作为统一抽象，例如 `/notes`、`/search`、`/canvas`、`/folders` 和 `/files/*`，但桌面模式会把它们映射到 Rust 命令，而不是发送 HTTP 请求。
+
+主要映射范围包括：
+
+| 领域 | 代表命令 |
+| --- | --- |
+| Vault | `vault_info`、`vault_read`、`vault_write`、`vault_scan`、`vault_search`、`vault_profile_set` |
+| 笔记 | `note_index`、`note_list`、`note_get`、`note_create`、`note_update`、`note_delete`、`note_history_*` |
+| 目录 / 标签 / 图谱 | `folder_*`、`tag_list`、`tag_delete`、`graph_build`、`meta_overview` |
+| Canvas | `canvas_list`、`canvas_read`、`canvas_write`、`canvas_move`、`canvas_delete` |
+| 附件 / 文件 | `vault_attachment_*`、`vault_files_list`、`vault_download`、`file_read`、`file_find`、`file_grep` |
+| 文件操作 | `file_preview`、`file_execute`、`file_undo`、`file_log` |
+| 专家 / Skill / Review | `expert_*`、`skill_*`、`review_health`、`review_plan`、`review_execute` |
+| 更新检查 | `update_check`（只读 GitHub Releases，安装仍需签名更新器） |
+
+IPC 契约测试要求：已映射路由必须走 Tauri `invoke`，未映射路由必须明确报告不可用，且不得静默调用 HTTP。修改 Rust 命令、前端路由或参数形状时，应同步检查 [`web/test/ipc-routes-contract.test.mjs`](web/test/ipc-routes-contract.test.mjs)、[`web/test/ipc-parity-consumption.test.mjs`](web/test/ipc-parity-consumption.test.mjs) 和 [`doc/升级计划/ipc-contract.md`](doc/升级计划/ipc-contract.md)。
+
+## 安全与可靠性约束
+
+- **Vault 是唯一持久化真源**：SQLite、标签、链接、图谱和检索结果都可以从文件重建。
+- **单一写入入口**：UI、文件助手、Review 和未来的 AI / MCP 都应通过 `WorkspaceService` 写入，不直接修改索引数据库。
+- **路径安全**：拒绝绝对路径、路径穿越、符号链接越界、保留目录和非法文件名。
+- **原子写入**：先写临时文件并替换目标，降低进程中断造成半写文件的风险。
+- **冲突检测**：写入可携带内容哈希；外部编辑器或其他实例修改后不会被静默覆盖。
+- **历史与审计**：写入前生成快照，操作记录追加到 `.lattice/audit.jsonl`；文件助手写入支持预览和撤销。
+- **索引恢复**：迁移前会尝试生成 `.db.bak-pre-migration`；索引损坏时优先从 Vault 文件重建。
+- **不把本地优先误解为加密**：当前架构保护路径、写入和凭证边界，但普通 Markdown 与附件仍以文件形式存储。
+
+## 目录结构
+
+```text
 lattice/
-├── server/                          后端（Express 5 + node:sqlite）
-│   ├── src/
-│   │   ├── config/                  环境变量集中校验，启动即 fail fast
-│   │   ├── db/
-│   │   │   ├── index.js             连接池、WAL、外键、事务包装器
-│   │   │   ├── migrate.js           迁移执行器（校验和漂移检测）
-│   │   │   └── seed.js              幂等的示例数据（可编程调用 + CLI 入口）
-│   │   ├── migrations/              版本化 SQL 迁移
-│   │   ├── lib/                     错误体系、结构化日志、Markdown 语义解析
-│   │   ├── middleware/              请求 ID、访问日志、CORS、安全头、校验、错误处理
-│   │   ├── modules/                 按功能组织，每个模块四层
-│   │   │   └── notes|folders|links|tags|search|graph|canvas|vault|meta|health/
-│   │   │       ├── *.routes.js      路由 + zod 边界校验
-│   │   │       ├── *.controller.js  只做请求/响应转换
-│   │   │       ├── *.service.js     业务规则与事务编排
-│   │   │       └── *.repository.js  只做 SQL
-│   │   ├── app.js                   中间件装配（顺序即安全边界）
-│   │   └── index.js                 启动、迁移、优雅停机
-│   └── test/                        纯函数单元测试
-├── web/                             前端（React 18 + Vite 5）
-│   ├── public/theme-init.js         首屏定主题（必须是同源外链，见下方 CSP 说明）
-│   └── src/
-│       ├── api/                     类型化 HTTP 客户端 + 资源访问层
-│       ├── hooks/                   知识库中心状态、防抖、轻提示
-│       ├── lib/                     Markdown 管线、HTML 消毒、力导向布局、格式化
-│       ├── components/              顶栏 / 侧栏 / 列表 / 编辑区 / 关系面板 / 图谱 / 白板 / 切换器
-│       └── styles.css               设计令牌 + 双主题
+├── package.json                 根脚本、版本和 Tauri CLI
+├── src-tauri/
+│   ├── src/main.rs              Windows 原生入口
+│   ├── src/lib.rs               Tauri 命令注册
+│   ├── src/workspace.rs         单写入协调器、快照、审计、文件操作
+│   ├── src/vault.rs             Vault 文件系统
+│   ├── src/index.rs             SQLite 投影、FTS5、标签、双链和图谱
+│   ├── src/db.rs                SQLite schema 与迁移
+│   ├── src/watcher.rs           文件监听与 reconcile
+│   ├── src/jobs.rs              持久化任务队列
+│   └── Cargo.toml               Rust 依赖和 rust-version
+├── web/
+│   ├── src/App.tsx              应用入口
+│   ├── src/api/                 HTTP / IPC 统一资源契约
+│   ├── src/components/          笔记、图谱、Canvas、AI 与 Review UI
+│   ├── src/editor/              BlockSuite 与 Markdown bridge
+│   ├── src/settings/            设置、模型、MCP 和更新 UI
+│   └── test/                    前端与 IPC 契约测试
+├── scripts/
+│   ├── dev.mjs                  Vite 开发启动器
+│   └── notion-calendar-mcp/     可选的 Notion Calendar MCP 工程
+└── doc/升级计划/                 架构、迁移计划、契约和进度
 ```
 
-### 应用图标
+## 迁移路线
 
-标记是「晶面层叠」：四层圆角方块沿 45° 逐层错位、逐层收缩，每层自带一条向下的
-厚度边 —— 八块平色堆出体积，不描边、不用渐变。`desktop/build/make-icon.py` 是
-唯一事实源，`web/index.html` 的 favicon 是同一套几何的 ≤24px 简化版，
-**改标记时两处要一起改**。
+当前目标架构保留原项目的 Markdown Vault、FTS5 中文检索、双链、Canvas、AI 写入审计和可撤销操作，同时改变运行时边界：
 
-脚本产出**两份** `.ico`，别搞混：
+1. **Phase 1：原生核心**：Tauri 2、Rust WorkspaceService、单实例锁、SQLite / FTS5、watcher、任务队列和 IPC 契约。
+2. **Phase 2：编辑器与数据能力**：BlockSuite 编辑器投影、Markdown 往返保真、属性 / 链接 / 历史一致性。
+3. **Phase 3：AI 本地化**：Ollama、embedding 任务、sqlite-vec、混合检索评测和桌面 AI 流式通道。
+4. **Phase 4：MCP 与发布**：MCP sidecar、插件权限、自动更新、主题、性能、无障碍和多语言。
 
-| 产物 | 用途 | 引用它的地方 |
-|---|---|---|
-| `build/icon.ico` | 打包时写进 exe 资源段（文件管理器 / 快捷方式 / 安装向导） | `electron-builder.yml` 的 `win.icon` |
-| `assets/icon.ico` | 运行时窗口与任务栏图标 | `src/main.js` 的 `ICON_PATH` |
+详细设计见 [`doc/升级计划/lattice-architecture.md`](doc/升级计划/lattice-architecture.md)。设计文档中的组件、权限和数据表如果标记为未来阶段，不应在用户文档中当作当前功能宣传。
 
-为什么必须两份：`build/` 是 electron-builder 的 `buildResources` 目录，
-**不会被拷进应用**。只留一份的话，开发模式（跑的是 `electron.exe`）会顶着
-Electron 的默认图标，直接跑 `release/win-unpacked/lattice.exe` 也未必对。
-两份由脚本用 `copyfile` 生成，字节完全一致。
+## 相关入口
 
-发布版本的窗口、任务栏与安装入口共用这套图标资源；修改图标后应随下一次发行版本一起更新。
+- [在线文档站](https://dawei-star.github.io/Lattice/website/lattice-docs.html)
+- [下载中心](https://dawei-star.github.io/Lattice/website/lattice-download.html)
+- [旧版 MCP 集成指南（v0.1.5 外部 Node Server）](website/lattice-mcp-guide.html)
 
-三点容易踩：
+## 许可证
 
-- **色阶要在 OKLab 里按明度等距生成，不要手工挑。** 八个色手工挑必然出现某两层
-  挤在一起、另两层拉太开，缩小后读成「两组两层」。推导规则与参数见
-  `build/concepts-v6/palette-oklch.py`，零依赖、可直接跑。
-- **≤24px 必须换简化几何。** 完整几何每层的 L 形露出只有 66 单位（16px 下 1.0px），
-  缩下去必糊。简化版减到三层并拉大明度跨度，保住「错位层叠」这个识别特征。
-- 交付时几何整体按 `MARK_SCALE = 0.92` 缩放。错位会让左上角与右下角分别顶到更外，
-  按 1.0 交付显得「顶格」。这个系数只做整体缩放，几何一字不动。
+本项目使用 [木兰公共许可证，第 2 版](LICENSE)。
 
-### 一个容易踩的坑：CSP 会拦掉自己的内联脚本
-
-生产模式下后端会给 HTML 施加 `script-src 'self'` 的 CSP（`server/src/app.js`），
-因此 `index.html` 里**不能**写内联 `<script>` —— 会被静默拦掉。首屏定主题那段逻辑
-就必须放在 `web/public/theme-init.js` 这种同源外链文件里，并且不能加 `type="module"`
-（module 脚本延迟执行，赶不上首次绘制，反闪烁会失效）。开发模式没有 CSP，看不到这个问题。
-
-### 桌面端的环境适配：两级崩溃自愈
-
-受限环境（虚拟机、远程桌面会话、带主动防御的安全软件）里 Chromium 的**子进程沙箱**
-可能无法初始化：GPU 进程反复崩溃，最终以
-`FATAL:gpu_data_manager_impl_private.cc  GPU process isn't usable. Goodbye.`
-直接终结整个应用 —— 用户看到的现象就是「双击了，什么都没发生」。
-`desktop/src/main.js` 为此做了两级兜底：
-
-1. **GPU 自愈**：同一次启动内 GPU 进程崩溃达 3 次即落下标记文件，下次启动自动追加
-   `--disable-gpu-sandbox`。只作用于 GPU 进程，主进程与内嵌后端不受影响；
-   驱动正常的机器永远不会触发。
-2. **渲染崩溃提示**：界面进程连续崩溃 3 次后弹窗说明成因并给出日志路径，
-   而不是留一片白屏让用户干等。
-
-另外三个只在桌面端成立的约束：
-
-- **窗口底色要跟随主题**：`BrowserWindow` 的 `backgroundColor` 在页面加载完成后按
-  `document.documentElement.dataset.theme` 回写，否则深色主题下拖动窗口会闪白边。
-- **外链必须外跳**：`will-navigate` / `setWindowOpenHandler` 把非本站 URL 交给系统浏览器，
-  防止把应用窗口本身导航走。
-- **环境变量必须早于动态 import**：`server/src/config` 在**首次 import 时**读取并冻结
-  `process.env`，所以 `DB_FILE` / `WEB_DIST_DIR` / `PORT` 都必须在 `import` 之前设置好，
-  顺序错了会静默用上默认值。
-
-### 分层约定
-
-一次「保存笔记」实际上要保证三件事同时成立：笔记本体落库、标签关联与正文一致、出链与正文一致。
-三者必须原子完成，因此统一收敛在 `notes.service` 的一个事务里 —— 控制器不碰 SQL，
-服务层不依赖 `req` / `res`，仓储层只负责查询。这样业务规则可以被后续的定时任务或脚本直接复用。
-
-链接与标签都是**正文派生数据**，不是独立事实。因此每次保存都按其正文全量重建，
-而不是做增量 diff —— 后者引入的一致性风险远高于它的性能收益。
-
-### 错误契约
-
-所有失败响应统一为：
-
-```json
-{
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "请求参数校验未通过",
-    "details": [{ "in": "body", "field": "name", "message": "目录名不能为空" }],
-    "requestId": "8f3a..."
-  }
-}
-```
-
-`requestId` 同时写在响应头和日志里，可直接串联排查。
-5xx 一律不外泄堆栈与内部细节，只返回通用文案。
-
----
-
-## API
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/health` `/ready` | 存活 / 就绪探针 |
-| `GET` | `/api/notes` | 列表，支持 `folderId`（`__none__` 表示未分类）、`tagId`、`inboxStatus`（`all` / `captured` / `processing` / `processed`）、`sort`、`limit`、`offset` |
-| `GET` | `/api/notes/index` | 全量轻量索引（供快速切换与双链解析） |
-| `GET` | `/api/notes/:id` | 详情，含标签、出链、反向链接 |
-| `POST` | `/api/notes` | 新建，可带客户端 UUID 以保证重试幂等 |
-| `PATCH` | `/api/notes/:id` | 局部更新（`title` / `content` / `folderId` / `isPinned` / `properties`） |
-| `DELETE` | `/api/notes/:id` | 删除，幂等 |
-| `GET` | `/api/notes/templates` | 列出 Vault `_templates/` 下的 Markdown 模板 |
-| `POST` | `/api/notes/from-template` | 按模板创建笔记，支持 `{{date}}` / `{{time}}` / `{{title}}` |
-| `POST` | `/api/notes/daily` | 创建幂等的 `Daily/YYYY-MM-DD.md` 每日笔记 |
-| `GET` | `/api/notes/:id/history` 等 | 查看、预览和恢复笔记版本历史 |
-| `GET` `POST` `PATCH` `DELETE` | `/api/folders` | 目录树与增删改 |
-| `GET` `POST` | `/api/files` | 确定性文件助手：read / find / grep / preview / execute / undo / log（execute 需确认，viewer 不可执行） |
-| `GET` `DELETE` | `/api/tags` | 标签列表（带引用数）与删除 |
-| `GET` `PUT` `PATCH` | `/api/canvas` | 读取、保存和移动 Vault 中的 `.canvas` 白板文件 |
-| `GET` | `/api/canvas/files` | 列出 Vault 中的白板文件 |
-| `GET` | `/api/vault/assets` | 列出可在白板中引用的图片资源 |
-| `GET` | `/api/vault/asset?path=` | 读取 Vault 中的图片资源 |
-| `GET` | `/api/vault/info` | 返回 Vault 路径、模式和当前生效的 profile |
-| `PUT` | `/api/vault/profile` | 保存 Inbox / Daily / Journal 的 Vault 相对目录（viewer 角色不可写） |
-| `GET` `POST` `DELETE` | `/api/vault/attachments` 等 | 附件列举、上传、读取、删除、引用检查和孤儿清理 |
-| `GET` | `/api/search?q=` | 全文检索；可附带 `inboxStatus` 限定 Inbox 状态，响应 `meta.strategy` 说明用了 `fts` 还是 `like` |
-| `GET` | `/api/graph` | 图谱节点、边、悬空引用与统计 |
-| `GET` | `/api/meta/overview` | 知识库总览统计 |
-| `POST` | `/api/ai/chat` | 对话（非流式，CLI / 兼容入口），返回带来源引用的回复、建议与结构化操作 |
-| `POST` | `/api/ai/chat/stream` | 流式对话（SSE）：`meta` → `delta`… → `done`/`error` |
-| `GET/PUT` | `/api/ai/settings` | 读取 / 保存服务端模型配置（对话模型 + embedding） |
-| `GET/POST` | `/api/ai/sessions` 等 | 会话列表、创建、消息读取、重命名、删除 |
-| `GET` | `/api/ai/index/status` · `POST /api/ai/index/reindex` | 语义索引状态与全量重建 |
-| `GET` | `/api/ai/related?noteId=` | 相关笔记推荐（语义，需 embedding 配置） |
-| `POST` | `/api/ai/retrieval/preview` | 检索调试视图：关键词/语义双路命中与融合结果 |
-| `POST` | `/api/ai/operations/preview` | 预览文件操作、存在性和风险；写操作标记为需要确认 |
-| `POST` | `/api/ai/operations/execute` | 在角色权限和显式确认通过后执行 `read/create/update/delete/move/copy/archive`；`archive` 只归档 `type: inbox` 文件并移除 Inbox 标记 |
-| `GET` | `/api/ai/history` | 查看 AI/CLI 文件操作审计历史 |
-
----
-
-## 数据模型
-
-```
-folders ──┬─< folders (parent_id, 自引用)
-          └─< notes (folder_id, ON DELETE SET NULL)
-
-notes ──┬─< note_tags >── tags
-        ├─< links (source_note_id, ON DELETE CASCADE)
-        └─< links (target_note_id, ON DELETE SET NULL → 变回悬空链接)
-        └── notes_fts (FTS5 虚拟表，由触发器保持同步)
-```
-
-`links.target_note_id` 为 `NULL` 表示**悬空链接**：被 `[[引用]]` 但目标笔记还不存在。
-删除被引用的笔记时，指向它的链接会自动退回悬空状态，而不是被整条抹掉 —— 这样引用关系不会凭空消失。
-
-迁移文件记录 sha256 校验和，历史迁移被改动时会直接报错，强制「只新增、不改写」。
-
----
-
-## 测试
-
-```bash
-npm test            # 后端单元测试（Markdown 与 AI 操作边界，36 项）
-npm run test:api    # 接口冒烟测试，需后端已启动（68 项）
-npm run test:web    # 前端渲染冒烟测试，需后端已启动（49 项）
-npm run test:mcp    # MCP stdio 协议与笔记读写 e2e
-npm --prefix desktop test  # Electron 桌面壳与打包契约测试
-npm run verify      # 依次执行以上全部
-```
-
-三层测试各自负责不同的事：
-
-1. **单元测试** —— 纯函数的边界行为，跑得最快，覆盖标签 / 双链 / 标题推断的各种边角情况
-2. **接口冒烟** —— 用 `fetch` 打真实端点，验证状态码、错误契约、CORS 白名单、写操作幂等性
-3. **前端渲染冒烟** —— 把真实的 React 组件树打包后在 jsdom 中挂载，连真实后端，验证
-   「渲染 → 取数 → 点击 → 自动保存 → 切视图」这条完整链路，并断言控制台无未处理异常
-
-前端测试会临时创建一篇样例笔记来验证嵌入渲染，**每次运行前先清理上次残留**，跑完自动删除，
-因此不会污染你的真实数据。
-
----
-
-## 已知限制与后续方向
-
-当前实现刻意划定了边界，以下是明确未做或仍需增强的部分：
-
-- **静态站点导出**：设置 → 备份与迁移 → 导出静态站点会生成 `index.html`、按 Vault 相对目录组织的笔记 HTML、双链导航、嵌入展开和 `assets/` 资源目录。Windows 桌面版与支持 File System Access API 的浏览器可直接选择目标目录；其他浏览器会平铺下载文件。
-- **历史保留策略待完善**：版本快照、预览与恢复已支持，已有 200 上限与相同内容跳过，但高频编辑下的按天归并尚未落地
-- **无独立 GUI diff 组件**：AI 文件操作确认前已以文本块渲染 `preview.diff`，单操作与批量计划共用同一预览 / 执行契约；工作台结构化 diff 视图尚未提供
-- **无实时协作**：单机单用户，未引入 WebSocket / CRDT
-- **图谱规模**：力导向是 O(n²)，数百到数千节点流畅；上万节点需要换 Barnes-Hut 近似
-- **`node:sqlite` 的稳定性**：它仍被 Node 标记为实验特性（虽已可直接使用）。若追求绝对稳定，
-  可换 `better-sqlite3`，接口几乎一一对应，迁移成本很低
-- **移动端 / PWA**：窄屏支持响应式布局；Web 版提供 manifest、应用壳缓存、安装提示和更新提示。离线只保证已缓存页面可读，API、SSE 和写入操作不会被缓存，也不支持离线写入。
-
-下一步建议：历史保留与清理 → 静态导出中的更多附件类型与主题自定义。
+*格物 Lattice · Local-first knowledge workspace*

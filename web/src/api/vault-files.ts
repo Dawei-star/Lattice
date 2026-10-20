@@ -1,5 +1,6 @@
 import { BASE_URL, http, type RequestOptions } from './client.ts';
 import { workspaceHeaders } from './workspace-auth.ts';
+import { isTauri } from '@tauri-apps/api/core';
 import type { FolderNode, NoteProperties } from './resources.ts';
 
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
@@ -93,10 +94,17 @@ export const vaultFiles = {
     url.searchParams.set('path', filePath);
     return url.toString();
   },
-  async download(filePath: string): Promise<void> {
+  async readBlob(filePath: string): Promise<Blob> {
+    if (isTauri()) {
+      const base64 = await http.get<string>('/vault/download', { query: { path: filePath } });
+      return base64ToBlob(base64, mimeTypeForPath(filePath));
+    }
     const response = await fetch(this.downloadUrl(filePath), { headers: workspaceHeaders() });
-    if (!response.ok) throw new Error(`文件下载失败（HTTP ${response.status}）`);
-    const blob = await response.blob();
+    if (!response.ok) throw new Error(`文件读取失败（HTTP ${response.status}）`);
+    return response.blob();
+  },
+  async download(filePath: string): Promise<void> {
+    const blob = await this.readBlob(filePath);
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -105,6 +113,26 @@ export const vaultFiles = {
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   },
 };
+
+function base64ToBlob(value: string, type: string): Blob {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type });
+}
+
+function mimeTypeForPath(filePath: string): string {
+  const extension = String(filePath).split(/[./\\]/).pop()?.toLowerCase() ?? '';
+  return ({
+    avif: 'image/avif',
+    gif: 'image/gif',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    svg: 'image/svg+xml',
+    webp: 'image/webp',
+  } as Record<string, string>)[extension] ?? 'application/octet-stream';
+}
 
 /** Vault 内图片资源条目（GET /vault/assets）。 */
 export interface VaultAssetSummary {

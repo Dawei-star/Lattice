@@ -40,6 +40,12 @@ export interface McpMarketEntry {
   requiresEnv?: McpRequiredEnv[];
   tools: Array<{ name: string; description: string }>;
   docs: string;
+  authorization?: {
+    kind?: string;
+    url: string;
+    label: string;
+    description?: string;
+  };
 }
 
 export const MCP_MARKET_CATEGORIES = Object.freeze([

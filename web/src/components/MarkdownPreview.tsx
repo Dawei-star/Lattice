@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
 import { renderMarkdown, type RenderMarkdownOptions } from '../lib/markdown.ts';
+import { vaultFiles } from '../api/vault-files.ts';
 import Lightbox from './Lightbox.tsx';
 
 /** 预览中点开的图片（灯箱目标）。 */
@@ -87,6 +89,49 @@ export default function MarkdownPreview({
       cancelled = true;
     };
   }, [html, resolveEmbed, resolveTitle, resolveAsset, depth]);
+
+  // Markdown HTML 是一次性注入的，桌面端不能把 Vault 路径直接交给 img.src。
+  // 监听嵌入内容的 DOM 变化，并把兼容 URL 对应的文件换成受限 IPC Blob URL。
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || !isTauri()) return undefined;
+    let cancelled = false;
+    const objectUrls = new Set<string>();
+    const loading = new WeakSet<HTMLImageElement>();
+
+    const loadImages = () => {
+      for (const image of root.querySelectorAll<HTMLImageElement>('img')) {
+        if (loading.has(image)) continue;
+        let url: URL;
+        try {
+          url = new URL(image.src, window.location.origin);
+        } catch {
+          continue;
+        }
+        if (!['/api/vault/asset', '/api/vault/attachment'].includes(url.pathname)) continue;
+        const path = url.searchParams.get('path');
+        if (!path) continue;
+        loading.add(image);
+        vaultFiles.readBlob(path)
+          .then((blob) => {
+            if (cancelled) return;
+            const objectUrl = URL.createObjectURL(blob);
+            objectUrls.add(objectUrl);
+            image.src = objectUrl;
+          })
+          .catch(() => undefined);
+      }
+    };
+
+    loadImages();
+    const observer = new MutationObserver(loadImages);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      for (const objectUrl of objectUrls) URL.revokeObjectURL(objectUrl);
+    };
+  }, [html]);
 
   const handleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     // 点击图片打开灯箱（嵌入卡片里的图片同样生效）

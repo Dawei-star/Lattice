@@ -6,9 +6,10 @@ import ContextMenu from '../ui/ContextMenu.jsx';
 import Modal from '../ui/Modal.jsx';
 import { canvasApi } from '../api/canvas.ts';
 import type { CanvasDocument } from '../api/canvas.ts';
-import { vaultAssetsApi, vaultAttachmentsApi, vaultFiles } from '../api/vault-files.ts';
+import { vaultAssetsApi, vaultAttachmentsApi } from '../api/vault-files.ts';
 import type { VaultAssetSummary } from '../api/vault-files.ts';
 import { getClipboardImageFiles } from '../lib/clipboard.ts';
+import VaultImage from './VaultImage.tsx';
 import type { NoteDetailRow, NoteIndexRow } from '../hooks/useVault.ts';
 import type { FileConfirmationResult, FileOperationInput } from '../hooks/useFileConfirmation.tsx';
 
@@ -1400,7 +1401,7 @@ export default function CanvasView({ canvasPath = '画板.canvas', noteIndex = [
                       />
                     )
                     : node.type === 'image'
-                      ? <><div className="canvas-card__image" title={node.path}><img src={vaultFiles.assetUrl(node.path as string)} alt={node.text} draggable="false" onError={(event) => { event.currentTarget.hidden = true; (event.currentTarget.nextElementSibling as HTMLElement).hidden = false; }} /><span hidden>图片暂不可用</span></div><h3 title={node.path}>{node.text}</h3></>
+                      ? <><div className="canvas-card__image" title={node.path}><VaultImage path={node.path as string} alt={node.text} draggable="false" onError={(event) => { event.currentTarget.hidden = true; (event.currentTarget.nextElementSibling as HTMLElement).hidden = false; }} /><span hidden>图片暂不可用</span></div><h3 title={node.path}>{node.text}</h3></>
                       : isGroup
                         ? <h3 className="canvas-card__group-label" title={displayTitle}>{displayTitle}</h3>
                         : <><h3 title={displayTitle}>{displayTitle}</h3><p title={linkedNote?.filePath}>{linkedNote?.filePath ?? '来自知识库 · 双击打开原文'}</p></>}
@@ -1512,7 +1513,7 @@ function CanvasResourcePicker({ kind, notes, images, query, loading, error, onQu
           {isImagePicker ? (
             <div className="canvas-picker__grid">
               {images.map((asset) => <button type="button" className="canvas-picker__image" key={asset.path} onClick={() => onSelectImage(asset)} title={`添加 ${asset.path}`}>
-                <img src={vaultFiles.assetUrl(asset.path)} alt="" loading="lazy" />
+                <VaultImage path={asset.path} alt="" loading="lazy" />
                 <span>{asset.path}</span>
               </button>)}
             </div>

@@ -16,6 +16,8 @@ export interface AiProviderConfig {
   temperature?: number;
   maxTokens?: number;
   contextWindowTokens?: number;
+  promptCostPer1kUsd?: number;
+  completionCostPer1kUsd?: number;
 }
 
 /** 语义索引 Embedding 配置。 */
@@ -38,6 +40,9 @@ export interface AiSettings {
   preferModel: boolean;
   interactionMode: 'quick' | 'task';
   autoApprove: boolean;
+  smallModelEnabled: boolean;
+  smallModelProviderId: string;
+  smallModelName: string;
 }
 
 const STORAGE_KEY = 'lattice-ai-settings-v1';
@@ -80,6 +85,9 @@ export const DEFAULT_AI_SETTINGS: Readonly<AiSettings> = Object.freeze({
   interactionMode: 'quick',
   // 任务模式：勾选后 AI 以 agent 循环检索和读取；写操作仍必须经过确认预览
   autoApprove: false,
+  smallModelEnabled: false,
+  smallModelProviderId: '',
+  smallModelName: '',
 });
 
 export function loadAiSettings(): AiSettings {
@@ -138,6 +146,33 @@ export function createAiProvider(overrides: Partial<AiProviderConfig> = {}): AiP
 export function getActiveAiProvider(settings?: AiSettings | null): AiProviderConfig | null {
   const providers = Array.isArray(settings?.providers) ? settings.providers : [];
   return providers.find((provider) => provider.id === (settings as AiSettings).activeProviderId) ?? providers[0] ?? null;
+}
+
+/**
+ * Desktop-only runtime view. API keys remain masked in UI/local persistence;
+ * this accessor exposes the volatile in-memory key only to the Tauri transport.
+ */
+export function getActiveAiProviderRuntime(settings?: AiSettings | null): AiProviderConfig | null {
+  const provider = getActiveAiProvider(settings);
+  if (!provider) return null;
+  const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
+  return { ...provider, apiKey };
+}
+
+/** Runtime-only view for the optional remote router/reranker model. */
+export function getSmallModelProviderRuntime(settings?: AiSettings | null): AiProviderConfig | null {
+  const current = settings ?? loadAiSettings();
+  if (current.smallModelEnabled !== true) return null;
+  const provider = (current.providers ?? []).find((item) => item.id === current.smallModelProviderId);
+  if (!provider || provider.enabled === false) return null;
+  const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
+  const model = current.smallModelName.trim();
+  if (!provider.endpoint.trim() || !model || (!apiKey && !isLocalOllamaEndpoint(provider.endpoint))) return null;
+  return { ...provider, model, apiKey, maxTokens: Math.min(provider.maxTokens ?? 512, 512), temperature: 0 };
+}
+
+export function hasSmallModel(settings?: AiSettings | null): boolean {
+  return getSmallModelProviderRuntime(settings) !== null;
 }
 
 export function hasExternalAi(settings?: AiSettings | null): boolean {
@@ -306,6 +341,25 @@ function rememberSecrets(settings: AiSettings) {
   else if (settings.embedding?.apiKey === '') volatileEmbeddingKey = '';
 }
 
+/**
+ * Returns enabled runtime providers in fallback order: active provider first,
+ * followed by the remaining configured providers. API keys are resolved from
+ * the volatile in-memory map and never from the persisted masked settings.
+ */
+export function getAiProviderRouteRuntime(settings?: AiSettings | null): AiProviderConfig[] {
+  const current = settings ?? loadAiSettings();
+  const active = getActiveAiProvider(current);
+  const ordered = [active, ...(current.providers ?? []).filter((provider) => provider !== active)];
+  const seen = new Set<string>();
+  return ordered.flatMap((provider) => {
+    if (!provider || seen.has(provider.id) || provider.enabled === false) return [];
+    const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
+    if (!provider.endpoint.trim() || !provider.model.trim() || (!apiKey && !isLocalOllamaEndpoint(provider.endpoint))) return [];
+    seen.add(provider.id);
+    return [{ ...provider, apiKey }];
+  });
+}
+
 function serializedApiKey(provider: AiProviderConfig | AiEmbeddingConfig, volatileKey?: string): { apiKey?: string } {
   if (isLocalOllamaEndpoint(provider.endpoint) && !provider.apiKey) return { apiKey: '' };
   if (isActualApiKey(provider.apiKey)) return { apiKey: provider.apiKey };
@@ -337,6 +391,9 @@ function normalize(value: any): AiSettings {
     preferModel: value?.preferModel === true,
     interactionMode: value?.interactionMode === 'task' || value?.autoApprove === true ? 'task' : 'quick',
     autoApprove: value?.autoApprove === true,
+    smallModelEnabled: value?.smallModelEnabled === true,
+    smallModelProviderId: typeof value?.smallModelProviderId === 'string' ? value.smallModelProviderId.trim().slice(0, 120) : '',
+    smallModelName: typeof value?.smallModelName === 'string' ? value.smallModelName.trim().slice(0, 120) : '',
   };
 }
 
@@ -362,6 +419,12 @@ function normalizeProvider(value: any): AiProviderConfig | null {
     ...(Number.isFinite(Number(value.maxTokens)) && Number(value.maxTokens) >= 1 ? { maxTokens: Math.floor(Number(value.maxTokens)) } : {}),
     ...(Number.isFinite(Number(value.contextWindowTokens)) && Number(value.contextWindowTokens) >= 8_000
       ? { contextWindowTokens: Math.min(Math.floor(Number(value.contextWindowTokens)), 1_000_000) }
+      : {}),
+    ...(Number.isFinite(Number(value.promptCostPer1kUsd)) && Number(value.promptCostPer1kUsd) >= 0
+      ? { promptCostPer1kUsd: Math.min(Number(value.promptCostPer1kUsd), 10_000) }
+      : {}),
+    ...(Number.isFinite(Number(value.completionCostPer1kUsd)) && Number(value.completionCostPer1kUsd) >= 0
+      ? { completionCostPer1kUsd: Math.min(Number(value.completionCostPer1kUsd), 10_000) }
       : {}),
   };
 }

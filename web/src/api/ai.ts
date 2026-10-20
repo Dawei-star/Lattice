@@ -1,5 +1,8 @@
 import { http, type RequestOptions } from './client.ts';
 import { workspaceHeaders } from './workspace-auth.ts';
+import type { AgentToolCall } from '../lib/ai-agent.ts';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { createTauriDurableRunTransport } from '../ai/providers/tauri-provider.ts';
 
 // 与 client.ts 相同的同源约定；SSE 用原生 fetch（http 封装不支持流式读取）
 const RAW_BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? '/api';
@@ -17,6 +20,7 @@ export interface AiStreamFinalPayload {
   text?: string;
   meta?: unknown;
   cancelled?: boolean;
+  toolCalls?: AgentToolCall[];
   [key: string]: unknown;
 }
 
@@ -28,6 +32,7 @@ export interface AiStreamEvent {
   meta?: unknown;
   cancelled?: boolean;
   message?: string;
+  call?: AgentToolCall;
   [key: string]: unknown;
 }
 
@@ -41,11 +46,6 @@ export interface AiStreamOptions extends Omit<RequestOptions, 'signal'> {
   headers?: Record<string, string>;
   /** 空闲超时（毫秒）：连接建立后连续无数据则中断（上游 hang 住时 UI 不再永远等待） */
   idleTimeoutMs?: number;
-}
-
-/** MCP 预热选项：role 随 body 下发（viewer 角色在服务端被拒绝拉起 MCP 进程）。 */
-export interface AiWarmupOptions extends RequestOptions {
-  role?: string | null;
 }
 
 /** 服务端模型配置文档（/ai/settings）。 */
@@ -69,9 +69,6 @@ export const aiApi = {
   chat: (input: unknown, options: RequestOptions = {}): Promise<AiChatResult> => http.post<AiChatResult>('/ai/chat', input, { timeout: 300_000, retries: 0, ...options }),
   // 连通性测试直连上游服务商（kind: 'chat' | 'embedding'），关闭重试避免重复消耗上游额度
   test: (input: unknown, options: RequestOptions = {}): Promise<unknown> => http.post('/ai/test', input, { timeout: 30_000, retries: 0, ...options }),
-  // MCP 预热：服务端后台建连 + listTools，立即返回 202（打开面板时调用，缩短首条消息 TTFT）。
-  // role 随body下发：viewer 角色在服务端被拒绝拉起 MCP 进程
-  warmupMcp: (mcpServers: unknown[] = [], options: AiWarmupOptions = {}): Promise<unknown> => http.post('/ai/mcp/warmup', { mcpServers, role: options.role }, { timeout: 10_000, retries: 0, ...options }),
   preview: (input: unknown, options: RequestOptions = {}): Promise<unknown> => http.post('/ai/operations/preview', input, options),
   // 写操作端点：关闭自动重试——超时后服务端可能已执行成功，重试会重复执行
   // 同一批文件动作（与 filesApi.execute / ai.write 同一口径）
@@ -94,11 +91,14 @@ export const aiApi = {
   indexStatus: (options: RequestOptions = {}): Promise<unknown> => http.get('/ai/index/status', options),
   reindex: (options: RequestOptions = {}): Promise<unknown> => http.post('/ai/index/reindex', {}, options),
   relatedNotes: (noteId: string, limit: number = 6, options: RequestOptions = {}): Promise<unknown[]> =>
-    http.get<unknown[]>(`/ai/related?noteId=${encodeURIComponent(noteId)}&limit=${limit}`, options),
-  retrievalPreview: (query: string, options: RequestOptions = {}): Promise<unknown> => http.post('/ai/retrieval/preview', { query }, { timeout: 60_000, retries: 0, ...options }),
+    http.get<unknown[]>('/ai/related', { ...options, query: { ...(options.query ?? {}), noteId, limit } }),
+  retrievalPreview: (input: string | Record<string, unknown>, options: RequestOptions = {}): Promise<unknown> => {
+    const body = typeof input === 'string' ? { query: input } : input;
+    return http.post('/ai/retrieval/preview', body, { timeout: 60_000, retries: 0, ...options });
+  },
   // 智能建议（双链 / 标签，只读）
   suggestions: (noteId: string, limit: number = 6, options: RequestOptions = {}): Promise<unknown[]> =>
-    http.get<unknown[]>(`/ai/suggestions?noteId=${encodeURIComponent(noteId)}&limit=${limit}`, options),
+    http.get<unknown[]>('/ai/suggestions', { ...options, query: { ...(options.query ?? {}), noteId, limit } }),
   // 每日摘要：生成（或更新）今天的 Journal/每日摘要 笔记
   digest: (options: RequestOptions = {}): Promise<unknown> => http.post('/ai/digest', {}, { timeout: 120_000, retries: 0, ...options }),
 
@@ -119,6 +119,22 @@ export const aiApi = {
  *  空闲超时：连接建立后连续 idleTimeoutMs 没有任何数据则中断（上游 hang 住时
  *  UI 不再永远停在"生成中"）。外部 signal 取消仍原样透传。 */
 async function postSse(path: string, input: unknown, { signal = null, onEvent = () => {}, headers = {}, idleTimeoutMs = 120_000 }: AiStreamOptions = {}): Promise<AiStreamFinalPayload> {
+  // Tauri 没有 Express 回落。写作助手也复用 durable Run 通道，确保取消和恢复与主对话一致。
+  if (isTauri()) {
+    const inputRecord = input && typeof input === 'object' ? input as Record<string, unknown> : { input };
+    const request = {
+      ...inputRecord,
+      runId: typeof inputRecord.runId === 'string' && inputRecord.runId.trim()
+        ? inputRecord.runId
+        : `run-write-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`,
+      mode: path === '/ai/write/stream' ? 'write' : 'task',
+      ...(path === '/ai/write/stream' && typeof inputRecord.message !== 'string'
+        ? { message: [inputRecord.instruction, inputRecord.text].filter((value) => typeof value === 'string' && value.trim()).join('\n\n') }
+        : {}),
+    };
+    return createTauriDurableRunTransport({ invoke }).stream(request as never, { signal, onEvent });
+  }
+
   // 与 client.ts 同款解析：同源相对路径在浏览器里可用，测试环境补上 origin
   const url = new URL(`${BASE_URL}${path}`, window.location.origin).toString();
   const controller = new AbortController();

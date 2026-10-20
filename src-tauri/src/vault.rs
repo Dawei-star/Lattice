@@ -8,6 +8,8 @@ use std::time::UNIX_EPOCH;
 use tempfile::NamedTempFile;
 use walkdir::{DirEntry, WalkDir};
 
+use crate::time::iso8601_utc;
+
 const MAX_NOTE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 10 * 1024 * 1024;
 const INTERNAL_DIRS: [&str; 3] = [".lattice", ".fc", "_templates"];
@@ -21,7 +23,22 @@ pub struct Vault {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultInfo {
+    pub(crate) vault_dir: String,
+    pub(crate) mode: String,
+    pub(crate) profile: serde_json::Value,
+    pub(crate) profile_path: String,
+    pub(crate) profile_status: String,
+    pub(crate) profile_warning: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultAssetEntry {
     pub(crate) path: String,
+    pub(crate) name: String,
+    pub(crate) mime_type: String,
+    pub(crate) size: u64,
+    pub(crate) modified_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -142,6 +159,112 @@ impl Vault {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// 返回与 Express `/vault/info` 相同形状的 Vault 元数据。
+    pub fn info(&self) -> VaultInfo {
+        let profile_path = self.profile_path();
+        let (profile, profile_status, profile_warning) = match fs::read_to_string(&profile_path) {
+            Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|error| error.to_string())
+                .and_then(|value| normalize_profile(&value))
+            {
+                Ok(profile) => (profile, "loaded".to_owned(), None),
+                Err(error) => (
+                    default_profile(),
+                    "invalid".to_owned(),
+                    Some(format!("Invalid Vault profile: {error}")),
+                ),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (default_profile(), "default".to_owned(), None)
+            }
+            Err(error) => (
+                default_profile(),
+                "invalid".to_owned(),
+                Some(format!("Unable to read Vault profile: {error}")),
+            ),
+        };
+
+        VaultInfo {
+            vault_dir: self.root.to_string_lossy().into_owned(),
+            mode: "markdown".to_owned(),
+            profile,
+            profile_path: profile_path.to_string_lossy().into_owned(),
+            profile_status,
+            profile_warning,
+        }
+    }
+
+    pub fn save_profile(&self, profile: serde_json::Value) -> Result<VaultInfo, String> {
+        let normalized = normalize_profile(&profile)?;
+        let directory = self.root.join(".lattice");
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let mut temporary = NamedTempFile::new_in(&directory).map_err(|error| error.to_string())?;
+        let raw = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
+        temporary
+            .write_all(format!("{raw}\n").as_bytes())
+            .map_err(|error| error.to_string())?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| error.to_string())?;
+
+        let target = self.profile_path();
+        if let Err(error) = fs::rename(temporary.path(), &target) {
+            if !target.exists() {
+                return Err(error.to_string());
+            }
+            fs::remove_file(&target).map_err(|remove_error| remove_error.to_string())?;
+            fs::rename(temporary.path(), &target).map_err(|rename_error| rename_error.to_string())?;
+        }
+        Ok(self.info())
+    }
+
+    pub fn ensure_directory(&self, relative: &str) -> Result<(), String> {
+        let normalized = normalize_folder_path(relative)?;
+        fs::create_dir_all(self.root.join(normalized)).map_err(|error| error.to_string())
+    }
+
+    pub fn list_assets(&self) -> Result<Vec<VaultAssetEntry>, String> {
+        let walker = WalkDir::new(&self.root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !excluded(entry));
+        let mut assets = Vec::new();
+        for entry in walker {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&self.root)
+                .map_err(|error| error.to_string())?;
+            if relative
+                .components()
+                .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
+            {
+                continue;
+            }
+            let Some(mime_type) = asset_mime(entry.path()) else {
+                continue;
+            };
+            let metadata = entry.metadata().map_err(|error| error.to_string())?;
+            assets.push(VaultAssetEntry {
+                path: relative.to_string_lossy().replace('\\', "/"),
+                name: entry.file_name().to_string_lossy().into_owned(),
+                mime_type: mime_type.to_owned(),
+                size: metadata.len(),
+                modified_at: modified_millis(&metadata).map(iso8601_utc),
+            });
+        }
+        assets.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(assets)
+    }
+
+    fn profile_path(&self) -> PathBuf {
+        self.root.join(".lattice").join("profile.json")
     }
 
     /// 遍历 Vault 内的目录（跳过符号链接与内部目录），返回相对路径（/ 分隔）。
@@ -424,6 +547,92 @@ fn frontmatter_title(path: &Path) -> Option<String> {
 
 fn checksum(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn default_profile() -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "paths": {
+            "inbox": "Inbox",
+            "daily": "Daily",
+            "journal": "Journal"
+        }
+    })
+}
+
+fn normalize_profile(value: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Vault profile must be an object".to_owned())?;
+    if object.keys().any(|key| key != "version" && key != "paths") {
+        return Err("Vault profile contains unknown fields".into());
+    }
+    if let Some(version) = object.get("version") {
+        if version.as_u64() != Some(1) {
+            return Err("Vault profile version must be 1".into());
+        }
+    }
+    let paths = object
+        .get("paths")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Vault profile paths must be an object".to_owned())?;
+    if paths.keys().any(|key| !matches!(key.as_str(), "inbox" | "daily" | "journal")) {
+        return Err("Vault profile paths contains unknown fields".into());
+    }
+    let inbox = normalize_folder_path(
+        paths
+            .get("inbox")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Vault profile paths.inbox is required".to_owned())?,
+    )?;
+    let daily = normalize_folder_path(
+        paths
+            .get("daily")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Vault profile paths.daily is required".to_owned())?,
+    )?;
+    let journal = normalize_folder_path(
+        paths
+            .get("journal")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Vault profile paths.journal is required".to_owned())?,
+    )?;
+    Ok(serde_json::json!({
+        "version": 1,
+        "paths": { "inbox": inbox, "daily": daily, "journal": journal }
+    }))
+}
+
+fn normalize_folder_path(value: &str) -> Result<String, String> {
+    let normalized = value.trim().replace('\\', "/");
+    if normalized.is_empty() || normalized.len() > 240 || normalized.starts_with('/') {
+        return Err("Vault folder path must be a non-empty relative path".into());
+    }
+    for part in normalized.split('/') {
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.starts_with('.')
+            || part.eq_ignore_ascii_case("_templates")
+            || part.ends_with([' ', '.'])
+            || part.chars().any(|character| "<>:\"|?*".contains(character))
+        {
+            return Err("Vault folder path contains an invalid or internal directory".into());
+        }
+    }
+    Ok(normalized)
+}
+
+fn asset_mime(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "avif" => Some("image/avif"),
+        "gif" => Some("image/gif"),
+        "jpeg" | "jpg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "svg" => Some("image/svg+xml"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

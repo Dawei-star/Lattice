@@ -8,19 +8,24 @@
 //! - 单实例锁：第二实例明确报"已被占用"，禁止静默共写（风险 R12）；
 //! - 统一错误模型：`ServiceError { code, message }`，命令面在 P1-04 切换。
 
-use crate::index::{FolderNode, Index, NoteDetail};
+use crate::index::{Index, NoteDetail};
 use crate::jobs::JobsQueue;
-use crate::markdown::{normalize_title, parse_frontmatter, sanitize_file_part, serialize_markdown_document, MarkdownDocument};
+use crate::markdown::{
+    MarkdownDocument, normalize_title, parse_frontmatter, sanitize_file_part,
+    serialize_markdown_document, strip_frontmatter,
+};
+use crate::memory::{MemoryError, MemoryRecord, MemoryStore};
 use crate::time::{iso8601_utc, now_millis};
-use crate::vault::{NoteContents, Vault};
-use uuid::Uuid;
+use crate::vault::{NoteContents, Vault, VaultInfo};
 use fs2::FileExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+use uuid::Uuid;
 
 /// 单篇笔记的历史快照上限，与 Express `notes.history.js` 一致。
 pub const SNAPSHOT_LIMIT: usize = 200;
@@ -35,7 +40,10 @@ pub struct ServiceError {
 
 impl ServiceError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 
@@ -62,18 +70,26 @@ pub struct AuditLog {
 impl AuditLog {
     fn open(lattice_dir: &Path) -> Result<Self, ServiceError> {
         fs::create_dir_all(lattice_dir)?;
-        Ok(Self { path: lattice_dir.join("audit.jsonl") })
+        Ok(Self {
+            path: lattice_dir.join("audit.jsonl"),
+        })
     }
 
     fn record(&self, action: &str, fields: &[(&str, &str)]) {
         let mut entry = serde_json::Map::new();
-        entry.insert("ts".into(), serde_json::json!(crate::time::iso8601_utc(crate::time::now_millis())));
+        entry.insert(
+            "ts".into(),
+            serde_json::json!(crate::time::iso8601_utc(crate::time::now_millis())),
+        );
         entry.insert("action".into(), serde_json::json!(action));
         for (key, value) in fields {
             entry.insert((*key).into(), serde_json::json!(value));
         }
         if let Ok(line) = serde_json::to_string(&entry)
-            && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&self.path)
+            && let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
         {
             let _ = writeln!(file, "{line}");
         }
@@ -95,7 +111,9 @@ pub struct SnapshotMeta {
 
 impl SnapshotStore {
     fn open(lattice_dir: &Path) -> Self {
-        Self { root: lattice_dir.join("history") }
+        Self {
+            root: lattice_dir.join("history"),
+        }
     }
 
     /// 列出某笔记的全部快照，按版本名倒序（时间戳前缀保证字典序即时间序）。
@@ -106,8 +124,12 @@ impl SnapshotStore {
         };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(stripped) = name.strip_suffix(".md") else { continue };
-            let Some((stamp, hash)) = stripped.split_once('-') else { continue };
+            let Some(stripped) = name.strip_suffix(".md") else {
+                continue;
+            };
+            let Some((stamp, hash)) = stripped.split_once('-') else {
+                continue;
+            };
             let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
             snapshots.push(SnapshotMeta {
                 version: stripped.to_owned(),
@@ -165,8 +187,16 @@ impl SnapshotStore {
         file.write_all(raw.as_bytes())?;
         file.sync_all()?;
         // 超出上限从最旧开始删除；单个删除失败不阻断
-        for stale in self.list(note_id).iter().take(existing.len().saturating_sub(limit - 1)) {
-            let _ = fs::remove_file(self.root.join(note_id).join(format!("{}.md", stale.version)));
+        for stale in self
+            .list(note_id)
+            .iter()
+            .take(existing.len().saturating_sub(limit - 1))
+        {
+            let _ = fs::remove_file(
+                self.root
+                    .join(note_id)
+                    .join(format!("{}.md", stale.version)),
+            );
         }
         Ok(Some(version))
     }
@@ -192,7 +222,10 @@ fn valid_version(version: &str) -> Option<(&str, &str)> {
     if stamp.len() != 19
         || bytes[8] != b'T'
         || !stamp.ends_with('Z')
-        || !stamp.chars().filter(|c| *c != 'T' && *c != 'Z').all(|c| c.is_ascii_digit())
+        || !stamp
+            .chars()
+            .filter(|c| *c != 'T' && *c != 'Z')
+            .all(|c| c.is_ascii_digit())
     {
         return None;
     }
@@ -240,7 +273,282 @@ pub struct WorkspaceService {
     audit: AuditLog,
     snapshots: SnapshotStore,
     jobs: JobsQueue,
+    memories: MemoryStore,
     _lock: File, // 句柄存活期间锁有效；drop 即释放
+}
+
+const MCP_CONFIG_DIRECTORY: &str = ".lattice";
+const MCP_CONFIG_FILE: &str = "mcp.json";
+const MCP_MAX_SERVERS: usize = 16;
+const MCP_MAX_KEY_LENGTH: usize = 80;
+const MCP_MAX_FIELD_LENGTH: usize = 4096;
+const MCP_MAX_ENV_ENTRIES: usize = 64;
+
+/// 项目级 MCP 配置状态。配置文件只描述外部连接，不代表 sidecar 已经启动。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProjectState {
+    pub path: String,
+    pub status: String,
+    pub warning: Option<String>,
+    pub servers: Vec<McpServerEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct McpServerEntry {
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub url: String,
+    pub enabled: bool,
+}
+
+fn mcp_string(value: Option<&serde_json::Value>, max: usize) -> String {
+    value
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(max)
+        .collect()
+}
+
+fn mcp_trimmed_string(value: Option<&serde_json::Value>, max: usize) -> String {
+    value
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(max)
+        .collect()
+}
+
+fn mcp_source(value: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let object = value.as_object()?;
+    object
+        .get("mcpServers")
+        .and_then(serde_json::Value::as_object)
+        .or(Some(object))
+}
+
+fn mcp_normalize_entry(key: &str, raw: &serde_json::Value) -> Option<McpServerEntry> {
+    let object = raw.as_object()?;
+    let key: String = key.trim().chars().take(MCP_MAX_KEY_LENGTH).collect();
+    if key.is_empty() {
+        return None;
+    }
+    let url = mcp_trimmed_string(object.get("url"), MCP_MAX_FIELD_LENGTH);
+    let transport = if object.get("transport").and_then(serde_json::Value::as_str) == Some("sse")
+        || !url.is_empty()
+    {
+        "sse"
+    } else {
+        "stdio"
+    };
+    let name = {
+        let value = mcp_trimmed_string(object.get("name"), 120);
+        if value.is_empty() { key.clone() } else { value }
+    };
+    let command = mcp_trimmed_string(object.get("command"), MCP_MAX_FIELD_LENGTH);
+    let args = object
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|item| item.chars().take(MCP_MAX_FIELD_LENGTH).collect())
+                .take(64)
+                .collect()
+        })
+        .unwrap_or_default();
+    let env = object
+        .get("env")
+        .and_then(serde_json::Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(name, value)| {
+                    if name.is_empty() || !value.is_string() {
+                        return None;
+                    }
+                    let name = name.chars().take(200).collect::<String>();
+                    Some((
+                        name,
+                        value
+                            .as_str()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(MCP_MAX_FIELD_LENGTH)
+                            .collect::<String>(),
+                    ))
+                })
+                .take(MCP_MAX_ENV_ENTRIES)
+                .collect()
+        })
+        .unwrap_or_default();
+    let valid_http_url = url
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || url
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+    if (transport == "stdio" && command.is_empty()) || (transport == "sse" && !valid_http_url) {
+        return None;
+    }
+    Some(McpServerEntry {
+        key,
+        name,
+        description: mcp_string(object.get("description"), 300),
+        transport: transport.to_owned(),
+        command,
+        args,
+        env,
+        url,
+        enabled: object.get("enabled").and_then(serde_json::Value::as_bool) != Some(false),
+    })
+}
+
+fn mcp_normalize_document(value: &serde_json::Value) -> (Vec<McpServerEntry>, usize) {
+    let Some(source) = mcp_source(value) else {
+        return (Vec::new(), 0);
+    };
+    let source_count = source.len();
+    let mut servers = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (key, raw) in source {
+        let Some(server) = mcp_normalize_entry(key, raw) else {
+            continue;
+        };
+        if !seen.insert(server.key.clone()) {
+            continue;
+        }
+        servers.push(server);
+        if servers.len() >= MCP_MAX_SERVERS {
+            break;
+        }
+    }
+    (servers, source_count)
+}
+
+fn mcp_server_document(server: &McpServerEntry) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert("name".into(), serde_json::json!(server.name));
+    value.insert("description".into(), serde_json::json!(server.description));
+    value.insert("transport".into(), serde_json::json!(server.transport));
+    if server.transport == "sse" {
+        value.insert("url".into(), serde_json::json!(server.url));
+    } else {
+        value.insert("command".into(), serde_json::json!(server.command));
+        value.insert("args".into(), serde_json::json!(server.args));
+    }
+    value.insert("env".into(), serde_json::json!(server.env));
+    value.insert("enabled".into(), serde_json::json!(server.enabled));
+    serde_json::Value::Object(value)
+}
+
+fn is_template_name(name: &str) -> bool {
+    name.len() > 3
+        && name.to_ascii_lowercase().ends_with(".md")
+        && !name.contains(['/', '\\', ':'])
+        && !name.contains("..")
+}
+
+fn template_name(value: &str) -> Result<String, ServiceError> {
+    let name = value.trim().trim_end_matches(".md").to_owned();
+    if name.is_empty() || !is_template_name(&format!("{name}.md")) {
+        return Err(ServiceError::new("VALIDATION", "Invalid template name"));
+    }
+    Ok(name)
+}
+
+fn normalize_date(value: Option<&str>) -> Result<String, ServiceError> {
+    let date = match value {
+        Some(value) if !value.is_empty() => value.to_owned(),
+        _ => {
+            let millis = crate::time::now_millis();
+            let seconds = millis.div_euclid(1000);
+            let days = seconds.div_euclid(86_400);
+            // Civil date conversion from Unix days, valid for the supported Vault date range.
+            let z = days + 719_468;
+            let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe.div_euclid(1_460) + doe.div_euclid(36_524)
+                - doe.div_euclid(146_096))
+            .div_euclid(365);
+            let year = yoe + era * 400;
+            let doy = doe - (365 * yoe + yoe.div_euclid(4) - yoe.div_euclid(100));
+            let mp = (5 * doy + 2).div_euclid(153);
+            let day = doy - (153 * mp + 2).div_euclid(5) + 1;
+            let month = mp + if mp < 10 { 3 } else { -9 };
+            let year = year + if month <= 2 { 1 } else { 0 };
+            format!("{year:04}-{month:02}-{day:02}")
+        }
+    };
+    let valid = date.len() == 10
+        && date.as_bytes()[4] == b'-'
+        && date.as_bytes()[7] == b'-'
+        && date
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| index == 4 || index == 7 || ch.is_ascii_digit());
+    if !valid {
+        return Err(ServiceError::new(
+            "VALIDATION",
+            "Date must use YYYY-MM-DD format",
+        ));
+    }
+    let year = date[0..4].parse::<u32>().unwrap_or(0);
+    let month = date[5..7].parse::<u32>().unwrap_or(0);
+    let day = date[8..10].parse::<u32>().unwrap_or(0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_multiple_of(400) || (year.is_multiple_of(4) && !year.is_multiple_of(100)) => {
+            29
+        }
+        2 => 28,
+        _ => 0,
+    };
+    if year == 0 || month == 0 || day == 0 || day > days_in_month {
+        return Err(ServiceError::new(
+            "VALIDATION",
+            "Date must be a valid calendar date",
+        ));
+    }
+    Ok(date)
+}
+
+fn builtin_templates() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "bug",
+            "---\ntype: bug\nstatus: open\npriority: medium\nproject:\n---\n# {{title}}\n\n## 现象\n\n\n## 复现步骤\n\n1.\n\n## 预期结果\n\n\n## 实际结果\n\n\n## 根因与修复\n",
+        ),
+        (
+            "decision",
+            "---\ntype: decision\nstatus: proposed\nproject:\n---\n# {{title}}\n\n## 背景\n\n\n## 方案\n\n\n## 决策\n\n\n## 影响\n",
+        ),
+        (
+            "meeting",
+            "---\ntype: meeting\nstatus: open\nproject:\n---\n# {{title}}\n\n日期：{{date}}\n时间：{{time}}\n\n## 参与者\n\n\n## 讨论\n\n\n## 结论与行动项\n\n- [ ]\n",
+        ),
+        (
+            "learning",
+            "---\ntype: learning\nstatus: draft\nproject:\n---\n# {{title}}\n\n## 问题\n\n\n## 结论\n\n\n## 示例\n\n```\n```\n\n## 相关链接\n",
+        ),
+        (
+            "retrospective",
+            "---\ntype: retrospective\nstatus: draft\nproject:\n---\n# {{title}}\n\n## 做得好的地方\n\n\n## 遇到的问题\n\n\n## 下一步改进\n\n- [ ]\n",
+        ),
+        (
+            "daily",
+            "---\ntype: daily\nstatus: draft\n---\n# {{title}}\n\n",
+        ),
+    ]
 }
 
 impl WorkspaceService {
@@ -261,24 +569,30 @@ impl WorkspaceService {
                 format!("Vault 已被另一个 Lattice 实例占用：{}", root.display()),
             )
         })?;
-        let vault =
-            Vault::open(root).map_err(|error| ServiceError::new("VAULT_OPEN_FAILED", error.to_string()))?;
+        let vault = Vault::open(root)
+            .map_err(|error| ServiceError::new("VAULT_OPEN_FAILED", error.to_string()))?;
         let index = Index::open(vault.root())
             .map_err(|error| ServiceError::new("INDEX_OPEN_FAILED", error))?;
         let audit = AuditLog::open(&lattice_dir)?;
         let jobs = JobsQueue::open(lattice_dir.join("lattice.db").as_path())
             .map_err(|error| ServiceError::new("JOBS_OPEN_FAILED", error))?;
+        let memories = MemoryStore::open(lattice_dir.join("lattice.db").as_path())
+            .map_err(|error| ServiceError::new("MEMORY_OPEN_FAILED", error))?;
         let recovered = jobs.recover_interrupted().unwrap_or(0);
         if recovered > 0 {
             log::info!("启动恢复：{recovered} 个中断任务已重排回队列");
         }
-        audit.record("workspace_open", &[("path", &vault.root().to_string_lossy())]);
+        audit.record(
+            "workspace_open",
+            &[("path", &vault.root().to_string_lossy())],
+        );
         Ok(Self {
             vault,
             index,
             audit,
             snapshots: SnapshotStore::open(&lattice_dir),
             jobs,
+            memories,
             _lock: lock,
         })
     }
@@ -293,32 +607,56 @@ impl WorkspaceService {
     ) -> Result<NoteContents, ServiceError> {
         // 快照需要旧内容；读取失败（不存在/超限）不阻断写入
         let previous = self.vault.read(path).ok();
-        let note = self.vault.write(path, raw, expected_hash).map_err(|error| {
-            let code = if error.contains("changed on disk") || error.contains("removed before") {
-                "CONFLICT"
-            } else {
-                "WRITE_FAILED"
-            };
-            self.audit.record("write_rejected", &[("path", path), ("code", code), ("actor", actor)]);
-            ServiceError::new(code, error)
-        })?;
+        let note = self
+            .vault
+            .write(path, raw, expected_hash)
+            .map_err(|error| {
+                let code = if error.contains("changed on disk") || error.contains("removed before")
+                {
+                    "CONFLICT"
+                } else {
+                    "WRITE_FAILED"
+                };
+                self.audit.record(
+                    "write_rejected",
+                    &[("path", path), ("code", code), ("actor", actor)],
+                );
+                ServiceError::new(code, error)
+            })?;
         // 旧内容与最新快照一致时 create 内部会跳过；无 frontmatter id 的文件跳过快照
         if let Some(previous) = previous {
             match frontmatter_id(&previous.raw) {
-                Some(note_id) => match self.snapshots.create(&note_id, &previous.raw, SNAPSHOT_LIMIT) {
-                    Ok(Some(version)) => {
-                        self.audit.record("snapshot", &[("path", path), ("version", &version), ("actor", actor)]);
+                Some(note_id) => {
+                    match self
+                        .snapshots
+                        .create(&note_id, &previous.raw, SNAPSHOT_LIMIT)
+                    {
+                        Ok(Some(version)) => {
+                            self.audit.record(
+                                "snapshot",
+                                &[("path", path), ("version", &version), ("actor", actor)],
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => log::warn!("快照失败（不阻断写入）：{error}"),
                     }
-                    Ok(None) => {}
-                    Err(error) => log::warn!("快照失败（不阻断写入）：{error}"),
-                },
+                }
                 None => log::debug!("跳过快照：{path} 缺少合法的 frontmatter id"),
             }
         }
-        self.audit.record("write", &[("path", path), ("hash", &note.sha256), ("actor", actor)]);
+        self.audit.record(
+            "write",
+            &[("path", path), ("hash", &note.sha256), ("actor", actor)],
+        );
         // 索引是可重建投影：同步失败只告警，下次扫描自愈
         if let Ok(meta) = self.vault.stat(&note.path)
-            && let Err(error) = self.index.upsert(&note.path, &note.raw, &note.sha256, meta.bytes, meta.modified_at)
+            && let Err(error) = self.index.upsert(
+                &note.path,
+                &note.raw,
+                &note.sha256,
+                meta.bytes,
+                meta.modified_at,
+            )
         {
             log::warn!("索引同步失败（下次扫描会自愈）：{error}");
         }
@@ -334,6 +672,446 @@ impl WorkspaceService {
         self.vault.root()
     }
 
+    pub fn vault_info(&self) -> VaultInfo {
+        self.vault.info()
+    }
+
+    fn mcp_config_path(&self) -> Result<PathBuf, ServiceError> {
+        let path = self
+            .vault
+            .root()
+            .join(MCP_CONFIG_DIRECTORY)
+            .join(MCP_CONFIG_FILE);
+        fc_assert_no_symlink(self.vault.root(), &path)
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
+        Ok(path)
+    }
+
+    /// 读取项目级 MCP 配置；只读取 `.lattice/mcp.json`，不连接或启动任何 Server。
+    pub fn mcp_project_get(&self) -> Result<McpProjectState, ServiceError> {
+        let path = self.mcp_config_path()?;
+        let path_text = path.to_string_lossy().into_owned();
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(McpProjectState {
+                    path: path_text,
+                    status: "default".into(),
+                    warning: None,
+                    servers: Vec::new(),
+                });
+            }
+            Err(error) => {
+                return Ok(McpProjectState {
+                    path: path_text,
+                    status: "invalid".into(),
+                    warning: Some(format!("无法读取配置：{error}")),
+                    servers: Vec::new(),
+                });
+            }
+        };
+        let document = match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(document) => document,
+            Err(error) => {
+                return Ok(McpProjectState {
+                    path: path_text,
+                    status: "invalid".into(),
+                    warning: Some(format!("JSON 解析失败：{error}")),
+                    servers: Vec::new(),
+                });
+            }
+        };
+        let (servers, _) = mcp_normalize_document(&document);
+        Ok(McpProjectState {
+            path: path_text,
+            status: "loaded".into(),
+            warning: None,
+            servers,
+        })
+    }
+
+    /// 归一化并原子保存项目级 MCP 配置；confirmed 是文件写入闸门。
+    pub fn mcp_project_set(
+        &self,
+        document: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<McpProjectState, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "保存项目级 MCP 配置需要 confirmed=true",
+            ));
+        }
+        if !document.is_object() || document.is_array() {
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "项目级 MCP 配置必须是 JSON 对象",
+            ));
+        }
+        let path = self.mcp_config_path()?;
+        let (servers, source_count) = mcp_normalize_document(&document);
+        let mut normalized = serde_json::Map::new();
+        for server in &servers {
+            normalized.insert(server.key.clone(), mcp_server_document(server));
+        }
+        let persisted = serde_json::json!({ "mcpServers": normalized });
+        let raw = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&persisted)
+                .map_err(|error| ServiceError::new("VALIDATION", error.to_string()))?
+        );
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        }
+        fc_write_atomic(&path, &raw).map_err(|error| ServiceError::new("IO_ERROR", error))?;
+        let dropped = source_count.saturating_sub(servers.len());
+        let count = servers.len().to_string();
+        self.audit.record(
+            "mcp_project_write",
+            &[
+                ("path", ".lattice/mcp.json"),
+                ("servers", &count),
+                ("actor", "ui"),
+            ],
+        );
+        let mut result = self.mcp_project_get()?;
+        result.warning = (dropped > 0)
+            .then(|| format!("{dropped} 个无效条目已被忽略（缺 command / URL 非法等）。"));
+        Ok(result)
+    }
+
+    pub fn save_vault_profile(
+        &self,
+        profile: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<VaultInfo, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "修改 Vault profile 需要 confirmed=true",
+            ));
+        }
+        self.vault
+            .save_profile(profile)
+            .map_err(|error| ServiceError::new("VALIDATION", error))
+    }
+
+    pub fn duplicate_note(
+        &self,
+        id: &str,
+        folder_id: Option<String>,
+        confirmed: bool,
+    ) -> Result<NoteDetail, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "创建笔记副本需要 confirmed=true",
+            ));
+        }
+        let current = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "笔记不存在"))?;
+        let properties = current.properties.as_object().cloned().unwrap_or_default();
+        let target_folder = folder_id.or(current.folder_id.clone());
+        self.create_note(
+            None,
+            Some(format!("{}（副本）", current.title)),
+            strip_frontmatter(&current.content),
+            target_folder,
+            &properties,
+            true,
+        )
+    }
+
+    pub fn list_templates(&self) -> Result<Vec<serde_json::Value>, ServiceError> {
+        let directory = self.vault.root().join("_templates");
+        let has_user_templates = fs::read_dir(&directory)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_file())
+                    .unwrap_or(false)
+                    && is_template_name(&entry.file_name().to_string_lossy())
+            });
+        let mut templates = Vec::new();
+        if has_user_templates {
+            for entry in fs::read_dir(&directory)
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?
+                .flatten()
+            {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !entry
+                    .file_type()
+                    .map(|kind| kind.is_file())
+                    .unwrap_or(false)
+                    || !is_template_name(&name)
+                {
+                    continue;
+                }
+                let raw = fs::read_to_string(entry.path())
+                    .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+                let meta = parse_frontmatter(&raw).unwrap_or_default();
+                let modified_at = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                    .map(|value| iso8601_utc(value.as_millis() as i64))
+                    .unwrap_or_default();
+                templates.push(serde_json::json!({ "name": name.trim_end_matches(".md"), "filePath": format!("_templates/{name}"), "title": meta.title.unwrap_or_else(|| name.trim_end_matches(".md").to_owned()), "size": raw.len(), "updatedAt": modified_at }));
+            }
+        } else {
+            for (name, raw) in builtin_templates() {
+                let meta = parse_frontmatter(raw).unwrap_or_default();
+                templates.push(serde_json::json!({ "name": name, "filePath": format!("_templates/{name}.md"), "title": meta.title.unwrap_or_else(|| name.to_owned()), "size": raw.len(), "updatedAt": "" }));
+            }
+        }
+        templates.sort_by(|left, right| {
+            left["name"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["name"].as_str().unwrap_or_default())
+        });
+        Ok(templates)
+    }
+
+    pub fn create_from_template(
+        &self,
+        template: &str,
+        title: Option<String>,
+        date: Option<String>,
+        folder_id: Option<String>,
+        confirmed: bool,
+    ) -> Result<NoteDetail, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "从模板创建笔记需要 confirmed=true",
+            ));
+        }
+        let name = template_name(template)?;
+        let user_path = self
+            .vault
+            .root()
+            .join("_templates")
+            .join(format!("{name}.md"));
+        let raw = if user_path.is_file() {
+            fs::read_to_string(user_path)?
+        } else {
+            builtin_templates()
+                .into_iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, raw)| raw.to_owned())
+                .ok_or_else(|| ServiceError::new("NOT_FOUND", "Template not found"))?
+        };
+        let resolved_date = normalize_date(date.as_deref())?;
+        let resolved_title = title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| parse_frontmatter(&raw).and_then(|meta| meta.title))
+            .unwrap_or_else(|| name.clone());
+        let rendered = raw
+            .replace("{{title}}", &resolved_title)
+            .replace("{{date}}", &resolved_date)
+            .replace("{{time}}", "00:00");
+        let meta = parse_frontmatter(&rendered).unwrap_or_default();
+        let content = strip_frontmatter(&rendered).to_owned();
+        self.create_note(
+            None,
+            Some(resolved_title),
+            &content,
+            folder_id,
+            &meta.properties,
+            true,
+        )
+    }
+
+    pub fn create_daily_note(
+        &self,
+        date: Option<String>,
+        confirmed: bool,
+    ) -> Result<NoteDetail, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "创建每日笔记需要 confirmed=true",
+            ));
+        }
+        let date = normalize_date(date.as_deref())?;
+        let profile = self.vault.info().profile;
+        let daily = profile["paths"]["daily"]
+            .as_str()
+            .unwrap_or("Daily")
+            .to_owned();
+        self.vault
+            .ensure_directory(&daily)
+            .map_err(|error| ServiceError::new("IO_ERROR", error))?;
+        let folder_id = crate::index::stable_folder_id(&daily);
+        let path = format!("{daily}/{date}.md");
+        if let Some(note) = self
+            .index
+            .find_note_detail(None, Some(&path))
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+        {
+            return Ok(note);
+        }
+        if self.vault.root().join(&path).is_file() {
+            self.index
+                .scan(&self.vault)
+                .map_err(|error| ServiceError::new("SCAN_ERROR", error))?;
+            if let Some(note) = self
+                .index
+                .find_note_detail(None, Some(&path))
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            {
+                return Ok(note);
+            }
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "每日笔记文件已存在但无法建立投影",
+            ));
+        }
+        self.create_from_template(
+            "daily",
+            Some(date.clone()),
+            Some(date),
+            Some(folder_id),
+            true,
+        )
+    }
+
+    /// 生成或更新当天的本地摘要笔记。
+    ///
+    /// 摘要是确定性的本地汇总，不调用云模型，也不创建独立的 AI 正文存储。
+    /// 用户点击每日摘要按钮即构成确认，最终文件仍经 create_note/update_note
+    /// 进入 WorkspaceService 的快照、冲突、索引和审计边界。
+    pub fn generate_ai_digest(
+        &self,
+        date: Option<String>,
+        confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "生成每日摘要需要 confirmed=true",
+            ));
+        }
+        let date = normalize_date(date.as_deref())?;
+        let profile = self.vault.info().profile;
+        let journal = profile["paths"]["journal"]
+            .as_str()
+            .unwrap_or("Journal")
+            .to_owned();
+        self.vault
+            .ensure_directory(&journal)
+            .map_err(|error| ServiceError::new("IO_ERROR", error))?;
+
+        let source_notes = self
+            .index
+            .digest_notes(&date, &journal)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let title = format!("每日摘要 {date}");
+        let file_path = format!("{journal}/{title}.md");
+        let mut sections = vec![
+            format!("今天共修改 {} 篇笔记。", source_notes.len()),
+            String::new(),
+            "## 修改的笔记".to_owned(),
+            String::new(),
+        ];
+        if source_notes.is_empty() {
+            sections.push("- （无）".to_owned());
+        } else {
+            for note in &source_notes {
+                let safe_title = note.title.replace(['[', ']'], "");
+                let time = note
+                    .updated_at
+                    .as_deref()
+                    .and_then(|value| value.get(11..16))
+                    .unwrap_or("--:--");
+                sections.push(format!(
+                    "- [[{}]]（{} 字，{} 更新）",
+                    safe_title, note.word_count, time
+                ));
+                if !note.excerpt.is_empty() {
+                    sections.push(format!("  > {}", note.excerpt));
+                }
+            }
+        }
+        sections.extend([
+            String::new(),
+            "---".to_owned(),
+            format!(
+                "由 Lattice 自动生成于 {}（本地模式）。",
+                iso8601_utc(now_millis())
+            ),
+        ]);
+        let content = sections.join("\n");
+
+        let mut existing = self
+            .index
+            .find_note_detail(None, Some(&file_path))
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        if existing.is_none() && self.vault.root().join(&file_path).is_file() {
+            self.index
+                .scan(&self.vault)
+                .map_err(|error| ServiceError::new("SCAN_ERROR", error))?;
+            existing = self
+                .index
+                .find_note_detail(None, Some(&file_path))
+                .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        }
+
+        if let Some(note) = existing {
+            let updated = self.update_note(
+                &note.id,
+                None,
+                Some(content),
+                None,
+                None,
+                None,
+                note.content_hash.clone(),
+                true,
+            )?;
+            return Ok(serde_json::json!({
+                "noteId": updated.id,
+                "title": updated.title,
+                "filePath": updated.file_path,
+                "created": false,
+                "modifiedCount": source_notes.len(),
+                "aiOverview": false,
+            }));
+        }
+
+        let folder_id = crate::index::stable_folder_id(&journal);
+        let mut properties = serde_json::Map::new();
+        properties.insert("type".to_owned(), serde_json::json!("digest"));
+        let created = self.create_note(
+            None,
+            Some(title),
+            &content,
+            Some(folder_id),
+            &properties,
+            true,
+        )?;
+        Ok(serde_json::json!({
+            "noteId": created.id,
+            "title": created.title,
+            "filePath": created.file_path,
+            "created": true,
+            "modifiedCount": source_notes.len(),
+            "aiOverview": false,
+        }))
+    }
+
     pub fn vault(&self) -> &Vault {
         &self.vault
     }
@@ -346,6 +1124,67 @@ impl WorkspaceService {
         &self.jobs
     }
 
+    pub fn memory_list(&self, include_expired: bool) -> Result<Vec<MemoryRecord>, ServiceError> {
+        self.memories
+            .list(include_expired)
+            .map_err(|error| ServiceError::new("MEMORY_ERROR", error))
+    }
+
+    pub fn memory_save(
+        &self,
+        id: Option<String>,
+        kind: String,
+        content: String,
+        source: String,
+        expires_at: Option<String>,
+        confirmed: bool,
+    ) -> Result<MemoryRecord, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "保存 AI 记忆需要 confirmed=true",
+            ));
+        }
+        let result = self
+            .memories
+            .save(id, &kind, &content, &source, expires_at.as_deref())
+            .map_err(|error| match error {
+                MemoryError::Validation(message) => ServiceError::new("VALIDATION", message),
+                MemoryError::Sensitive(message) => ServiceError::new("SENSITIVE_CONTENT", message),
+                MemoryError::Storage(message) => ServiceError::new("MEMORY_ERROR", message),
+            })?;
+        self.audit.record(
+            "memory_save",
+            &[
+                ("id", &result.id),
+                ("kind", &result.kind),
+                ("source", &result.source),
+            ],
+        );
+        Ok(result)
+    }
+
+    pub fn memory_delete(
+        &self,
+        id: &str,
+        confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
+        if !confirmed {
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除 AI 记忆需要 confirmed=true",
+            ));
+        }
+        let deleted = self
+            .memories
+            .delete(id)
+            .map_err(|error| ServiceError::new("MEMORY_ERROR", error))?;
+        if deleted {
+            self.audit.record("memory_delete", &[("id", id)]);
+        }
+        Ok(serde_json::json!({ "id": id, "deleted": deleted }))
+    }
+
     /// 创建笔记（契约 POST /api/notes → note_create）：
     /// confirmed 必需；client id 已存在时幂等返回详情；标题归一化 + 路径占用
     /// 递增分配；frontmatter 序列化后经统一写边界落盘（审计/快照/索引一并生效）。
@@ -354,6 +1193,7 @@ impl WorkspaceService {
         id: Option<String>,
         title: Option<String>,
         content: &str,
+        folder_id: Option<String>,
         properties: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<NoteDetail, ServiceError> {
@@ -375,8 +1215,12 @@ impl WorkspaceService {
             Some(id) => id,
             None => Uuid::new_v4().to_string(),
         };
+        if let Some(folder_id) = folder_id.as_deref() {
+            crate::index::directory_path_for_id(&self.vault, folder_id)
+                .ok_or_else(|| ServiceError::new("VALIDATION", "指定的目录不存在"))?;
+        }
         let final_title = normalize_title(title.as_deref().unwrap_or(""), content);
-        let file_path = self.allocate_file_path(&final_title)?;
+        let file_path = self.allocate_file_path(&final_title, folder_id.as_deref())?;
         let timestamp = iso8601_utc(now_millis());
         let raw = serialize_markdown_document(&MarkdownDocument {
             id: &note_id,
@@ -395,10 +1239,26 @@ impl WorkspaceService {
     }
 
     /// 路径分配（对齐 allocateFilePath）：重名时追加 " (2)" 递增后缀。
-    fn allocate_file_path(&self, title: &str) -> Result<String, ServiceError> {
+    fn allocate_file_path(
+        &self,
+        title: &str,
+        folder_id: Option<&str>,
+    ) -> Result<String, ServiceError> {
         let base = format!("{}.md", sanitize_file_part(title, "未命名笔记"));
-        let stem = base.trim_end_matches(".md").to_owned();
-        let mut candidate = base.clone();
+        let directory = folder_id
+            .map(|id| {
+                crate::index::directory_path_for_id(&self.vault, id)
+                    .ok_or_else(|| ServiceError::new("VALIDATION", "指定的目录不存在"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let relative_base = if directory.is_empty() {
+            base.clone()
+        } else {
+            format!("{directory}/{base}")
+        };
+        let stem = relative_base.trim_end_matches(".md").to_owned();
+        let mut candidate = relative_base;
         let mut suffix = 2;
         loop {
             let taken_in_index = self
@@ -423,6 +1283,7 @@ impl WorkspaceService {
         id: &str,
         title: Option<String>,
         content: Option<String>,
+        folder_id: Option<Option<String>>,
         is_pinned: Option<bool>,
         properties: Option<serde_json::Map<String, serde_json::Value>>,
         expected_hash: Option<String>,
@@ -438,18 +1299,30 @@ impl WorkspaceService {
             && let Some(current_hash) = current.content_hash.as_deref()
             && expected != current_hash
         {
-            self.audit.record("update_rejected", &[("path", id), ("code", "CONFLICT"), ("actor", "ui")]);
+            self.audit.record(
+                "update_rejected",
+                &[("path", id), ("code", "CONFLICT"), ("actor", "ui")],
+            );
             return Err(ServiceError::new(
                 "CONFLICT",
                 "笔记已在其他窗口被修改，请刷新后再保存",
             ));
         }
-        // 改 content/置顶免确认；会改变文件路径的（标题）需要 confirmed（契约特例）
+        // 改 content/置顶免确认；会改变文件路径的（标题/目录）需要 confirmed（契约特例）
         let title_changed = title.as_ref().is_some_and(|next| *next != current.title);
-        if title_changed && !confirmed {
+        let next_folder_id = match folder_id {
+            None => current.folder_id.clone(),
+            Some(value) => value,
+        };
+        if let Some(folder_id) = next_folder_id.as_deref() {
+            crate::index::directory_path_for_id(&self.vault, folder_id)
+                .ok_or_else(|| ServiceError::new("VALIDATION", "指定的目录不存在"))?;
+        }
+        let folder_changed = next_folder_id != current.folder_id;
+        if (title_changed || folder_changed) && !confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
-                "修改标题会改变文件路径，需要 confirmed=true",
+                "修改标题或目录会改变文件路径，需要 confirmed=true",
             ));
         }
         let old_path = current
@@ -475,13 +1348,14 @@ impl WorkspaceService {
 
         let content_changed = next_content != current.content;
         let pinned_changed = next_pinned != current.is_pinned;
-        let properties_changed = serde_json::Value::Object(next_properties.clone()) != current_properties;
-        let path_changed = title_changed;
-        if !title_changed && !content_changed && !pinned_changed && !properties_changed {
+        let properties_changed =
+            serde_json::Value::Object(next_properties.clone()) != current_properties;
+        let path_changed = title_changed || folder_changed;
+        if !path_changed && !content_changed && !pinned_changed && !properties_changed {
             return Ok(current); // 无变化短路
         }
         let next_path = if path_changed {
-            self.allocate_file_path(&next_title)?
+            self.allocate_file_path(&next_title, next_folder_id.as_deref())?
         } else {
             old_path.clone()
         };
@@ -498,11 +1372,14 @@ impl WorkspaceService {
         if path_changed {
             // 重命名：新内容写旧路径（触发旧内容快照）→ 原子 rename → 投影迁移。
             // Windows 上文件被占用时 rename 明确失败并整体回滚（Express 同语义）。
-            self.write(&old_path, &raw, None, "ui")?;
+            self.write(&old_path, &raw, current.content_hash.as_deref(), "ui")?;
             let mut moved = false;
             let mut last_error = None;
             for _ in 0..3 {
-                match std::fs::rename(self.vault.root().join(&old_path), self.vault.root().join(&next_path)) {
+                match std::fs::rename(
+                    self.vault.root().join(&old_path),
+                    self.vault.root().join(&next_path),
+                ) {
                     Ok(()) => {
                         moved = true;
                         break;
@@ -518,7 +1395,9 @@ impl WorkspaceService {
                     "CONFLICT",
                     format!(
                         "文件正被其他程序占用，无法重命名（{}）",
-                        last_error.map(|error| error.to_string()).unwrap_or_else(|| "未知错误".into())
+                        last_error
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "未知错误".into())
                     ),
                 ));
             }
@@ -530,9 +1409,18 @@ impl WorkspaceService {
                 .stat(&next_path)
                 .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
             self.index
-                .upsert(&next_path, &raw, &meta_sha256(&raw), meta.bytes, meta.modified_at)
+                .upsert(
+                    &next_path,
+                    &raw,
+                    &meta_sha256(&raw),
+                    meta.bytes,
+                    meta.modified_at,
+                )
                 .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
-            self.audit.record("rename", &[("from", &old_path), ("to", &next_path), ("actor", "ui")]);
+            self.audit.record(
+                "rename",
+                &[("from", &old_path), ("to", &next_path), ("actor", "ui")],
+            );
         } else {
             // 同路径内容更新：expectedHash 用 current.contentHash（乐观锁已校验）
             self.write(&old_path, &raw, current.content_hash.as_deref(), "ui")?;
@@ -546,7 +1434,12 @@ impl WorkspaceService {
     /// 删除笔记（契约 DELETE /api/notes/:id → note_delete）：
     /// destructive——confirmed + secondConfirmed 双确认；删除文件与投影行，
     /// 历史快照目录保留（版本快照是附属数据，不随删除丢失）。
-    pub fn delete_note(&self, id: &str, confirmed: bool, second_confirmed: bool) -> Result<bool, ServiceError> {
+    pub fn delete_note(
+        &self,
+        id: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed || !second_confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
@@ -566,14 +1459,15 @@ impl WorkspaceService {
         self.index
             .remove(&path)
             .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
-        self.audit.record("delete", &[("path", &path), ("actor", "ui")]);
-        Ok(true)
+        self.audit
+            .record("delete", &[("path", &path), ("actor", "ui")]);
+        Ok(serde_json::json!({ "id": id, "deleted": true }))
     }
 
     /// 历史版本列表（契约 GET /api/notes/:id/history → note_history_list）。
-    pub fn history_list(&self, id: &str) -> Result<Vec<HistoryEntry>, ServiceError> {
+    pub fn history_list(&self, id: &str) -> Result<HistoryList, ServiceError> {
         let note_id = self.require_note_id(id)?;
-        Ok(self
+        let items = self
             .snapshots
             .list(&note_id)
             .into_iter()
@@ -583,7 +1477,17 @@ impl WorkspaceService {
                 created_at: meta.created_at,
                 size: meta.size,
             })
-            .collect())
+            .collect();
+        let current_hash = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .and_then(|note| note.content_hash)
+            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "笔记缺少当前内容哈希"))?;
+        Ok(HistoryList {
+            items,
+            current_hash,
+        })
     }
 
     /// 读取历史版本内容（契约 GET /api/notes/:id/history/:version → note_history_get）。
@@ -593,12 +1497,23 @@ impl WorkspaceService {
             .snapshots
             .read(&note_id, version)
             .ok_or_else(|| ServiceError::new("NOT_FOUND", "历史版本不存在或已损坏"))?;
-        let (_, hash) = valid_version(version)
+        let (stamp, hash) = valid_version(version)
             .ok_or_else(|| ServiceError::new("VALIDATION", "历史版本标识无效"))?;
+        let current = self
+            .index
+            .find_note_detail(Some(id), None)
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", "笔记不存在"))?;
+        let frontmatter = parse_frontmatter(&raw).unwrap_or_default();
         Ok(HistorySnapshot {
             version: version.to_owned(),
-            raw,
             hash: hash.to_owned(),
+            created_at: version_created_at(stamp),
+            title: frontmatter.title.unwrap_or(current.title),
+            content: strip_frontmatter(&raw).to_owned(),
+            is_pinned: frontmatter.pinned,
+            properties: serde_json::Value::Object(frontmatter.properties),
+            raw,
         })
     }
 
@@ -637,12 +1552,24 @@ impl WorkspaceService {
             .file_path
             .clone()
             .ok_or_else(|| ServiceError::new("NOTES_ERROR", "笔记缺少文件路径"))?;
-        self.write(&path, &snapshot.raw, current.content_hash.as_deref(), "ui")?;
-        self.audit.record("restore", &[("path", &path), ("version", version), ("actor", "ui")]);
-        self.index
-            .find_note_detail(Some(id), None)
-            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?
-            .ok_or_else(|| ServiceError::new("NOTES_ERROR", "恢复后索引未同步，请重试"))
+        let frontmatter = parse_frontmatter(&snapshot.raw).unwrap_or_default();
+        let title = frontmatter.title.or_else(|| Some(current.title.clone()));
+        let content = strip_frontmatter(&snapshot.raw).to_owned();
+        let restored = self.update_note(
+            id,
+            title,
+            Some(content),
+            None,
+            Some(frontmatter.pinned),
+            Some(frontmatter.properties),
+            current.content_hash.clone(),
+            true,
+        )?;
+        self.audit.record(
+            "restore",
+            &[("path", &path), ("version", version), ("actor", "ui")],
+        );
+        Ok(restored)
     }
 
     /// 定位笔记的 frontmatter id（历史快照按 UUID 组织；无 id 的笔记无历史）。
@@ -669,9 +1596,10 @@ impl WorkspaceService {
     pub fn folder_create(
         &self,
         name: &str,
-        parent_path: Option<&str>,
+        parent_id: Option<&str>,
+        sort_order: Option<u64>,
         confirmed: bool,
-    ) -> Result<FolderNode, ServiceError> {
+    ) -> Result<FolderRecord, ServiceError> {
         if !confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
@@ -679,7 +1607,13 @@ impl WorkspaceService {
             ));
         }
         let safe_name = sanitize_file_part(name, "未命名目录");
-        let relative = match parent_path {
+        let parent_path = parent_id
+            .map(|id| {
+                crate::index::directory_path_for_id(&self.vault, id)
+                    .ok_or_else(|| ServiceError::new("NOT_FOUND", "父目录不存在"))
+            })
+            .transpose()?;
+        let relative = match parent_path.as_deref() {
             Some(parent) => format!("{parent}/{safe_name}"),
             None => safe_name.clone(),
         };
@@ -692,15 +1626,15 @@ impl WorkspaceService {
         }
         std::fs::create_dir_all(&target)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法创建目录：{error}")))?;
-        self.audit.record("folder_create", &[("path", &relative), ("actor", "ui")]);
-        let (created_at, updated_at) = crate::index::directory_timestamps(self.vault.root(), &relative);
-        Ok(FolderNode {
+        self.audit
+            .record("folder_create", &[("path", &relative), ("actor", "ui")]);
+        let (created_at, updated_at) =
+            crate::index::directory_timestamps(self.vault.root(), &relative);
+        Ok(FolderRecord {
             id: crate::index::stable_folder_id(&relative),
             name: safe_name,
-            parent_id: parent_path.map(crate::index::stable_folder_id),
-            sort_order: 0,
-            note_count: 0,
-            children: Vec::new(),
+            parent_id: parent_path.as_deref().map(crate::index::stable_folder_id),
+            sort_order: sort_order.unwrap_or(0),
             created_at,
             updated_at,
         })
@@ -712,9 +1646,10 @@ impl WorkspaceService {
         &self,
         id: &str,
         name: Option<String>,
-        new_parent_path: Option<&str>,
+        parent_id: Option<Option<&str>>,
+        sort_order: Option<u64>,
         confirmed: bool,
-    ) -> Result<Vec<FolderNode>, ServiceError> {
+    ) -> Result<FolderRecord, ServiceError> {
         if !confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
@@ -724,22 +1659,45 @@ impl WorkspaceService {
         let old_path = crate::index::directory_path_for_id(&self.vault, id)
             .ok_or_else(|| ServiceError::new("NOT_FOUND", "目录不存在"))?;
         let old_name = old_path.rsplit('/').next().unwrap_or(&old_path).to_owned();
-        let parent = old_path.rsplit_once('/').map(|(parent, _)| parent.to_owned());
+        let parent = old_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_owned());
         let next_name = match name.as_deref() {
             Some(next) => sanitize_file_part(next, "未命名目录"),
-            None => old_name,
+            None => old_name.clone(),
         };
-        let next_parent = new_parent_path.map(str::to_owned).unwrap_or(parent.clone().unwrap_or_default());
-        let parent = if new_parent_path.is_some() { Some(next_parent.clone()) } else { parent };
+        let requested_parent = match parent_id {
+            Some(Some(id)) => Some(
+                crate::index::directory_path_for_id(&self.vault, id)
+                    .ok_or_else(|| ServiceError::new("NOT_FOUND", "父目录不存在"))?,
+            ),
+            Some(None) => None,
+            None => parent,
+        };
+        let parent = requested_parent;
         let next_path = match parent {
             Some(parent) if !parent.is_empty() => format!("{parent}/{next_name}"),
             _ => next_name.clone(),
         };
+        if next_path != old_path && next_path.starts_with(&format!("{old_path}/")) {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "不能把目录移动到它自己或其子目录下",
+            ));
+        }
         if next_path == old_path {
-            return self
-                .index
-                .folder_tree(&self.vault)
-                .map_err(|error| ServiceError::new("FOLDERS_ERROR", error));
+            let (created_at, updated_at) =
+                crate::index::directory_timestamps(self.vault.root(), &old_path);
+            return Ok(FolderRecord {
+                id: crate::index::stable_folder_id(&old_path),
+                name: old_name,
+                parent_id: old_path
+                    .rsplit_once('/')
+                    .map(|(parent, _)| crate::index::stable_folder_id(parent)),
+                sort_order: sort_order.unwrap_or(0),
+                created_at,
+                updated_at,
+            });
         }
         let target = self.vault.root().join(&next_path);
         if target.exists() {
@@ -750,24 +1708,36 @@ impl WorkspaceService {
         }
         std::fs::rename(self.vault.root().join(&old_path), target)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法重命名目录：{error}")))?;
-        self.audit.record("folder_rename", &[("from", &old_path), ("to", &next_path), ("actor", "ui")]);
+        self.audit.record(
+            "folder_rename",
+            &[("from", &old_path), ("to", &next_path), ("actor", "ui")],
+        );
         // 投影自愈：路径变化级联 notes.folder_id / links / note_tags
         self.index
             .scan(&self.vault)
             .map_err(|error| ServiceError::new("SCAN_ERROR", error))?;
-        self.index
-            .folder_tree(&self.vault)
-            .map_err(|error| ServiceError::new("FOLDERS_ERROR", error))
+        let (created_at, updated_at) =
+            crate::index::directory_timestamps(self.vault.root(), &next_path);
+        Ok(FolderRecord {
+            id: crate::index::stable_folder_id(&next_path),
+            name: next_name,
+            parent_id: next_path
+                .rsplit_once('/')
+                .map(|(parent, _)| crate::index::stable_folder_id(parent)),
+            sort_order: sort_order.unwrap_or(0),
+            created_at,
+            updated_at,
+        })
     }
 
-    /// 删除空目录（契约 DELETE /api/folders/:id → folder_delete）：
-    /// destructive 双确认；含笔记或子目录时明确拒绝（不级联删除用户数据）。
+    /// 删除目录（契约 DELETE /api/folders/:id → folder_delete）：
+    /// destructive 双确认；目录下文件按 Express 语义移到 Vault 根，目录本身再删除。
     pub fn folder_delete(
         &self,
         id: &str,
         confirmed: bool,
         second_confirmed: bool,
-    ) -> Result<Vec<FolderNode>, ServiceError> {
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed || !second_confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
@@ -777,20 +1747,81 @@ impl WorkspaceService {
         let path = crate::index::directory_path_for_id(&self.vault, id)
             .ok_or_else(|| ServiceError::new("NOT_FOUND", "目录不存在"))?;
         let target = self.vault.root().join(&path);
-        let mut entries = std::fs::read_dir(&target)
-            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法读取目录：{error}")))?;
-        if entries.next().is_some() {
+        let mut files = Vec::new();
+        collect_folder_files(&target, &path, &mut files)
+            .map_err(|error| ServiceError::new("IO_ERROR", error))?;
+        let mut moves: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut affected_note_count = 0u64;
+        for relative in &files {
+            let source = self.vault.root().join(relative);
+            let source_name = relative.rsplit('/').next().unwrap_or(relative);
+            let extension = posix_extname(source_name)
+                .trim_start_matches('.')
+                .to_ascii_lowercase();
+            let target_name = if matches!(extension.as_str(), "md" | "markdown") {
+                let raw = fs::read_to_string(&source)
+                    .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+                affected_note_count += 1;
+                format!(
+                    "{}.md",
+                    sanitize_file_part(
+                        &crate::vault::title_from_markdown(&raw, relative),
+                        "未命名笔记"
+                    )
+                )
+            } else {
+                source_name.to_owned()
+            };
+            let mut destination = self.vault.root().join(&target_name);
+            let mut suffix = 2;
+            while destination.exists() || moves.iter().any(|(_, path)| path == &destination) {
+                let stem = target_name
+                    .rsplit_once('.')
+                    .map(|(stem, _)| stem)
+                    .unwrap_or(&target_name);
+                let extension = target_name
+                    .rsplit_once('.')
+                    .map(|(_, ext)| format!(".{ext}"))
+                    .unwrap_or_default();
+                destination = self
+                    .vault
+                    .root()
+                    .join(format!("{stem} ({suffix}){extension}"));
+                suffix += 1;
+            }
+            fc_assert_no_symlink(self.vault.root(), &source)
+                .map_err(|error| ServiceError::new("VALIDATION", error))?;
+            fc_assert_no_symlink(self.vault.root(), &destination)
+                .map_err(|error| ServiceError::new("VALIDATION", error))?;
+            if let Err(error) = fs::rename(&source, &destination) {
+                for (moved_source, moved_destination) in moves.iter().rev() {
+                    let _ = fs::rename(moved_destination, moved_source);
+                }
+                return Err(ServiceError::new(
+                    "IO_ERROR",
+                    format!("无法移动目录文件：{error}"),
+                ));
+            }
+            moves.push((source, destination));
+        }
+        if let Err(error) = fs::remove_dir_all(&target) {
+            for (source, destination) in moves.iter().rev() {
+                let _ = fs::rename(destination, source);
+            }
             return Err(ServiceError::new(
-                "CONFLICT",
-                "目录不为空：请先移走其中的笔记与子目录",
+                "IO_ERROR",
+                format!("无法删除目录：{error}"),
             ));
         }
-        std::fs::remove_dir(&target)
-            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除目录：{error}")))?;
-        self.audit.record("folder_delete", &[("path", &path), ("actor", "ui")]);
         self.index
-            .folder_tree(&self.vault)
-            .map_err(|error| ServiceError::new("FOLDERS_ERROR", error))
+            .scan(&self.vault)
+            .map_err(|error| ServiceError::new("SCAN_ERROR", error))?;
+        self.audit
+            .record("folder_delete", &[("path", &path), ("actor", "ui")]);
+        Ok(serde_json::json!({
+            "deletedFolderCount": 1,
+            "affectedNoteCount": affected_note_count,
+        }))
     }
 }
 
@@ -811,7 +1842,10 @@ impl WorkspaceService {
             return Err(ServiceError::new("VALIDATION", "非法的画布路径"));
         }
         if !trimmed.to_ascii_lowercase().ends_with(".canvas") {
-            return Err(ServiceError::new("VALIDATION", "画布文件必须是 .canvas 后缀"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "画布文件必须是 .canvas 后缀",
+            ));
         }
         Ok(self.vault.root().join(trimmed))
     }
@@ -820,10 +1854,16 @@ impl WorkspaceService {
     pub fn canvas_list(&self) -> Result<Vec<CanvasFileEntry>, ServiceError> {
         let mut files = Vec::new();
         fn walk(root: &Path, prefix: &str, files: &mut Vec<CanvasFileEntry>) {
-            let Ok(entries) = std::fs::read_dir(root) else { return };
+            let Ok(entries) = std::fs::read_dir(root) else {
+                return;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let relative = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                let relative = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     if name.eq_ignore_ascii_case(".lattice") {
                         continue;
@@ -849,11 +1889,18 @@ impl WorkspaceService {
         let file = self.canvas_path(path)?;
         match std::fs::read_to_string(&file) {
             Ok(raw) => {
-                let value: serde_json::Value = serde_json::from_str(&raw)
-                    .map_err(|error| ServiceError::new("VALIDATION", format!("画布 JSON 解析失败：{error}")))?;
+                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                    ServiceError::new("VALIDATION", format!("画布 JSON 解析失败：{error}"))
+                })?;
                 Ok(CanvasDocument {
-                    nodes: value.get("nodes").cloned().unwrap_or(serde_json::Value::Array(Vec::new())),
-                    edges: value.get("edges").cloned().unwrap_or(serde_json::Value::Array(Vec::new())),
+                    nodes: value
+                        .get("nodes")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Array(Vec::new())),
+                    edges: value
+                        .get("edges")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Array(Vec::new())),
                     revision: Some(checksum(raw.as_bytes())),
                 })
             }
@@ -889,8 +1936,10 @@ impl WorkspaceService {
         let document = serde_json::json!({ "nodes": nodes, "edges": edges, "version": 1 });
         let raw = format!(
             "{}\n",
-            serde_json::to_string_pretty(&document)
-                .map_err(|error| ServiceError::new("VALIDATION", format!("画布序列化失败：{error}")))?
+            serde_json::to_string_pretty(&document).map_err(|error| ServiceError::new(
+                "VALIDATION",
+                format!("画布序列化失败：{error}")
+            ))?
         );
         // 对齐 Express assertWritablePath：写盘前拒绝穿越符号链接
         fc_assert_no_symlink(self.vault.root(), &file)
@@ -908,7 +1957,8 @@ impl WorkspaceService {
                 ));
             }
             let mut temporary = tempfile::NamedTempFile::new_in(
-                file.parent().ok_or_else(|| ServiceError::new("IO_ERROR", "无效路径"))?,
+                file.parent()
+                    .ok_or_else(|| ServiceError::new("IO_ERROR", "无效路径"))?,
             )
             .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
             use std::io::Write;
@@ -922,9 +1972,11 @@ impl WorkspaceService {
             if let Some(parent) = file.parent() {
                 fs::create_dir_all(parent)?;
             }
-            std::fs::write(&file, &raw).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            std::fs::write(&file, &raw)
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
         }
-        self.audit.record("canvas_write", &[("path", path), ("actor", "ui")]);
+        self.audit
+            .record("canvas_write", &[("path", path), ("actor", "ui")]);
         Ok(CanvasWriteResult {
             nodes: document
                 .get("nodes")
@@ -939,9 +1991,17 @@ impl WorkspaceService {
     }
 
     /// 移动/重命名画布（契约 PATCH /api/canvas/file → canvas_move）。
-    pub fn canvas_move(&self, from: &str, to: &str, confirmed: bool) -> Result<CanvasMoveResult, ServiceError> {
+    pub fn canvas_move(
+        &self,
+        from: &str,
+        to: &str,
+        confirmed: bool,
+    ) -> Result<CanvasMoveResult, ServiceError> {
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "移动画布需要 confirmed=true"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "移动画布需要 confirmed=true",
+            ));
         }
         let source = self.canvas_path(from)?;
         let target = self.canvas_path(to)?;
@@ -951,7 +2011,8 @@ impl WorkspaceService {
         // Windows 文件系统大小写不敏感：仅改大小写的重命名（画板.canvas → 画板.Canvas）
         // 会被 exists() 误判为「目标已存在」，与 Express canvas.move 一致，用同路径判定豁免
         let same_file = if cfg!(windows) {
-            source.to_string_lossy().to_ascii_lowercase() == target.to_string_lossy().to_ascii_lowercase()
+            source.to_string_lossy().to_ascii_lowercase()
+                == target.to_string_lossy().to_ascii_lowercase()
         } else {
             source == target
         };
@@ -970,7 +2031,10 @@ impl WorkspaceService {
             std::fs::rename(&source, &target)
                 .map_err(|error| ServiceError::new("IO_ERROR", format!("无法移动画布：{error}")))?;
         }
-        self.audit.record("canvas_move", &[("from", from), ("to", to), ("actor", "ui")]);
+        self.audit.record(
+            "canvas_move",
+            &[("from", from), ("to", to), ("actor", "ui")],
+        );
         Ok(CanvasMoveResult {
             from_path: from.to_string(),
             to_path: to.to_string(),
@@ -980,7 +2044,12 @@ impl WorkspaceService {
     /// 删除画布（契约 DELETE /api/canvas/file → canvas_delete）：destructive 双确认。
     /// 幂等：文件已不在磁盘（被外部删除、树列表过期）时按成功处理，让前端能清掉过期条目
     /// （对齐 Express canvas.remove）。
-    pub fn canvas_delete(&self, path: &str, confirmed: bool, second_confirmed: bool) -> Result<CanvasDeleteResult, ServiceError> {
+    pub fn canvas_delete(
+        &self,
+        path: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<CanvasDeleteResult, ServiceError> {
         if !confirmed || !second_confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
@@ -989,14 +2058,21 @@ impl WorkspaceService {
         }
         let file = self.canvas_path(path)?;
         if !file.exists() {
-            return Ok(CanvasDeleteResult { path: path.to_string(), deleted: true });
+            return Ok(CanvasDeleteResult {
+                path: path.to_string(),
+                deleted: true,
+            });
         }
         fc_assert_no_symlink(self.vault.root(), &file)
             .map_err(|error| ServiceError::new("VALIDATION", error))?;
         std::fs::remove_file(&file)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除画布：{error}")))?;
-        self.audit.record("canvas_delete", &[("path", path), ("actor", "ui")]);
-        Ok(CanvasDeleteResult { path: path.to_string(), deleted: true })
+        self.audit
+            .record("canvas_delete", &[("path", path), ("actor", "ui")]);
+        Ok(CanvasDeleteResult {
+            path: path.to_string(),
+            deleted: true,
+        })
     }
 }
 
@@ -1013,7 +2089,10 @@ impl WorkspaceService {
                 .split('/')
                 .any(|part| part.is_empty() || part == "." || part == "..")
         {
-            return Err(ServiceError::new("VALIDATION", "附件路径必须位于 attachments/ 下"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "附件路径必须位于 attachments/ 下",
+            ));
         }
         Ok(self.vault.root().join(trimmed))
     }
@@ -1039,7 +2118,9 @@ impl WorkspaceService {
     fn walk_attachments(&self) -> Vec<String> {
         let mut files = Vec::new();
         fn walk(dir: &Path, prefix: &str, files: &mut Vec<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with('.') || name.ends_with(".tmp") {
@@ -1053,7 +2134,11 @@ impl WorkspaceService {
                 }
             }
         }
-        walk(&self.vault.root().join(Self::ATTACHMENT_ROOT), Self::ATTACHMENT_ROOT, &mut files);
+        walk(
+            &self.vault.root().join(Self::ATTACHMENT_ROOT),
+            Self::ATTACHMENT_ROOT,
+            &mut files,
+        );
         files.sort();
         files
     }
@@ -1061,7 +2146,9 @@ impl WorkspaceService {
     /// 附件列表（契约 GET /api/vault/attachments → vault_attachments_list）：
     /// 文件 + 引用来源 + orphan 标记（引用派生自笔记正文）。
     pub fn attachments_list(&self) -> Result<Vec<AttachmentEntry>, ServiceError> {
-        let references = self.collect_reference_map().map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        let references = self
+            .collect_reference_map()
+            .map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
         let mut entries = Vec::new();
         for path in self.walk_attachments() {
             let metadata = std::fs::metadata(self.vault.root().join(&path))
@@ -1073,7 +2160,8 @@ impl WorkspaceService {
                 path: path.clone(),
                 name: path.rsplit('/').next().unwrap_or(&path).to_owned(),
                 size: metadata.len(),
-                mime: Self::attachment_mime(&extension).unwrap_or("application/octet-stream").to_owned(),
+                mime_type: Self::attachment_mime(&extension).map(str::to_owned),
+                modified_at: modified_iso(&metadata),
                 referenced_by,
                 orphan,
             });
@@ -1086,29 +2174,97 @@ impl WorkspaceService {
     pub fn attachment_upload(
         &self,
         name: &str,
+        mime_type: Option<&str>,
+        folder: Option<&str>,
         bytes: Vec<u8>,
         confirmed: bool,
-    ) -> Result<String, ServiceError> {
+    ) -> Result<AttachmentUpload, ServiceError> {
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "上传附件需要 confirmed=true"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "上传附件需要 confirmed=true",
+            ));
+        }
+        if bytes.is_empty() {
+            return Err(ServiceError::new("VALIDATION", "附件内容不能为空"));
         }
         if bytes.len() as u64 > 25 * 1024 * 1024 {
             return Err(ServiceError::new("VALIDATION", "附件超过 25MB 上传限制"));
         }
-        let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        if Self::attachment_mime(&extension).is_none() {
-            return Err(ServiceError::new("VALIDATION", format!("不支持的附件格式：{extension}")));
+        let folder = folder
+            .unwrap_or("")
+            .replace('\\', "/")
+            .split('/')
+            .map(|part| sanitize_file_part(part, "").trim().to_owned())
+            .filter(|part| !part.is_empty() && !part.starts_with('.'))
+            .take(4)
+            .collect::<Vec<_>>()
+            .join("/");
+        let safe_name = sanitize_file_part(name.rsplit('/').next().unwrap_or(name), "attachment");
+        let extension = safe_name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let expected_mime = vault_file_mime(&extension).ok_or_else(|| {
+            ServiceError::new("VALIDATION", format!("不支持的附件格式：{extension}"))
+        })?;
+        if let Some(declared) = mime_type.filter(|value| !value.trim().is_empty())
+            && declared != expected_mime
+            && !(declared == "image/jpg" && expected_mime == "image/jpeg")
+        {
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "附件类型与文件扩展名不匹配",
+            ));
         }
-        let safe_name = sanitize_file_part(name, "attachment");
-        let relative = format!("{}/{}", Self::ATTACHMENT_ROOT, safe_name);
+        let stem = safe_name
+            .rsplit_once('.')
+            .map(|(stem, _)| stem)
+            .unwrap_or(&safe_name);
+        let base = if folder.is_empty() {
+            Self::ATTACHMENT_ROOT.to_owned()
+        } else {
+            format!("{}/{folder}", Self::ATTACHMENT_ROOT)
+        };
+        let mut relative = format!("{base}/{safe_name}");
+        let mut suffix = 2;
+        while self.vault.root().join(&relative).exists() {
+            let extension = safe_name
+                .rsplit_once('.')
+                .map(|(_, extension)| format!(".{extension}"))
+                .unwrap_or_default();
+            relative = format!("{base}/{stem} ({suffix}){extension}");
+            suffix += 1;
+        }
         let target = self.attachment_path(&relative)?;
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        std::fs::write(&target, &bytes)
-            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法写入附件：{error}")))?;
-        self.audit.record("attachment_upload", &[("path", &relative), ("actor", "ui")]);
-        Ok(relative)
+        fc_assert_no_symlink(self.vault.root(), &target)
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let temporary = fc_temporary_path(&target);
+        let write_result = (|| {
+            fs::write(&temporary, &bytes)
+                .map_err(|error| ServiceError::new("IO_ERROR", format!("无法写入附件：{error}")))?;
+            fs::rename(&temporary, &target)
+                .map_err(|error| ServiceError::new("IO_ERROR", format!("无法提交附件：{error}")))
+        })();
+        if temporary.exists() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write_result?;
+        let metadata = std::fs::metadata(&target)
+            .map_err(|error| ServiceError::new("IO_ERROR", format!("无法读取附件：{error}")))?;
+        self.audit
+            .record("attachment_upload", &[("path", &relative), ("actor", "ui")]);
+        Ok(AttachmentUpload {
+            path: relative.clone(),
+            name: relative.rsplit('/').next().unwrap_or(&relative).to_owned(),
+            mime_type: expected_mime.to_owned(),
+            size: metadata.len(),
+            modified_at: modified_iso(&metadata),
+        })
     }
 
     /// 删除附件（契约 DELETE /api/vault/attachments → vault_attachment_delete）：
@@ -1118,14 +2274,16 @@ impl WorkspaceService {
         path: &str,
         confirmed: bool,
         second_confirmed: bool,
-    ) -> Result<bool, ServiceError> {
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed || !second_confirmed {
             return Err(ServiceError::new(
                 "CONFIRMATION_REQUIRED",
                 "删除附件需要 confirmed=true 且 secondConfirmed=true",
             ));
         }
-        let references = self.collect_reference_map().map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        let references = self
+            .collect_reference_map()
+            .map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
         if let Some(referenced_by) = references.get(path.trim().replace('\\', "/").as_str())
             && !referenced_by.is_empty()
         {
@@ -1140,14 +2298,21 @@ impl WorkspaceService {
         }
         std::fs::remove_file(&file)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法删除附件：{error}")))?;
-        self.audit.record("attachment_delete", &[("path", path), ("actor", "ui")]);
-        Ok(true)
+        let normalized = path.trim().replace('\\', "/");
+        if let Some((parent, _)) = normalized.rsplit_once('/') {
+            self.remove_empty_parents(parent);
+        }
+        self.audit
+            .record("attachment_delete", &[("path", path), ("actor", "ui")]);
+        Ok(serde_json::json!({ "path": normalized, "deleted": true }))
     }
 
     /// 附件引用详情（契约 GET /api/vault/attachments/references → vault_attachment_references）。
     pub fn attachment_references(&self, path: &str) -> Result<AttachmentReferences, ServiceError> {
         let safe_path = path.trim().replace('\\', "/");
-        let references = self.collect_reference_map().map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
+        let references = self
+            .collect_reference_map()
+            .map_err(|error| ServiceError::new("REFERENCES_ERROR", error))?;
         let referenced_by = references.get(&safe_path).cloned().unwrap_or_default();
         Ok(AttachmentReferences {
             path: safe_path,
@@ -1176,10 +2341,16 @@ impl WorkspaceService {
         file_path: &str,
     ) -> Result<AttachmentValidation, ServiceError> {
         if content.chars().count() > 2_000_000 {
-            return Err(ServiceError::new("VALIDATION", "正文长度超过 200 万字符上限"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "正文长度超过 200 万字符上限",
+            ));
         }
         if file_path.chars().count() > 1024 {
-            return Err(ServiceError::new("VALIDATION", "文件路径超过 1024 字符上限"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "文件路径超过 1024 字符上限",
+            ));
         }
         let references = self.extract_attachment_references(content, file_path);
         let existing: std::collections::HashSet<String> = self
@@ -1192,7 +2363,10 @@ impl WorkspaceService {
             .filter(|reference| !existing.contains(*reference))
             .cloned()
             .collect();
-        Ok(AttachmentValidation { references, missing })
+        Ok(AttachmentValidation {
+            references,
+            missing,
+        })
     }
 
     /// 孤儿附件清理（契约 POST /api/vault/attachments/cleanup → vault_attachment_cleanup）：
@@ -1255,7 +2429,10 @@ impl WorkspaceService {
         }
         self.audit.record(
             "attachment_cleanup",
-            &[("deleted", &deleted.len().to_string()), ("skipped", &skipped.len().to_string())],
+            &[
+                ("deleted", &deleted.len().to_string()),
+                ("skipped", &skipped.len().to_string()),
+            ],
         );
         Ok(AttachmentCleanup {
             dry_run: false,
@@ -1272,30 +2449,45 @@ impl WorkspaceService {
     pub fn vault_download(&self, path: &str) -> Result<VaultDownload, ServiceError> {
         let safe_path = path.trim().replace('\\', "/");
         if safe_path.is_empty() || safe_path.chars().count() > 1024 {
-            return Err(ServiceError::new("VALIDATION", "文件路径必须是 Vault 内的相对路径"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "文件路径必须是 Vault 内的相对路径",
+            ));
         }
         if safe_path.starts_with('/')
             || safe_path
                 .split('/')
                 .any(|part| part.is_empty() || part == "." || part == "..")
         {
-            return Err(ServiceError::new("VALIDATION", "文件路径必须是 Vault 内的相对路径"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "文件路径必须是 Vault 内的相对路径",
+            ));
         }
         if !is_visible_vault_path(&safe_path) {
-            return Err(ServiceError::new("VALIDATION", "只能下载显示列表中的附件文件"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "只能下载显示列表中的附件文件",
+            ));
         }
         let target = self.vault.root().join(&safe_path);
-        let metadata = std::fs::metadata(&target)
-            .map_err(|_| ServiceError::new("NOT_FOUND", "文件不存在"))?;
+        let metadata =
+            std::fs::metadata(&target).map_err(|_| ServiceError::new("NOT_FOUND", "文件不存在"))?;
         if !metadata.is_file() {
             return Err(ServiceError::new("NOT_FOUND", "文件不存在"));
         }
         let bytes = std::fs::read(&target)
             .map_err(|error| ServiceError::new("IO_ERROR", format!("无法读取文件：{error}")))?;
-        let extension = posix_extname(&safe_path).trim_start_matches('.').to_ascii_lowercase();
+        let extension = posix_extname(&safe_path)
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
         Ok(VaultDownload {
             path: safe_path.clone(),
-            name: safe_path.rsplit('/').next().unwrap_or(&safe_path).to_owned(),
+            name: safe_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&safe_path)
+                .to_owned(),
             mime_type: vault_file_mime(&extension).map(str::to_owned),
             size: metadata.len(),
             base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
@@ -1307,9 +2499,15 @@ impl WorkspaceService {
     fn list_attachment_files(&self) -> Vec<VaultFileEntry> {
         let mut files = Vec::new();
         for path in self.walk_attachments() {
-            let extension = posix_extname(&path).trim_start_matches('.').to_ascii_lowercase();
-            let Some(mime) = vault_file_mime(&extension) else { continue };
-            let Ok(metadata) = std::fs::metadata(self.vault.root().join(&path)) else { continue };
+            let extension = posix_extname(&path)
+                .trim_start_matches('.')
+                .to_ascii_lowercase();
+            let Some(mime) = vault_file_mime(&extension) else {
+                continue;
+            };
+            let Ok(metadata) = std::fs::metadata(self.vault.root().join(&path)) else {
+                continue;
+            };
             files.push(VaultFileEntry {
                 name: path.rsplit('/').next().unwrap_or(&path).to_owned(),
                 path,
@@ -1381,7 +2579,11 @@ impl WorkspaceService {
         if reference.is_empty() || posix_extname(&reference).is_empty() {
             return None;
         }
-        let note_dir = if note_path.is_empty() { "" } else { posix_dirname(note_path) };
+        let note_dir = if note_path.is_empty() {
+            ""
+        } else {
+            posix_dirname(note_path)
+        };
         let joined = if note_dir.is_empty() || note_dir == "." {
             reference.clone()
         } else {
@@ -1389,8 +2591,7 @@ impl WorkspaceService {
         };
         let root_reference = normalize_reference(&reference);
         let relative_reference = normalize_reference(&joined);
-        let root_first =
-            reference.starts_with("attachments/") || reference.starts_with('/');
+        let root_first = reference.starts_with("attachments/") || reference.starts_with('/');
         let candidates: Vec<Option<String>> = if root_first {
             vec![root_reference, relative_reference]
         } else {
@@ -1422,7 +2623,9 @@ impl WorkspaceService {
             if !is_empty || std::fs::remove_dir(&current).is_err() {
                 break;
             }
-            let Some(parent) = current.parent().map(|path| path.to_path_buf()) else { break };
+            let Some(parent) = current.parent().map(|path| path.to_path_buf()) else {
+                break;
+            };
             current = parent;
         }
     }
@@ -1450,7 +2653,9 @@ impl WorkspaceService {
                     .map(|m| m.as_str().trim().to_owned());
                 let Some(raw) = raw else { continue };
                 let decoded = raw.replace("%20", " ");
-                let Some(position) = decoded.find(Self::ATTACHMENT_ROOT) else { continue };
+                let Some(position) = decoded.find(Self::ATTACHMENT_ROOT) else {
+                    continue;
+                };
                 let relative = decoded[position..].to_owned();
                 if seen.insert(relative.clone()) {
                     map.entry(relative).or_default().push(ReferenceSource {
@@ -1474,20 +2679,30 @@ impl WorkspaceService {
 
 impl WorkspaceService {
     /// 契约 GET /api/files/read：按字符切片读取文件内容。
-    pub fn file_read(&self, path: &str, offset: u64, limit: Option<u64>) -> Result<FileReadOutcome, ServiceError> {
+    pub fn file_read(
+        &self,
+        path: &str,
+        offset: u64,
+        limit: Option<u64>,
+    ) -> Result<FileReadOutcome, ServiceError> {
         fc_guard(|| {
             let safe = fc_normalize_relative(path)?;
             let file_path = self.fc_resolve(&safe)?;
             fc_assert_regular_file(&file_path, &safe)?;
             let meta = fs::metadata(&file_path).map_err(|error| error.to_string())?;
             if meta.len() > FC_MAX_READ_INPUT_BYTES {
-                return Err(format!("File too large for read ({} bytes, limit {FC_MAX_READ_INPUT_BYTES}): {safe}", meta.len()));
+                return Err(format!(
+                    "File too large for read ({} bytes, limit {FC_MAX_READ_INPUT_BYTES}): {safe}",
+                    meta.len()
+                ));
             }
             let raw = fs::read(&file_path).map_err(|error| error.to_string())?;
             // JS toString('utf8') 等价：非法字节替换为 U+FFFD，不失败
             let content = String::from_utf8_lossy(&raw);
             let characters: Vec<char> = content.chars().collect();
-            let max = limit.unwrap_or(FC_MAX_READ_BYTES).clamp(1, FC_MAX_READ_BYTES);
+            let max = limit
+                .unwrap_or(FC_MAX_READ_BYTES)
+                .clamp(1, FC_MAX_READ_BYTES);
             let slice = if offset >= characters.len() as u64 {
                 String::new()
             } else {
@@ -1507,7 +2722,12 @@ impl WorkspaceService {
     }
 
     /// 契约 GET /api/files/find：glob 匹配 + 可选扩展名过滤，直接走文件系统。
-    pub fn file_find(&self, pattern: Option<String>, dir: Option<String>, file_type: Option<String>) -> Result<FileFindOutcome, ServiceError> {
+    pub fn file_find(
+        &self,
+        pattern: Option<String>,
+        dir: Option<String>,
+        file_type: Option<String>,
+    ) -> Result<FileFindOutcome, ServiceError> {
         fc_guard(|| {
             let base = self.fc_resolve_directory(dir.as_deref().unwrap_or(""))?;
             let normalized_pattern = pattern.as_deref().unwrap_or("**/*");
@@ -1545,12 +2765,22 @@ impl WorkspaceService {
                 });
             }
             let total = items.len();
-            Ok(FileFindOutcome { pattern: normalized_pattern.to_owned(), items, total })
+            Ok(FileFindOutcome {
+                pattern: normalized_pattern.to_owned(),
+                items,
+                total,
+            })
         })
     }
 
     /// 契约 GET /api/files/grep：逐行匹配（regex 大小写不敏感；普通文本 to_lowercase 包含）。
-    pub fn file_grep(&self, query: String, dir: Option<String>, regex_flag: bool, file_type: Option<String>) -> Result<FileGrepOutcome, ServiceError> {
+    pub fn file_grep(
+        &self,
+        query: String,
+        dir: Option<String>,
+        regex_flag: bool,
+        file_type: Option<String>,
+    ) -> Result<FileGrepOutcome, ServiceError> {
         fc_guard(move || {
             if query.is_empty() {
                 return Err("A grep query is required".into());
@@ -1596,31 +2826,64 @@ impl WorkspaceService {
                         None => line.to_lowercase().contains(&needle),
                     };
                     if matched {
-                        items.push(GrepItem { path: relative_path.clone(), line: index + 1, text: line.to_owned() });
+                        items.push(GrepItem {
+                            path: relative_path.clone(),
+                            line: index + 1,
+                            text: line.to_owned(),
+                        });
                     }
                 }
             }
             let total = items.len();
-            Ok(FileGrepOutcome { query, regex: regex_flag, items, total })
+            Ok(FileGrepOutcome {
+                query,
+                regex: regex_flag,
+                items,
+                total,
+            })
         })
     }
 
     /// 契约 POST /api/files/preview：预览 + plan/planHash + 确认要求
     /// （单动作与 actions[]≤30 批量二态；桌面单机恒为 editor，blocked 恒 false）。
-    pub fn file_preview(&self, action: Option<FileAction>, actions: Option<Vec<FileAction>>) -> Result<serde_json::Value, ServiceError> {
+    pub fn file_preview(
+        &self,
+        action: Option<FileAction>,
+        actions: Option<Vec<FileAction>>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        self.file_preview_with_context(action, actions, "local-user", "editor", None)
+    }
+
+    pub fn file_preview_with_context(
+        &self,
+        action: Option<FileAction>,
+        actions: Option<Vec<FileAction>>,
+        actor: &str,
+        role: &str,
+        allowed_paths: Option<&[String]>,
+    ) -> Result<serde_json::Value, ServiceError> {
         fc_guard(|| {
             let (normalized, is_batch) = fc_normalize_actions(action, actions)?;
+            fc_authorize_actions(&normalized, role, allowed_paths)?;
             let mut data = if is_batch {
                 self.fc_preview_batch(&normalized)?
             } else {
                 self.fc_preview_mutation(&normalized[0])?
             };
             let plan = self.fc_plan(&normalized, None);
-            let delete_count = normalized.iter().filter(|item| item.action_type == "delete").count();
-            let paths: Vec<serde_json::Value> = match data.get("operations").and_then(|operations| operations.as_array()) {
+            let delete_count = normalized
+                .iter()
+                .filter(|item| item.action_type == "delete")
+                .count();
+            let paths: Vec<serde_json::Value> = match data
+                .get("operations")
+                .and_then(|operations| operations.as_array())
+            {
                 Some(operations) => operations
                     .iter()
-                    .flat_map(|operation| operation["changes"].as_array().cloned().unwrap_or_default())
+                    .flat_map(|operation| {
+                        operation["changes"].as_array().cloned().unwrap_or_default()
+                    })
                     .filter_map(|change| change.get("fullPath").cloned())
                     .collect(),
                 None => data["changes"]
@@ -1632,8 +2895,8 @@ impl WorkspaceService {
                     .collect(),
             };
             data["plan"] = plan;
-            data["actor"] = serde_json::json!("local-user");
-            data["role"] = serde_json::json!("editor");
+            data["actor"] = serde_json::json!(actor);
+            data["role"] = serde_json::json!(role);
             data["blocked"] = serde_json::json!(false);
             data["confirmation"] = serde_json::json!({
                 "required": normalized.iter().any(|item| FC_MUTATION_TYPES.contains(&item.action_type.as_str())),
@@ -1657,25 +2920,89 @@ impl WorkspaceService {
         plan_id: Option<String>,
         plan_hash: Option<String>,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.file_execute_with_context(
+            action,
+            actions,
+            confirmed,
+            second_confirmed,
+            plan_id,
+            plan_hash,
+            "local-user",
+            "editor",
+            None,
+            None,
+        )
+    }
+
+    pub fn file_execute_with_context(
+        &self,
+        action: Option<FileAction>,
+        actions: Option<Vec<FileAction>>,
+        confirmed: bool,
+        second_confirmed: bool,
+        plan_id: Option<String>,
+        plan_hash: Option<String>,
+        _actor: &str,
+        role: &str,
+        allowed_paths: Option<&[String]>,
+        idempotency_key: Option<&str>,
+    ) -> Result<serde_json::Value, ServiceError> {
         fc_guard(|| {
             if !confirmed {
                 return Err("File changes require explicit confirmation".into());
             }
             let plan_hash = plan_hash.ok_or("File changes require a preview plan")?;
             let (normalized, is_batch) = fc_normalize_actions(action, actions)?;
+            fc_authorize_actions(&normalized, role, allowed_paths)?;
             if normalized.iter().any(|item| item.action_type == "delete") && !second_confirmed {
                 return Err("Delete operations require a second confirmation".into());
             }
-            if is_batch {
+            let request_hash = fc_sha256_hex(
+                serde_json::to_string(&serde_json::json!({
+                    "actions": &normalized,
+                    "planId": &plan_id,
+                    "planHash": &plan_hash,
+                }))
+                .map_err(|error| error.to_string())?
+                .as_bytes(),
+            );
+            let key = idempotency_key.map(str::trim).filter(|value| !value.is_empty());
+            if let Some(key) = key {
+                fc_validate_idempotency_key(key)?;
+                if let Some(cached) = self.fc_read_idempotency(key)? {
+                    if cached["requestHash"].as_str() != Some(request_hash.as_str()) {
+                        return Err("Idempotency key was already used for a different file plan".into());
+                    }
+                    return cached
+                        .get("result")
+                        .cloned()
+                        .ok_or_else(|| "Stored idempotency result is invalid".to_owned());
+                }
+            }
+            let result = if is_batch {
                 self.fc_mutate_batch(&normalized, plan_id.as_deref(), Some(&plan_hash))
             } else {
-                self.fc_mutate_single(&normalized[0], plan_id.as_deref(), Some(&plan_hash), None, None)
+                self.fc_mutate_single(
+                    &normalized[0],
+                    plan_id.as_deref(),
+                    Some(&plan_hash),
+                    None,
+                    None,
+                )
+            }?;
+            if let Some(key) = key {
+                self.fc_write_idempotency(key, &request_hash, &result)?;
             }
+            Ok(result)
         })
     }
 
     /// 契约 POST /api/files/undo：按 manifest 快照逆序还原；force 跳过状态一致性校验。
-    pub fn file_undo(&self, operation_id: Option<String>, force: bool) -> Result<serde_json::Value, ServiceError> {
+    pub fn file_undo(
+        &self,
+        operation_id: Option<String>,
+        force: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         fc_guard(|| self.fc_undo(operation_id.as_deref(), force))
     }
 
@@ -1688,7 +3015,10 @@ impl WorkspaceService {
             }
             let count = limit.unwrap_or(40).clamp(1, 500) as usize;
             let content = fs::read_to_string(&audit).map_err(|error| error.to_string())?;
-            let lines: Vec<&str> = content.lines().filter(|line| !line.trim().is_empty()).collect();
+            let lines: Vec<&str> = content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect();
             let start = lines.len().saturating_sub(count);
             let mut entries = Vec::new();
             for line in lines[start..].iter().rev() {
@@ -1713,8 +3043,16 @@ impl WorkspaceService {
 
     /// 解析目录相对路径（空串 = 根），存在时必须是目录（对齐 resolveDirectory）。
     fn fc_resolve_directory(&self, value: &str) -> Result<PathBuf, String> {
-        let safe = if value.is_empty() || value == "." { String::new() } else { fc_normalize_relative(value)? };
-        let resolved = if safe.is_empty() { self.vault.root().to_path_buf() } else { self.vault.root().join(&safe) };
+        let safe = if value.is_empty() || value == "." {
+            String::new()
+        } else {
+            fc_normalize_relative(value)?
+        };
+        let resolved = if safe.is_empty() {
+            self.vault.root().to_path_buf()
+        } else {
+            self.vault.root().join(&safe)
+        };
         resolved
             .strip_prefix(self.vault.root())
             .map_err(|_| format!("Path escapes root: {}", resolved.display()))?;
@@ -1722,7 +3060,10 @@ impl WorkspaceService {
         if resolved.exists() {
             let meta = fs::symlink_metadata(&resolved).map_err(|error| error.to_string())?;
             if meta.file_type().is_symlink() {
-                return Err(format!("Symbolic links are not supported: {}", if safe.is_empty() { "." } else { &safe }));
+                return Err(format!(
+                    "Symbolic links are not supported: {}",
+                    if safe.is_empty() { "." } else { &safe }
+                ));
             }
             if !meta.is_dir() {
                 return Err(format!("Not a directory: {safe}"));
@@ -1739,7 +3080,10 @@ impl WorkspaceService {
             fc_assert_regular_file(&target, &action.path)?;
         }
         let preview_paths: Vec<&str> = match action.action_type.as_str() {
-            "move" | "copy" => vec![&action.path, action.target_path.as_deref().unwrap_or(&action.path)],
+            "move" | "copy" => vec![
+                &action.path,
+                action.target_path.as_deref().unwrap_or(&action.path),
+            ],
             _ => vec![&action.path],
         };
         let mut changes = Vec::new();
@@ -1755,8 +3099,13 @@ impl WorkspaceService {
         }
         let plan_hash = {
             let action_value = serde_json::to_value(action).map_err(|error| error.to_string())?;
-            let payload = serde_json::json!({ "version": 1, "action": action_value, "changes": changes });
-            fc_sha256_hex(serde_json::to_string(&payload).map_err(|error| error.to_string())?.as_bytes())
+            let payload =
+                serde_json::json!({ "version": 1, "action": action_value, "changes": changes });
+            fc_sha256_hex(
+                serde_json::to_string(&payload)
+                    .map_err(|error| error.to_string())?
+                    .as_bytes(),
+            )
         };
         let source = self.fc_resolve(&action.path)?;
         let source_missing = !changes[0]["before"]["exists"].as_bool().unwrap_or(false);
@@ -1764,13 +3113,36 @@ impl WorkspaceService {
             "{} {}{}{}",
             action.action_type,
             action.path,
-            action.target_path.as_ref().map(|target| format!(" -> {target}")).unwrap_or_default(),
-            if source_missing { " (source missing)" } else { "" },
+            action
+                .target_path
+                .as_ref()
+                .map(|target| format!(" -> {target}"))
+                .unwrap_or_default(),
+            if source_missing {
+                " (source missing)"
+            } else {
+                ""
+            },
         );
-        let existing = changes.iter().filter(|change| change["before"]["exists"].as_bool().unwrap_or(false)).count();
-        let destination = action.target_path.as_ref().map(|target| format!("，目标 {target}")).unwrap_or_default();
-        let scope = if changes.len() > 1 { format!("影响 {} 个路径", changes.len()) } else { "影响 1 个路径".to_owned() };
-        let state = if existing > 0 { format!("，其中 {existing} 个路径已有内容") } else { "，目标目前不存在".to_owned() };
+        let existing = changes
+            .iter()
+            .filter(|change| change["before"]["exists"].as_bool().unwrap_or(false))
+            .count();
+        let destination = action
+            .target_path
+            .as_ref()
+            .map(|target| format!("，目标 {target}"))
+            .unwrap_or_default();
+        let scope = if changes.len() > 1 {
+            format!("影响 {} 个路径", changes.len())
+        } else {
+            "影响 1 个路径".to_owned()
+        };
+        let state = if existing > 0 {
+            format!("，其中 {existing} 个路径已有内容")
+        } else {
+            "，目标目前不存在".to_owned()
+        };
         let verb = match action.action_type.as_str() {
             "delete" => "移除内容",
             "move" => "改变路径并移除原位置",
@@ -1792,11 +3164,19 @@ impl WorkspaceService {
         if let Some(target) = &action.target_path {
             preview["targetPath"] = serde_json::json!(target);
         }
-        if matches!(action.action_type.as_str(), "create" | "write" | "append" | "edit") {
+        if matches!(
+            action.action_type.as_str(),
+            "create" | "write" | "append" | "edit"
+        ) {
             let current = fc_read_text_if_present(&source)?;
             let next = fc_next_text(action, current.as_deref())?;
-            preview["diff"] = serde_json::json!(fc_unified_diff(&action.path, current.as_deref().unwrap_or(""), &next));
-            preview["after"] = serde_json::to_value(fc_state_for_text(&next)).map_err(|error| error.to_string())?;
+            preview["diff"] = serde_json::json!(fc_unified_diff(
+                &action.path,
+                current.as_deref().unwrap_or(""),
+                &next
+            ));
+            preview["after"] = serde_json::to_value(fc_state_for_text(&next))
+                .map_err(|error| error.to_string())?;
         }
         Ok(preview)
     }
@@ -1809,7 +3189,9 @@ impl WorkspaceService {
         }
         let mut counts = std::collections::BTreeMap::new();
         for operation in &operations {
-            *counts.entry(operation["type"].as_str().unwrap_or_default().to_owned()).or_insert(0u64) += 1;
+            *counts
+                .entry(operation["type"].as_str().unwrap_or_default().to_owned())
+                .or_insert(0u64) += 1;
         }
         let before: Vec<serde_json::Value> = operations
             .iter()
@@ -1824,14 +3206,28 @@ impl WorkspaceService {
             .collect();
         let plan_hash = {
             let payload = serde_json::json!({ "actions": actions, "before": before });
-            fc_sha256_hex(serde_json::to_string(&payload).map_err(|error| error.to_string())?.as_bytes())
+            fc_sha256_hex(
+                serde_json::to_string(&payload)
+                    .map_err(|error| error.to_string())?
+                    .as_bytes(),
+            )
         };
         let total = operations.len();
-        let breakdown = counts.iter().map(|(kind, count)| format!("{count} {kind}")).collect::<Vec<_>>().join(", ");
+        let breakdown = counts
+            .iter()
+            .map(|(kind, count)| format!("{count} {kind}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let summary = if breakdown.is_empty() {
-            format!("{total} file operation{}", if total == 1 { "" } else { "s" })
+            format!(
+                "{total} file operation{}",
+                if total == 1 { "" } else { "s" }
+            )
         } else {
-            format!("{total} file operation{} ({breakdown})", if total == 1 { "" } else { "s" })
+            format!(
+                "{total} file operation{} ({breakdown})",
+                if total == 1 { "" } else { "s" }
+            )
         };
         Ok(serde_json::json!({
             "planHash": plan_hash,
@@ -1869,19 +3265,44 @@ impl WorkspaceService {
         if let Some(expected) = plan_hash
             && expected != preview_hash
         {
-            return Err(format!("Operation plan hash mismatch: expected {expected}, current {preview_hash}"));
+            return Err(format!(
+                "Operation plan hash mismatch: expected {expected}, current {preview_hash}"
+            ));
         }
-        let operation_id = format!("{}-{}", now_millis(), &Uuid::new_v4().simple().to_string()[..8]);
+        let operation_id = format!(
+            "{}-{}",
+            now_millis(),
+            &Uuid::new_v4().simple().to_string()[..8]
+        );
         let plan = self.fc_plan(std::slice::from_ref(action), plan_id);
-        let plan_action_id = plan["actions"][0]["id"].as_str().unwrap_or("op-1").to_owned();
+        let plan_action_id = plan["actions"][0]["id"]
+            .as_str()
+            .unwrap_or("op-1")
+            .to_owned();
         let plan_id_value = plan["id"].clone();
         let created_at = iso8601_utc(now_millis());
-        let operation_dir = self.vault.root().join(FC_INTERNAL_DIR).join("trash").join(&operation_id);
+        let operation_dir = self
+            .vault
+            .root()
+            .join(FC_INTERNAL_DIR)
+            .join("trash")
+            .join(&operation_id);
         let snapshot_dir = operation_dir.join("files");
         fs::create_dir_all(&snapshot_dir).map_err(|error| error.to_string())?;
         let change_paths: Vec<String> = match action.action_type.as_str() {
-            "move" => vec![action.path.clone(), action.target_path.clone().unwrap_or_else(|| action.path.clone())],
-            "copy" => vec![action.target_path.clone().unwrap_or_else(|| action.path.clone())],
+            "move" => vec![
+                action.path.clone(),
+                action
+                    .target_path
+                    .clone()
+                    .unwrap_or_else(|| action.path.clone()),
+            ],
+            "copy" => vec![
+                action
+                    .target_path
+                    .clone()
+                    .unwrap_or_else(|| action.path.clone()),
+            ],
             _ => vec![action.path.clone()],
         };
         let mut entries: Vec<serde_json::Value> = Vec::new();
@@ -1893,8 +3314,12 @@ impl WorkspaceService {
             let result = self.fc_apply_action(action)?;
             applied = true;
             for entry in entries.iter_mut() {
-                let absolute = self.vault.root().join(entry["path"].as_str().unwrap_or_default());
-                entry["after"] = serde_json::to_value(fc_state_for(&absolute)?).map_err(|error| error.to_string())?;
+                let absolute = self
+                    .vault
+                    .root()
+                    .join(entry["path"].as_str().unwrap_or_default());
+                entry["after"] = serde_json::to_value(fc_state_for(&absolute)?)
+                    .map_err(|error| error.to_string())?;
             }
             Ok(result)
         })();
@@ -1922,7 +3347,10 @@ impl WorkspaceService {
         }
         fs::write(
             operation_dir.join("manifest.json"),
-            format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?
+            ),
         )
         .map_err(|error| error.to_string())?;
         let mut audit = serde_json::json!({
@@ -1960,36 +3388,101 @@ impl WorkspaceService {
     }
 
     /// 批量执行：共享一个 plan，逐动作走 fc_mutate_single；中途失败终止（对齐 BATCH_PARTIAL_FAILURE 的 HTTP 语义：透传失败消息）。
-    fn fc_mutate_batch(&self, actions: &[FileAction], plan_id: Option<&str>, plan_hash: Option<&str>) -> Result<serde_json::Value, String> {
+    fn fc_mutate_batch(
+        &self,
+        actions: &[FileAction],
+        plan_id: Option<&str>,
+        plan_hash: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
         let preview = self.fc_preview_batch(actions)?;
         let preview_hash = preview["planHash"].as_str().unwrap_or_default().to_owned();
         if let Some(expected) = plan_hash
             && expected != preview_hash
         {
-            return Err(format!("Batch plan hash mismatch: expected {expected}, current {preview_hash}"));
+            return Err(format!(
+                "Batch plan hash mismatch: expected {expected}, current {preview_hash}"
+            ));
         }
-        let batch_id = format!("{}-{}", now_millis(), &Uuid::new_v4().simple().to_string()[..8]);
+        let batch_id = format!(
+            "{}-{}",
+            now_millis(),
+            &Uuid::new_v4().simple().to_string()[..8]
+        );
         let plan = self.fc_plan(actions, plan_id);
         let plan_id_value = plan["id"].clone();
         let mut operation_ids = Vec::new();
+        let mut results = Vec::new();
         for (index, action) in actions.iter().enumerate() {
-            let action_id = plan["actions"][index]["id"].as_str().unwrap_or("op-1").to_owned();
-            let result = self.fc_mutate_single(action, Some(plan_id_value.as_str().unwrap_or_default()), None, Some(&batch_id), Some(&action_id))?;
-            operation_ids.push(result["operationId"].clone());
+            let action_id = plan["actions"][index]["id"]
+                .as_str()
+                .unwrap_or("op-1")
+                .to_owned();
+            let result = self.fc_mutate_single(
+                action,
+                Some(plan_id_value.as_str().unwrap_or_default()),
+                None,
+                Some(&batch_id),
+                Some(&action_id),
+            );
+            match result {
+                Ok(result) => {
+                    let operation_id = result["operationId"].clone();
+                    operation_ids.push(operation_id.clone());
+                    results.push(fc_batch_result(
+                        &action_id,
+                        action,
+                        "completed",
+                        Some(result),
+                        None,
+                    ));
+                }
+                Err(error) => {
+                    results.push(fc_batch_result(
+                        &action_id,
+                        action,
+                        "failed",
+                        None,
+                        Some(error.clone()),
+                    ));
+                    return Ok(fc_batch_outcome(
+                        &batch_id,
+                        &plan_id_value,
+                        plan["version"].clone(),
+                        &preview_hash,
+                        actions.len(),
+                        operation_ids.len(),
+                        1,
+                        true,
+                        operation_ids,
+                        results,
+                        preview,
+                        Some(error),
+                    ));
+                }
+            }
         }
-        Ok(serde_json::json!({
-            "batchId": batch_id,
-            "planId": plan_id_value,
-            "planVersion": plan["version"],
-            "planHash": preview_hash,
-            "total": actions.len(),
-            "operationIds": operation_ids,
-            "preview": preview,
-        }))
+        Ok(fc_batch_outcome(
+            &batch_id,
+            &plan_id_value,
+            plan["version"].clone(),
+            &preview_hash,
+            actions.len(),
+            actions.len(),
+            0,
+            false,
+            operation_ids,
+            results,
+            preview,
+            None,
+        ))
     }
 
     /// 撤销：找到 manifest → 状态一致性校验（force 跳过）→ 逆序还原 → 标记 undone + 审计。
-    fn fc_undo(&self, operation_id: Option<&str>, force: bool) -> Result<serde_json::Value, String> {
+    fn fc_undo(
+        &self,
+        operation_id: Option<&str>,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         let manifest = self.fc_find_manifest(operation_id)?;
         let Some(mut manifest) = manifest else {
             return Err(match operation_id {
@@ -1998,7 +3491,10 @@ impl WorkspaceService {
             });
         };
         let id = manifest["id"].as_str().unwrap_or_default().to_owned();
-        if manifest.get("undoneAt").is_some_and(|value| value.is_string()) {
+        if manifest
+            .get("undoneAt")
+            .is_some_and(|value| value.is_string())
+        {
             return Err(format!("Operation already undone: {id}"));
         }
         let entries = manifest["entries"].as_array().cloned().unwrap_or_default();
@@ -2006,13 +3502,21 @@ impl WorkspaceService {
             for entry in &entries {
                 let relative = entry["path"].as_str().unwrap_or_default();
                 let absolute = self.fc_resolve(relative)?;
-                let current = serde_json::to_value(fc_state_for(&absolute)?).map_err(|error| error.to_string())?;
+                let current = serde_json::to_value(fc_state_for(&absolute)?)
+                    .map_err(|error| error.to_string())?;
                 if !fc_same_state(&current, &entry["after"]) {
-                    return Err(format!("Cannot undo {id}: file changed after the operation ({relative})"));
+                    return Err(format!(
+                        "Cannot undo {id}: file changed after the operation ({relative})"
+                    ));
                 }
             }
         }
-        let operation_dir = self.vault.root().join(FC_INTERNAL_DIR).join("trash").join(&id);
+        let operation_dir = self
+            .vault
+            .root()
+            .join(FC_INTERNAL_DIR)
+            .join("trash")
+            .join(&id);
         for entry in entries.iter().rev() {
             self.fc_restore_entry(entry, &operation_dir)?;
         }
@@ -2020,7 +3524,10 @@ impl WorkspaceService {
         manifest["undoneAt"] = serde_json::json!(undone_at);
         fs::write(
             operation_dir.join("manifest.json"),
-            format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?
+            ),
         )
         .map_err(|error| error.to_string())?;
         self.fc_audit_append(serde_json::json!({
@@ -2035,7 +3542,12 @@ impl WorkspaceService {
             "type": "undo",
             "path": serde_json::Value::Null,
             "targetPath": serde_json::Value::Null,
-            "action": { "id": serde_json::Value::Null, "type": "undo" },
+            "action": {
+                "id": serde_json::Value::Null,
+                "type": "undo",
+                "path": serde_json::Value::Null,
+                "targetPath": serde_json::Value::Null,
+            },
             "operationId": id,
         }))?;
         Ok(serde_json::json!({
@@ -2046,7 +3558,12 @@ impl WorkspaceService {
     }
 
     /// 快照单个受影响路径：文件复制到快照目录，目录/缺失只记状态。
-    fn fc_capture_entry(&self, relative: &str, snapshot_dir: &Path, index: usize) -> Result<serde_json::Value, String> {
+    fn fc_capture_entry(
+        &self,
+        relative: &str,
+        snapshot_dir: &Path,
+        index: usize,
+    ) -> Result<serde_json::Value, String> {
         let absolute = self.vault.root().join(relative);
         let before = fc_state_for(&absolute)?;
         let mut entry = serde_json::json!({
@@ -2062,8 +3579,14 @@ impl WorkspaceService {
     }
 
     /// 逆序还原单个条目：缺失→删除现物、目录→重建、文件→从快照原子写回。
-    fn fc_restore_entry(&self, entry: &serde_json::Value, operation_dir: &Path) -> Result<(), String> {
-        let relative = entry["path"].as_str().ok_or("manifest entry missing path")?;
+    fn fc_restore_entry(
+        &self,
+        entry: &serde_json::Value,
+        operation_dir: &Path,
+    ) -> Result<(), String> {
+        let relative = entry["path"]
+            .as_str()
+            .ok_or("manifest entry missing path")?;
         let absolute = self.vault.root().join(relative);
         absolute
             .strip_prefix(self.vault.root())
@@ -2077,9 +3600,13 @@ impl WorkspaceService {
                     if let Err(error) = fs::remove_dir(&absolute) {
                         if matches!(
                             error.kind(),
-                            std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                            std::io::ErrorKind::DirectoryNotEmpty
+                                | std::io::ErrorKind::AlreadyExists
+                                | std::io::ErrorKind::PermissionDenied
                         ) {
-                            return Err(format!("Cannot undo: directory is not empty ({relative})"));
+                            return Err(format!(
+                                "Cannot undo: directory is not empty ({relative})"
+                            ));
                         }
                         return Err(error.to_string());
                     }
@@ -2092,7 +3619,9 @@ impl WorkspaceService {
                         }
                     }
                     if absolute.exists() {
-                        return Err(format!("Cannot undo: file could not be removed ({relative})"));
+                        return Err(format!(
+                            "Cannot undo: file could not be removed ({relative})"
+                        ));
                     }
                 }
             }
@@ -2102,7 +3631,9 @@ impl WorkspaceService {
             fs::create_dir_all(&absolute).map_err(|error| error.to_string())?;
             return Ok(());
         }
-        let snapshot = entry["snapshot"].as_str().ok_or_else(|| format!("Undo snapshot is missing: {relative}"))?;
+        let snapshot = entry["snapshot"]
+            .as_str()
+            .ok_or_else(|| format!("Undo snapshot is missing: {relative}"))?;
         let snapshot_path = operation_dir.join("files").join(snapshot);
         if !snapshot_path.exists() {
             return Err(format!("Undo snapshot is missing: {relative}"));
@@ -2114,7 +3645,10 @@ impl WorkspaceService {
     }
 
     /// 查 manifest：指定 id 或最近一条未撤销的（缺失/损坏一律视为没有可撤销操作）。
-    fn fc_find_manifest(&self, operation_id: Option<&str>) -> Result<Option<serde_json::Value>, String> {
+    fn fc_find_manifest(
+        &self,
+        operation_id: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, String> {
         let trash = self.vault.root().join(FC_INTERNAL_DIR).join("trash");
         if let Some(id) = operation_id {
             return Ok(fc_read_manifest(&trash.join(id).join("manifest.json")));
@@ -2127,10 +3661,17 @@ impl WorkspaceService {
             .flatten()
             .filter(|entry| entry.path().is_dir())
             .filter_map(|entry| fc_read_manifest(&entry.path().join("manifest.json")))
-            .filter(|manifest| !manifest.get("undoneAt").is_some_and(|value| value.is_string()))
+            .filter(|manifest| {
+                !manifest
+                    .get("undoneAt")
+                    .is_some_and(|value| value.is_string())
+            })
             .collect();
         manifests.sort_by(|left, right| {
-            left["createdAt"].as_str().unwrap_or_default().cmp(right["createdAt"].as_str().unwrap_or_default())
+            left["createdAt"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["createdAt"].as_str().unwrap_or_default())
         });
         Ok(manifests.pop())
     }
@@ -2179,9 +3720,13 @@ impl WorkspaceService {
                     fs::remove_file(&source).map_err(|error| error.to_string())?;
                     return Ok(serde_json::json!({ "path": action.path }));
                 }
-                let target = target.ok_or_else(|| format!("{} requires a target path", action.action_type))?;
+                let target = target
+                    .ok_or_else(|| format!("{} requires a target path", action.action_type))?;
                 if target.exists() {
-                    return Err(format!("Target already exists: {}", action.target_path.clone().unwrap_or_default()));
+                    return Err(format!(
+                        "Target already exists: {}",
+                        action.target_path.clone().unwrap_or_default()
+                    ));
                 }
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -2203,9 +3748,47 @@ impl WorkspaceService {
         if let Some(parent) = audit.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let mut file = OpenOptions::new().create(true).append(true).open(&audit).map_err(|error| error.to_string())?;
-        writeln!(file, "{}", serde_json::to_string(&entry).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&audit)
+            .map_err(|error| error.to_string())?;
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&entry).map_err(|error| error.to_string())?
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn fc_read_idempotency(&self, key: &str) -> Result<Option<serde_json::Value>, String> {
+        let path = self
+            .vault
+            .root()
+            .join(FC_INTERNAL_DIR)
+            .join("idempotency")
+            .join(format!("{}.json", fc_sha256_hex(key.as_bytes())));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+        Ok(serde_json::from_str(&content).ok())
+    }
+
+    fn fc_write_idempotency(
+        &self,
+        key: &str,
+        request_hash: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), String> {
+        let directory = self.vault.root().join(FC_INTERNAL_DIR).join("idempotency");
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join(format!("{}.json", fc_sha256_hex(key.as_bytes())));
+        let payload = serde_json::json!({ "requestHash": request_hash, "result": result });
+        fc_write_atomic(
+            &path,
+            &format!("{}\n", serde_json::to_string(&payload).map_err(|error| error.to_string())?),
+        )
     }
 }
 
@@ -2215,7 +3798,9 @@ const FC_HIDDEN_ROOT_DIRS: [&str; 2] = [".fc", ".lattice"];
 const FC_MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 const FC_MAX_READ_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const FC_MAX_GREP_BYTES: u64 = 4 * 1024 * 1024;
-const FC_MUTATION_TYPES: [&str; 8] = ["create", "write", "append", "edit", "copy", "move", "delete", "mkdir"];
+const FC_MUTATION_TYPES: [&str; 8] = [
+    "create", "write", "append", "edit", "copy", "move", "delete", "mkdir",
+];
 
 /// files 错误守卫：按消息短语映射契约错误码（对齐 files.service guarded）。
 fn fc_guard<T>(task: impl FnOnce() -> Result<T, String>) -> Result<T, ServiceError> {
@@ -2232,7 +3817,10 @@ fn fc_guard<T>(task: impl FnOnce() -> Result<T, String>) -> Result<T, ServiceErr
         ];
         let code = if conflict_phrases.iter().any(|phrase| lower.contains(phrase)) {
             "CONFLICT"
-        } else if lower.contains("does not exist") || lower.starts_with("not a file:") || lower.starts_with("not a directory:") {
+        } else if lower.contains("does not exist")
+            || lower.starts_with("not a file:")
+            || lower.starts_with("not a directory:")
+        {
             "NOT_FOUND"
         } else {
             "VALIDATION"
@@ -2242,15 +3830,26 @@ fn fc_guard<T>(task: impl FnOnce() -> Result<T, String>) -> Result<T, ServiceErr
 }
 
 /// 归一 actions 输入：单动作与批量二态（批量 1..=30）。
-fn fc_normalize_actions(action: Option<FileAction>, actions: Option<Vec<FileAction>>) -> Result<(Vec<FileAction>, bool), String> {
+fn fc_normalize_actions(
+    action: Option<FileAction>,
+    actions: Option<Vec<FileAction>>,
+) -> Result<(Vec<FileAction>, bool), String> {
     if let Some(actions) = actions {
         if actions.is_empty() || actions.len() > 30 {
             return Err("Batch requires between 1 and 30 actions".into());
         }
-        let normalized = actions.into_iter().map(fc_normalize_action).collect::<Result<Vec<_>, _>>()?;
+        let normalized = actions
+            .into_iter()
+            .map(fc_normalize_action)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((normalized, true))
     } else {
-        Ok((vec![fc_normalize_action(action.ok_or("A file action is required")?)?], false))
+        Ok((
+            vec![fc_normalize_action(
+                action.ok_or("A file action is required")?,
+            )?],
+            false,
+        ))
     }
 }
 
@@ -2258,7 +3857,11 @@ fn fc_normalize_actions(action: Option<FileAction>, actions: Option<Vec<FileActi
 fn fc_normalize_action(raw: FileAction) -> Result<FileAction, String> {
     let kind = raw.action_type.trim().to_lowercase();
     if !FC_MUTATION_TYPES.contains(&kind.as_str()) {
-        let display = if kind.is_empty() { "(empty)" } else { kind.as_str() };
+        let display = if kind.is_empty() {
+            "(empty)"
+        } else {
+            kind.as_str()
+        };
         return Err(format!("Unsupported mutation: {display}"));
     }
     let mut action = FileAction {
@@ -2268,14 +3871,20 @@ fn fc_normalize_action(raw: FileAction) -> Result<FileAction, String> {
         content: None,
         replace: None,
         with: None,
-        all: None,
+        all: Some(raw.all.unwrap_or(false)),
     };
     if matches!(kind.as_str(), "copy" | "move") {
-        let target = raw.target_path.as_deref().ok_or("A relative path is required")?;
+        let target = raw
+            .target_path
+            .as_deref()
+            .ok_or("A relative path is required")?;
         action.target_path = Some(fc_normalize_relative(target)?);
     }
     if matches!(kind.as_str(), "create" | "write" | "append") {
-        action.content = Some(raw.content.ok_or_else(|| format!("{kind} requires --content"))?);
+        action.content = Some(
+            raw.content
+                .ok_or_else(|| format!("{kind} requires --content"))?,
+        );
     }
     if kind == "edit" {
         let replace = raw.replace.ok_or("edit requires --replace")?;
@@ -2287,6 +3896,46 @@ fn fc_normalize_action(raw: FileAction) -> Result<FileAction, String> {
         action.all = Some(raw.all.unwrap_or(false));
     }
     Ok(action)
+}
+
+fn fc_authorize_actions(
+    actions: &[FileAction],
+    role: &str,
+    allowed_paths: Option<&[String]>,
+) -> Result<(), String> {
+    if matches!(role.trim().to_lowercase().as_str(), "viewer" | "read-only" | "readonly") {
+        return Err("Viewer role cannot execute file mutations".into());
+    }
+    let Some(allowed_paths) = allowed_paths else {
+        return Ok(());
+    };
+    let scopes = allowed_paths
+        .iter()
+        .map(|path| fc_normalize_relative(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    for action in actions {
+        let paths = std::iter::once(&action.path).chain(action.target_path.iter());
+        for path in paths {
+            if !scopes
+                .iter()
+                .any(|scope| path == scope || path.starts_with(&format!("{scope}/")))
+            {
+                return Err(format!("File action exceeds the authorized path scope: {path}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fc_validate_idempotency_key(key: &str) -> Result<(), String> {
+    if key.chars().count() > 240
+        || !key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".:_-".contains(character))
+    {
+        return Err("Invalid idempotency key".into());
+    }
+    Ok(())
 }
 
 /// 相对路径归一：拒绝绝对路径/穿越/内部目录（对齐 normalizeRelativePath）。
@@ -2311,7 +3960,11 @@ fn fc_normalize_relative(value: &str) -> Result<String, String> {
         return Err(format!("Invalid relative path: {value}"));
     }
     // Windows 大小写不敏感且剥离段尾点/空格（'.FC.' 与 '.fc' 指向同一目录）
-    let first = normalized.split('/').next().unwrap_or_default().to_lowercase();
+    let first = normalized
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
     if first.trim_end_matches(['.', ' ']) == FC_INTERNAL_DIR {
         return Err(format!("The {FC_INTERNAL_DIR} directory is reserved"));
     }
@@ -2325,7 +3978,10 @@ fn fc_assert_no_symlink(root: &Path, resolved: &Path) -> Result<(), String> {
         if let Ok(meta) = fs::symlink_metadata(&current)
             && meta.file_type().is_symlink()
         {
-            let display = current.strip_prefix(root).unwrap_or(current.as_path()).display();
+            let display = current
+                .strip_prefix(root)
+                .unwrap_or(current.as_path())
+                .display();
             return Err(format!("Symbolic links are not supported: {display}"));
         }
         match current.parent() {
@@ -2340,7 +3996,9 @@ fn fc_assert_no_symlink(root: &Path, resolved: &Path) -> Result<(), String> {
 fn fc_assert_regular_file(path: &Path, display: &str) -> Result<(), String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(format!("File does not exist: {display}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("File does not exist: {display}"));
+        }
         Err(error) => return Err(error.to_string()),
     };
     if meta.file_type().is_symlink() || !meta.is_file() {
@@ -2354,18 +4012,36 @@ fn fc_state_for(path: &Path) -> Result<FileState, String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(FileState { exists: false, kind: "missing".into(), size: None, sha256: None })
+            return Ok(FileState {
+                exists: false,
+                kind: "missing".into(),
+                size: None,
+                sha256: None,
+            });
         }
         Err(error) => return Err(error.to_string()),
     };
     if meta.file_type().is_symlink() {
-        return Err(format!("Symbolic links are not supported: {}", path.display()));
+        return Err(format!(
+            "Symbolic links are not supported: {}",
+            path.display()
+        ));
     }
     if meta.is_dir() {
-        return Ok(FileState { exists: true, kind: "directory".into(), size: None, sha256: None });
+        return Ok(FileState {
+            exists: true,
+            kind: "directory".into(),
+            size: None,
+            sha256: None,
+        });
     }
     if !meta.is_file() {
-        return Ok(FileState { exists: true, kind: "other".into(), size: None, sha256: None });
+        return Ok(FileState {
+            exists: true,
+            kind: "other".into(),
+            size: None,
+            sha256: None,
+        });
     }
     let data = fs::read(path).map_err(|error| error.to_string())?;
     Ok(FileState {
@@ -2398,7 +4074,9 @@ fn fc_read_text_if_present(path: &Path) -> Result<Option<String>, String> {
     if meta.len() > FC_MAX_READ_BYTES {
         return Err(format!("File is too large: {}", path.display()));
     }
-    Ok(Some(String::from_utf8_lossy(&fs::read(path).map_err(|error| error.to_string())?).into_owned()))
+    Ok(Some(
+        String::from_utf8_lossy(&fs::read(path).map_err(|error| error.to_string())?).into_owned(),
+    ))
 }
 
 /// 计算写入后的文本（对齐 nextText：create/write 直接覆盖、append 追加、edit 计数替换）。
@@ -2406,20 +4084,30 @@ fn fc_next_text(action: &FileAction, current: Option<&str>) -> Result<String, St
     match action.action_type.as_str() {
         "create" | "write" => Ok(action.content.clone().unwrap_or_default()),
         "append" => {
-            let current = current.ok_or_else(|| format!("Source file does not exist: {}", action.path))?;
-            Ok(format!("{current}{}", action.content.clone().unwrap_or_default()))
+            let current =
+                current.ok_or_else(|| format!("Source file does not exist: {}", action.path))?;
+            Ok(format!(
+                "{current}{}",
+                action.content.clone().unwrap_or_default()
+            ))
         }
         _ => {
-            let current = current.ok_or_else(|| format!("Source file does not exist: {}", action.path))?;
+            let current =
+                current.ok_or_else(|| format!("Source file does not exist: {}", action.path))?;
             let replace = action.replace.as_deref().unwrap_or_default();
             let matches = current.split(replace).count() - 1;
             if matches == 0 {
                 return Err(format!("Text to replace was not found in {}", action.path));
             }
             if matches > 1 && action.all != Some(true) {
-                return Err(format!("Text to replace occurs {matches} times; use --all to replace all"));
+                return Err(format!(
+                    "Text to replace occurs {matches} times; use --all to replace all"
+                ));
             }
-            Ok(current.split(replace).collect::<Vec<_>>().join(action.with.as_deref().unwrap_or_default()))
+            Ok(current
+                .split(replace)
+                .collect::<Vec<_>>()
+                .join(action.with.as_deref().unwrap_or_default()))
         }
     }
 }
@@ -2429,8 +4117,14 @@ fn fc_unified_diff(file_path: &str, before: &str, after: &str) -> String {
     if before == after {
         return String::new();
     }
-    let left: Vec<&str> = before.split('\n').map(|line: &str| line.strip_suffix('\r').unwrap_or(line)).collect();
-    let right: Vec<&str> = after.split('\n').map(|line: &str| line.strip_suffix('\r').unwrap_or(line)).collect();
+    let left: Vec<&str> = before
+        .split('\n')
+        .map(|line: &str| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
+    let right: Vec<&str> = after
+        .split('\n')
+        .map(|line: &str| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
     let mut lines = vec![format!("--- {file_path}"), format!("+++ {file_path}")];
     for index in 0..left.len().max(right.len()) {
         let old = left.get(index);
@@ -2451,7 +4145,10 @@ fn fc_unified_diff(file_path: &str, before: &str, after: &str) -> String {
 /// glob → 大小写不敏感正则（对齐 globToRegExp：** / → (?:.*/)?，* → [^/]*，? → [^/]）。
 fn fc_glob_regex(pattern: &str) -> Result<regex::Regex, String> {
     let portable = pattern.replace('\\', "/");
-    if portable.starts_with('/') || (portable.len() >= 2 && portable.as_bytes()[1] == b':') || portable.split('/').any(|part| part == "..") {
+    if portable.starts_with('/')
+        || (portable.len() >= 2 && portable.as_bytes()[1] == b':')
+        || portable.split('/').any(|part| part == "..")
+    {
         return Err(format!("Invalid search pattern: {pattern}"));
     }
     let portable = portable.strip_prefix("./").unwrap_or(&portable);
@@ -2483,7 +4180,10 @@ fn fc_glob_regex(pattern: &str) -> Result<regex::Regex, String> {
         }
     }
     source.push('$');
-    regex::RegexBuilder::new(&source).case_insensitive(true).build().map_err(|error| error.to_string())
+    regex::RegexBuilder::new(&source)
+        .case_insensitive(true)
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 /// 递归列文件：跳过根下内部目录与符号链接，码点序排序。
@@ -2495,15 +4195,23 @@ fn fc_list_files(root: &Path, base: &Path) -> Vec<PathBuf> {
 }
 
 fn fc_walk(root: &Path, base: &Path, directory: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(directory) else { return };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if base == root
-            && path.file_name().and_then(|name| name.to_str()).map(|name| FC_HIDDEN_ROOT_DIRS.contains(&name)).unwrap_or(false)
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| FC_HIDDEN_ROOT_DIRS.contains(&name))
+                .unwrap_or(false)
         {
             continue;
         }
-        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
         if meta.file_type().is_symlink() {
             continue;
         }
@@ -2548,8 +4256,14 @@ fn fc_write_atomic_from_file(target: &Path, source: &Path) -> Result<(), String>
 }
 
 fn fc_temporary_path(target: &Path) -> PathBuf {
-    let name = target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    target.parent().unwrap_or(target).join(format!("{name}.{}.tmp", Uuid::new_v4()))
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    target
+        .parent()
+        .unwrap_or(target)
+        .join(format!("{name}.{}.tmp", Uuid::new_v4()))
 }
 
 fn fc_replace_file(source: &Path, target: &Path) -> Result<(), String> {
@@ -2580,7 +4294,8 @@ fn fc_plan_action((index, action): (usize, &FileAction)) -> serde_json::Value {
 
 /// 审计里的动作摘要（对齐 auditAction：id/type/path/targetPath）。
 fn fc_audit_action(action: &FileAction, action_id: &str) -> serde_json::Value {
-    let mut object = serde_json::json!({ "id": action_id, "type": action.action_type, "path": action.path });
+    let mut object =
+        serde_json::json!({ "id": action_id, "type": action.action_type, "path": action.path });
     if let Some(target) = &action.target_path {
         object["targetPath"] = serde_json::json!(target);
     }
@@ -2635,6 +4350,75 @@ pub struct FileAction {
     pub with: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all: Option<bool>,
+}
+
+/// Keep batch failure details useful for recovery without echoing write bodies.
+fn fc_batch_result(
+    action_id: &str,
+    action: &FileAction,
+    status: &str,
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "id": action_id,
+        "type": action.action_type,
+        "path": action.path,
+        "status": status,
+    });
+    if let Some(target_path) = &action.target_path {
+        value["targetPath"] = serde_json::json!(target_path);
+    }
+    if let Some(result) = result {
+        value["result"] = result;
+    }
+    if let Some(error) = error {
+        value["error"] = serde_json::json!(error.chars().take(500).collect::<String>());
+    }
+    value
+}
+
+fn fc_batch_outcome(
+    batch_id: &str,
+    plan_id: &serde_json::Value,
+    plan_version: serde_json::Value,
+    plan_hash: &str,
+    total: usize,
+    completed: usize,
+    failed: usize,
+    partial_failure: bool,
+    operation_ids: Vec<serde_json::Value>,
+    results: Vec<serde_json::Value>,
+    preview: serde_json::Value,
+    failure: Option<String>,
+) -> serde_json::Value {
+    let compensation = serde_json::json!({
+        "available": !operation_ids.is_empty(),
+        "kind": "file_undo",
+        "requiresConfirmation": true,
+        "operationIds": operation_ids,
+    });
+    let mut outcome = serde_json::json!({
+        "batchId": batch_id,
+        "planId": plan_id,
+        "planVersion": plan_version,
+        "planHash": plan_hash,
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "skipped": total.saturating_sub(completed.saturating_add(failed)),
+        "partialFailure": partial_failure,
+        "operationIds": compensation["operationIds"],
+        "compensation": compensation,
+        "results": results,
+        "preview": preview,
+    });
+    if let Some(failure) = failure {
+        outcome["failure"] = serde_json::json!({
+            "message": failure.chars().take(500).collect::<String>(),
+        });
+    }
+    outcome
 }
 
 /// files 读取结果（字符切片口径）。
@@ -2705,52 +4489,52 @@ pub struct FileState {
 
 /// 内置专家（目录字典序，与 Express readdirSync 一致）。
 const BUILTIN_EXPERTS: &[&str] = &[
-    include_str!("../../server/src/modules/experts/builtin/experts/decision-archivist.json"),
-    include_str!("../../server/src/modules/experts/builtin/experts/general.json"),
-    include_str!("../../server/src/modules/experts/builtin/experts/inbox-organizer.json"),
-    include_str!("../../server/src/modules/experts/builtin/experts/knowledge-curator.json"),
-    include_str!("../../server/src/modules/experts/builtin/experts/knowledge-researcher.json"),
-    include_str!("../../server/src/modules/experts/builtin/experts/note-editor.json"),
-    include_str!("../../server/src/modules/experts/builtin/experts/task-executor.json"),
+    include_str!("../resources/builtin/experts/decision-archivist.json"),
+    include_str!("../resources/builtin/experts/general.json"),
+    include_str!("../resources/builtin/experts/inbox-organizer.json"),
+    include_str!("../resources/builtin/experts/knowledge-curator.json"),
+    include_str!("../resources/builtin/experts/knowledge-researcher.json"),
+    include_str!("../resources/builtin/experts/note-editor.json"),
+    include_str!("../resources/builtin/experts/task-executor.json"),
 ];
 
 /// 内置技能（skill.json, SKILL.md），目录字典序。
 const BUILTIN_SKILLS: &[(&str, &str)] = &[
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/decision-capture/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/decision-capture/SKILL.md"),
+        include_str!("../resources/builtin/skills/decision-capture/skill.json"),
+        include_str!("../resources/builtin/skills/decision-capture/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/inbox-triage/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/inbox-triage/SKILL.md"),
+        include_str!("../resources/builtin/skills/inbox-triage/skill.json"),
+        include_str!("../resources/builtin/skills/inbox-triage/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/link-graph-analysis/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/link-graph-analysis/SKILL.md"),
+        include_str!("../resources/builtin/skills/link-graph-analysis/skill.json"),
+        include_str!("../resources/builtin/skills/link-graph-analysis/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/note-structure-audit/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/note-structure-audit/SKILL.md"),
+        include_str!("../resources/builtin/skills/note-structure-audit/skill.json"),
+        include_str!("../resources/builtin/skills/note-structure-audit/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/operation-plan/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/operation-plan/SKILL.md"),
+        include_str!("../resources/builtin/skills/operation-plan/skill.json"),
+        include_str!("../resources/builtin/skills/operation-plan/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/task-batch-planner/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/task-batch-planner/SKILL.md"),
+        include_str!("../resources/builtin/skills/task-batch-planner/skill.json"),
+        include_str!("../resources/builtin/skills/task-batch-planner/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/task-round-discipline/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/task-round-discipline/SKILL.md"),
+        include_str!("../resources/builtin/skills/task-round-discipline/skill.json"),
+        include_str!("../resources/builtin/skills/task-round-discipline/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/vault-health-check/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/vault-health-check/SKILL.md"),
+        include_str!("../resources/builtin/skills/vault-health-check/skill.json"),
+        include_str!("../resources/builtin/skills/vault-health-check/SKILL.md"),
     ),
     (
-        include_str!("../../server/src/modules/experts/builtin/skills/vault-search/skill.json"),
-        include_str!("../../server/src/modules/experts/builtin/skills/vault-search/SKILL.md"),
+        include_str!("../resources/builtin/skills/vault-search/skill.json"),
+        include_str!("../resources/builtin/skills/vault-search/SKILL.md"),
     ),
 ];
 
@@ -2766,9 +4550,13 @@ impl WorkspaceService {
             }
         }
         for path in expert_list_json_files(&self.experts_dir()) {
-            if let Ok(document) = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&path).unwrap_or_default())
-                && let Ok(expert) = expert_normalize(&document, &path.file_stem().unwrap_or_default().to_string_lossy(), "workspace")
-            {
+            if let Ok(document) = serde_json::from_str::<serde_json::Value>(
+                &fs::read_to_string(&path).unwrap_or_default(),
+            ) && let Ok(expert) = expert_normalize(
+                &document,
+                &path.file_stem().unwrap_or_default().to_string_lossy(),
+                "workspace",
+            ) {
                 if let Some(slot) = entries.iter_mut().find(|entry| entry["id"] == expert["id"]) {
                     *slot = expert;
                 } else {
@@ -2779,12 +4567,19 @@ impl WorkspaceService {
         for expert in entries.iter_mut() {
             let enabled_count = expert["skills"]
                 .as_array()
-                .map(|skills| skills.iter().filter(|skill| skill["enabled"] == serde_json::json!(true)).count())
+                .map(|skills| {
+                    skills
+                        .iter()
+                        .filter(|skill| skill["enabled"] == serde_json::json!(true))
+                        .count()
+                })
                 .unwrap_or(0);
             expert["skillCount"] = serde_json::json!(enabled_count);
             if let Some(skills) = expert["skills"].as_array_mut() {
                 for skill in skills.iter_mut() {
-                    skill["available"] = serde_json::json!(self.skill_exists(skill["id"].as_str().unwrap_or_default()));
+                    skill["available"] = serde_json::json!(
+                        self.skill_exists(skill["id"].as_str().unwrap_or_default())
+                    );
                 }
             }
         }
@@ -2805,50 +4600,92 @@ impl WorkspaceService {
     }
 
     /// 契约 POST /api/experts 与 PUT /api/experts/:id（save 复用；新建禁覆盖内置专家）。
-    pub fn expert_save(&self, input: serde_json::Value, existing_id: Option<String>, confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+    pub fn expert_save(
+        &self,
+        input: serde_json::Value,
+        existing_id: Option<String>,
+        confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "文件变更必须先完成确认",
+            ));
         }
         let id = match &existing_id {
-            Some(existing) => expert_assert_id(existing).map_err(|error| ServiceError::new("VALIDATION", error))?,
+            Some(existing) => expert_assert_id(existing)
+                .map_err(|error| ServiceError::new("VALIDATION", error))?,
             None => {
-                let requested = expert_assert_id(input.get("id").and_then(|value| value.as_str()).unwrap_or(""))
-                    .map_err(|error| ServiceError::new("VALIDATION", error))?;
+                let requested = expert_assert_id(
+                    input
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(""),
+                )
+                .map_err(|error| ServiceError::new("VALIDATION", error))?;
                 if BUILTIN_EXPERTS.iter().any(|raw| {
                     serde_json::from_str::<serde_json::Value>(raw)
                         .ok()
-                        .and_then(|document| document.get("id").and_then(|value| value.as_str()).map(|value| value == requested))
+                        .and_then(|document| {
+                            document
+                                .get("id")
+                                .and_then(|value| value.as_str())
+                                .map(|value| value == requested)
+                        })
                         .unwrap_or(false)
                 }) {
-                    return Err(ServiceError::new("CONFLICT", "内置专家不可直接覆盖，请先复制为工作区版本"));
+                    return Err(ServiceError::new(
+                        "CONFLICT",
+                        "内置专家不可直接覆盖，请先复制为工作区版本",
+                    ));
                 }
                 requested
             }
         };
-        let document = expert_normalize(&input, &id, "workspace").map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let document = expert_normalize(&input, &id, "workspace")
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
         expert_write_json(&self.experts_dir().join(format!("{id}.json")), &document)?;
         self.expert_get(&id)
     }
 
     /// 契约 DELETE /api/experts/:id：仅删除工作区版本（双确认）。
-    pub fn expert_delete(&self, id: &str, confirmed: bool, second_confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+    pub fn expert_delete(
+        &self,
+        id: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "文件变更必须先完成确认",
+            ));
         }
         if !second_confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "删除操作必须完成二次确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除操作必须完成二次确认",
+            ));
         }
-        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let resolved =
+            expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
         let path = self.experts_dir().join(format!("{resolved}.json"));
         if !path.exists() {
-            return Err(ServiceError::new("NOT_FOUND", format!("工作区专家「{resolved}」不存在")));
+            return Err(ServiceError::new(
+                "NOT_FOUND",
+                format!("工作区专家「{resolved}」不存在"),
+            ));
         }
         fs::remove_file(&path).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
         Ok(serde_json::json!({ "id": resolved, "deleted": true }))
     }
 
     /// 契约 POST /api/experts/route：关键词命中数 ≥ ceil(threshold×2) 即建议，score = 命中×100 + priority。
-    pub fn expert_route(&self, message: &str, exclude_id: Option<String>) -> Result<Vec<serde_json::Value>, ServiceError> {
+    pub fn expert_route(
+        &self,
+        message: &str,
+        exclude_id: Option<String>,
+    ) -> Result<Vec<serde_json::Value>, ServiceError> {
         let text = message.to_lowercase();
         if text.trim().is_empty() {
             return Ok(Vec::new());
@@ -2856,7 +4693,10 @@ impl WorkspaceService {
         let mut candidates = Vec::new();
         for expert in self.expert_list()? {
             let id = expert["id"].as_str().unwrap_or_default();
-            if id == "general" || Some(id) == exclude_id.as_deref() || expert["enabled"] != serde_json::json!(true) {
+            if id == "general"
+                || Some(id) == exclude_id.as_deref()
+                || expert["enabled"] != serde_json::json!(true)
+            {
                 continue;
             }
             let mut keywords: Vec<String> = expert["routing"]["keywords"]
@@ -2875,8 +4715,14 @@ impl WorkspaceService {
             if keywords.is_empty() {
                 continue;
             }
-            let matched: Vec<&str> = keywords.iter().filter(|keyword| text.contains(keyword.as_str())).map(String::as_str).collect();
-            let threshold = expert["routing"]["confidenceThreshold"].as_f64().unwrap_or(0.72);
+            let matched: Vec<&str> = keywords
+                .iter()
+                .filter(|keyword| text.contains(keyword.as_str()))
+                .map(String::as_str)
+                .collect();
+            let threshold = expert["routing"]["confidenceThreshold"]
+                .as_f64()
+                .unwrap_or(0.72);
             let required = ((threshold * 2.0).ceil() as usize).max(1);
             if matched.len() < required {
                 continue;
@@ -2896,7 +4742,10 @@ impl WorkspaceService {
         }
         candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
         candidates.truncate(3);
-        Ok(candidates.into_iter().map(|(_, _, candidate)| candidate).collect())
+        Ok(candidates
+            .into_iter()
+            .map(|(_, _, candidate)| candidate)
+            .collect())
     }
 
     /// 契约 GET /api/experts/skills：技能目录（builtin + workspace 覆盖；filePath + contentHash，不含 content）。
@@ -2919,7 +4768,10 @@ impl WorkspaceService {
                     continue;
                 }
                 if let Some(skill) = self.read_skill_dir(&entry.path(), "workspace") {
-                    if let Some(slot) = entries.iter_mut().find(|existing| existing["id"] == skill["id"]) {
+                    if let Some(slot) = entries
+                        .iter_mut()
+                        .find(|existing| existing["id"] == skill["id"])
+                    {
                         *slot = skill.clone();
                     } else {
                         entries.push(skill);
@@ -2932,7 +4784,14 @@ impl WorkspaceService {
             if let Some(object) = skill.as_object_mut() {
                 object.remove("content");
                 object.remove("path");
-                object.insert("filePath".into(), self.skills_dir().join(&skill_id).display().to_string().into());
+                object.insert(
+                    "filePath".into(),
+                    self.skills_dir()
+                        .join(&skill_id)
+                        .display()
+                        .to_string()
+                        .into(),
+                );
             }
         }
         Ok(entries)
@@ -2944,36 +4803,68 @@ impl WorkspaceService {
     }
 
     /// 契约 POST /api/experts/skills 与 PUT /api/experts/skills/:id（save 复用；新建禁覆盖内置技能）。
-    pub fn skill_save(&self, input: serde_json::Value, existing_id: Option<String>, confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+    pub fn skill_save(
+        &self,
+        input: serde_json::Value,
+        existing_id: Option<String>,
+        confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "文件变更必须先完成确认",
+            ));
         }
         let id = match &existing_id {
-            Some(existing) => expert_assert_id(existing).map_err(|error| ServiceError::new("VALIDATION", error))?,
+            Some(existing) => expert_assert_id(existing)
+                .map_err(|error| ServiceError::new("VALIDATION", error))?,
             None => {
-                let requested = expert_assert_id(input.get("id").and_then(|value| value.as_str()).unwrap_or(""))
-                    .map_err(|error| ServiceError::new("VALIDATION", error))?;
+                let requested = expert_assert_id(
+                    input
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(""),
+                )
+                .map_err(|error| ServiceError::new("VALIDATION", error))?;
                 if BUILTIN_SKILLS.iter().any(|(manifest, _)| {
                     serde_json::from_str::<serde_json::Value>(manifest)
                         .ok()
-                        .and_then(|document| document.get("id").and_then(|value| value.as_str()).map(|value| value == requested))
+                        .and_then(|document| {
+                            document
+                                .get("id")
+                                .and_then(|value| value.as_str())
+                                .map(|value| value == requested)
+                        })
                         .unwrap_or(false)
                 }) {
-                    return Err(ServiceError::new("CONFLICT", "内置Skill不可直接覆盖，请先复制为工作区版本"));
+                    return Err(ServiceError::new(
+                        "CONFLICT",
+                        "内置Skill不可直接覆盖，请先复制为工作区版本",
+                    ));
                 }
                 requested
             }
         };
-        let content = input.get("content").and_then(|value| value.as_str()).unwrap_or_default().trim().to_owned();
+        let content = input
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
         if content.is_empty() {
             return Err(ServiceError::new("VALIDATION", "Skill 内容不能为空"));
         }
         if content.chars().count() > SKILL_MAX_CHARS {
-            return Err(ServiceError::new("VALIDATION", format!("Skill 内容不能超过 {SKILL_MAX_CHARS} 个字符")));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                format!("Skill 内容不能超过 {SKILL_MAX_CHARS} 个字符"),
+            ));
         }
-        let document = skill_normalize(&input, &id, "workspace").map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let document = skill_normalize(&input, &id, "workspace")
+            .map_err(|error| ServiceError::new("VALIDATION", error))?;
         let directory = self.skills_dir().join(&id);
-        fs::create_dir_all(&directory).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        fs::create_dir_all(&directory)
+            .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
         expert_write_json(&directory.join("skill.json"), &document)?;
         fs::write(directory.join("SKILL.md"), format!("{content}\n"))
             .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
@@ -2981,19 +4872,35 @@ impl WorkspaceService {
     }
 
     /// 契约 DELETE /api/experts/skills/:id：仅删除工作区目录（双确认）。
-    pub fn skill_delete(&self, id: &str, confirmed: bool, second_confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+    pub fn skill_delete(
+        &self,
+        id: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "文件变更必须先完成确认",
+            ));
         }
         if !second_confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "删除操作必须完成二次确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除操作必须完成二次确认",
+            ));
         }
-        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let resolved =
+            expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
         let directory = self.skills_dir().join(&resolved);
         if !directory.exists() {
-            return Err(ServiceError::new("NOT_FOUND", format!("工作区 Skill「{resolved}」不存在")));
+            return Err(ServiceError::new(
+                "NOT_FOUND",
+                format!("工作区 Skill「{resolved}」不存在"),
+            ));
         }
-        fs::remove_dir_all(&directory).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        fs::remove_dir_all(&directory)
+            .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
         Ok(serde_json::json!({ "id": resolved, "deleted": true }))
     }
 
@@ -3011,7 +4918,8 @@ impl WorkspaceService {
 
     /// 读专家文档：工作区优先，回落内置（对齐 readExpert）。
     fn read_expert(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
-        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+        let resolved =
+            expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
         let workspace = self.experts_dir().join(format!("{resolved}.json"));
         let raw = if workspace.exists() {
             fs::read_to_string(&workspace).ok()
@@ -3021,33 +4929,52 @@ impl WorkspaceService {
                 .find(|raw| {
                     serde_json::from_str::<serde_json::Value>(raw)
                         .ok()
-                        .and_then(|document| document.get("id").and_then(|value| value.as_str()).map(|value| value == resolved))
+                        .and_then(|document| {
+                            document
+                                .get("id")
+                                .and_then(|value| value.as_str())
+                                .map(|value| value == resolved)
+                        })
                         .unwrap_or(false)
                 })
                 .map(|raw| raw.to_string())
         };
         let Some(raw) = raw else {
-            return Err(ServiceError::new("NOT_FOUND", format!("专家「{resolved}」不存在")));
+            return Err(ServiceError::new(
+                "NOT_FOUND",
+                format!("专家「{resolved}」不存在"),
+            ));
         };
-        let document: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|error| ServiceError::new("VALIDATION", format!("无法读取配置文件：{error}")))?;
-        let source = if workspace.exists() { "workspace" } else { "builtin" };
-        expert_normalize(&document, &resolved, source).map_err(|error| ServiceError::new("VALIDATION", error))
+        let document: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+            ServiceError::new("VALIDATION", format!("无法读取配置文件：{error}"))
+        })?;
+        let source = if workspace.exists() {
+            "workspace"
+        } else {
+            "builtin"
+        };
+        expert_normalize(&document, &resolved, source)
+            .map_err(|error| ServiceError::new("VALIDATION", error))
     }
 
     /// 读技能文档（对齐 readSkill：workspace 优先；include_content 控制正文与 path 字段）。
-    fn read_skill(&self, id: &str, include_content: bool) -> Result<serde_json::Value, ServiceError> {
-        let resolved = expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
+    fn read_skill(
+        &self,
+        id: &str,
+        include_content: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
+        let resolved =
+            expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
         let workspace_dir = self.skills_dir().join(&resolved);
         let workspace = self.read_skill_dir(&workspace_dir, "workspace");
-        let builtin = BUILTIN_SKILLS
-            .iter()
-            .find_map(|(manifest, body)| {
-                let document = serde_json::from_str::<serde_json::Value>(manifest).ok()?;
-                let candidate = skill_document(&document, body, "builtin")?;
-                (candidate["id"].as_str() == Some(resolved.as_str())).then_some(candidate)
-            });
-        let skill = workspace.or(builtin).ok_or_else(|| ServiceError::new("NOT_FOUND", format!("Skill「{resolved}」不存在")))?;
+        let builtin = BUILTIN_SKILLS.iter().find_map(|(manifest, body)| {
+            let document = serde_json::from_str::<serde_json::Value>(manifest).ok()?;
+            let candidate = skill_document(&document, body, "builtin")?;
+            (candidate["id"].as_str() == Some(resolved.as_str())).then_some(candidate)
+        });
+        let skill = workspace
+            .or(builtin)
+            .ok_or_else(|| ServiceError::new("NOT_FOUND", format!("Skill「{resolved}」不存在")))?;
         if include_content {
             return Ok(skill);
         }
@@ -3068,7 +4995,9 @@ impl WorkspaceService {
         }
         let body = fs::read_to_string(&body_path).ok()?;
         let body: String = body.chars().take(SKILL_MAX_CHARS).collect();
-        let document = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(manifest_path).ok()?).ok()?;
+        let document =
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(manifest_path).ok()?)
+                .ok()?;
         skill_document(&document, &body, source)
     }
 }
@@ -3097,11 +5026,19 @@ fn expert_file_stem(raw: &str) -> String {
 }
 
 fn expert_list_json_files(directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(directory) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
     let mut files: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().map(|extension| extension == "json").unwrap_or(false))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .map(|extension| extension == "json")
+                    .unwrap_or(false)
+        })
         .collect();
     files.sort();
     files
@@ -3109,19 +5046,34 @@ fn expert_list_json_files(directory: &Path) -> Vec<PathBuf> {
 
 fn expert_write_json(path: &Path, value: &serde_json::Value) -> Result<(), ServiceError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
     }
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(value).map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?))
-        .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))
+    fs::write(
+        path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(value)
+                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?
+        ),
+    )
+    .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))
 }
 
 /// 字符串归一：trim + 按 Unicode 码点截断（JS slice(0, N) 的 BMP 等价）。
 fn expert_clean_string(value: Option<&str>, fallback: &str, max: usize) -> String {
-    let trimmed = value.map(str::trim).filter(|value| !value.is_empty()).unwrap_or(fallback);
+    let trimmed = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback);
     trimmed.chars().take(max).collect()
 }
 
-fn expert_string_array(value: Option<&Vec<serde_json::Value>>, fallback: Vec<String>, max: usize) -> Vec<String> {
+fn expert_string_array(
+    value: Option<&Vec<serde_json::Value>>,
+    fallback: Vec<String>,
+    max: usize,
+) -> Vec<String> {
     match value {
         Some(items) => items
             .iter()
@@ -3135,7 +5087,11 @@ fn expert_string_array(value: Option<&Vec<serde_json::Value>>, fallback: Vec<Str
 
 fn expert_string_array_strict(value: Option<&Vec<serde_json::Value>>, max: usize) -> Vec<String> {
     match value {
-        Some(items) => items.iter().filter_map(|item| item.as_str().map(str::to_owned)).take(max).collect(),
+        Some(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .take(max)
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -3148,8 +5104,17 @@ fn expert_clamp(value: Option<f64>, fallback: f64, min: f64, max: f64) -> f64 {
 }
 
 /// 专家文档归一（对齐 normalizeExpert：默认值/截断/绑定收敛）。
-fn expert_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> Result<serde_json::Value, String> {
-    let id = expert_assert_id(value.get("id").and_then(|item| item.as_str()).unwrap_or(id_hint))?;
+fn expert_normalize(
+    value: &serde_json::Value,
+    id_hint: &str,
+    source: &str,
+) -> Result<serde_json::Value, String> {
+    let id = expert_assert_id(
+        value
+            .get("id")
+            .and_then(|item| item.as_str())
+            .unwrap_or(id_hint),
+    )?;
     let bindings = value
         .get("skills")
         .and_then(|item| item.as_array())
@@ -3162,10 +5127,22 @@ fn expert_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> R
                         (text, true, 50, serde_json::json!({}))
                     } else {
                         (
-                            item.get("id").and_then(|value| value.as_str()).unwrap_or_default(),
-                            item.get("enabled").and_then(|value| value.as_bool()).unwrap_or(true),
-                            expert_clamp(item.get("priority").and_then(|value| value.as_f64()), 50.0, 0.0, 100.0) as i64,
-                            item.get("config").filter(|value| value.is_object()).cloned().unwrap_or_else(|| serde_json::json!({})),
+                            item.get("id")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default(),
+                            item.get("enabled")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(true),
+                            expert_clamp(
+                                item.get("priority").and_then(|value| value.as_f64()),
+                                50.0,
+                                0.0,
+                                100.0,
+                            ) as i64,
+                            item.get("config")
+                                .filter(|value| value.is_object())
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({})),
                         )
                     };
                     expert_assert_id(skill_id).ok().map(|skill_id| {
@@ -3217,8 +5194,20 @@ fn expert_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> R
 }
 
 /// 技能文档（manifest + content/contentHash/path，对齐 readSkillFromDir）。
-fn skill_document(manifest: &serde_json::Value, body: &str, source: &str) -> Option<serde_json::Value> {
-    let normalized = skill_normalize(manifest, manifest.get("id").and_then(|item| item.as_str()).unwrap_or(""), source).ok()?;
+fn skill_document(
+    manifest: &serde_json::Value,
+    body: &str,
+    source: &str,
+) -> Option<serde_json::Value> {
+    let normalized = skill_normalize(
+        manifest,
+        manifest
+            .get("id")
+            .and_then(|item| item.as_str())
+            .unwrap_or(""),
+        source,
+    )
+    .ok()?;
     Some(serde_json::json!({
         "id": normalized["id"],
         "version": normalized["version"],
@@ -3238,8 +5227,17 @@ fn skill_document(manifest: &serde_json::Value, body: &str, source: &str) -> Opt
 }
 
 /// 技能清单归一（对齐 normalizeSkillManifest）。
-fn skill_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> Result<serde_json::Value, String> {
-    let id = expert_assert_id(value.get("id").and_then(|item| item.as_str()).unwrap_or(id_hint))?;
+fn skill_normalize(
+    value: &serde_json::Value,
+    id_hint: &str,
+    source: &str,
+) -> Result<serde_json::Value, String> {
+    let id = expert_assert_id(
+        value
+            .get("id")
+            .and_then(|item| item.as_str())
+            .unwrap_or(id_hint),
+    )?;
     let schema = |key: &str| {
         value
             .get(key)
@@ -3270,22 +5268,36 @@ fn skill_normalize(value: &serde_json::Value, id_hint: &str, source: &str) -> Re
 // duplicates 删除不做 backlink 迁移（note_delete 暂无 replacementId）。
 // ===========================================================================
 
-static REPAIR_PLANS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, serde_json::Value>>> = std::sync::OnceLock::new();
+static REPAIR_PLANS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, serde_json::Value>>> =
+    std::sync::OnceLock::new();
 const REVIEW_PLAN_TTL_MILLIS: i64 = 15 * 60_000;
 
 impl WorkspaceService {
     /// 契约 GET /api/review/health：只读、可解释、可排序的知识健康报告。
-    pub fn review_health(&self, stale_days: u64, limit: u64) -> Result<serde_json::Value, ServiceError> {
+    pub fn review_health(
+        &self,
+        stale_days: u64,
+        limit: u64,
+    ) -> Result<serde_json::Value, ServiceError> {
         self.health_scan(stale_days.clamp(7, 3650), limit.clamp(1, 100))
     }
 
     /// 契约 POST /api/review/health/plan：依据扫描结果生成修复计划（actions + manual）。
-    pub fn review_plan(&self, finding_ids: Vec<String>, stale_days: u64, limit: u64) -> Result<serde_json::Value, ServiceError> {
+    pub fn review_plan(
+        &self,
+        finding_ids: Vec<String>,
+        stale_days: u64,
+        limit: u64,
+    ) -> Result<serde_json::Value, ServiceError> {
         if finding_ids.is_empty() || finding_ids.len() > 100 {
-            return Err(ServiceError::new("VALIDATION", "一次修复计划必须包含 1-100 条线索"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "一次修复计划必须包含 1-100 条线索",
+            ));
         }
         let report = self.health_scan(stale_days.clamp(7, 3650), limit.clamp(1, 100))?;
-        let selected: std::collections::HashSet<String> = finding_ids.iter().map(String::clone).collect();
+        let selected: std::collections::HashSet<String> =
+            finding_ids.iter().map(String::clone).collect();
         let mut selected_findings: Vec<(String, serde_json::Value)> = Vec::new();
         for (category, items) in report["categories"].as_object().into_iter().flatten() {
             for item in items.as_array().into_iter().flatten() {
@@ -3296,13 +5308,23 @@ impl WorkspaceService {
         }
         let missing: Vec<&String> = finding_ids
             .iter()
-            .filter(|id| !selected_findings.iter().any(|(_, item)| item["id"].as_str() == Some(id.as_str())))
+            .filter(|id| {
+                !selected_findings
+                    .iter()
+                    .any(|(_, item)| item["id"].as_str() == Some(id.as_str()))
+            })
             .collect();
         if !missing.is_empty() {
-            return Err(ServiceError::new("VALIDATION", "部分健康线索已不在当前扫描结果中，请重新扫描后再生成计划"));
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "部分健康线索已不在当前扫描结果中，请重新扫描后再生成计划",
+            ));
         }
 
-        let notes = self.index.list_for_health().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let notes = self
+            .index
+            .list_for_health()
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
         let mut updates: HashMap<String, serde_json::Value> = HashMap::new();
         let mut deletes: Vec<serde_json::Value> = Vec::new();
         let mut manual: Vec<serde_json::Value> = Vec::new();
@@ -3310,21 +5332,38 @@ impl WorkspaceService {
 
         for (category, item) in &selected_findings {
             let category = category.as_str();
-            if category == "metadata" && notes.iter().any(|note| note.id == item["id"].as_str().unwrap_or_default()) {
+            if category == "metadata"
+                && notes
+                    .iter()
+                    .any(|note| note.id == item["id"].as_str().unwrap_or_default())
+            {
                 let missing_items: Vec<String> = item["missing"]
                     .as_array()
-                    .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let note = notes.iter().find(|note| note.id == item["id"].as_str().unwrap_or_default());
+                let note = notes
+                    .iter()
+                    .find(|note| note.id == item["id"].as_str().unwrap_or_default());
                 let mut changed = false;
                 if missing_items.iter().any(|key| key == "来源")
                     && let Some(note) = note
                 {
                     let source = format!("vault:{}", note.file_path);
-                    changed |= review_update_property(&mut updates, note, now_millis_value, |properties| {
-                        properties.insert("source".into(), serde_json::json!(source.clone()));
-                        true
-                    }, "补全来源为当前 Vault 路径");
+                    changed |= review_update_property(
+                        &mut updates,
+                        note,
+                        now_millis_value,
+                        |properties| {
+                            properties.insert("source".into(), serde_json::json!(source.clone()));
+                            true
+                        },
+                        "补全来源为当前 Vault 路径",
+                    );
                 }
                 if missing_items.iter().any(|key| key == "标签") {
                     manual.push(serde_json::json!({
@@ -3338,7 +5377,11 @@ impl WorkspaceService {
                         "title": item["title"], "reason": "时间戳缺失，不能凭推测覆盖原始时间；请人工核对文件历史",
                     }));
                 }
-                if !changed && !missing_items.iter().any(|key| key == "标签" || key == "时间戳") {
+                if !changed
+                    && !missing_items
+                        .iter()
+                        .any(|key| key == "标签" || key == "时间戳")
+                {
                     manual.push(serde_json::json!({
                         "findingId": item["id"], "category": category,
                         "title": item["title"], "reason": "没有可安全自动补全的元数据",
@@ -3347,15 +5390,40 @@ impl WorkspaceService {
                 continue;
             }
             if category == "taxonomy" && item["issueType"] == serde_json::json!("tag-alias") {
-                let aliases: Vec<String> = item["tags"].as_array().map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                let canonical = item["suggestedCanonical"].as_str().unwrap_or_default().to_owned();
-                for note_id in item["noteIds"].as_array().map(|items| items.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()).unwrap_or_default() {
+                let aliases: Vec<String> = item["tags"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let canonical = item["suggestedCanonical"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                for note_id in item["noteIds"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+                {
                     if let Some(note) = notes.iter().find(|note| note.id == note_id) {
                         // 属性内标签归一（数组或中/英逗号分隔字符串）
                         let raw_tags = note.properties.get("tags").cloned();
                         let tags: Vec<String> = match &raw_tags {
-                            Some(serde_json::Value::Array(items)) => items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect(),
-                            Some(serde_json::Value::String(text)) => text.split([',', '，', '、']).map(str::to_owned).collect(),
+                            Some(serde_json::Value::Array(items)) => items
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_owned))
+                                .collect(),
+                            Some(serde_json::Value::String(text)) => {
+                                text.split([',', '，', '、']).map(str::to_owned).collect()
+                            }
                             _ => Vec::new(),
                         };
                         let normalized_tags: Vec<String> = {
@@ -3369,23 +5437,41 @@ impl WorkspaceService {
                         if !normalized_tags.is_empty() && normalized_tags != tags {
                             let canonical_clone = canonical.clone();
                             let normalized_clone = normalized_tags.clone();
-                            review_update_property(&mut updates, note, now_millis_value, move |properties| {
-                                properties.insert("tags".into(), serde_json::json!(normalized_clone));
-                                true
-                            }, format!("标签归一为「{canonical_clone}」"));
+                            review_update_property(
+                                &mut updates,
+                                note,
+                                now_millis_value,
+                                move |properties| {
+                                    properties
+                                        .insert("tags".into(), serde_json::json!(normalized_clone));
+                                    true
+                                },
+                                format!("标签归一为「{canonical_clone}」"),
+                            );
                         }
                         let mut content = note.content.clone();
                         for alias in &aliases {
                             if *alias != canonical {
-                                content = content.replace(&format!("#{alias}"), &format!("#{canonical}"));
+                                content =
+                                    content.replace(&format!("#{alias}"), &format!("#{canonical}"));
                             }
                         }
                         if content != note.content {
-                            review_update_content(&mut updates, note, content, now_millis_value, format!("正文标签归一为「{canonical}」"));
+                            review_update_content(
+                                &mut updates,
+                                note,
+                                content,
+                                now_millis_value,
+                                format!("正文标签归一为「{canonical}」"),
+                            );
                         }
                     }
                 }
-                if item["noteIds"].as_array().map(|items| items.is_empty()).unwrap_or(true) {
+                if item["noteIds"]
+                    .as_array()
+                    .map(|items| items.is_empty())
+                    .unwrap_or(true)
+                {
                     manual.push(serde_json::json!({
                         "findingId": item["id"], "category": category,
                         "title": item["title"], "reason": "没有找到受影响笔记，需人工核对标签来源",
@@ -3394,18 +5480,46 @@ impl WorkspaceService {
                 continue;
             }
             if category == "taxonomy" && item["issueType"] == serde_json::json!("category-alias") {
-                let variants: Vec<String> = item["variants"].as_array().map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let variants: Vec<String> = item["variants"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let canonical = review_choose_canonical(&variants);
-                for note_id in item["noteIds"].as_array().map(|items| items.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()).unwrap_or_default() {
+                for note_id in item["noteIds"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+                {
                     if let Some(note) = notes.iter().find(|note| note.id == note_id) {
                         let canonical_clone = canonical.clone();
-                        review_update_property(&mut updates, note, now_millis_value, move |properties| {
-                            properties.insert("category".into(), serde_json::json!(canonical_clone));
-                            true
-                        }, format!("分类归一为「{canonical}」"));
+                        review_update_property(
+                            &mut updates,
+                            note,
+                            now_millis_value,
+                            move |properties| {
+                                properties
+                                    .insert("category".into(), serde_json::json!(canonical_clone));
+                                true
+                            },
+                            format!("分类归一为「{canonical}」"),
+                        );
                     }
                 }
-                if item["noteIds"].as_array().map(|items| items.is_empty()).unwrap_or(true) {
+                if item["noteIds"]
+                    .as_array()
+                    .map(|items| items.is_empty())
+                    .unwrap_or(true)
+                {
                     manual.push(serde_json::json!({
                         "findingId": item["id"], "category": category,
                         "title": item["title"], "reason": "没有找到受影响笔记，需人工核对分类来源",
@@ -3413,14 +5527,38 @@ impl WorkspaceService {
                 }
                 continue;
             }
-            if category == "duplicates" && item["evidence"].as_array().map(|items| items.iter().filter_map(|value| value.as_str()).any(|value| value.contains("标题相同")) && items.iter().filter_map(|value| value.as_str()).any(|value| value.contains("正文高度一致"))).unwrap_or(false) {
+            if category == "duplicates"
+                && item["evidence"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .any(|value| value.contains("标题相同"))
+                            && items
+                                .iter()
+                                .filter_map(|value| value.as_str())
+                                .any(|value| value.contains("正文高度一致"))
+                    })
+                    .unwrap_or(false)
+            {
                 // 完全重复：保留 updatedAt 最新者（相同比 id），其余进入删除
                 let mut group: Vec<&crate::index::HealthNote> = item["noteIds"]
                     .as_array()
-                    .map(|items| items.iter().filter_map(|value| value.as_str()).filter_map(|id| notes.iter().find(|note| note.id == id)).collect())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .filter_map(|id| notes.iter().find(|note| note.id == id))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 group.sort_by(|left, right| {
-                    right.updated_at.as_deref().unwrap_or_default().cmp(left.updated_at.as_deref().unwrap_or_default())
+                    right
+                        .updated_at
+                        .as_deref()
+                        .unwrap_or_default()
+                        .cmp(left.updated_at.as_deref().unwrap_or_default())
                         .then_with(|| left.id.cmp(&right.id))
                 });
                 let survivor = group.first().copied();
@@ -3429,7 +5567,8 @@ impl WorkspaceService {
                         continue;
                     }
                     let survivor_id = survivor.map(|note| note.id.clone()).unwrap_or_default();
-                    let survivor_title = survivor.map(|note| note.title.clone()).unwrap_or_default();
+                    let survivor_title =
+                        survivor.map(|note| note.title.clone()).unwrap_or_default();
                     deletes.push(serde_json::json!({
                         "id": format!("delete:{}", note.id),
                         "type": "delete",
@@ -3463,8 +5602,13 @@ impl WorkspaceService {
 
         let mut actions: Vec<serde_json::Value> = Vec::new();
         for (note_id, state) in &updates {
-            let state_changed = state["propertyChanged"] == serde_json::json!(true) || state["contentChanged"] == serde_json::json!(true);
-            if !state_changed || deletes.iter().any(|action| action["noteId"] == serde_json::json!(note_id.as_str())) {
+            let state_changed = state["propertyChanged"] == serde_json::json!(true)
+                || state["contentChanged"] == serde_json::json!(true);
+            if !state_changed
+                || deletes
+                    .iter()
+                    .any(|action| action["noteId"] == serde_json::json!(note_id.as_str()))
+            {
                 continue;
             }
             let note = notes.iter().find(|note| note.id == *note_id);
@@ -3483,7 +5627,10 @@ impl WorkspaceService {
                 "noteId": note_id,
                 "path": note.file_path,
                 "patch": serde_json::Value::Object(patch),
-                "summary": state["summaries"],
+                "summary": state["summaries"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(|item| item.as_str()).collect::<Vec<_>>().join("；"))
+                    .unwrap_or_else(|| state["summaries"].as_str().unwrap_or_default().to_owned()),
                 "fullPath": self.vault.root().join(&note.file_path).display().to_string(),
                 "directory": self.vault.root().join(&note.file_path).parent().map(|parent| parent.display().to_string()).unwrap_or_default(),
                 "beforeHash": note.content_hash,
@@ -3494,7 +5641,11 @@ impl WorkspaceService {
         let plan_id = Uuid::new_v4().to_string();
         let plan_hash = {
             let payload = serde_json::json!({ "version": 1, "actions": actions, "manual": manual });
-            fc_sha256_hex(serde_json::to_string(&payload).map_err(|error| ServiceError::new("NOTES_ERROR", error.to_string()))?.as_bytes())
+            fc_sha256_hex(
+                serde_json::to_string(&payload)
+                    .map_err(|error| ServiceError::new("NOTES_ERROR", error.to_string()))?
+                    .as_bytes(),
+            )
         };
         let plan = serde_json::json!({
             "id": plan_id,
@@ -3511,19 +5662,42 @@ impl WorkspaceService {
     }
 
     /// 契约 POST /api/review/health/execute：校验 plan/plashHash 与笔记版本后逐动作执行。
-    pub fn review_execute(&self, plan_id: &str, plan_hash: &str, confirmed: bool, second_confirmed: bool) -> Result<serde_json::Value, ServiceError> {
+    pub fn review_execute(
+        &self,
+        plan_id: &str,
+        plan_hash: &str,
+        confirmed: bool,
+        second_confirmed: bool,
+    ) -> Result<serde_json::Value, ServiceError> {
         review_prune_plans();
-        let plan = review_get_plan(plan_id)
-            .ok_or_else(|| ServiceError::new("CONFLICT", "修复计划已过期，请重新生成健康修复计划"))?;
+        let plan = review_get_plan(plan_id).ok_or_else(|| {
+            ServiceError::new("CONFLICT", "修复计划已过期，请重新生成健康修复计划")
+        })?;
         if plan["planHash"].as_str().unwrap_or_default() != plan_hash {
-            return Err(ServiceError::new("CONFLICT", "修复计划已变化，请重新生成预览"));
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "修复计划已变化，请重新生成预览",
+            ));
         }
-        let has_delete = plan["actions"].as_array().map(|actions| actions.iter().any(|action| action["type"] == serde_json::json!("delete"))).unwrap_or(false);
+        let has_delete = plan["actions"]
+            .as_array()
+            .map(|actions| {
+                actions
+                    .iter()
+                    .any(|action| action["type"] == serde_json::json!("delete"))
+            })
+            .unwrap_or(false);
         if !confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "文件变更必须先完成确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "文件变更必须先完成确认",
+            ));
         }
         if has_delete && !second_confirmed {
-            return Err(ServiceError::new("CONFIRMATION_REQUIRED", "删除操作必须完成二次确认"));
+            return Err(ServiceError::new(
+                "CONFIRMATION_REQUIRED",
+                "删除操作必须完成二次确认",
+            ));
         }
         let mut results = Vec::new();
         for action in plan["actions"].as_array().cloned().unwrap_or_default() {
@@ -3535,27 +5709,43 @@ impl WorkspaceService {
                     .find_note_detail(Some(note_id.as_str()), None)
                     .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
                 let Some(current) = current else {
-                    return Err(ServiceError::new("CONFLICT", "目标笔记已变化，请重新扫描后生成计划"));
+                    return Err(ServiceError::new(
+                        "CONFLICT",
+                        "目标笔记已变化，请重新扫描后生成计划",
+                    ));
                 };
-                if current.content_hash.as_deref().unwrap_or_default() != action["beforeHash"].as_str().unwrap_or_default() {
-                    return Err(ServiceError::new("CONFLICT", "目标笔记已变化，请重新扫描后生成计划"));
+                if current.content_hash.as_deref().unwrap_or_default()
+                    != action["beforeHash"].as_str().unwrap_or_default()
+                {
+                    return Err(ServiceError::new(
+                        "CONFLICT",
+                        "目标笔记已变化，请重新扫描后生成计划",
+                    ));
                 }
                 if action["type"] == serde_json::json!("delete") {
                     self.delete_note(&note_id, true, true)?;
                     Ok(serde_json::json!({ "deleted": true }))
                 } else {
                     let patch = &action["patch"];
-                    let properties = patch.get("properties").and_then(|value| value.as_object()).cloned();
+                    let properties = patch
+                        .get("properties")
+                        .and_then(|value| value.as_object())
+                        .cloned();
                     let detail = self.update_note(
                         &note_id,
                         None,
-                        patch.get("content").and_then(|value| value.as_str()).map(str::to_owned),
+                        patch
+                            .get("content")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                        None,
                         None,
                         properties,
                         Some(action["beforeHash"].as_str().unwrap_or_default().to_owned()),
                         true,
                     )?;
-                    Ok(serde_json::to_value(detail).map_err(|error| ServiceError::new("NOTES_ERROR", error.to_string()))?)
+                    Ok(serde_json::to_value(detail)
+                        .map_err(|error| ServiceError::new("NOTES_ERROR", error.to_string()))?)
                 }
             })();
             results.push(match outcome {
@@ -3569,9 +5759,18 @@ impl WorkspaceService {
                 }),
             });
         }
-        let completed = results.iter().filter(|item| item["status"] == serde_json::json!("completed")).count();
-        let failed = results.iter().filter(|item| item["status"] == serde_json::json!("failed")).count();
-        let skipped = plan["manual"].as_array().map(|items| items.len()).unwrap_or(0);
+        let completed = results
+            .iter()
+            .filter(|item| item["status"] == serde_json::json!("completed"))
+            .count();
+        let failed = results
+            .iter()
+            .filter(|item| item["status"] == serde_json::json!("failed"))
+            .count();
+        let skipped = plan["manual"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0);
         review_remove_plan(plan_id);
         Ok(serde_json::json!({
             "planId": plan_id,
@@ -3586,10 +5785,22 @@ impl WorkspaceService {
 
     /// 扫描主体（对齐 knowledge-health.service scan）：9 类线索 + 健康分。
     fn health_scan(&self, stale_days: u64, limit: u64) -> Result<serde_json::Value, ServiceError> {
-        let notes = self.index.list_for_health().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
-        let tags = self.index.tags_for_notes().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
-        let (outgoing, incoming) = self.index.link_counts().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
-        let dangling = self.index.dangling_link_details().map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let notes = self
+            .index
+            .list_for_health()
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let tags = self
+            .index
+            .tags_for_notes()
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let (outgoing, incoming) = self
+            .index
+            .link_counts()
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
+        let dangling = self
+            .index
+            .dangling_link_details()
+            .map_err(|error| ServiceError::new("NOTES_ERROR", error))?;
         let now = now_millis();
         let limit = limit as usize;
 
@@ -3597,7 +5808,10 @@ impl WorkspaceService {
             let mut finding = serde_json::json!({
                 "status": "open", "severity": "candidate", "confidence": "review", "priority": 40,
                 "id": note.id, "kind": "note", "title": note.title,
-                "path": note.file_path, "folderId": note.folder_id,
+                "path": note.file_path,
+                // 文件路径是真源；旧索引或迁移中的行可能尚未回填 folder_id，
+                // 健康报告仍按路径给出目录归属。
+                "folderId": note.folder_id.clone().or_else(|| crate::index::folder_id_for(&note.file_path)),
                 "updatedAt": note.updated_at, "wordCount": note.word_count,
             });
             if let (Some(target), Some(source)) = (finding.as_object_mut(), extra.as_object()) {
@@ -3621,12 +5835,13 @@ impl WorkspaceService {
             })
             .collect();
 
-        let mut broken_groups: std::collections::BTreeMap<String, serde_json::Value> = std::collections::BTreeMap::new();
+        let mut broken_groups: std::collections::BTreeMap<String, serde_json::Value> =
+            std::collections::BTreeMap::new();
         for row in &dangling {
             let key = row.target_title.to_lowercase();
-            let entry = broken_groups.entry(key).or_insert_with(|| {
-                serde_json::json!({ "targetTitle": row.target_title, "sources": [] })
-            });
+            let entry = broken_groups.entry(key).or_insert_with(
+                || serde_json::json!({ "targetTitle": row.target_title, "sources": [] }),
+            );
             if let Some(sources) = entry["sources"].as_array_mut() {
                 sources.push(serde_json::json!({ "id": row.source_id, "title": row.source_title, "path": row.source_path }));
             }
@@ -3634,12 +5849,21 @@ impl WorkspaceService {
         let mut broken: Vec<serde_json::Value> = broken_groups
             .into_values()
             .map(|mut group| {
-                let count = group["sources"].as_array().map(|sources| sources.len()).unwrap_or(0);
+                let count = group["sources"]
+                    .as_array()
+                    .map(|sources| sources.len())
+                    .unwrap_or(0);
                 let target = group["targetTitle"].clone();
-                group["id"] = serde_json::json!(format!("broken-link:{}", target.as_str().unwrap_or_default()));
+                group["id"] = serde_json::json!(format!(
+                    "broken-link:{}",
+                    target.as_str().unwrap_or_default()
+                ));
                 group["kind"] = serde_json::json!("broken-link");
                 group["referenceCount"] = serde_json::json!(count);
-                group["reason"] = serde_json::json!(format!("有 {count} 篇笔记引用「{}」，但目标笔记尚不存在", target.as_str().unwrap_or_default()));
+                group["reason"] = serde_json::json!(format!(
+                    "有 {count} 篇笔记引用「{}」，但目标笔记尚不存在",
+                    target.as_str().unwrap_or_default()
+                ));
                 group["status"] = serde_json::json!("open");
                 group["severity"] = serde_json::json!("error");
                 group["confidence"] = serde_json::json!("high");
@@ -3648,19 +5872,33 @@ impl WorkspaceService {
             })
             .collect();
         broken.sort_by(|left, right| {
-            right["referenceCount"].as_i64().unwrap_or(0).cmp(&left["referenceCount"].as_i64().unwrap_or(0))
-                .then_with(|| left["targetTitle"].as_str().unwrap_or_default().cmp(right["targetTitle"].as_str().unwrap_or_default()))
+            right["referenceCount"]
+                .as_i64()
+                .unwrap_or(0)
+                .cmp(&left["referenceCount"].as_i64().unwrap_or(0))
+                .then_with(|| {
+                    left["targetTitle"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .cmp(right["targetTitle"].as_str().unwrap_or_default())
+                })
         });
         broken.truncate(limit);
 
         let isolated: Vec<serde_json::Value> = notes
             .iter()
-            .filter(|note| outgoing.get(&note.id).copied().unwrap_or(0) == 0 && incoming.get(&note.id).copied().unwrap_or(0) == 0)
+            .filter(|note| {
+                outgoing.get(&note.id).copied().unwrap_or(0) == 0
+                    && incoming.get(&note.id).copied().unwrap_or(0) == 0
+            })
             .map(|note| {
-                note_finding(note, serde_json::json!({
-                    "reason": "没有出链，也没有其他笔记引用它",
-                    "outgoingCount": 0, "backlinkCount": 0,
-                }))
+                note_finding(
+                    note,
+                    serde_json::json!({
+                        "reason": "没有出链，也没有其他笔记引用它",
+                        "outgoingCount": 0, "backlinkCount": 0,
+                    }),
+                )
             })
             .collect();
 
@@ -3669,37 +5907,58 @@ impl WorkspaceService {
             .iter()
             .filter(|note| {
                 note.properties["type"] != serde_json::json!("inbox")
-                    && health_parse_iso_millis(note.updated_at.as_deref()).map(|millis| millis < cutoff).unwrap_or(false)
+                    && health_parse_iso_millis(note.updated_at.as_deref())
+                        .map(|millis| millis < cutoff)
+                        .unwrap_or(false)
                     && incoming.get(&note.id).copied().unwrap_or(0) == 0
             })
             .map(|note| {
                 let age = health_parse_iso_millis(note.updated_at.as_deref())
                     .map(|millis| ((now - millis).max(0) / 86_400_000).max(0))
                     .unwrap_or(0);
-                note_finding(note, serde_json::json!({
-                    "reason": format!("已超过 {stale_days} 天未更新，且没有反向链接"),
-                    "ageDays": age, "backlinkCount": 0,
-                }))
+                note_finding(
+                    note,
+                    serde_json::json!({
+                        "reason": format!("已超过 {stale_days} 天未更新，且没有反向链接"),
+                        "ageDays": age, "backlinkCount": 0,
+                    }),
+                )
             })
             .collect();
 
         // duplicates：标题归一 / 正文指纹 两条证据，同集合合并
-        let mut duplicate_groups: HashMap<String, (Vec<&crate::index::HealthNote>, std::collections::HashSet<String>)> = HashMap::new();
+        let mut duplicate_groups: HashMap<
+            String,
+            (
+                Vec<&crate::index::HealthNote>,
+                std::collections::HashSet<String>,
+            ),
+        > = HashMap::new();
         for note in &notes {
             let title_key = review_normalize_text(&note.title);
             if !title_key.is_empty() {
-                let entry = duplicate_groups.entry(format!("title:{title_key}")).or_insert_with(|| (Vec::new(), std::collections::HashSet::new()));
+                let entry = duplicate_groups
+                    .entry(format!("title:{title_key}"))
+                    .or_insert_with(|| (Vec::new(), std::collections::HashSet::new()));
                 entry.0.push(note);
                 entry.1.insert("标题相同".into());
             }
             let body_key = review_body_fingerprint(&note.content);
             if !body_key.is_empty() {
-                let entry = duplicate_groups.entry(format!("body:{body_key}")).or_insert_with(|| (Vec::new(), std::collections::HashSet::new()));
+                let entry = duplicate_groups
+                    .entry(format!("body:{body_key}"))
+                    .or_insert_with(|| (Vec::new(), std::collections::HashSet::new()));
                 entry.0.push(note);
                 entry.1.insert("正文高度一致".into());
             }
         }
-        let mut merged: HashMap<String, (Vec<&crate::index::HealthNote>, std::collections::HashSet<String>)> = HashMap::new();
+        let mut merged: HashMap<
+            String,
+            (
+                Vec<&crate::index::HealthNote>,
+                std::collections::HashSet<String>,
+            ),
+        > = HashMap::new();
         for (notes_in_group, evidence) in duplicate_groups.into_values() {
             if notes_in_group.len() < 2 {
                 continue;
@@ -3707,7 +5966,9 @@ impl WorkspaceService {
             let mut ids: Vec<&str> = notes_in_group.iter().map(|note| note.id.as_str()).collect();
             ids.sort();
             let key = ids.join("|");
-            let entry = merged.entry(key).or_insert_with(|| (notes_in_group, std::collections::HashSet::new()));
+            let entry = merged
+                .entry(key)
+                .or_insert_with(|| (notes_in_group, std::collections::HashSet::new()));
             for item in evidence {
                 entry.1.insert(item);
             }
@@ -3788,36 +6049,58 @@ impl WorkspaceService {
             .iter()
             .filter_map(|note| {
                 let mut missing: Vec<&str> = Vec::new();
-                if tags.get(&note.id).map(|names| names.is_empty()).unwrap_or(true) {
+                if tags
+                    .get(&note.id)
+                    .map(|names| names.is_empty())
+                    .unwrap_or(true)
+                {
                     missing.push("标签");
                 }
                 let has_source = ["source", "来源", "origin"].iter().any(|key| {
-                    note.properties.get(*key).map(|value| !value.is_null() && value.as_str().map(|text| !text.trim().is_empty()).unwrap_or(true)).unwrap_or(false)
+                    note.properties
+                        .get(*key)
+                        .map(|value| {
+                            !value.is_null()
+                                && value
+                                    .as_str()
+                                    .map(|text| !text.trim().is_empty())
+                                    .unwrap_or(true)
+                        })
+                        .unwrap_or(false)
                 });
                 if !has_source {
                     missing.push("来源");
                 }
-                if health_parse_iso_millis(note.created_at.as_deref()).is_none() || health_parse_iso_millis(note.updated_at.as_deref()).is_none() {
+                if health_parse_iso_millis(note.created_at.as_deref()).is_none()
+                    || health_parse_iso_millis(note.updated_at.as_deref()).is_none()
+                {
                     missing.push("时间戳");
                 }
                 if missing.is_empty() {
                     return None;
                 }
-                let severity = if missing.contains(&"时间戳") || missing.contains(&"来源") { "warning" } else { "candidate" };
-                Some(note_finding(note, serde_json::json!({
-                    "kind": "metadata",
-                    "missing": missing,
-                    "metadata": {
-                        "hasTags": !missing.contains(&"标签"),
-                        "hasSource": !missing.contains(&"来源"),
-                        "hasTimestamps": !missing.contains(&"时间戳"),
-                    },
-                    "reason": format!("缺少元数据：{}", missing.join("、")),
-                    "status": "open",
-                    "severity": severity,
-                    "confidence": "review",
-                    "priority": if severity == "warning" { 70 } else { 40 },
-                })))
+                let severity = if missing.contains(&"时间戳") || missing.contains(&"来源") {
+                    "warning"
+                } else {
+                    "candidate"
+                };
+                Some(note_finding(
+                    note,
+                    serde_json::json!({
+                        "kind": "metadata",
+                        "missing": missing,
+                        "metadata": {
+                            "hasTags": !missing.contains(&"标签"),
+                            "hasSource": !missing.contains(&"来源"),
+                            "hasTimestamps": !missing.contains(&"时间戳"),
+                        },
+                        "reason": format!("缺少元数据：{}", missing.join("、")),
+                        "status": "open",
+                        "severity": severity,
+                        "confidence": "review",
+                        "priority": if severity == "warning" { 70 } else { 40 },
+                    }),
+                ))
             })
             .take(limit)
             .collect();
@@ -3843,11 +6126,20 @@ impl WorkspaceService {
                 }
                 let affected: Vec<String> = notes
                     .iter()
-                    .filter(|note| tags.get(&note.id).map(|note_tags| note_tags.iter().any(|name| names.contains(name))).unwrap_or(false))
+                    .filter(|note| {
+                        tags.get(&note.id)
+                            .map(|note_tags| note_tags.iter().any(|name| names.contains(name)))
+                            .unwrap_or(false)
+                    })
                     .map(|note| note.id.clone())
                     .collect();
                 let mut canonical_candidates = names.clone();
-                canonical_candidates.sort_by(|left, right| left.chars().count().cmp(&right.chars().count()).then_with(|| left.cmp(right)));
+                canonical_candidates.sort_by(|left, right| {
+                    left.chars()
+                        .count()
+                        .cmp(&right.chars().count())
+                        .then_with(|| left.cmp(right))
+                });
                 findings.push(serde_json::json!({
                     "id": format!("taxonomy:tag:{}", review_normalize_taxonomy(&names.join("|"))),
                     "kind": "taxonomy",
@@ -3860,9 +6152,15 @@ impl WorkspaceService {
                 }));
             }
             // 分类别名：properties.category 近似写法
-            let mut category_groups: HashMap<String, (std::collections::BTreeSet<String>, Vec<String>)> = HashMap::new();
+            let mut category_groups: HashMap<
+                String,
+                (std::collections::BTreeSet<String>, Vec<String>),
+            > = HashMap::new();
             for note in &notes {
-                let category = note.properties.get("category").or_else(|| note.properties.get("分类"));
+                let category = note
+                    .properties
+                    .get("category")
+                    .or_else(|| note.properties.get("分类"));
                 let Some(category) = category else { continue };
                 let text = match category {
                     serde_json::Value::String(text) => text.trim().to_owned(),
@@ -3876,7 +6174,9 @@ impl WorkspaceService {
                 if key.is_empty() {
                     continue;
                 }
-                let entry = category_groups.entry(key).or_insert_with(|| (std::collections::BTreeSet::new(), Vec::new()));
+                let entry = category_groups
+                    .entry(key)
+                    .or_insert_with(|| (std::collections::BTreeSet::new(), Vec::new()));
                 entry.0.insert(text);
                 entry.1.push(note.id.clone());
             }
@@ -3906,16 +6206,32 @@ impl WorkspaceService {
                 if note.folder_id.is_none() {
                     missing.push("未归入目录");
                 }
-                if tags.get(&note.id).map(|names| names.is_empty()).unwrap_or(true) {
+                if tags
+                    .get(&note.id)
+                    .map(|names| names.is_empty())
+                    .unwrap_or(true)
+                {
                     missing.push("没有标签");
                 }
-                if !note.properties.as_object().map(|object| object.keys().any(|key| !system_properties.contains(&key.as_str()))).unwrap_or(false) {
+                if !note
+                    .properties
+                    .as_object()
+                    .map(|object| {
+                        object
+                            .keys()
+                            .any(|key| !system_properties.contains(&key.as_str()))
+                    })
+                    .unwrap_or(false)
+                {
                     missing.push("缺少自定义属性");
                 }
                 if missing.is_empty() {
                     return None;
                 }
-                Some(note_finding(note, serde_json::json!({ "missing": missing, "reason": missing.join("、") })))
+                Some(note_finding(
+                    note,
+                    serde_json::json!({ "missing": missing, "reason": missing.join("、") }),
+                ))
             })
             .take(limit)
             .collect();
@@ -3937,24 +6253,57 @@ impl WorkspaceService {
             "incomplete": rank(incomplete),
         });
         let mut findings: Vec<serde_json::Value> = Vec::new();
-        for items in categories.as_object().into_iter().flat_map(|object| object.values()) {
+        for items in categories
+            .as_object()
+            .into_iter()
+            .flat_map(|object| object.values())
+        {
             findings.extend(items.as_array().cloned().unwrap_or_default());
         }
         findings.sort_by(review_compare_findings);
         let counts: serde_json::Map<String, serde_json::Value> = categories
             .as_object()
-            .map(|object| object.iter().map(|(key, items)| (key.clone(), serde_json::json!(items.as_array().map(|items| items.len()).unwrap_or(0)))).collect())
+            .map(|object| {
+                object
+                    .iter()
+                    .map(|(key, items)| {
+                        (
+                            key.clone(),
+                            serde_json::json!(
+                                items.as_array().map(|items| items.len()).unwrap_or(0)
+                            ),
+                        )
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
-        let hard_total = findings.iter().filter(|item| item["severity"] == serde_json::json!("error")).count();
-        let warning_total = findings.iter().filter(|item| item["severity"] == serde_json::json!("warning")).count();
-        let candidate_total = findings.iter().filter(|item| item["severity"] == serde_json::json!("candidate")).count();
+        let hard_total = findings
+            .iter()
+            .filter(|item| item["severity"] == serde_json::json!("error"))
+            .count();
+        let warning_total = findings
+            .iter()
+            .filter(|item| item["severity"] == serde_json::json!("warning"))
+            .count();
+        let candidate_total = findings
+            .iter()
+            .filter(|item| item["severity"] == serde_json::json!("candidate"))
+            .count();
         let weighted: i64 = findings
             .iter()
-            .map(|item| if item["severity"] == serde_json::json!("error") { 2 } else { 1 })
+            .map(|item| {
+                if item["severity"] == serde_json::json!("error") {
+                    2
+                } else {
+                    1
+                }
+            })
             .sum();
         let note_count = notes.len();
         let health_score = if note_count > 0 {
-            ((100.0 - (weighted as f64 / (note_count as f64 * 2.0)) * 100.0).round().max(0.0)) as i64
+            ((100.0 - (weighted as f64 / (note_count as f64 * 2.0)) * 100.0)
+                .round()
+                .max(0.0)) as i64
         } else {
             100
         };
@@ -4039,8 +6388,14 @@ fn review_public_plan(plan: &serde_json::Value) -> serde_json::Value {
                 .collect()
         })
         .unwrap_or_default();
-    let manual_count = plan["manual"].as_array().map(|items| items.len()).unwrap_or(0);
-    let delete_count = stripped.iter().filter(|action| action["type"] == serde_json::json!("delete")).count();
+    let manual_count = plan["manual"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let delete_count = stripped
+        .iter()
+        .filter(|action| action["type"] == serde_json::json!("delete"))
+        .count();
     serde_json::json!({
         "id": plan["id"],
         "version": plan["version"],
@@ -4077,7 +6432,9 @@ fn review_update_property(
 ) -> bool {
     let state = review_state_for(updates, note, at);
     let before = serde_json::to_string(&state["properties"]).unwrap_or_default();
-    let Some(object) = state["properties"].as_object_mut() else { return false };
+    let Some(object) = state["properties"].as_object_mut() else {
+        return false;
+    };
     if !mutate(object) {
         return false;
     }
@@ -4134,14 +6491,28 @@ fn review_state_for<'a>(
 
 fn review_choose_canonical(values: &[String]) -> String {
     let mut sorted: Vec<&String> = values.iter().collect();
-    sorted.sort_by(|left, right| left.chars().count().cmp(&right.chars().count()).then_with(|| left.cmp(right)));
-    sorted.first().map(|value| (*value).clone()).unwrap_or_default()
+    sorted.sort_by(|left, right| {
+        left.chars()
+            .count()
+            .cmp(&right.chars().count())
+            .then_with(|| left.cmp(right))
+    });
+    sorted
+        .first()
+        .map(|value| (*value).clone())
+        .unwrap_or_default()
 }
 
 fn review_canonicalize_alias(value: &str, aliases: &[String], canonical: &str) -> String {
     let source = value.trim().trim_start_matches('#').to_owned();
-    let matches = aliases.iter().any(|alias| review_normalize_taxonomy(alias) == review_normalize_taxonomy(&source));
-    if matches { canonical.to_owned() } else { source }
+    let matches = aliases
+        .iter()
+        .any(|alias| review_normalize_taxonomy(alias) == review_normalize_taxonomy(&source));
+    if matches {
+        canonical.to_owned()
+    } else {
+        source
+    }
 }
 
 /// 文本归一：小写 + 去空白/标点/符号（无 NFKC，偏差见块注释）。
@@ -4154,8 +6525,24 @@ fn review_normalize_text(value: &str) -> String {
 }
 
 fn is_punctuation_or_symbol(character: char) -> bool {
-    matches!(character, ' ' | '\t' | '\n' | '\r' | '，' | '。' | '、' | '；' | '：' | '「' | '」' | '（' | '）' | '！' | '？' | '·')
-        || character.is_ascii_punctuation()
+    matches!(
+        character,
+        ' ' | '\t'
+            | '\n'
+            | '\r'
+            | '，'
+            | '。'
+            | '、'
+            | '；'
+            | '：'
+            | '「'
+            | '」'
+            | '（'
+            | '）'
+            | '！'
+            | '？'
+            | '·'
+    ) || character.is_ascii_punctuation()
 }
 
 /// 分类/标签归一：小写 + 去空白与分隔符。
@@ -4164,7 +6551,9 @@ fn review_normalize_taxonomy(value: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .filter(|character| !character.is_whitespace() && !matches!(character, '_' | '-' | '/' | '\\'))
+        .filter(|character| {
+            !character.is_whitespace() && !matches!(character, '_' | '-' | '/' | '\\')
+        })
         .collect()
 }
 
@@ -4180,7 +6569,10 @@ fn review_body_fingerprint(content: &str) -> String {
 /// ISO-8601 UTC → 毫秒（仅支持本项目的 `YYYY-MM-DDTHH:MM:SS.mmmZ` 口径）。
 fn health_parse_iso_millis(value: Option<&str>) -> Option<i64> {
     let value = value?;
-    let digits: Vec<i64> = value.chars().filter_map(|character| character.to_digit(10).map(|digit| digit as i64)).collect();
+    let digits: Vec<i64> = value
+        .chars()
+        .filter_map(|character| character.to_digit(10).map(|digit| digit as i64))
+        .collect();
     if digits.len() < 14 {
         return None;
     }
@@ -4198,7 +6590,11 @@ fn health_parse_iso_millis(value: Option<&str>) -> Option<i64> {
     }
     // Howard Hinnant days_from_civil
     let year_adjusted = if month <= 2 { year - 1 } else { year };
-    let era = if year_adjusted >= 0 { year_adjusted } else { year_adjusted - 399 } / 400;
+    let era = if year_adjusted >= 0 {
+        year_adjusted
+    } else {
+        year_adjusted - 399
+    } / 400;
     let year_of_era = year_adjusted - era * 400;
     let month_prime = if month > 2 { month - 3 } else { month + 9 };
     let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
@@ -4208,10 +6604,26 @@ fn health_parse_iso_millis(value: Option<&str>) -> Option<i64> {
 }
 
 /// 线索排序：priority 降序 → updatedAt 升序 → id 升序。
-fn review_compare_findings(left: &serde_json::Value, right: &serde_json::Value) -> std::cmp::Ordering {
-    right["priority"].as_i64().unwrap_or(0).cmp(&left["priority"].as_i64().unwrap_or(0))
-        .then_with(|| left["updatedAt"].as_str().unwrap_or_default().cmp(right["updatedAt"].as_str().unwrap_or_default()))
-        .then_with(|| left["id"].as_str().unwrap_or_default().cmp(right["id"].as_str().unwrap_or_default()))
+fn review_compare_findings(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> std::cmp::Ordering {
+    right["priority"]
+        .as_i64()
+        .unwrap_or(0)
+        .cmp(&left["priority"].as_i64().unwrap_or(0))
+        .then_with(|| {
+            left["updatedAt"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["updatedAt"].as_str().unwrap_or_default())
+        })
+        .then_with(|| {
+            left["id"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["id"].as_str().unwrap_or_default())
+        })
 }
 
 /// 附件条目（对齐 Express listAttachments，camelCase 序列化）。
@@ -4221,9 +6633,33 @@ pub struct AttachmentEntry {
     pub path: String,
     pub name: String,
     pub size: u64,
-    pub mime: String,
+    pub mime_type: Option<String>,
+    pub modified_at: Option<String>,
     pub referenced_by: Vec<ReferenceSource>,
     pub orphan: bool,
+}
+
+/// 上传附件结果（对齐 Express uploadAttachment）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUpload {
+    pub path: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub modified_at: Option<String>,
+}
+
+/// 文件夹写入结果（对齐 Express create/updateFolder；目录树节点另有 children/noteCount）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderRecord {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub sort_order: u64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// 引用来源（引用附件的笔记）。
@@ -4339,6 +6775,31 @@ fn is_note_extension(extension: &str) -> bool {
     matches!(extension, "md" | "markdown" | "canvas")
 }
 
+/// Recursively enumerate files under a folder for folder-delete relocation.
+/// Symlinks are ignored so a destructive operation cannot move data outside the Vault.
+fn collect_folder_files(
+    directory: &Path,
+    relative: &str,
+    files: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(directory).map_err(|error| error.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let child_relative = format!("{relative}/{name}");
+        if file_type.is_dir() {
+            collect_folder_files(&entry.path(), &child_relative, files)?;
+        } else if file_type.is_file() {
+            files.push(child_relative);
+        }
+    }
+    Ok(())
+}
+
 /// 可见性判定（对齐 Express isVisibleVaultPath）：无点开头段、无 node_modules、
 /// 无 .tmp 结尾段，且不是笔记类文件。
 fn is_visible_vault_path(path: &str) -> bool {
@@ -4362,13 +6823,20 @@ fn is_visible_vault_path(path: &str) -> bool {
 /// 递归收集全库非笔记文件（对齐 Express walkVaultFiles）：跳过点开头条目、
 /// .tmp 文件与 node_modules 目录；stat 瞬时失败的单项跳过而非整体失败。
 fn walk_vault_files(root: &Path, directory: &Path, entries: &mut Vec<VaultFileEntry>) {
-    let Ok(children) = std::fs::read_dir(directory) else { return };
+    let Ok(children) = std::fs::read_dir(directory) else {
+        return;
+    };
     for child in children.flatten() {
         let name = child.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || name.ends_with(".tmp") || name.eq_ignore_ascii_case("node_modules") {
+        if name.starts_with('.')
+            || name.ends_with(".tmp")
+            || name.eq_ignore_ascii_case("node_modules")
+        {
             continue;
         }
-        let Ok(file_type) = child.file_type() else { continue };
+        let Ok(file_type) = child.file_type() else {
+            continue;
+        };
         if file_type.is_symlink() {
             continue;
         }
@@ -4379,14 +6847,20 @@ fn walk_vault_files(root: &Path, directory: &Path, entries: &mut Vec<VaultFileEn
         if !file_type.is_file() {
             continue;
         }
-        let extension = posix_extname(&name).trim_start_matches('.').to_ascii_lowercase();
+        let extension = posix_extname(&name)
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
         if is_note_extension(&extension) {
             continue;
         }
         let absolute = child.path();
-        let Ok(relative) = absolute.strip_prefix(root) else { continue };
+        let Ok(relative) = absolute.strip_prefix(root) else {
+            continue;
+        };
         let relative = relative.to_string_lossy().replace('\\', "/");
-        let Ok(metadata) = child.metadata() else { continue };
+        let Ok(metadata) = child.metadata() else {
+            continue;
+        };
         entries.push(VaultFileEntry {
             name,
             path: relative,
@@ -4526,13 +7000,28 @@ pub struct HistoryEntry {
     pub size: u64,
 }
 
+/// 历史版本列表（对齐 Express listHistory）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryList {
+    pub items: Vec<HistoryEntry>,
+    pub current_hash: String,
+}
+
 /// 历史版本内容（对齐 Express readSnapshot）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistorySnapshot {
     pub version: String,
-    pub raw: String,
     pub hash: String,
+    pub created_at: Option<String>,
+    pub title: String,
+    pub content: String,
+    pub is_pinned: bool,
+    pub properties: serde_json::Value,
+    /// 仅供恢复流程使用；不暴露给 IPC，避免与 Express 的版本响应泄漏 raw。
+    #[serde(skip)]
+    pub raw: String,
 }
 
 /// 画布文档（对齐 Express canvas read，nodes/edges 为 Obsidian 兼容 JSON）。
@@ -4571,7 +7060,8 @@ pub struct CanvasDeleteResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileAction, ServiceError, SNAPSHOT_LIMIT, WorkspaceService};
+    use super::{BUILTIN_EXPERTS, BUILTIN_SKILLS};
+    use super::{FileAction, SNAPSHOT_LIMIT, ServiceError, WorkspaceService, fc_batch_outcome};
 
     fn open_service(directory: &Path) -> WorkspaceService {
         WorkspaceService::open(directory.to_path_buf()).unwrap()
@@ -4602,6 +7092,118 @@ mod tests {
             let _first = open_service(directory.path());
         }
         let _second = open_service(directory.path()); // 不应报 VAULT_LOCKED
+    }
+
+    #[test]
+    fn mcp_project_missing_file_returns_default_without_starting_servers() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+
+        let state = service.mcp_project_get().unwrap();
+
+        assert_eq!(state.status, "default");
+        assert!(state.warning.is_none());
+        assert!(state.servers.is_empty());
+        assert!(Path::new(&state.path).starts_with(service.path()));
+        assert!(
+            state.path.ends_with(".lattice\\mcp.json") || state.path.ends_with(".lattice/mcp.json")
+        );
+    }
+
+    #[test]
+    fn mcp_project_set_requires_confirmation_and_persists_normalized_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let document = serde_json::json!({
+            "mcpServers": {
+                " git ": {
+                    "name": " Git ",
+                    "description": "repo",
+                    "command": " uvx ",
+                    "args": ["mcp-server-git", 42],
+                    "env": {"TOKEN": "secret", "INVALID": 42},
+                    "enabled": false
+                }
+            }
+        });
+
+        let error = service
+            .mcp_project_set(document.clone(), false)
+            .unwrap_err();
+        assert_eq!(error.code, "CONFIRMATION_REQUIRED");
+
+        let saved = service.mcp_project_set(document, true).unwrap();
+        assert_eq!(saved.status, "loaded");
+        assert!(saved.warning.is_none());
+        assert_eq!(saved.servers.len(), 1);
+        assert_eq!(saved.servers[0].key, "git");
+        assert_eq!(saved.servers[0].command, "uvx");
+        assert_eq!(saved.servers[0].args, vec!["mcp-server-git"]);
+        assert_eq!(
+            saved.servers[0].env.get("TOKEN"),
+            Some(&"secret".to_owned())
+        );
+        assert!(!saved.servers[0].enabled);
+
+        let raw = fs::read_to_string(directory.path().join(".lattice").join("mcp.json")).unwrap();
+        let persisted: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(persisted["mcpServers"]["git"]["command"], "uvx");
+        assert!(persisted["mcpServers"]["git"].get("url").is_none());
+    }
+
+    #[test]
+    fn mcp_project_filters_invalid_entries_and_reports_dropped_count() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let document = serde_json::json!({
+            "stdio-missing-command": {"args": ["ignored"]},
+            "sse-invalid-url": {"transport": "sse", "url": "file:///tmp/mcp"},
+            "remote": {"url": "HtTpS://example.test/mcp", "name": "Remote"}
+        });
+
+        let saved = service.mcp_project_set(document, true).unwrap();
+
+        assert_eq!(saved.servers.len(), 1);
+        assert_eq!(saved.servers[0].key, "remote");
+        assert_eq!(saved.servers[0].transport, "sse");
+        assert_eq!(
+            saved.warning.as_deref(),
+            Some("2 个无效条目已被忽略（缺 command / URL 非法等）。")
+        );
+    }
+
+    #[test]
+    fn mcp_project_read_reports_invalid_json_without_overwriting_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let path = directory.path().join(".lattice").join("mcp.json");
+        fs::write(&path, "{not-json").unwrap();
+
+        let state = service.mcp_project_get().unwrap();
+
+        assert_eq!(state.status, "invalid");
+        assert!(state.warning.as_deref().unwrap().contains("JSON 解析失败"));
+        assert!(state.servers.is_empty());
+        assert_eq!(fs::read_to_string(path).unwrap(), "{not-json");
+    }
+
+    #[test]
+    fn mcp_project_repeated_save_is_stable_and_stays_under_vault() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let document = serde_json::json!({
+            "remote": {"url": "https://example.test/mcp", "enabled": true}
+        });
+
+        let first = service.mcp_project_set(document.clone(), true).unwrap();
+        let first_raw = fs::read_to_string(&first.path).unwrap();
+        let second = service.mcp_project_set(document, true).unwrap();
+        let second_raw = fs::read_to_string(&second.path).unwrap();
+
+        assert_eq!(first.path, second.path);
+        assert_eq!(first.servers, second.servers);
+        assert_eq!(first_raw, second_raw);
+        assert!(Path::new(&second.path).starts_with(service.path()));
     }
 
     #[test]
@@ -4637,7 +7239,9 @@ mod tests {
     fn previous_content_is_snapshotted_before_overwrite() {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
-        let first = service.write("a.md", &note_raw("v1"), None, "test").unwrap();
+        let first = service
+            .write("a.md", &note_raw("v1"), None, "test")
+            .unwrap();
         service
             .write("a.md", &note_raw("v2"), Some(&first.sha256), "test")
             .unwrap();
@@ -4647,20 +7251,29 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         versions.sort();
-        assert_eq!(versions.len(), 1, "只应有一次覆盖产生一个快照：{versions:?}");
-        let snapshotted =
-            std::fs::read_to_string(history.join(&versions[0])).unwrap();
+        assert_eq!(
+            versions.len(),
+            1,
+            "只应有一次覆盖产生一个快照：{versions:?}"
+        );
+        let snapshotted = std::fs::read_to_string(history.join(&versions[0])).unwrap();
         assert!(snapshotted.contains("v1"), "快照应保存旧内容 v1");
         let version = versions[0].trim_end_matches(".md");
         let (stamp, _) = version.split_once('-').unwrap();
-        assert_eq!(stamp.len(), 19, "版本名应为 8 位日期 + T + 9 位时间 + Z：{stamp}");
+        assert_eq!(
+            stamp.len(),
+            19,
+            "版本名应为 8 位日期 + T + 9 位时间 + Z：{stamp}"
+        );
     }
 
     #[test]
     fn snapshot_skipped_when_latest_matches_previous_content() {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
-        let first = service.write("a.md", &note_raw("v1"), None, "test").unwrap();
+        let first = service
+            .write("a.md", &note_raw("v1"), None, "test")
+            .unwrap();
         let second = service
             .write("a.md", &note_raw("v2"), Some(&first.sha256), "test")
             .unwrap();
@@ -4678,7 +7291,9 @@ mod tests {
     fn notes_without_frontmatter_id_skip_snapshots_but_still_write() {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
-        let first = service.write("bare.md", "无 frontmatter", None, "test").unwrap();
+        let first = service
+            .write("bare.md", "无 frontmatter", None, "test")
+            .unwrap();
         service
             .write("bare.md", "第二版", Some(&first.sha256), "test")
             .unwrap();
@@ -4700,10 +7315,18 @@ mod tests {
             if round > 0 {
                 let previous = service.vault().read("a.md").unwrap();
                 let store = super::SnapshotStore::open(&directory.path().join(".lattice"));
-                store.create(super::frontmatter_id(&previous.raw).unwrap().as_str(), &previous.raw, limit).unwrap();
+                store
+                    .create(
+                        super::frontmatter_id(&previous.raw).unwrap().as_str(),
+                        &previous.raw,
+                        limit,
+                    )
+                    .unwrap();
                 expected_hash = Some(previous.sha256.clone());
             }
-            service.write("a.md", &raw, expected_hash.as_deref(), "test").unwrap();
+            service
+                .write("a.md", &raw, expected_hash.as_deref(), "test")
+                .unwrap();
         }
         let history = directory.path().join(".lattice/history").join(NOTE_ID);
         let count = std::fs::read_dir(&history).unwrap().count();
@@ -4743,7 +7366,10 @@ mod tests {
             .into_iter()
             .map(|entry| entry.path)
             .collect();
-        assert_eq!(paths, vec!["attachments/pic.png", "data.bin", "docs/paper.pdf"]);
+        assert_eq!(
+            paths,
+            vec!["attachments/pic.png", "data.bin", "docs/paper.pdf"]
+        );
         let entries = service.vault_files_list().unwrap();
         assert_eq!(entries[0].mime_type.as_deref(), Some("image/png"));
         assert_eq!(entries[1].mime_type, None, "未知扩展名 mimeType 应为 null");
@@ -4777,24 +7403,42 @@ mod tests {
         write_file(directory.path(), "attachments/used.png", b"used");
         write_file(directory.path(), "attachments/note.txt", b"txt");
         service
-            .write("a.md", &note_raw("![used](attachments/used.png)"), None, "test")
+            .write(
+                "a.md",
+                &note_raw("![used](attachments/used.png)"),
+                None,
+                "test",
+            )
             .unwrap();
 
         let preview = service.attachment_cleanup(true, false, false).unwrap();
         assert!(preview.dry_run);
-        let candidates: Vec<&str> = preview.candidates.iter().map(|file| file.path.as_str()).collect();
-        assert_eq!(candidates, vec!["attachments/note.txt", "attachments/orphan.png"]);
+        let candidates: Vec<&str> = preview
+            .candidates
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(
+            candidates,
+            vec!["attachments/note.txt", "attachments/orphan.png"]
+        );
 
         let rejected = service.attachment_cleanup(false, true, false).unwrap_err();
         assert_eq!(rejected.code, "CONFIRMATION_REQUIRED");
 
         let outcome = service.attachment_cleanup(false, true, true).unwrap();
         assert!(!outcome.dry_run);
-        assert_eq!(outcome.deleted, vec!["attachments/note.txt", "attachments/orphan.png"]);
+        assert_eq!(
+            outcome.deleted,
+            vec!["attachments/note.txt", "attachments/orphan.png"]
+        );
         assert!(outcome.skipped.is_empty());
         assert!(!directory.path().join("attachments/orphan.png").exists());
         assert!(!directory.path().join("attachments/note.txt").exists());
-        assert!(directory.path().join("attachments/used.png").exists(), "被引用附件必须保留");
+        assert!(
+            directory.path().join("attachments/used.png").exists(),
+            "被引用附件必须保留"
+        );
     }
 
     #[test]
@@ -4816,7 +7460,9 @@ mod tests {
         assert_eq!(note.code, "VALIDATION");
         let traversal = service.vault_download("../outside.png").unwrap_err();
         assert_eq!(traversal.code, "VALIDATION");
-        let missing = service.vault_download("attachments/missing.png").unwrap_err();
+        let missing = service
+            .vault_download("attachments/missing.png")
+            .unwrap_err();
         assert_eq!(missing.code, "NOT_FOUND");
     }
 
@@ -4824,7 +7470,11 @@ mod tests {
     fn file_read_slices_by_characters_and_reports_eof() {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
-        write_file(directory.path(), "docs/note.md", "你好世界，hello".as_bytes());
+        write_file(
+            directory.path(),
+            "docs/note.md",
+            "你好世界，hello".as_bytes(),
+        );
 
         let first = service.file_read("docs/note.md", 0, Some(5)).unwrap();
         assert_eq!(first.content, "你好世界，");
@@ -4843,20 +7493,32 @@ mod tests {
     fn file_find_and_grep_cover_glob_type_and_regex() {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
-        write_file(directory.path(), "docs/a.md", "第一行 TARGETS\n第二行\n".as_bytes());
+        write_file(
+            directory.path(),
+            "docs/a.md",
+            "第一行 TARGETS\n第二行\n".as_bytes(),
+        );
         write_file(directory.path(), "docs/b.txt", "plain".as_bytes());
         write_file(directory.path(), "c.md", "root targets".as_bytes());
 
-        let all_md = service.file_find(Some("**/*.md".into()), None, None).unwrap();
+        let all_md = service
+            .file_find(Some("**/*.md".into()), None, None)
+            .unwrap();
         assert_eq!(all_md.total, 2);
-        let typed = service.file_find(Some("**/*".into()), Some("docs".into()), Some("txt".into())).unwrap();
+        let typed = service
+            .file_find(Some("**/*".into()), Some("docs".into()), Some("txt".into()))
+            .unwrap();
         assert_eq!(typed.total, 1);
         assert_eq!(typed.items[0].path, "docs/b.txt");
 
         // 普通文本大小写不敏感
-        let plain = service.file_grep("targets".into(), None, false, None).unwrap();
+        let plain = service
+            .file_grep("targets".into(), None, false, None)
+            .unwrap();
         assert_eq!(plain.total, 2);
-        let regexed = service.file_grep("^第二行$".into(), Some("docs".into()), true, None).unwrap();
+        let regexed = service
+            .file_grep("^第二行$".into(), Some("docs".into()), true, None)
+            .unwrap();
         assert_eq!(regexed.total, 1);
         assert_eq!(regexed.items[0].line, 2);
     }
@@ -4878,14 +7540,22 @@ mod tests {
         };
         let preview = service.file_preview(Some(action.clone()), None).unwrap();
         let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
-        assert_eq!(preview["requiresSecondConfirmation"], serde_json::json!(false));
+        assert_eq!(
+            preview["requiresSecondConfirmation"],
+            serde_json::json!(false)
+        );
         assert!(preview["diff"].as_str().unwrap().contains("+hello rust"));
         assert_eq!(preview["confirmation"]["required"], serde_json::json!(true));
 
-        let executed = service.file_execute(Some(action), None, true, false, None, Some(plan_hash)).unwrap();
+        let executed = service
+            .file_execute(Some(action), None, true, false, None, Some(plan_hash))
+            .unwrap();
         assert_eq!(executed["replaced"], serde_json::json!(1));
         assert_eq!(executed["undoable"], serde_json::json!(true));
-        assert_eq!(fs::read_to_string(directory.path().join("doc.md")).unwrap(), "hello rust\n");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("doc.md")).unwrap(),
+            "hello rust\n"
+        );
         let operation_id = executed["operationId"].as_str().unwrap().to_owned();
 
         // planHash 与当前状态不符必须被拒
@@ -4903,11 +7573,56 @@ mod tests {
             .unwrap_err();
         assert_eq!(rejected.code, "CONFLICT");
 
-        let undone = service.file_undo(Some(operation_id.clone()), false).unwrap();
+        let undone = service
+            .file_undo(Some(operation_id.clone()), false)
+            .unwrap();
         assert_eq!(undone["undone"], serde_json::json!(true));
-        assert_eq!(fs::read_to_string(directory.path().join("doc.md")).unwrap(), "hello world\n");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("doc.md")).unwrap(),
+            "hello world\n"
+        );
         let again = service.file_undo(Some(operation_id), false).unwrap_err();
         assert_eq!(again.code, "CONFLICT");
+    }
+
+    #[test]
+    fn batch_outcome_exposes_compensation_without_write_payloads() {
+        let action = FileAction {
+            action_type: "write".into(),
+            path: "Notes/a.md".into(),
+            target_path: None,
+            content: Some("secret body must not be returned".into()),
+            replace: None,
+            with: None,
+            all: None,
+        };
+        let outcome = fc_batch_outcome(
+            "batch-1",
+            &serde_json::json!("plan-1"),
+            serde_json::json!(1),
+            "hash-1",
+            2,
+            1,
+            1,
+            true,
+            vec![serde_json::json!("operation-1")],
+            vec![serde_json::json!({
+                "id": "action-1",
+                "status": "completed",
+                "result": { "operationId": "operation-1" },
+            })],
+            serde_json::json!({}),
+            Some("second action failed".into()),
+        );
+        assert_eq!(outcome["partialFailure"], serde_json::json!(true));
+        assert_eq!(outcome["completed"], serde_json::json!(1));
+        assert_eq!(outcome["failed"], serde_json::json!(1));
+        assert_eq!(
+            outcome["compensation"]["operationIds"][0],
+            serde_json::json!("operation-1")
+        );
+        assert!(!outcome.to_string().contains("secret body"));
+        assert!(!outcome.to_string().contains(&action.content.unwrap()));
     }
 
     #[test]
@@ -4926,22 +7641,137 @@ mod tests {
             all: None,
         };
         let preview = service.file_preview(Some(action.clone()), None).unwrap();
-        assert_eq!(preview["confirmation"]["secondConfirmationRequired"], serde_json::json!(true));
+        assert_eq!(
+            preview["confirmation"]["secondConfirmationRequired"],
+            serde_json::json!(true)
+        );
         let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
 
         // 闸门顺序：confirmed → planHash → delete 的 secondConfirmed
-        let no_confirmation = service.file_execute(Some(action.clone()), None, false, true, None, Some(plan_hash.clone())).unwrap_err();
+        let no_confirmation = service
+            .file_execute(
+                Some(action.clone()),
+                None,
+                false,
+                true,
+                None,
+                Some(plan_hash.clone()),
+            )
+            .unwrap_err();
         assert_eq!(no_confirmation.code, "VALIDATION");
-        let no_plan = service.file_execute(Some(action.clone()), None, true, true, None, None).unwrap_err();
+        let no_plan = service
+            .file_execute(Some(action.clone()), None, true, true, None, None)
+            .unwrap_err();
         assert_eq!(no_plan.code, "VALIDATION");
-        let no_second = service.file_execute(Some(action.clone()), None, true, false, None, Some(plan_hash.clone())).unwrap_err();
+        let no_second = service
+            .file_execute(
+                Some(action.clone()),
+                None,
+                true,
+                false,
+                None,
+                Some(plan_hash.clone()),
+            )
+            .unwrap_err();
         assert_eq!(no_second.code, "VALIDATION");
 
-        let executed = service.file_execute(Some(action), None, true, true, None, Some(plan_hash)).unwrap();
+        let executed = service
+            .file_execute(Some(action), None, true, true, None, Some(plan_hash))
+            .unwrap();
         assert!(!directory.path().join("gone.txt").exists());
-        let undone = service.file_undo(Some(executed["operationId"].as_str().unwrap().to_owned()), false).unwrap();
+        let undone = service
+            .file_undo(
+                Some(executed["operationId"].as_str().unwrap().to_owned()),
+                false,
+            )
+            .unwrap();
         assert_eq!(undone["undone"], serde_json::json!(true));
-        assert_eq!(fs::read_to_string(directory.path().join("gone.txt")).unwrap(), "delete me");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("gone.txt")).unwrap(),
+            "delete me"
+        );
+    }
+
+    #[test]
+    fn ai_file_execution_rechecks_role_scope_and_idempotency() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        write_file(directory.path(), "allowed.md", b"before");
+        write_file(directory.path(), "outside.md", b"outside");
+
+        let action = FileAction {
+            action_type: "write".into(),
+            path: "allowed.md".into(),
+            target_path: None,
+            content: Some("after".into()),
+            replace: None,
+            with: None,
+            all: None,
+        };
+        let preview = service.file_preview(Some(action.clone()), None).unwrap();
+        let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
+        let denied_viewer = service
+            .file_execute_with_context(
+                Some(action.clone()),
+                None,
+                true,
+                false,
+                None,
+                Some(plan_hash.clone()),
+                "local-user",
+                "viewer",
+                Some(&["allowed.md".to_owned()]),
+                Some("run-1:op-1"),
+            )
+            .unwrap_err();
+        assert_eq!(denied_viewer.code, "VALIDATION");
+
+        let denied_scope = service
+            .file_execute_with_context(
+                Some(FileAction { path: "outside.md".into(), ..action.clone() }),
+                None,
+                true,
+                false,
+                None,
+                Some(plan_hash.clone()),
+                "local-user",
+                "editor",
+                Some(&["allowed.md".to_owned()]),
+                Some("run-1:op-2"),
+            )
+            .unwrap_err();
+        assert_eq!(denied_scope.code, "VALIDATION");
+
+        let first = service
+            .file_execute_with_context(
+                Some(action.clone()),
+                None,
+                true,
+                false,
+                None,
+                Some(plan_hash.clone()),
+                "local-user",
+                "editor",
+                Some(&["allowed.md".to_owned()]),
+                Some("run-1:op-1"),
+            )
+            .unwrap();
+        let second = service
+            .file_execute_with_context(
+                Some(action),
+                None,
+                true,
+                false,
+                None,
+                Some(plan_hash),
+                "local-user",
+                "editor",
+                Some(&["allowed.md".to_owned()]),
+                Some("run-1:op-1"),
+            )
+            .unwrap();
+        assert_eq!(first["operationId"], second["operationId"]);
+        assert_eq!(fs::read_to_string(directory.path().join("allowed.md")).unwrap(), "after");
     }
 
     #[test]
@@ -4962,7 +7792,9 @@ mod tests {
         };
         let preview = service.file_preview(Some(action.clone()), None).unwrap();
         let plan_hash = preview["planHash"].as_str().unwrap().to_owned();
-        service.file_execute(Some(action), None, true, false, None, Some(plan_hash)).unwrap();
+        service
+            .file_execute(Some(action), None, true, false, None, Some(plan_hash))
+            .unwrap();
 
         let log = service.file_log(None).unwrap();
         assert_eq!(log.len(), 1);
@@ -4976,7 +7808,32 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
         let listed = service.expert_list().unwrap();
-        assert!(listed.iter().any(|expert| expert["id"] == serde_json::json!("general") && expert["source"] == serde_json::json!("builtin")));
+        assert_eq!(
+            BUILTIN_EXPERTS.len(),
+            7,
+            "builtin experts 资源数量必须与迁移基线一致"
+        );
+        assert_eq!(
+            BUILTIN_SKILLS.len(),
+            9,
+            "builtin skills 资源数量必须与迁移基线一致"
+        );
+        assert!(
+            BUILTIN_EXPERTS
+                .iter()
+                .all(|raw| serde_json::from_str::<serde_json::Value>(raw).is_ok())
+        );
+        assert!(
+            BUILTIN_SKILLS
+                .iter()
+                .all(|(manifest, body)| !manifest.is_empty() && !body.is_empty())
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|expert| expert["id"] == serde_json::json!("general")
+                    && expert["source"] == serde_json::json!("builtin"))
+        );
         let builtin_count = listed.len();
 
         // 更新内置专家：写入工作区版本（读取时覆盖视图，builtin 原件不动）
@@ -4991,7 +7848,10 @@ mod tests {
         assert_eq!(updated["description"], serde_json::json!("工作区覆盖版"));
         let listed = service.expert_list().unwrap();
         assert_eq!(listed.len(), builtin_count, "同 id 覆盖不新增条目");
-        let general = listed.iter().find(|expert| expert["id"] == serde_json::json!("general")).unwrap();
+        let general = listed
+            .iter()
+            .find(|expert| expert["id"] == serde_json::json!("general"))
+            .unwrap();
         assert_eq!(general["source"], serde_json::json!("workspace"));
     }
 
@@ -5000,23 +7860,49 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
 
-        let rejected = service.expert_save(serde_json::json!({ "name": "x" }), Some("my-expert".into()), false).unwrap_err();
+        let rejected = service
+            .expert_save(
+                serde_json::json!({ "name": "x" }),
+                Some("my-expert".into()),
+                false,
+            )
+            .unwrap_err();
         assert_eq!(rejected.code, "CONFIRMATION_REQUIRED");
-        let bad_id = service.expert_save(serde_json::json!({ "name": "x" }), Some("Bad_ID".into()), true).unwrap_err();
+        let bad_id = service
+            .expert_save(
+                serde_json::json!({ "name": "x" }),
+                Some("Bad_ID".into()),
+                true,
+            )
+            .unwrap_err();
         assert_eq!(bad_id.code, "VALIDATION");
-        let builtin_conflict =
-            service.expert_save(serde_json::json!({ "id": "general", "name": "自定义 general" }), None, true).unwrap_err();
+        let builtin_conflict = service
+            .expert_save(
+                serde_json::json!({ "id": "general", "name": "自定义 general" }),
+                None,
+                true,
+            )
+            .unwrap_err();
         assert_eq!(builtin_conflict.code, "CONFLICT");
 
         let created = service
             .expert_save(serde_json::json!({ "id": "my-expert", "name": "我的专家", "skills": ["vault-search"] }), None, true)
             .unwrap();
         assert_eq!(created["source"], serde_json::json!("workspace"));
-        assert_eq!(created["skills"][0]["id"], serde_json::json!("vault-search"));
-        assert!(created["skills"][0]["skill"].is_object(), "详情应嵌入技能定义摘要");
+        assert_eq!(
+            created["skills"][0]["id"],
+            serde_json::json!("vault-search")
+        );
+        assert!(
+            created["skills"][0]["skill"].is_object(),
+            "详情应嵌入技能定义摘要"
+        );
         // available 只在列表口径出现（对齐 listExperts）
         let listed = service.expert_list().unwrap();
-        let mine = listed.iter().find(|expert| expert["id"] == serde_json::json!("my-expert")).unwrap();
+        let mine = listed
+            .iter()
+            .find(|expert| expert["id"] == serde_json::json!("my-expert"))
+            .unwrap();
         assert_eq!(mine["skills"][0]["available"], serde_json::json!(true));
 
         let skill_conflict = service
@@ -5029,18 +7915,31 @@ mod tests {
         assert_eq!(skill_conflict.code, "CONFLICT");
 
         let empty = service
-            .skill_save(serde_json::json!({ "id": "my-skill", "name": "x", "content": "  " }), None, true)
+            .skill_save(
+                serde_json::json!({ "id": "my-skill", "name": "x", "content": "  " }),
+                None,
+                true,
+            )
             .unwrap_err();
         assert_eq!(empty.code, "VALIDATION");
 
         let skill = service
-            .skill_save(serde_json::json!({ "id": "my-skill", "name": "我的技能", "content": "技能正文" }), None, true)
+            .skill_save(
+                serde_json::json!({ "id": "my-skill", "name": "我的技能", "content": "技能正文" }),
+                None,
+                true,
+            )
             .unwrap();
         // SKILL.md 落盘带尾换行（对齐 Express `${content}\n`），读回即含 \n
         assert_eq!(skill["content"], serde_json::json!("技能正文\n"));
         let detail = service.skill_get("my-skill").unwrap();
         assert_eq!(detail["contentHash"], skill["contentHash"]);
-        assert!(directory.path().join(".lattice/skills/my-skill/SKILL.md").exists());
+        assert!(
+            directory
+                .path()
+                .join(".lattice/skills/my-skill/SKILL.md")
+                .exists()
+        );
     }
 
     #[test]
@@ -5050,9 +7949,26 @@ mod tests {
         let message = "帮我整理收件箱并归档决策";
         let suggestions = service.expert_route(message, None).unwrap();
         // general 永不参与；命中关键词的专家按 score 排序
-        assert!(suggestions.iter().all(|item| item["id"] != serde_json::json!("general")));
-        let excluded = service.expert_route(message, suggestions.first().and_then(|item| item["id"].as_str()).map(str::to_owned)).unwrap();
-        assert!(excluded.iter().all(|item| Some(item["id"].as_str().unwrap_or_default()) != suggestions.first().and_then(|item| item["id"].as_str())));
+        assert!(
+            suggestions
+                .iter()
+                .all(|item| item["id"] != serde_json::json!("general"))
+        );
+        let excluded = service
+            .expert_route(
+                message,
+                suggestions
+                    .first()
+                    .and_then(|item| item["id"].as_str())
+                    .map(str::to_owned),
+            )
+            .unwrap();
+        assert!(
+            excluded
+                .iter()
+                .all(|item| Some(item["id"].as_str().unwrap_or_default())
+                    != suggestions.first().and_then(|item| item["id"].as_str()))
+        );
         assert!(suggestions.len() <= 3);
     }
 
@@ -5061,18 +7977,39 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let service = open_service(directory.path());
         service
-            .expert_save(serde_json::json!({ "id": "temp-expert", "name": "临时" }), None, true)
+            .expert_save(
+                serde_json::json!({ "id": "temp-expert", "name": "临时" }),
+                None,
+                true,
+            )
             .unwrap();
         service
-            .skill_save(serde_json::json!({ "id": "temp-skill", "name": "临时", "content": "正文" }), None, true)
+            .skill_save(
+                serde_json::json!({ "id": "temp-skill", "name": "临时", "content": "正文" }),
+                None,
+                true,
+            )
             .unwrap();
 
-        let no_second = service.expert_delete("temp-expert", true, false).unwrap_err();
+        let no_second = service
+            .expert_delete("temp-expert", true, false)
+            .unwrap_err();
         assert_eq!(no_second.code, "CONFIRMATION_REQUIRED");
         let deleted = service.expert_delete("temp-expert", true, true).unwrap();
         assert_eq!(deleted["deleted"], serde_json::json!(true));
-        assert!(!directory.path().join(".lattice/experts/temp-expert.json").exists());
-        assert!(service.expert_list().unwrap().iter().any(|expert| expert["id"] == serde_json::json!("general")));
+        assert!(
+            !directory
+                .path()
+                .join(".lattice/experts/temp-expert.json")
+                .exists()
+        );
+        assert!(
+            service
+                .expert_list()
+                .unwrap()
+                .iter()
+                .any(|expert| expert["id"] == serde_json::json!("general"))
+        );
 
         let skill_deleted = service.skill_delete("temp-skill", true, true).unwrap();
         assert_eq!(skill_deleted["deleted"], serde_json::json!(true));
@@ -5097,12 +8034,18 @@ mod tests {
             .unwrap();
         let report = service.review_health(90, 100).unwrap();
         assert_eq!(report["noteCount"], serde_json::json!(1));
-        assert_eq!(report["summary"]["hardTotal"], serde_json::json!(1), "Inbox 未处理应为 error");
+        assert_eq!(
+            report["summary"]["hardTotal"],
+            serde_json::json!(1),
+            "Inbox 未处理应为 error"
+        );
         assert!(report["summary"]["healthScore"].as_i64().unwrap() < 100);
         let isolated = report["categories"]["isolated"].as_array().unwrap();
         assert_eq!(isolated.len(), 1);
         // 未知 finding id 生成计划必须被拒
-        let rejected = service.review_plan(vec!["not-exist".into()], 90, 100).unwrap_err();
+        let rejected = service
+            .review_plan(vec!["not-exist".into()], 90, 100)
+            .unwrap_err();
         assert_eq!(rejected.code, "VALIDATION");
     }
 
@@ -5121,24 +8064,53 @@ mod tests {
         let report = service.review_health(90, 100).unwrap();
         let metadata = report["categories"]["metadata"].as_array().unwrap();
         assert!(!metadata.is_empty(), "缺来源/标签应有 metadata 线索");
-        let finding_ids: Vec<String> = metadata.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect();
+        let finding_ids: Vec<String> = metadata
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect();
         let plan = service.review_plan(finding_ids, 90, 100).unwrap();
         let plan_hash = plan["planHash"].as_str().unwrap().to_owned();
         assert_eq!(plan["confirmation"]["required"], serde_json::json!(true));
 
         // planHash 不符必须被拒
-        let mismatch = service.review_execute(plan["id"].as_str().unwrap(), "0".repeat(64).as_str(), true, true).unwrap_err();
+        let mismatch = service
+            .review_execute(
+                plan["id"].as_str().unwrap(),
+                "0".repeat(64).as_str(),
+                true,
+                true,
+            )
+            .unwrap_err();
         assert_eq!(mismatch.code, "CONFLICT");
         // 未确认必须被拒
-        let unconfirmed = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, false, true).unwrap_err();
+        let unconfirmed = service
+            .review_execute(plan["id"].as_str().unwrap(), &plan_hash, false, true)
+            .unwrap_err();
         assert_eq!(unconfirmed.code, "CONFIRMATION_REQUIRED");
 
-        let executed = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true).unwrap();
-        assert_eq!(executed["completed"], serde_json::json!(1), "缺来源应自动补全 source");
-        let detail = service.index.find_note_detail(Some("019501a2-3b4c-4c5d-89ab-cdef01234569"), None).unwrap().unwrap();
-        assert!(detail.properties_json.unwrap_or_default().contains("vault:notes/a.md"));
+        let executed = service
+            .review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true)
+            .unwrap();
+        assert_eq!(
+            executed["completed"],
+            serde_json::json!(1),
+            "缺来源应自动补全 source"
+        );
+        let detail = service
+            .index
+            .find_note_detail(Some("019501a2-3b4c-4c5d-89ab-cdef01234569"), None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            detail
+                .properties_json
+                .unwrap_or_default()
+                .contains("vault:notes/a.md")
+        );
         // 计划执行后即删除
-        let again = service.review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true).unwrap_err();
+        let again = service
+            .review_execute(plan["id"].as_str().unwrap(), &plan_hash, true, true)
+            .unwrap_err();
         assert_eq!(again.code, "CONFLICT");
     }
 
@@ -5160,18 +8132,203 @@ mod tests {
 
         let roots = service.index().folder_tree(service.vault()).unwrap();
         let names: Vec<&str> = roots.iter().map(|node| node.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "Beta"], "NOCASE 升序：alpha 必须排在 Beta 之前");
+        assert_eq!(
+            names,
+            vec!["alpha", "Beta"],
+            "NOCASE 升序：alpha 必须排在 Beta 之前"
+        );
         assert_eq!(roots[0].note_count, 1, "noteCount 是**直属**笔记数");
         assert_eq!(roots[0].children.len(), 0);
-        assert_eq!(roots[1].children.len(), 1, "子目录必须挂在父节点下，不能另起为根");
+        assert_eq!(
+            roots[1].children.len(),
+            1,
+            "子目录必须挂在父节点下，不能另起为根"
+        );
         assert_eq!(roots[1].children[0].name, "child");
         assert_eq!(
             roots[1].children[0].parent_id.as_deref(),
             Some(roots[1].id.as_str()),
             "子节点的 parentId 必须指向父节点 id"
         );
-        assert!(roots[0].created_at.ends_with('Z'), "createdAt 是 ISO-8601 UTC");
-        assert!(roots[0].updated_at.ends_with('Z'), "updatedAt 是 ISO-8601 UTC");
+        assert!(
+            roots[0].created_at.ends_with('Z'),
+            "createdAt 是 ISO-8601 UTC"
+        );
+        assert!(
+            roots[0].updated_at.ends_with('Z'),
+            "updatedAt 是 ISO-8601 UTC"
+        );
+    }
+
+    #[test]
+    fn folder_delete_moves_non_empty_contents_to_vault_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let folder = service.folder_create("待删除", None, None, true).unwrap();
+        write_file(
+            directory.path(),
+            "待删除/源笔记.md",
+            note_raw("正文").as_bytes(),
+        );
+        write_file(directory.path(), "待删除/附件.pdf", b"pdf");
+        write_file(directory.path(), "待删除/子目录/附件.pdf", b"nested");
+        write_file(directory.path(), "测试.md", b"existing");
+        service.index().scan(service.vault()).unwrap();
+
+        let result = service.folder_delete(&folder.id, true, true).unwrap();
+
+        assert_eq!(result["deletedFolderCount"], serde_json::json!(1));
+        assert_eq!(result["affectedNoteCount"], serde_json::json!(1));
+        assert!(!directory.path().join("待删除").exists());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("测试 (2).md")).unwrap(),
+            note_raw("正文")
+        );
+        let mut attachment_contents = vec![
+            fs::read(directory.path().join("附件.pdf")).unwrap(),
+            fs::read(directory.path().join("附件 (2).pdf")).unwrap(),
+        ];
+        attachment_contents.sort();
+        assert_eq!(
+            attachment_contents,
+            vec![b"nested".to_vec(), b"pdf".to_vec()]
+        );
+    }
+
+    #[test]
+    fn notes_create_and_update_honor_folder_id_three_state_semantics() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let folder = service.folder_create("目标目录", None, None, true).unwrap();
+        let note_id = "019501a2-3b4c-4c5d-89ab-cdef01234570".to_owned();
+
+        let created = service
+            .create_note(
+                Some(note_id.clone()),
+                Some("目录笔记".into()),
+                "正文",
+                Some(folder.id.clone()),
+                &serde_json::Map::new(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(created.folder_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(created.file_path.as_deref(), Some("目标目录/目录笔记.md"));
+        assert!(directory.path().join("目标目录/目录笔记.md").exists());
+
+        let rejected = service
+            .update_note(&note_id, None, None, Some(None), None, None, None, false)
+            .unwrap_err();
+        assert_eq!(rejected.code, "CONFIRMATION_REQUIRED");
+
+        let moved = service
+            .update_note(&note_id, None, None, Some(None), None, None, None, true)
+            .unwrap();
+        assert_eq!(moved.folder_id, None);
+        assert_eq!(moved.file_path.as_deref(), Some("目录笔记.md"));
+        assert!(!directory.path().join("目标目录/目录笔记.md").exists());
+        assert!(directory.path().join("目录笔记.md").exists());
+
+        let kept = service
+            .update_note(
+                &note_id,
+                None,
+                Some("只改正文".into()),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap();
+        assert_eq!(kept.folder_id, None, "省略 folderId 必须保持原目录");
+    }
+
+    #[test]
+    fn templates_duplicate_and_daily_creation_validate_inputs_and_are_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let templates = service.list_templates().unwrap();
+        assert_eq!(templates.len(), 6);
+        assert!(templates.iter().any(|template| template["name"] == "daily"));
+
+        let invalid_date = service
+            .create_from_template(
+                "meeting",
+                Some("会议".into()),
+                Some("2026-99-99".into()),
+                None,
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(invalid_date.code, "VALIDATION");
+
+        let original = service
+            .create_note(
+                Some("019501a2-3b4c-4c5d-89ab-cdef01234574".into()),
+                Some("原始笔记".into()),
+                "原始正文",
+                None,
+                &serde_json::Map::new(),
+                true,
+            )
+            .unwrap();
+        let duplicate = service.duplicate_note(&original.id, None, true).unwrap();
+        assert_ne!(duplicate.id, original.id);
+        assert_eq!(duplicate.title, "原始笔记（副本）");
+        assert!(duplicate.content.ends_with("原始正文"));
+        assert!(!duplicate.content.contains(&original.id));
+
+        let daily = service
+            .create_daily_note(Some("2026-02-28".into()), true)
+            .unwrap();
+        let daily_again = service
+            .create_daily_note(Some("2026-02-28".into()), true)
+            .unwrap();
+        assert_eq!(daily.id, daily_again.id, "每日笔记按日期必须幂等");
+        assert!(
+            daily
+                .file_path
+                .as_deref()
+                .is_some_and(|path| path == "Daily/2026-02-28.md")
+        );
+
+        let invalid_daily = service
+            .create_daily_note(Some("2026-02-29".into()), true)
+            .unwrap_err();
+        assert_eq!(invalid_daily.code, "VALIDATION");
+    }
+
+    #[test]
+    fn ai_digest_is_local_idempotent_and_requires_confirmation() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let rejected = service.generate_ai_digest(None, false).unwrap_err();
+        assert_eq!(rejected.code, "CONFIRMATION_REQUIRED");
+
+        let source = service
+            .create_note(
+                Some("019501a2-3b4c-4c5d-89ab-cdef01234575".into()),
+                Some("今天的工作".into()),
+                "本地摘要来源",
+                None,
+                &serde_json::Map::new(),
+                true,
+            )
+            .unwrap();
+        let today = source
+            .updated_at
+            .as_deref()
+            .unwrap_or_default()
+            .get(..10)
+            .unwrap()
+            .to_owned();
+        let first = service.generate_ai_digest(Some(today.clone()), true).unwrap();
+        let second = service.generate_ai_digest(Some(today), true).unwrap();
+        assert_eq!(first["created"], true);
+        assert_eq!(second["created"], false);
+        assert_eq!(first["noteId"], second["noteId"]);
+        assert_eq!(first["modifiedCount"], 1);
     }
 
     /// 附件仓库不算笔记目录（Express 的 `folders` 表里没有它），但**只在下辖没有笔记时**才隐藏：
@@ -5184,11 +8341,19 @@ mod tests {
         service.index().scan(service.vault()).unwrap();
 
         assert!(
-            service.index().folder_tree(service.vault()).unwrap().is_empty(),
+            service
+                .index()
+                .folder_tree(service.vault())
+                .unwrap()
+                .is_empty(),
             "空的附件仓库不应出现在笔记目录树里"
         );
         assert_eq!(
-            service.index().meta_overview(service.vault()).unwrap().folder_count,
+            service
+                .index()
+                .meta_overview(service.vault())
+                .unwrap()
+                .folder_count,
             0,
             "目录计数同样不含附件仓库（对齐 Express COUNT(*) FROM folders）"
         );
@@ -5202,6 +8367,13 @@ mod tests {
         let roots = service.index().folder_tree(service.vault()).unwrap();
         assert_eq!(roots.len(), 1, "里面有笔记时应按用户的笔记目录保留");
         assert_eq!(roots[0].name, "attachments");
-        assert_eq!(service.index().meta_overview(service.vault()).unwrap().folder_count, 1);
+        assert_eq!(
+            service
+                .index()
+                .meta_overview(service.vault())
+                .unwrap()
+                .folder_count,
+            1
+        );
     }
 }

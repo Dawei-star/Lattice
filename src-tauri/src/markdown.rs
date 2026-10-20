@@ -310,16 +310,26 @@ pub fn parse_frontmatter(raw: &str) -> Option<Frontmatter> {
 
 /// 去掉 frontmatter，返回正文（Express 的 note.content 口径不含 frontmatter）。
 pub fn strip_frontmatter(raw: &str) -> &str {
-    let mut lines = raw.lines();
-    if !lines.next().is_some_and(|first| first.trim_end_matches('\r') == "---") {
+    let Some(first_line_end) = raw.find('\n') else {
+        return raw;
+    };
+    let first_line = raw[..first_line_end].trim_end_matches('\r');
+    if first_line != "---" {
         return raw;
     }
-    let mut offset = 0usize;
-    for line in raw.lines() {
-        let line_end = offset + line.len();
-        if line.trim_end_matches('\r') == "---" {
-            // 正文从闭合栏之后开始（跳过换行符）
-            return &raw[(line_end + 1).min(raw.len())..];
+    let mut offset = first_line_end + 1;
+    while offset <= raw.len() {
+        let line_end = raw[offset..]
+            .find('\n')
+            .map(|relative| offset + relative)
+            .unwrap_or(raw.len());
+        if raw[offset..line_end].trim_end_matches('\r') == "---" {
+            // 正文从闭合栏之后开始（跳过换行符）。
+            let body_start = if line_end < raw.len() { line_end + 1 } else { line_end };
+            return &raw[body_start..];
+        }
+        if line_end == raw.len() {
+            break;
         }
         offset = line_end + 1;
     }
@@ -498,7 +508,10 @@ pub fn normalize_title(raw_title: &str, fallback_content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_word_count, extract_frontmatter_tags, extract_note_tags, extract_tags, parse_frontmatter};
+    use super::{
+        compute_word_count, extract_frontmatter_tags, extract_note_tags, extract_tags,
+        parse_frontmatter, strip_frontmatter,
+    };
 
     #[test]
     fn inline_tags_support_chinese_and_nested() {
@@ -568,6 +581,13 @@ mod tests {
         assert!(parse_frontmatter("普通文本").is_none());
         assert!(parse_frontmatter("---\nid: not-a-uuid\n---").unwrap().id.is_none());
         assert!(parse_frontmatter("---\ntitle: t\n").is_none(), "未闭合 frontmatter");
+    }
+
+    #[test]
+    fn strip_frontmatter_removes_only_the_closed_frontmatter_block() {
+        let raw = "---\nid: 019501a2-3b4c-4c5d-89ab-cdef01234567\ntitle: 测试\n---\n正文\n---\n仍是正文";
+        assert_eq!(strip_frontmatter(raw), "正文\n---\n仍是正文");
+        assert_eq!(strip_frontmatter("没有 frontmatter"), "没有 frontmatter");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// 001：索引投影初版。
 ///
@@ -136,14 +136,71 @@ ALTER TABLE notes ADD COLUMN folder_id TEXT;
 CREATE INDEX ix_notes_folder ON notes (folder_id);
 "#;
 
+/// 008：本地向量投影。向量表只保存可重建的索引，不改变 Markdown 真源。
+/// embedding 使用 JSON 文本存储，查询适配层会在 SQL 权限过滤后做余弦排序；
+/// 这样保持与 sqlite-vec 相同的向量维度/更新协议，同时兼容当前 Windows 构建链。
+const MIGRATION_008: &str = r#"
+CREATE TABLE note_embeddings (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_path    TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL,
+  dimension    INTEGER NOT NULL,
+  embedding    TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+CREATE INDEX ix_note_embeddings_path ON note_embeddings (note_path);
+"#;
+
+/// 009：AI Run 事件日志。
+///
+/// Run 主状态复用 jobs 表；事件单独追加，支持面板关闭后按序号补拉，
+/// 也避免把长文本和流式 delta 挤进 jobs.result 单列。
+const MIGRATION_009: &str = r#"
+CREATE TABLE ai_run_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id      TEXT NOT NULL,
+  sequence    INTEGER NOT NULL,
+  type        TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  UNIQUE(run_id, sequence)
+);
+CREATE INDEX ix_ai_run_events_run ON ai_run_events (run_id, sequence);
+"#;
+
+/// 010：任务检查点。
+///
+/// 检查点只保存可恢复的阶段元数据，不保存模型凭据或流式正文；正文仍从
+/// `ai_run_events` 按 sequence 补拉，凭据由当前进程重新注入。
+const MIGRATION_010: &str = r#"
+ALTER TABLE jobs ADD COLUMN checkpoint TEXT;
+"#;
+
+/// 011：用户明确管理的 AI 记忆。
+///
+/// 记忆不是 Markdown 投影，直接存放在工作区数据库中；写入边界由
+/// `memory::MemoryStore` 负责，任何模型请求都没有直接写入路径。
+const MIGRATION_011: &str = r#"
+CREATE TABLE ai_memories (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK(kind IN ('preference', 'knowledge')),
+  content    TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT
+);
+CREATE INDEX ix_ai_memories_updated ON ai_memories (updated_at DESC);
+CREATE INDEX ix_ai_memories_expires ON ai_memories (expires_at);
+"#;
+
 /// 打开索引库并把 Schema 迁移到最新版本。
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("无法创建索引目录：{error}"))?;
     }
     backup_before_migration(path);
-    let connection =
-        Connection::open(path).map_err(|error| format!("无法打开索引库：{error}"))?;
+    let connection = Connection::open(path).map_err(|error| format!("无法打开索引库：{error}"))?;
     connection
         .execute_batch(
             // WAL：读写不互相阻塞；NORMAL 在 WAL 下兼顾安全与性能；
@@ -163,7 +220,9 @@ pub fn open(path: &Path) -> Result<Connection, String> {
 /// 备份失败只告警——投影库可由 Markdown 真源重建，不值得阻断启动；
 /// WAL/SHM 不复制（SQLite 会用主库+日志自恢复，手工拼 WAL 反而危险）。
 fn backup_before_migration(path: &Path) {
-    let Ok(metadata) = fs::metadata(path) else { return };
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
     if metadata.len() == 0 {
         return;
     }
@@ -204,18 +263,28 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         return Ok(());
     }
     // 每个迁移步骤一个事务：失败只回滚当前步，已完成的低版本保留。
-    let steps: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003), (4, MIGRATION_004), (5, MIGRATION_005), (6, MIGRATION_006), (7, MIGRATION_007)];
+    let steps: &[(i64, &str)] = &[
+        (1, MIGRATION_001),
+        (2, MIGRATION_002),
+        (3, MIGRATION_003),
+        (4, MIGRATION_004),
+        (5, MIGRATION_005),
+        (6, MIGRATION_006),
+        (7, MIGRATION_007),
+        (8, MIGRATION_008),
+        (9, MIGRATION_009),
+        (10, MIGRATION_010),
+        (11, MIGRATION_011),
+    ];
     for &(target, script) in steps {
         if version < target {
             let transaction = connection
                 .unchecked_transaction()
                 .map_err(|error| format!("无法开启迁移事务：{error}"))?;
-            transaction
-                .execute_batch(script)
-                .map_err(|error| {
-                    // 事务随 drop 回滚：半套 schema 不会落盘，便于失败诊断后重试。
-                    format!("迁移到 v{target} 失败（已回滚，下次启动重试）：{error}")
-                })?;
+            transaction.execute_batch(script).map_err(|error| {
+                // 事务随 drop 回滚：半套 schema 不会落盘，便于失败诊断后重试。
+                format!("迁移到 v{target} 失败（已回滚，下次启动重试）：{error}")
+            })?;
             transaction
                 .execute_batch(&format!("PRAGMA user_version = {target}"))
                 .map_err(|error| format!("无法写入索引库版本：{error}"))?;
@@ -360,7 +429,9 @@ mod tests {
         std::fs::create_dir_all(database.parent().unwrap()).unwrap();
         {
             let legacy = Connection::open(&database).unwrap();
-            legacy.execute("CREATE TABLE legacy_data (value TEXT)", []).unwrap();
+            legacy
+                .execute("CREATE TABLE legacy_data (value TEXT)", [])
+                .unwrap();
             legacy
                 .execute("INSERT INTO legacy_data (value) VALUES ('旧数据')", [])
                 .unwrap();

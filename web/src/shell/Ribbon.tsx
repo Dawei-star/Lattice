@@ -1,6 +1,5 @@
 import {
   Activity,
-  BrainCircuit,
   FilePlus2,
   FolderOpen,
   Inbox,
@@ -76,19 +75,12 @@ export default function Ribbon({ view, onViewChange, onOpenSwitcher, onOpenExper
         </button>
       </div>
 
-      <button type="button" className="ribbon__button ribbon__button--mobile-expert" onClick={() => onOpenExpertsCenter?.('experts')} aria-label="专家模式" title="专家模式">
-        <RibbonIcon icon={Sparkles} />
-      </button>
-
       <div className="ribbon__group ribbon__group--secondary">
         <button type="button" className="ribbon__button" onClick={() => onCreateCanvas?.()} aria-label="新建白板" title="新建白板">
           <RibbonIcon icon={SquarePlus} />
         </button>
         <button type="button" className="ribbon__button" onClick={() => onOpenSwitcher?.()} aria-label="快速切换" title="快速切换（Ctrl / Cmd + K）">
           <RibbonIcon icon={Search} />
-        </button>
-        <button type="button" className="ribbon__button" onClick={() => onOpenExpertsCenter?.('experts')} aria-label="专家模式" title="专家模式">
-          <RibbonIcon icon={BrainCircuit} />
         </button>
         <button type="button" className="ribbon__button" onClick={() => onToggleAi?.()} aria-label="AI 文件助手" title="AI 文件助手">
           <RibbonIcon icon={Sparkles} />

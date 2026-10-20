@@ -5,6 +5,7 @@ export interface LatticeSettings {
   fontSize: string;
   contentWidth: string;
   density: 'compact' | 'comfortable';
+  editorEngine: 'legacy' | 'blocksuite';
   editorMode: 'edit' | 'split' | 'preview';
   tabSize: string;
   autoSaveDelay: string;
@@ -23,6 +24,7 @@ export const DEFAULT_SETTINGS: Readonly<LatticeSettings> = Object.freeze({
   fontSize: '14',
   contentWidth: '860',
   density: 'compact',
+  editorEngine: 'legacy',
   editorMode: 'split',
   tabSize: '2',
   autoSaveDelay: '900',
@@ -36,6 +38,7 @@ const OPTIONS: Record<Exclude<keyof LatticeSettings, 'autoSave' | 'quickSwitcher
   fontSize: new Set(['13', '14', '15']),
   contentWidth: new Set(['720', '860', '1040']),
   density: new Set(['compact', 'comfortable']),
+  editorEngine: new Set(['legacy', 'blocksuite']),
   editorMode: new Set(['edit', 'split', 'preview']),
   tabSize: new Set(['2', '4']),
   autoSaveDelay: new Set(['500', '900', '1500']),
@@ -106,8 +109,13 @@ function normalizeSettings(value: Record<string, unknown> | null | undefined): L
   if (typeof value?.autoSave === 'boolean') next.autoSave = value.autoSave;
   if (typeof value?.quickSwitcher === 'boolean') next.quickSwitcher = value.quickSwitcher;
   if (typeof value?.showAttachments === 'boolean') next.showAttachments = value.showAttachments;
+  if (value?.editorEngine === 'legacy' || value?.editorEngine === 'blocksuite') next.editorEngine = value.editorEngine;
   if (value?.backgroundImage === '' || (typeof value?.backgroundImage === 'string' && SAFE_BACKGROUND_IMAGE.test(value.backgroundImage))) {
     next.backgroundImage = value.backgroundImage;
   }
   return next;
+}
+
+export function resolveEditorEngine(settings: LatticeSettings): LatticeSettings['editorEngine'] {
+  return settings.editorEngine === 'blocksuite' ? 'blocksuite' : 'legacy';
 }

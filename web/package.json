@@ -1,19 +1,18 @@
 {
   "name": "@lattice/web",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test:native": "node test/native-document.test.mjs",
     "preview": "vite preview --port 5173",
-    "test": "node test/native-vault-contract.test.mjs && node test/native-document.test.mjs && node test/theme.test.mjs && node test/settings-store.test.mjs && node test/ai-motion.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/static-export.test.mjs && node test/static-site.test.mjs && node test/pwa.test.mjs && node test/ai-settings.test.mjs && node test/mcp-settings.test.mjs && node test/mcp-marketplace.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/note-list-state.test.mjs && node test/review.test.mjs && node test/update.test.mjs && node test/ipc-dual-track.test.mjs && node test/ipc-routes-contract.test.mjs && node test/ipc-args-contract.test.mjs && node test/ipc-parity-consumption.test.mjs && node test/run-integration.mjs",
-    "test:e2e": "node test/canvas-navigation.test.mjs && node test/run-smoke.mjs"
+    "test": "node test/theme.test.mjs && node test/settings-store.test.mjs && node test/ai-motion.test.mjs && node test/ai-notifications.test.mjs && node test/ai-tool-checkpoint.test.mjs && node test/ai-run.test.mjs && node test/ai-run-recovery.test.mjs && node test/ai-policy.test.mjs && node test/ai-agent.test.mjs && node test/ai-provider-read-tools.test.mjs && node test/ai-contracts.test.mjs && node test/ai-run-state.test.mjs && node test/ai-controller.test.mjs && node test/ai-query-planner.test.mjs && node test/ai-stream-adapter.test.mjs && node test/ai-session-store.test.mjs && node test/ai-message-state.test.mjs && node test/ai-operation-adapter.test.mjs && node test/ai-operation-planner.test.mjs && node test/ai-provider.test.mjs && node test/ai-provider-router.test.mjs && node test/ai-context.test.mjs && node test/ai-metrics.test.mjs && node test/ai-trace.test.mjs && node test/golden-eval.test.mjs && node test/ai-retrieval-cache.test.mjs && node test/ai-small-model.test.mjs && node test/ai-desktop-provider-test.test.mjs && node test/ai-attachments.test.mjs && node test/clipboard.test.mjs && node test/sanitize.test.mjs && node test/markdown.test.mjs && node test/markdown-bridge.test.mjs && node test/blocksuite-focus.test.mjs && node test/blocksuite-edgeless.test.mjs && node test/roundtrip-scan.test.mjs && node test/static-export.test.mjs && node test/static-site.test.mjs && node test/pwa.test.mjs && node test/ai-settings.test.mjs && node test/mcp-settings.test.mjs && node test/mcp-marketplace.test.mjs && node test/workspace-auth.test.mjs && node test/folder-naming.test.mjs && node test/canvas-naming.test.mjs && node test/sidebar-bootstrap.test.mjs && node test/note-list-state.test.mjs && node test/review.test.mjs && node test/update.test.mjs && node test/ipc-dual-track.test.mjs && node test/ipc-routes-contract.test.mjs && node test/ipc-args-contract.test.mjs && node test/ipc-parity-consumption.test.mjs"
   },
   "dependencies": {
     "@blocksuite/blocks": "^0.19.5",
+    "@blocksuite/icons": "2.1.75",
     "@blocksuite/presets": "^0.19.5",
     "@blocksuite/store": "^0.19.5",
     "@gsap/react": "^2.1.2",

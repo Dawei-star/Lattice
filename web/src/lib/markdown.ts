@@ -239,3 +239,38 @@ export function parseOutline(source: string | null | undefined): OutlineEntry[] 
 
   return headings;
 }
+
+/** Stable heading comparison used by the editor and AI note navigation. */
+export function headingAnchor(value: string | null | undefined): string {
+  return String(value ?? '')
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[`*_~]/g, '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+}
+
+/** Locate an excerpt in Markdown while tolerating line wrapping differences. */
+export function findMarkdownSourceMatch(source: string | null | undefined, excerpt: string | null | undefined): { start: number; end: number } | null {
+  const text = String(source ?? '');
+  const needle = String(excerpt ?? '').replace(/\s+/g, ' ').trim();
+  if (!text || !needle) return null;
+  const direct = text.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase());
+  if (direct >= 0) return { start: direct, end: direct + needle.length };
+  const compactText = text.replace(/\s+/g, ' ');
+  const compactIndex = compactText.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase());
+  if (compactIndex < 0) return null;
+  let sourceIndex = 0;
+  let compactCursor = 0;
+  while (sourceIndex < text.length && compactCursor < compactIndex) {
+    if (/\s/.test(text[sourceIndex])) {
+      while (sourceIndex < text.length && /\s/.test(text[sourceIndex])) sourceIndex += 1;
+      compactCursor += 1;
+    } else {
+      sourceIndex += 1;
+      compactCursor += 1;
+    }
+  }
+  return { start: sourceIndex, end: Math.min(text.length, sourceIndex + needle.length) };
+}

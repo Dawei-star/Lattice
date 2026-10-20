@@ -297,10 +297,38 @@ export default function ModelCenter() {
         ? <ProviderChooser onChoose={openProviderForm} onClose={closeModal} />
         : <CustomModelForm key={`${draft!.providerKey}-${editingId ?? 'new'}`} draft={draft as ModelDraft} editing={Boolean(editingId)} error={formError} onChange={updateDraft} onSwitchProvider={switchDraftProvider} onSubmit={submitProvider} onTest={runConnectivityTest} testing={testing} saving={saving} testResult={testResult} onBack={() => { setFormError(''); setTestResult(null); setAddStep('chooser'); }} onReset={() => { setTestResult(null); setDraft((current) => ({ ...(current as ModelDraft), endpoint: '', model: '', name: '', apiKey: '' })); }} />}
     </Modal> : null}
+    <SmallModelSection settings={settings} />
     <EmbeddingSection settings={settings} />
     <IndexStatusSection />
     <RetrievalDebugSection />
   </div>;
+}
+
+function SmallModelSection({ settings }: { settings: AiSettings }) {
+  const configuredProviders = settings.providers.filter((provider) => provider.enabled !== false && provider.endpoint && provider.model && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint)));
+  const selectedProviderId = configuredProviders.some((provider) => provider.id === settings.smallModelProviderId)
+    ? settings.smallModelProviderId
+    : configuredProviders[0]?.id ?? '';
+  const selectedProvider = configuredProviders.find((provider) => provider.id === selectedProviderId);
+  const enabled = settings.smallModelEnabled && Boolean(selectedProvider && settings.smallModelName.trim());
+  const update = (patch: Partial<AiSettings>) => saveAiSettings({ ...settings, ...patch });
+
+  return <section className="model-center__panel" aria-label="路由与重排模型">
+    <header className="model-center__panel-head">
+      <h4>路由与重排模型</h4>
+      <span className={`model-center__pill ${enabled ? 'model-center__pill--ready' : 'model-center__pill--pending'}`}>{enabled ? '已启用' : '未启用'}</span>
+      <div className="model-center__panel-actions">
+        <button type="button" className={`model-center__switch ${enabled ? 'is-on' : ''}`} onClick={() => update({ smallModelEnabled: !settings.smallModelEnabled, smallModelProviderId: selectedProviderId })} role="switch" aria-checked={enabled} aria-label={enabled ? '停用路由与重排模型' : '启用路由与重排模型'} disabled={!selectedProvider || !settings.smallModelName.trim()}><span /></button>
+      </div>
+    </header>
+    <div className="model-center__small-model-body">
+      <div className="model-center__small-model-fields">
+        <label>复用服务商<select value={selectedProviderId} onChange={(event) => update({ smallModelProviderId: event.target.value })} disabled={!configuredProviders.length}><option value="">请先配置远程模型</option>{configuredProviders.map((provider) => <option value={provider.id} key={provider.id}>{provider.name || provider.service} · {provider.model}</option>)}</select></label>
+        <label>小模型 ID<input value={settings.smallModelName} onChange={(event) => update({ smallModelName: event.target.value })} placeholder={selectedProvider?.model || '例如 gpt-4o-mini'} maxLength={120} /></label>
+      </div>
+      <p className="model-center__small-model-hint">可使用同一服务商的轻量模型做意图判断和检索重排。意图判断会发送当前问题；重排只发送候选标题、短摘要和已有分数，不发送整篇笔记。未启用或调用失败时自动回退本地规则。</p>
+    </div>
+  </section>;
 }
 
 /**
@@ -584,7 +612,7 @@ function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, on
     {isCustom ? <label><em>*</em> 自定义请求地址<span className="model-center__label-hint">填写兼容 OpenAI API 的服务端地址，/chat/completions 会根据地址自动补全。</span>{endpointInput}</label> : null}
     {modelField}
     {keyField}
-    <details><summary>高级配置 <span>›</span></summary>{!isCustom ? nameField : null}{!isCustom ? <label>请求地址 (OpenAI 兼容)<span className="model-center__label-hint">{draft.providerHint || '服务商默认地址已自动填入，可按需修改。'}</span>{endpointInput}</label> : null}<label>认证方式<select value={draft.authHeader} onChange={(event) => onChange({ authHeader: event.target.value as AiProviderConfig['authHeader'] })}><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option></select></label><label>温度 temperature (0–2)<span className="model-center__label-hint">越高回答越发散，越低越稳定；留空使用系统默认 0.2。</span><input type="number" min="0" max="2" step="0.1" value={draft.temperature ?? ''} onChange={(event) => onChange({ temperature: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="0.2" /></label><label>最大输出 tokens<span className="model-center__label-hint">限制单次回复长度，控制成本与时长；留空不限制。</span><input type="number" min="1" step="1" value={draft.maxTokens ?? ''} onChange={(event) => onChange({ maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /></label><label>上下文窗口 tokens<span className="model-center__label-hint">填写模型官方上下文上限；留空使用 128k，最大支持 1M。</span><input type="number" min="8000" max="1000000" step="1000" value={draft.contextWindowTokens ?? ''} onChange={(event) => onChange({ contextWindowTokens: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="128000" /></label></details>
+    <details><summary>高级配置 <span>›</span></summary>{!isCustom ? nameField : null}{!isCustom ? <label>请求地址 (OpenAI 兼容)<span className="model-center__label-hint">{draft.providerHint || '服务商默认地址已自动填入，可按需修改。'}</span>{endpointInput}</label> : null}<label>认证方式<select value={draft.authHeader} onChange={(event) => onChange({ authHeader: event.target.value as AiProviderConfig['authHeader'] })}><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option></select></label><label>温度 temperature (0–2)<span className="model-center__label-hint">越高回答越发散，越低越稳定；留空使用系统默认 0.2。</span><input type="number" min="0" max="2" step="0.1" value={draft.temperature ?? ''} onChange={(event) => onChange({ temperature: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="0.2" /></label><label>最大输出 tokens<span className="model-center__label-hint">限制单次回复长度，控制成本与时长；留空不限制。</span><input type="number" min="1" step="1" value={draft.maxTokens ?? ''} onChange={(event) => onChange({ maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /></label><label>上下文窗口 tokens<span className="model-center__label-hint">填写模型官方上下文上限；留空使用 128k，最大支持 1M。</span><input type="number" min="8000" max="1000000" step="1000" value={draft.contextWindowTokens ?? ''} onChange={(event) => onChange({ contextWindowTokens: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="128000" /></label><label>输入价格 USD / 1k tokens<span className="model-center__label-hint">用于本地成本估算；留空则只记录 token，不估算金额。</span><input type="number" min="0" step="0.000001" value={draft.promptCostPer1kUsd ?? ''} onChange={(event) => onChange({ promptCostPer1kUsd: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="留空" /></label><label>输出价格 USD / 1k tokens<span className="model-center__label-hint">按模型官方价格填写，单位为美元。</span><input type="number" min="0" step="0.000001" value={draft.completionCostPer1kUsd ?? ''} onChange={(event) => onChange({ completionCostPer1kUsd: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="留空" /></label></details>
     {testResult ? <p className={`model-center__test-result ${testResult.ok ? 'is-ok' : 'is-failed'}`} role="status">{testResult.ok ? `✓ 连通性测试通过 · ${testResult.latencyMs ?? '?'}ms · ${draft.model}` : `✗ ${testResult.error ?? '连通性测试失败'}`}</p> : null}
     {error ? <p className="model-center__form-error" role="alert">{error}</p> : null}
     <footer>

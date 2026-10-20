@@ -37,6 +37,34 @@
 
 以下指标需在桌面应用运行态采集，自动化环境无法替代：
 
+#### 3.2.1 本机过程级补充采样（2026-10-15）
+
+> 口径限制：使用 Windows release `lattice.exe`，通过 `LATTICE_VAULT_DIR` 指向临时 Vault；`WindowReadyMs` 是进程主窗口句柄出现时间，不等于首屏可交互时间；工作集为窗口出现后等待 5/8 秒的单次采样，不是稳定空闲内存基线。该数据用于问题记录和后续人工复核，不能替代三次中位数验收。
+
+| Vault 规模 | 文件数 | WindowReadyMs | 工作集采样 | SQLite | TCP 监听 |
+|---|---:|---:|---:|---|---:|
+| 500 篇 | 500 | 2,000 ms | 44.98 MiB（等待 5 秒） | 已创建 | 0 |
+| 10,000 篇 | 10,000 | 525 ms | 45.14 MiB（等待 8 秒） | 已创建 | 0 |
+
+> 两组均为单次过程采样，受 Windows 文件缓存、桌面加载状态和测试机负载影响；未将其标记为冷/热启动、首屏或完整索引验收结果。
+
+#### 3.2.2 Windows P1-10 隔离 Vault 三次采样（2026-10-15）
+
+> 采样脚本：[`scripts/windows-p1-10-runtime-sample.ps1`](../../scripts/windows-p1-10-runtime-sample.ps1)；原始结果：[`windows-p1-10-runtime-sample.json`](windows-p1-10-runtime-sample.json)。每个规模执行 3 次冷启动（新建临时 Vault）和 3 次热启动（同一临时 Vault 完成一次索引后重启）。`indexCompleteMs` 是 SQLite `notes` 行数达到生成文件数的过程指标，不是首屏可交互时间；`windowReadyMs` 是主窗口句柄出现时间。所有样本索引数量正确，Lattice 进程 TCP 监听均为 0。
+
+| Vault | 模式 | indexCompleteMs 三次 | 中位数 | 工作集范围 | 结论 |
+|---|---|---:|---:|---:|---|
+| 500 篇 | 冷启动 | 2,746 / 3,680 / 4,116 ms | 3,680 ms | 33.3–75.3 MiB | 过程采样完成 |
+| 500 篇 | 热启动 | 839 / 1,451 / 1,523 ms | 1,451 ms | 31.5–31.7 MiB | 过程采样完成 |
+| 10,000 篇 | 冷启动 | 17,014 / 29,376 / 77,430 ms | 29,376 ms | 35.9–36.3 MiB | **波动显著，待负责人确认** |
+| 10,000 篇 | 热启动 | 495 / 1,814 / 1,822 ms | 1,814 ms | 33.6–33.7 MiB | 过程采样完成 |
+
+> 该采样补齐了按规模/冷热状态的三次过程数据，但仍不能关闭人工验收：首屏可交互、真实库磁盘搜索 P95 和发布负责人签字尚未完成。10,000 篇冷启动最大值 77.430 秒已登记为异常观察，不得以中位数掩盖。
+
+#### 3.2.3 10,000 篇冷启动低频探针复测（2026-10-15）
+
+> 为排除高频外部 SQLite 轮询对索引任务的干扰，复测将索引状态探针降为最多每秒一次，原始结果见 [`windows-p1-10-runtime-recheck.json`](windows-p1-10-runtime-recheck.json)。冷启动 3 次为 **16,663 / 34,081 / 41,011 ms**，热启动 3 次为 **792 / 1,180 / 2,168 ms**。未复现 77.430 秒，但冷启动仍出现 41.011 秒长尾；该结果支持“Windows 冷索引存在显著波动”的观察，不能据此判定性能达标。
+
 | 指标 | 状态 | 采集方法建议 |
 |---|---|---|
 | 冷启动时间（双击到首屏可交互） | ⬜ 待测 | 手表计时或系统日志；按 500/10,000 篇 Vault 各测 3 次取中位 |
@@ -69,3 +97,18 @@
 | React / Zustand / TS | 18.3 / ^5.0.15 / 5.9.3 | — |
 | Node engines | root ≥22.5 / server ≥22.9 | 实测 24.12 全绿 |
 | rust-version | 1.90（Cargo.toml） | 实测 1.99 全绿 |
+
+## 6. P1-09/P1-10 当前核验记录（2026-10-15）
+
+| 门禁 | 结果 |
+|---|---|
+| Rust 单元测试（`src-tauri`） | **75/75 通过**（`cargo test --lib`） |
+| Rust clippy | **通过**（`cargo clippy --lib -- -D warnings`） |
+| Web TypeScript | **通过**（`npm --prefix web run typecheck`） |
+| Web 生产构建 | **通过**（Vite 1978 modules） |
+| Web 全量契约测试 | **通过**；IPC 映射 57 条、设计性排除 1 条、50 个 fixture 消费层对齐 |
+| 版本一致性 | 根、Web、Cargo、Tauri 配置及 lockfile 均为 `0.2.0` |
+| Windows 桌面安装包 | **通过**：MSI `10.13 MiB`，NSIS `7.56 MiB`，产物版本 `0.2.0` |
+| macOS/Linux 安装包 | 本机未执行；`.github/workflows/upgrade-gate.yml` 已加入三平台 `desktop-build` 矩阵，待 CI 记录真实结果 |
+
+删除 Express 后，依赖 `server/src/index.js` 的旧 HTTP 集成测试不再属于桌面版测试链；P1/P3 契约快照和 Rust parity 夹具继续保留。
