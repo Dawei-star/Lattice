@@ -19,7 +19,7 @@ use std::sync::Mutex;
 
 pub(crate) mod secrets;
 
-pub use secrets::{env_secret, keyring_secret, resolve_secret, store_secret};
+pub use secrets::{delete_secret, env_secret, keyring_secret, resolve_secret, store_secret};
 
 /// 设置表永远只有一行。
 const SETTINGS_ROW_ID: i64 = 1;

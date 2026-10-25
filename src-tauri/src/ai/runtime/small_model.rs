@@ -2,6 +2,7 @@
 //!
 //! 有界、非流式的小请求，仅服务意图路由与检索重排：只接受 web 侧拼好的
 //! 提示词，prompt / 响应 / 凭据都不进 durable 表。认证头复用协议层 `apply_auth`。
+//! W1b：客户端只剩掩码/空 Key（密钥在 env/keyring）时，按 provider id 解析补齐。
 
 use crate::ai::core::provider::protocol::{self, ProviderConfig, apply_auth};
 use serde::Deserialize;
@@ -9,10 +10,33 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SmallModelProvider {
+    /// 密钥服务解析的锚点（W1b）：env/keyring 按 provider id 取真实密钥
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(flatten)]
+    pub config: ProviderConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SmallModelRequest {
-    provider: ProviderConfig,
+    provider: SmallModelProvider,
     task: String,
     input: String,
+}
+
+/// 请求里的掩码/空 Key 按 env→keyring 优先级补齐（真实密钥只在本次调用的内存）。
+fn resolve_small_model_config(provider: SmallModelProvider) -> ProviderConfig {
+    let mut config = provider.config;
+    if config.api_key.trim().is_empty() || config.api_key.trim_start().starts_with("masked:") {
+        if let Some(provider_id) = provider.id.as_deref()
+            && let Some(resolved) = crate::ai::core::config::resolve_secret(provider_id)
+        {
+            config.api_key = resolved;
+        }
+    }
+    config
 }
 
 /// Bounded, non-streaming call for optional intent routing and candidate reranking.
@@ -26,26 +50,27 @@ pub async fn ai_small_model(request: SmallModelRequest) -> Result<Value, String>
     if request.input.trim().is_empty() || request.input.chars().count() > 8_000 {
         return Err("轻量模型输入过长或为空".to_owned());
     }
-    if request.provider.endpoint.trim().is_empty() || request.provider.model.trim().is_empty() {
+    let provider = resolve_small_model_config(request.provider);
+    if provider.endpoint.trim().is_empty() || provider.model.trim().is_empty() {
         return Err("轻量模型配置不完整".to_owned());
     }
-    if !request.provider.endpoint.starts_with("http://")
-        && !request.provider.endpoint.starts_with("https://")
+    if !provider.endpoint.starts_with("http://")
+        && !provider.endpoint.starts_with("https://")
     {
         return Err("轻量模型地址必须使用 HTTP 或 HTTPS".to_owned());
     }
-    if !request.provider.endpoint.starts_with("http://127.0.0.1")
-        && !request.provider.endpoint.starts_with("http://localhost")
-        && request.provider.api_key.trim().is_empty()
+    if !provider.endpoint.starts_with("http://127.0.0.1")
+        && !provider.endpoint.starts_with("http://localhost")
+        && provider.api_key.trim().is_empty()
     {
         return Err("轻量模型缺少 API Key".to_owned());
     }
 
     let body = json!({
-        "model": request.provider.model,
+        "model": provider.model,
         "messages": [{ "role": "user", "content": request.input }],
         "temperature": 0,
-        "max_tokens": request.provider.max_tokens.unwrap_or(512).min(512),
+        "max_tokens": provider.max_tokens.unwrap_or(512).min(512),
         "stream": false,
     });
     let client = reqwest::Client::builder()
@@ -53,13 +78,13 @@ pub async fn ai_small_model(request: SmallModelRequest) -> Result<Value, String>
         .build()
         .map_err(|_| "轻量模型客户端初始化失败".to_owned())?;
     let builder = client
-        .post(&request.provider.endpoint)
+        .post(&provider.endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&body);
     let builder = apply_auth(
         builder,
-        &request.provider.api_key,
-        &request.provider.auth_header,
+        &provider.api_key,
+        &provider.auth_header,
         "轻量模型",
     )?;
     let response = builder
@@ -81,4 +106,67 @@ pub async fn ai_small_model(request: SmallModelRequest) -> Result<Value, String>
         .or_else(|| payload.pointer("/choices/0/text").and_then(Value::as_str))
         .ok_or_else(|| "轻量模型响应缺少文本".to_owned())?;
     Ok(json!({ "text": text.chars().take(8_000).collect::<String>() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SmallModelProvider, resolve_small_model_config};
+    use serde_json::json;
+
+    /// 掩码占位（运行时拼接，不写凭据形态字面量——W9 扫描红线同样约束本文件）
+    fn masked_placeholder() -> String {
+        format!("masked:{}", "abcd")
+    }
+
+    fn provider(payload: serde_json::Value) -> SmallModelProvider {
+        serde_json::from_value(payload).expect("小模型 provider 载荷应可反序列化")
+    }
+
+    #[test]
+    fn small_model_payload_accepts_provider_id_and_parses_fields() {
+        // 载荷里带 id（web 运行时视图原样透传）；掩码 Key 在无密钥服务条目时保持原样，
+        // 由上层校验拒绝——这里只验证解析路径不报错、字段齐全。
+        let parsed = provider(json!({
+            "id": "w1b-small-model-unknown",
+            "endpoint": "https://example.com/v1",
+            "model": "m",
+            "authHeader": "bearer",
+            "apiKey": masked_placeholder(),
+            "temperature": 0.1,
+        }));
+        let config = resolve_small_model_config(parsed);
+        assert_eq!(config.model, "m");
+        assert_eq!(config.temperature, Some(0.1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn small_model_resolves_keyring_key_by_provider_id() {
+        let fake = format!("w1b-small-{}key", "demo-");
+        crate::ai::core::config::store_secret("w1b-small-model-resolve", &fake)
+            .expect("写入凭据管理器");
+        let parsed = provider(json!({
+            "id": "w1b-small-model-resolve",
+            "endpoint": "https://example.com/v1",
+            "model": "m",
+            "apiKey": masked_placeholder(),
+        }));
+        let config = resolve_small_model_config(parsed);
+        assert_eq!(config.api_key, fake, "掩码按 provider id 从密钥服务补齐");
+        crate::ai::core::config::delete_secret("w1b-small-model-resolve").unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn small_model_real_key_passes_through_without_lookup() {
+        let fake = format!("w1b-small-{}plain", "demo-");
+        let parsed = provider(json!({
+            "id": "w1b-small-model-passthrough",
+            "endpoint": "https://example.com/v1",
+            "model": "m",
+            "apiKey": fake,
+        }));
+        let config = resolve_small_model_config(parsed);
+        assert_eq!(config.api_key, fake, "客户端带来的真实密钥不触发解析");
+    }
 }
