@@ -12874,7 +12874,8 @@ body::after,
 
 /* AI processing indicators are functional feedback, so they stay active even when decorative motion is reduced. */
 @media (prefers-reduced-motion: reduce) {
-  .ai-progress__item.is-running > svg {
+  .ai-progress__item.is-running > svg,
+  .ai-timeline__item.is-running > svg {
     animation: ai-progress-spin 900ms linear infinite !important;
   }
 

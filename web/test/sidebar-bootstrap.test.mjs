@@ -26,6 +26,9 @@ await esbuild.build({
   platform: 'browser',
   target: 'es2022',
   jsx: 'automatic',
+  // U3 富媒体依赖把字体文件带进了模块图（katex.min.css 引用 woff/woff2/ttf）；
+  // 冒烟打包用 dataurl 内联，避免为字体落盘。
+  loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
   outfile: path.join(testDir, '.build', 'sidebar-bootstrap-app.mjs'),
   define: testDefine('test'),
   logLevel: 'warning',

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAiProvider, getActiveAiProvider, getAiProviderRouteRuntime, getSmallModelProviderRuntime, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.ts';
+import { createAiProvider, getActiveAiProvider, getActiveAiProviderRuntime, getAiProviderRouteRuntime, getSmallModelProviderRuntime, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.ts';
 import { isLocalOllamaEndpoint } from '../src/settings/aiProviders.ts';
 
 const values = new Map();
@@ -88,4 +88,61 @@ test('runtime provider route prioritizes active providers and excludes unusable 
   assert.deepEqual(getAiProviderRouteRuntime(settings).map((provider) => provider.id), ['active', 'fallback']);
   assert.equal(getAiProviderRouteRuntime(settings)[0].apiKey, 'active-secret');
   assert.equal(getAiProviderRouteRuntime(settings)[1].apiKey, 'fallback-secret');
+});
+
+// --- W1b：keyAvailable 感知路由（密钥在 env/keyring，客户端只剩掩码） --------------
+test('keyring-backed providers pass runtime gates with a masked key only', () => {
+  const provider = {
+    ...createAiProvider({ name: '远程主服务', endpoint: 'https://example.com/v1', model: 'large-model', apiKey: 'masked:abcd' }),
+    keyAvailable: true,
+  };
+  const settings = saveAiSettings({
+    ...loadAiSettings(),
+    providers: [provider],
+    activeProviderId: provider.id,
+  });
+  assert.equal(hasExternalAi(settings), true, '掩码 + keyAvailable → 可用（内核请求边界补齐）');
+  const runtime = getActiveAiProviderRuntime(settings);
+  assert.equal(runtime.apiKey, '', '客户端不带真实密钥，传空串由内核注入');
+  const route = getAiProviderRouteRuntime(settings);
+  assert.deepEqual(route.map((item) => item.id), [provider.id], 'keyAvailable 提供方进入路由候选');
+  assert.equal(route[0].apiKey, '');
+});
+
+test('masked keys without keyAvailable still fail closed', () => {
+  const provider = createAiProvider({ name: '远程主服务', endpoint: 'https://example.com/v1', model: 'large-model', apiKey: 'masked:abcd' });
+  const settings = saveAiSettings({
+    ...loadAiSettings(),
+    providers: [provider],
+    activeProviderId: provider.id,
+  });
+  assert.equal(hasExternalAi(settings), false, '掩码且无 keyAvailable → 按未配置（W1 热修语义保持）');
+  assert.equal(getAiProviderRouteRuntime(settings).length, 0);
+});
+
+test('small model gate honors keyAvailable', () => {
+  const provider = {
+    ...createAiProvider({ name: '远程主服务', endpoint: 'https://example.com/v1', model: 'large-model', apiKey: 'masked:abcd' }),
+    keyAvailable: true,
+  };
+  const settings = saveAiSettings({
+    ...loadAiSettings(),
+    providers: [provider],
+    activeProviderId: provider.id,
+    smallModelEnabled: true,
+    smallModelProviderId: provider.id,
+    smallModelName: 'small-model',
+  });
+  const runtime = getSmallModelProviderRuntime(settings);
+  assert.ok(runtime, 'keyAvailable 放行 small model');
+  assert.equal(runtime.apiKey, '');
+});
+
+test('normalize keeps the server keyAvailable flag on hydration', () => {
+  values.set('lattice-ai-settings-v1', JSON.stringify({
+    providers: [{ id: 'p1', name: 'n', endpoint: 'https://example.com/chat/completions', model: 'm', apiKey: 'masked:abcd', keyAvailable: true }],
+    activeProviderId: 'p1',
+  }));
+  const settings = loadAiSettings();
+  assert.equal(settings.providers[0].keyAvailable, true, '服务端实测标记随 hydrate 保留');
 });

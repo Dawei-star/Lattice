@@ -13,6 +13,8 @@ export interface AiProviderConfig {
   enabled: boolean;
   /** 只有通过「连通性测试」的配置才为 true；界面据此区分「已配置」和「已连接」 */
   verified?: boolean;
+  /** W1b：服务端实测密钥可解析（env→keyring）；真值时客户端可只带掩码，内核请求边界补齐 */
+  keyAvailable?: boolean;
   /** W7c 能力实测：probe 确认端点/模型接受工具调用面。false → 任务模式置灰（能力协商链） */
   nativeTools?: boolean;
   temperature?: number;
@@ -157,6 +159,8 @@ export function getActiveAiProvider(settings?: AiSettings | null): AiProviderCon
 export function getActiveAiProviderRuntime(settings?: AiSettings | null): AiProviderConfig | null {
   const provider = getActiveAiProvider(settings);
   if (!provider) return null;
+  // W1b：keyAvailable=true 时客户端没有（也不需要有）真实 Key——传空串，
+  // 内核 provider_from_request 按 env→keyring 优先级补齐（密钥只在请求内存）。
   const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
   return { ...provider, apiKey };
 }
@@ -169,7 +173,7 @@ export function getSmallModelProviderRuntime(settings?: AiSettings | null): AiPr
   if (!provider || provider.enabled === false) return null;
   const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
   const model = current.smallModelName.trim();
-  if (!provider.endpoint.trim() || !model || (!apiKey && !isLocalOllamaEndpoint(provider.endpoint))) return null;
+  if (!provider.endpoint.trim() || !model || (!apiKey && !isLocalOllamaEndpoint(provider.endpoint) && provider.keyAvailable !== true)) return null;
   return { ...provider, model, apiKey, maxTokens: Math.min(provider.maxTokens ?? 512, 512), temperature: 0 };
 }
 
@@ -181,7 +185,9 @@ export function hasExternalAi(settings?: AiSettings | null): boolean {
   const provider = getActiveAiProvider(settings);
   if (!provider || provider.enabled === false || !provider.endpoint?.trim() || !provider.model?.trim()) return false;
   if (isLocalOllamaEndpoint(provider.endpoint)) return true;
-  // 掩码不等于可用：真实 Key 只认内存映射或明文值（重启后只剩掩码时按未配置处理）
+  // W1b：keyAvailable（服务端按 env→keyring 实测）为真即可用——客户端只剩掩码时
+  // 内核会在请求边界补齐真实密钥。否则掩码不等于可用，按未配置处理。
+  if (provider.keyAvailable === true) return true;
   const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
   return Boolean(apiKey);
 }
@@ -359,8 +365,9 @@ export function getAiProviderRouteRuntime(settings?: AiSettings | null): AiProvi
   const seen = new Set<string>();
   return ordered.flatMap((provider) => {
     if (!provider || seen.has(provider.id) || provider.enabled === false) return [];
+    // W1b：keyAvailable=true（env/keyring 可解析）时传空 Key，由内核请求边界补齐
     const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
-    if (!provider.endpoint.trim() || !provider.model.trim() || (!apiKey && !isLocalOllamaEndpoint(provider.endpoint))) return [];
+    if (!provider.endpoint.trim() || !provider.model.trim() || (!apiKey && !isLocalOllamaEndpoint(provider.endpoint) && provider.keyAvailable !== true)) return [];
     seen.add(provider.id);
     return [{ ...provider, apiKey }];
   });
@@ -420,6 +427,8 @@ function normalizeProvider(value: any): AiProviderConfig | null {
     enabled: value.enabled !== false,
     // 只有通过「连通性测试」的配置才允许标记为 verified；界面据此区分「已配置」和「已连接」
     verified: value.verified === true,
+    // W1b：服务端实测的密钥可用性（env→keyring 可解析）；只在真值时保留，缺省视为未知
+    ...(value.keyAvailable === true ? { keyAvailable: true } : {}),
     // W7c：probe 实测的工具能力（易失，重启后随下次探测刷新；与服务端无关）
     ...(value.nativeTools === true || value.nativeTools === false ? { nativeTools: value.nativeTools === true } : {}),
     // 高级参数（缺省 undefined = 沿用服务端默认）；随配置一并同步到服务端

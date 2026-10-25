@@ -2117,7 +2117,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       setError('该任务缺少可恢复的请求内容，请忽略后重新提交。');
       return;
     }
-    if (!provider?.endpoint?.trim() || !provider.model?.trim() || (!provider.apiKey?.trim() && !localEndpoint)) {
+    // W1b：keyAvailable=true（env/keyring 可解析）时页面内存只剩掩码也可恢复，内核补齐密钥
+    if (!provider?.endpoint?.trim() || !provider.model?.trim() || (!provider.apiKey?.trim() && !localEndpoint && provider.keyAvailable !== true)) {
       setError('恢复任务需要当前页面中的模型配置，请先打开模型设置并配置可用模型。');
       return;
     }
