@@ -704,7 +704,13 @@ function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, on
       if (!models.length) setDiscoverError('服务未返回模型清单，请手填模型 ID。');
     } catch (requestError) {
       setDiscovered([]);
-      setDiscoverError((requestError as Error)?.message || '获取模型列表失败，请手填模型 ID。');
+      // Tauri 命令失败拒绝的是原始字符串（没有 .message），两种形态都要取到原因
+      const reason = typeof requestError === 'string' ? requestError : (requestError as Error)?.message;
+      if (!draft.apiKey.trim() && !isLocalOllamaEndpoint(draft.endpoint)) {
+        setDiscoverError(`获取模型列表失败：请先在下方填写 API 密钥再拉取（上游原因：${reason || '未提供'}）。`);
+      } else {
+        setDiscoverError(`获取模型列表失败：${reason || '请手填模型 ID。'}`);
+      }
     } finally {
       setDiscovering(false);
     }
