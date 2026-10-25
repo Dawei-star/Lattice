@@ -177,7 +177,7 @@ pub(crate) fn resolve_precedence(env_value: Option<String>, keyring_value: Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_secret, env_secret, env_var_name, keyring_account, keyring_secret, resolve_secret, store_secret};
+    use super::{delete_secret, env_var_name, keyring_account, keyring_secret, resolve_secret, store_secret};
     use crate::ai::core::config::secrets::EnvSecretsVault;
     use crate::ai::core::config::secrets::SecretsVault;
 
