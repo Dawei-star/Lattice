@@ -236,10 +236,37 @@ function pushToServer(settings: AiSettings) {
           : null,
       });
       window.dispatchEvent(new CustomEvent('lattice:ai-server-sync', { detail: { ok: true } }));
+      // W1b：保存会触发内核把真实密钥写入密钥服务——回读 keyAvailable 让新密钥
+      // 立即可用（不必重启）。只在 false→true 翻转时回写，避免循环。
+      void refreshKeyAvailabilityFromServer();
     } catch (error) {
       window.dispatchEvent(new CustomEvent('lattice:ai-server-sync', { detail: { ok: false, error: (error as Error)?.message ?? '同步失败' } }));
     }
   }, 600);
+}
+
+/** W1b：从服务端回读各 provider 的 keyAvailable（env→keyring 实测）并合并进本地设置。 */
+async function refreshKeyAvailabilityFromServer() {
+  if (typeof window === 'undefined') return;
+  try {
+    const response = await aiApi.getSettings();
+    const server = (response?.data ?? response) as Record<string, any> | null | undefined;
+    const serverProviders = Array.isArray(server?.providers) ? server.providers : [];
+    if (!serverProviders.length) return;
+    const current = loadAiSettings();
+    let changed = false;
+    const providers = current.providers.map((provider) => {
+      const match = serverProviders.find((item: any) => String(item?.id ?? '') === provider.id);
+      if (match?.keyAvailable === true && provider.keyAvailable !== true) {
+        changed = true;
+        return { ...provider, keyAvailable: true };
+      }
+      return provider;
+    });
+    if (changed) saveAiSettings({ ...current, providers });
+  } catch {
+    // 读不到就保持现状（重启后的 hydrate 会兜底）
+  }
 }
 
 /**

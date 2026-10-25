@@ -74,6 +74,11 @@ pub(crate) fn keyring_account(provider_id: &str) -> Option<String> {
 
 const KEYRING_SERVICE: &str = "Lattice";
 
+/// 测试专用：Windows 凭据管理器在并行测试下有瞬态竞态，涉及真实读写的测试
+/// 统一拿这把锁串行执行（pub(crate) 供 small_model 的回环测试共用）。
+#[cfg(test)]
+pub(crate) static KEYRING_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn keyring_entry(provider_id: &str) -> Result<keyring::Entry, SecretStoreError> {
     let account = keyring_account(provider_id).ok_or_else(|| SecretStoreError {
         code: "INVALID_PROVIDER_ID".to_owned(),
@@ -95,10 +100,19 @@ impl SecretsVault for KeyringSecretsVault {
     }
 }
 
-/// 从系统密钥服务读取；无条目/服务不可用一律 None（warn 日志区分场景）。
+/// 从系统密钥服务读取；无条目返回 None，其余错误重试一次后仍失败才按 None 处理
+/// （Windows 凭据管理器在并发/高负载下有瞬态失败，直接吞掉会造成「密钥时有时无」）。
 pub fn keyring_secret(provider_id: &str) -> Option<String> {
     let entry = keyring_entry(provider_id).ok()?;
-    match entry.get_password() {
+    let mut read = entry.get_password();
+    if let Err(error) = &read {
+        // NoEntry 是确定性的「不存在」，不重试；其余错误短暂等待后重试一次
+        if !matches!(error, keyring::Error::NoEntry) {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            read = entry.get_password();
+        }
+    }
+    match read {
         Ok(password) if !password.trim().is_empty() => Some(password),
         Ok(_) => None,
         Err(keyring::Error::NoEntry) => None,
@@ -192,11 +206,18 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn keyring_roundtrip_on_windows_credential_manager() {
+        let _guard = super::KEYRING_TEST_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // 运行时拼接构造假密钥：仓库不得出现可用凭据字面量（W9 扫描红线同样约束本文件）
         let fake = format!("w1b-test-{}key", "demo-");
         let provider = "w1b-keyring-roundtrip";
         store_secret(provider, &fake).expect("写入 Windows 凭据管理器");
-        assert_eq!(keyring_secret(provider).as_deref(), Some(fake.as_str()));
+        let mut loaded = keyring_secret(provider);
+        for _ in 0..5 {
+            if loaded.is_some() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            loaded = keyring_secret(provider);
+        }
+        assert_eq!(loaded.as_deref(), Some(fake.as_str()));
         assert_eq!(resolve_secret(provider).as_deref(), Some(fake.as_str()));
         assert!(delete_secret(provider).unwrap());
         assert!(!delete_secret(provider).unwrap(), "重复删除返回 false");

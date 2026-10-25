@@ -1394,6 +1394,16 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       sendInFlightRef.current = false;
       return;
     }
+    // W1b/W1c：模型配置了但密钥不可用（重启后页面内存只剩掩码、密钥服务里也没有）——
+    // 给出可操作的提示，而不是放行到内核吃「缺少 API Key」的笼统报错。
+    if (isTauri() && !hasExternalAi(settings)) {
+      const gateProvider = getActiveAiProvider(settings);
+      if (gateProvider?.endpoint?.trim() && gateProvider?.model?.trim() && !isLoopbackEndpoint(gateProvider.endpoint)) {
+        setError(`「${gateProvider.name || gateProvider.model}」的密钥当前不可用：重启后页面内存的密钥已失效，且密钥服务（env/Windows 凭据管理器）里也没有。请打开「模型设置」重新保存一次该模型的密钥——保存后会写入系统密钥服务，之后重启也能直接用。`);
+        sendInFlightRef.current = false;
+        return;
+      }
+    }
     const requestMode = options.mode ?? (taskModeEnabled ? 'task' : (settings.interactionMode || 'quick'));
     const taskMode = requestMode === 'task';
     const remoteRouting = !options.resumeRun && !options.continuation

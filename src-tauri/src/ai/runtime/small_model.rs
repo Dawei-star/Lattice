@@ -142,6 +142,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn small_model_resolves_keyring_key_by_provider_id() {
+        let _guard = crate::ai::core::config::secrets::KEYRING_TEST_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let fake = format!("w1b-small-{}key", "demo-");
         crate::ai::core::config::store_secret("w1b-small-model-resolve", &fake)
             .expect("写入凭据管理器");
@@ -151,7 +152,19 @@ mod tests {
             "model": "m",
             "apiKey": masked_placeholder(),
         }));
-        let config = resolve_small_model_config(parsed);
+        // 凭据管理器在并行负载下偶发读延迟，小步重试再断言
+        let mut config = resolve_small_model_config(parsed);
+        for _ in 0..5 {
+            if config.api_key == fake { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let parsed = provider(json!({
+                "id": "w1b-small-model-resolve",
+                "endpoint": "https://example.com/v1",
+                "model": "m",
+                "apiKey": masked_placeholder(),
+            }));
+            config = resolve_small_model_config(parsed);
+        }
         assert_eq!(config.api_key, fake, "掩码按 provider id 从密钥服务补齐");
         crate::ai::core::config::delete_secret("w1b-small-model-resolve").unwrap();
     }
