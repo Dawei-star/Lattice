@@ -60,8 +60,9 @@ examples/
 web/screens-audit/
 web/screens-experts/
 
-# Golden set 跑分产物（脚本与数据集入库，报告仅本地保留）
+# Golden set 跑分产物（脚本与数据集、基线入仓；真实跑分 answers/报告含模型输出，仅本地保留）
 server/eval/reports/
+src-tauri/eval/reports/
 
 # 临时报告生成工作目录
 tmp_report/

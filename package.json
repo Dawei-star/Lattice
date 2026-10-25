@@ -22,10 +22,12 @@
     "test:web": "npm --prefix web run test",
     "p2:roundtrip": "node scripts/p2-roundtrip-scan.mjs",
     "eval:golden:compare": "node src-tauri/eval/golden-regression.mjs",
+    "eval:golden:baseline": "node src-tauri/eval/build-baseline.mjs",
     "eval:quality-gate": "node src-tauri/eval/quality-gate.mjs",
+    "eval:gate": "node src-tauri/eval/regression-gate.mjs && node src-tauri/eval/scan-secrets.mjs",
     "verify:fixtures": "node src-tauri/tests/tools/validate-fixtures.mjs",
     "test": "npm --prefix web run test",
-    "verify": "npm run test:fc && npm --prefix web run typecheck && npm --prefix web run test && npm run verify:fixtures && npm run test:desktop"
+    "verify": "npm run test:fc && npm --prefix web run typecheck && npm --prefix web run test && npm run verify:fixtures && npm run eval:gate && npm run test:desktop"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2"

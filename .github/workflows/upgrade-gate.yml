@@ -99,3 +99,17 @@ jobs:
         run: npm --prefix web ci
       - name: TypeScript typecheck
         run: npm --prefix web run typecheck
+
+  eval-gate:
+    # W9（地基 ⑧）：金标集基线一致性自检 + 密钥字面量扫描。
+    # 纯 node 标准库，无需安装依赖；基线与题集漂移或仓库出现可用凭据字面量即红。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Golden-set baseline regression gate
+        run: node src-tauri/eval/regression-gate.mjs
+      - name: Secret literal scan
+        run: node src-tauri/eval/scan-secrets.mjs
