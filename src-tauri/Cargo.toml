@@ -43,3 +43,5 @@ regex = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 # OpenAI-compatible desktop streaming; API keys are used in memory only.
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "default-tls"] }
+# W1b 密钥服务：Windows 凭据管理器 / macOS 钥匙串（linux 无 feature 时回退 mock，读取恒空）
+keyring = { version = "3", features = ["windows-native", "apple-native"] }

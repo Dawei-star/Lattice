@@ -52,8 +52,19 @@ pub(crate) fn provider_from_request(request: &Value) -> Result<ProviderConfig, S
         .get("provider")
         .cloned()
         .ok_or_else(|| "桌面端 AI 需要先配置外部模型".to_owned())?;
-    let config: ProviderConfig =
+    let mut config: ProviderConfig =
         serde_json::from_value(provider).map_err(|_| "桌面端 AI 模型配置无效".to_owned())?;
+    // W1b：客户端重启后页面内存只剩掩码/空值——内核按解析优先级（env 覆盖 → keyring
+    // 持久）补齐真实密钥。真实密钥只存在于本次请求的进程内存，掩码永不发给上游。
+    if config.api_key.trim().is_empty() || config.api_key.trim_start().starts_with("masked:") {
+        if let Some(provider_id) = request
+            .pointer("/provider/id")
+            .and_then(serde_json::Value::as_str)
+            && let Some(resolved) = crate::ai::core::config::resolve_secret(provider_id)
+        {
+            config.api_key = resolved;
+        }
+    }
     validate_provider_config(&config)?;
     Ok(config)
 }

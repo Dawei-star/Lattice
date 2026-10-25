@@ -1147,7 +1147,7 @@ impl WorkspaceService {
     }
 
     /// 读取脱敏设置文档，并为每个 provider 附 `keyAvailable`
-    /// （密钥能否从环境变量解析；真实密钥永不进入返回值）。
+    /// （密钥能否从 env/keyring 解析（W1b 解析优先级）；真实密钥永不进入返回值）。
     pub fn ai_settings_load(&self) -> Result<serde_json::Value, ServiceError> {
         let mut document = self
             .ai_settings
@@ -1161,7 +1161,7 @@ impl WorkspaceService {
                 let available = provider
                     .get("id")
                     .and_then(serde_json::Value::as_str)
-                    .and_then(crate::ai::core::config::env_secret)
+                    .and_then(crate::ai::core::config::resolve_secret)
                     .is_some();
                 if let Some(object) = provider.as_object_mut() {
                     object.insert(
@@ -1175,10 +1175,35 @@ impl WorkspaceService {
     }
 
     /// 保存设置：Rust 边界白名单脱敏（真实 Key 只留掩码）后落盘，返回脱敏文档。
+    /// W1b：真实 Key 在脱敏**之前**写入系统密钥服务（Windows 凭据管理器 /
+    /// macOS 钥匙串）——SQLite 永远只有掩码，密钥按 env/keyring 恢复。
+    /// 密钥服务写失败不阻断保存（记日志），可用性由 keyAvailable 如实反映。
     pub fn ai_settings_save(
         &self,
         document: &serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        if let Some(providers) = document
+            .get("providers")
+            .and_then(serde_json::Value::as_array)
+        {
+            for provider in providers {
+                let Some(id) = provider.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(key) = provider.get("apiKey").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let trimmed = key.trim();
+                if trimmed.is_empty() || trimmed.starts_with("masked:") {
+                    continue; // 空值 = 沿用已存密钥；掩码 = 服务端回显，均不入密钥服务
+                }
+                if let Err(error) =
+                    crate::ai::core::config::store_secret(id, trimmed)
+                {
+                    log::warn!("密钥写入系统密钥服务失败（provider={id}）：{error}");
+                }
+            }
+        }
         let sanitized = self
             .ai_settings
             .save(document)
