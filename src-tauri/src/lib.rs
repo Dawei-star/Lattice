@@ -17,7 +17,6 @@ mod db;
 mod index;
 mod jobs;
 mod markdown;
-mod memory;
 mod migration;
 #[cfg(test)]
 mod parity_tests;
@@ -31,7 +30,7 @@ use ai::{AiRetrievalRequest, AiRetrievalResponse};
 use ai_runtime::{
     AiEventSink, AiRuntimeState, ai_chat_cancel, ai_chat_stream, ai_small_model,
     checkpoint_for_tool_calls, redact_request_secrets, sanitize_ai_persistence,
-    sanitize_tool_checkpoint, stream_provider,
+    sanitize_tool_checkpoint, stream_provider_round,
 };
 use index::{
     AiRelatedNote, FolderNode, GraphData, IndexStats, MetaOverview, NoteDetail, NoteIndexEntry,
@@ -145,6 +144,15 @@ pub fn run() {
             ai_run_checkpoint,
             ai_run_cancel,
             ai_run_resume,
+            ai_run_confirm,
+            ai_run_feedback,
+            ai_settings_get,
+            ai_settings_set,
+            ai_models_catalog,
+            ai_provider_models,
+            ai_runtime_detect,
+            ai_prompts_list,
+            ai_trace_query,
             memory_list,
             memory_save,
             memory_delete,
@@ -227,9 +235,77 @@ fn mcp_project_set(
 fn memory_list(
     state: State<'_, WorkspaceState>,
     include_expired: Option<bool>,
-) -> Result<Vec<memory::MemoryRecord>, String> {
+) -> Result<Vec<crate::ai::core::context::memory::MemoryRecord>, String> {
     with_workspace(state, |workspace| {
         workspace.memory_list(include_expired.unwrap_or(false))
+    })
+}
+
+/// 读取脱敏设置文档（密钥恒为掩码）+ 每 provider 的 keyAvailable（地基 §5.2）。
+#[tauri::command]
+fn ai_settings_get(state: State<'_, WorkspaceState>) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.ai_settings_load())
+}
+
+/// 保存设置：真实 Key 在 Rust 边界替换为掩码后落盘，返回脱敏文档。
+#[tauri::command]
+fn ai_settings_set(
+    state: State<'_, WorkspaceState>,
+    document: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| {
+        workspace.ai_settings_save(&document)
+    })
+}
+
+/// 模型目录：内置 JSON + Vault 覆盖，含能力/价格/开放权重标记（W3）。
+#[tauri::command]
+fn ai_models_catalog(state: State<'_, WorkspaceState>) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| Ok(workspace.ai_models_catalog()))
+}
+
+/// 动态发现：GET {base}/models（OpenAI 兼容端点通用），归一化为模型清单。
+#[tauri::command]
+async fn ai_provider_models(
+    endpoint: String,
+    api_key: Option<String>,
+    auth_header: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let models = crate::ai::core::provider::discovery::discover_models(
+        &endpoint,
+        api_key.as_deref().unwrap_or(""),
+        auth_header.as_deref().unwrap_or("bearer"),
+    )
+    .await?;
+    serde_json::to_value(models).map_err(|error| format!("模型清单序列化失败：{error}"))
+}
+
+/// 扫描本机推理运行时（loopback 端口探测，免密钥；Ollama 优先走 /api/tags）。
+#[tauri::command]
+async fn ai_runtime_detect() -> Result<serde_json::Value, String> {
+    let runtimes = crate::ai::core::provider::discovery::detect_local_runtimes().await;
+    serde_json::to_value(runtimes).map_err(|error| format!("运行时结果序列化失败：{error}"))
+}
+
+/// Prompt 模板状态（W5）：id / 版本 / 是否被 `.lattice/prompts` 覆盖。
+#[tauri::command]
+fn ai_prompts_list(state: State<'_, WorkspaceState>) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| {
+        serde_json::to_value(workspace.ai_prompts_list()).map_err(|error| {
+            workspace::ServiceError::new("PROMPT_STATUS_ERROR", format!("Prompt 状态序列化失败：{error}"))
+        })
+    })
+}
+
+/// AI 指标查询（W8）：最近明细 + 按 task_type 的 P50/P95 汇总（含成本/用量合计）。
+#[tauri::command]
+fn ai_trace_query(
+    state: State<'_, WorkspaceState>,
+    task_type: Option<String>,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| {
+        workspace.ai_trace_query(task_type.as_deref(), limit.unwrap_or(50))
     })
 }
 
@@ -242,7 +318,7 @@ fn memory_save(
     source: String,
     expires_at: Option<String>,
     confirmed: Option<bool>,
-) -> Result<memory::MemoryRecord, String> {
+) -> Result<crate::ai::core::context::memory::MemoryRecord, String> {
     with_workspace(state, |workspace| {
         workspace.memory_save(
             id,
@@ -521,12 +597,17 @@ fn ai_run_resume(
     run_id: String,
     request: Option<serde_json::Value>,
 ) -> Result<Option<Job>, String> {
-    if let Some(request) = request {
-        let request_run = request_run_id(&request)?;
-        if request_run != run_id {
-            return Err("恢复请求的 runId 与目标任务不一致".to_owned());
+    // W7c：内核续跑（ai_run_confirm 已注册续跑请求并重新入队）优先——
+    // 忽略前端附带请求，也不重复 resume，前端直接进入事件回放。
+    let kernel_continuation = runtime.take_kernel_continuation(&run_id);
+    if !kernel_continuation {
+        if let Some(request) = request {
+            let request_run = request_run_id(&request)?;
+            if request_run != run_id {
+                return Err("恢复请求的 runId 与目标任务不一致".to_owned());
+            }
+            runtime.register_pending_request(&run_id, request)?;
         }
-        runtime.register_pending_request(&run_id, request)?;
     }
     with_workspace(state, |workspace| {
         let Some(existing) = workspace
@@ -536,6 +617,9 @@ fn ai_run_resume(
         else {
             return Ok(None);
         };
+        if kernel_continuation {
+            return Ok(Some(existing));
+        }
         let job = workspace
             .jobs()
             .resume(&existing.id)
@@ -559,6 +643,160 @@ fn ai_run_resume(
         }
         Ok(job)
     })
+}
+
+/// W7c 确认下沉：用户对挂起的写批次作出裁决后，由内核执行（或记录拒绝）、
+/// 构建续跑请求、重新入队。前端只负责渲染预览与发送确认，不再自行执行写操作。
+#[tauri::command]
+fn ai_run_confirm(
+    handle: tauri::AppHandle,
+    runtime: State<'_, AiRuntimeState>,
+    run_id: String,
+    approved: bool,
+    second_confirmed: bool,
+    approved_call_ids: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
+    let pending = runtime
+        .take_pending_writes(&run_id)
+        .ok_or_else(|| "该任务没有待确认的写操作".to_owned())?;
+    let workspace_state = handle.state::<WorkspaceState>();
+    let workspace = workspace_state
+        .0
+        .read()
+        .map_err(|_| "工作区不可用".to_owned())?;
+    let job = workspace
+        .jobs()
+        .get_by_kind_key("ai-run", &run_id)
+        .map_err(|error| ServiceError::new("AI_RUN_ERROR", error).message)?
+        .ok_or_else(|| "任务不存在".to_owned())?;
+    if job.status != jobs::STATUS_WAITING_CONFIRMATION {
+        return Err("任务不在等待确认状态".to_owned());
+    }
+
+    let mut tool_results = pending.executed_results.clone();
+    let approved_ids: Option<std::collections::HashSet<String>> = approved_call_ids
+        .map(|ids| ids.into_iter().collect());
+    let mut executed_count = 0usize;
+    let mut failed_count = 0usize;
+    if approved {
+        for call in &pending.pending {
+            if let Some(approved_ids) = &approved_ids {
+                if !approved_ids.contains(&call.id) {
+                    tool_results.push(serde_json::json!({
+                        "callId": call.id,
+                        "result": { "status": "failed", "error": "用户跳过了该写操作" },
+                    }));
+                    continue;
+                }
+            }
+            let Some((_, plan_hash)) = pending.plan_hashes.iter().find(|(id, _)| id == &call.id) else {
+                failed_count += 1;
+                tool_results.push(serde_json::json!({
+                    "callId": call.id,
+                    "result": { "status": "failed", "error": "写操作预览缺失，无法执行" },
+                }));
+                continue;
+            };
+            let key = format!("{run_id}:{}", call.id);
+            match workspace.file_execute_with_context(
+                crate::ai::core::agent::tools::write_action_from_call(call),
+                None,
+                true,
+                second_confirmed || !pending.has_delete,
+                None,
+                Some(plan_hash.clone()),
+                "local-user",
+                "editor",
+                None,
+                Some(&key),
+            ) {
+                Ok(result) => {
+                    executed_count += 1;
+                    tool_results.push(serde_json::json!({ "callId": call.id, "result": result }));
+                }
+                Err(error) => {
+                    failed_count += 1;
+                    tool_results.push(serde_json::json!({
+                        "callId": call.id,
+                        "result": { "status": "failed", "error": error.message },
+                    }));
+                }
+            }
+        }
+    } else {
+        for call in &pending.pending {
+            tool_results.push(serde_json::json!({
+                "callId": call.id,
+                "result": { "status": "failed", "error": "用户拒绝了该写操作" },
+            }));
+        }
+    }
+
+    // 确认/拒绝事件（路径与结果统计，不含写入正文）
+    let sequence = workspace.jobs().ai_event_count(&run_id).unwrap_or(0) + 1;
+    let (status, text) = if approved {
+        (
+            "tool_running",
+            format!("已确认写操作：执行 {executed_count} 项，失败 {failed_count} 项，继续任务"),
+        )
+    } else {
+        ("tool_running", "用户拒绝了写操作，等待模型调整方案".to_owned())
+    };
+    let _ = workspace.jobs().append_ai_event(
+        &run_id,
+        sequence,
+        &serde_json::json!({ "type": "status", "status": status, "text": text }),
+    );
+    let _ = handle.emit(
+        &format!("ai://stream/{run_id}"),
+        serde_json::json!({ "type": "status", "status": status, "text": text }),
+    );
+
+    // 续跑请求与读写续跑同构（消息文本一致以稳定模型行为），由内核注册后重新入队
+    let mut continuation = pending.continuation_request;
+    continuation["message"] = serde_json::json!("请根据工具执行结果继续完成任务。");
+    continuation["toolCalls"] = pending.calls;
+    continuation["toolResults"] = serde_json::Value::Array(tool_results);
+    continuation["preferModel"] = serde_json::json!(true);
+    continuation["resumeRun"] = serde_json::json!(true);
+    runtime.register_pending_request(&run_id, continuation)?;
+    runtime.mark_kernel_continuation(&run_id);
+    let job = workspace
+        .jobs()
+        .resume(&job.id)
+        .map_err(|error| ServiceError::new("AI_RUN_ERROR", error).message)?;
+    Ok(serde_json::json!({ "job": job, "executedCount": executed_count, "failedCount": failed_count }))
+}
+
+/// U3：消息反馈（👍/👎）落 trace——追加为 ai_run_events 的 feedback 事件
+///（事件流 append-only，无需新表/迁移；rating 之外不携带任何正文）。
+#[tauri::command]
+fn ai_run_feedback(
+    handle: tauri::AppHandle,
+    state: State<'_, WorkspaceState>,
+    run_id: String,
+    rating: String,
+) -> Result<(), String> {
+    if !matches!(rating.as_str(), "up" | "down") {
+        return Err("反馈类型无效".to_owned());
+    }
+    with_workspace(state, |workspace| {
+        let sequence = workspace.jobs().ai_event_count(&run_id).unwrap_or(0) + 1;
+        workspace
+            .jobs()
+            .append_ai_event(
+                &run_id,
+                sequence,
+                &serde_json::json!({ "type": "feedback", "rating": rating }),
+            )
+            .map_err(|error| ServiceError::new("AI_RUN_ERROR", error))?;
+        Ok(())
+    })?;
+    let _ = handle.emit(
+        &format!("ai://stream/{run_id}"),
+        serde_json::json!({ "type": "feedback", "rating": rating }),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -1516,13 +1754,405 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                 }
                 continue;
             }
-            let result = tauri::async_runtime::block_on(stream_provider(
+            // W7b：Agent 读工具循环下沉 worker——关面板不再中断多轮检索/读取。
+            // 只有「全部为已注册读工具且预算允许」才内核续跑；出现写工具、
+            // 预算耗尽或解析异常时按原行为收尾（done 带原 toolCalls 交回前端）。
+            let agent_budget = crate::ai::core::agent::budget_for_mode(
+                request
+                    .get("mode")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("quick"),
+            );
+            let tool_registry = crate::ai::core::agent::ToolRegistry::builtin();
+            // W8：跨轮累计用量与首字延迟，run 结束一次性落 ai_trace
+            let trace_mode = request
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("quick")
+                .to_owned();
+            let trace_started = std::time::Instant::now();
+            let mut trace_ttft_ms: Option<u64> = None;
+            let mut trace_prompt_tokens: u64 = 0;
+            let mut trace_completion_tokens: u64 = 0;
+            let mut trace_total_tokens: u64 = 0;
+            let mut agent_steps: u32 = 1;
+            let mut remaining_tool_calls = agent_budget.max_tool_calls;
+            // W7c：内核已执行的写调用 id（跨轮累计，终态 done 的 meta 里回传给前端过滤）
+            let mut kernel_write_ids: Vec<String> = Vec::new();
+            // W7c：写轮预算终局（不再等待确认，任务直接完成）
+            let mut write_round_final = false;
+            let mut current_request = request;
+            let mut result = tauri::async_runtime::block_on(stream_provider_round(
                 handle.clone(),
                 runtime.clone(),
                 run_id.clone(),
-                request,
-                Some(sink),
+                current_request.clone(),
+                Some(sink.clone()),
+                false,
             ));
+            loop {
+                if runtime.is_cancelled(&run_id) {
+                    break;
+                }
+                let Ok(ref payload) = result else {
+                    break;
+                };
+                if payload.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true) {
+                    break;
+                }
+                // W8：累计本轮用量；TTFT 取首轮（多轮 run 的用户感知首字）
+                if let Some(usage) = payload.pointer("/meta/usage").and_then(|value| value.as_object()) {
+                    trace_prompt_tokens += usage
+                        .get("prompt_tokens")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    trace_completion_tokens += usage
+                        .get("completion_tokens")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    trace_total_tokens += usage
+                        .get("total_tokens")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                }
+                if trace_ttft_ms.is_none() {
+                    trace_ttft_ms = payload
+                        .pointer("/meta/ttftMs")
+                        .and_then(serde_json::Value::as_u64);
+                }
+                let Some(calls_value) = payload.get("toolCalls").and_then(|value| value.as_array())
+                else {
+                    break;
+                };
+                if calls_value.is_empty() {
+                    break;
+                }
+                let pending_calls: Vec<crate::ai::core::agent::PendingCall> = calls_value
+                    .iter()
+                    .map(|call| crate::ai::core::agent::PendingCall {
+                        id: call
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        name: call
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        input: call.get("input").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    })
+                    .collect();
+                let registry_kind = |name: &str| {
+                    tool_registry
+                        .get(name)
+                        .map(|descriptor| descriptor.kind)
+                };
+                let has_writes = pending_calls
+                    .iter()
+                    .any(|call| registry_kind(&call.name) == Some(crate::ai::core::agent::ToolKind::Write));
+                let tool_results: Vec<serde_json::Value>;
+                if !has_writes {
+                    // W7b 读轮原样：仅当全部为已注册读工具且预算允许才内核续跑，
+                    // 出现未注册工具或预算/步数耗尽时交回前端（done 带原 toolCalls）。
+                    let all_reads = pending_calls
+                        .iter()
+                        .all(|call| registry_kind(&call.name) == Some(crate::ai::core::agent::ToolKind::Read));
+                    if !all_reads
+                        || agent_steps >= agent_budget.max_steps
+                        || remaining_tool_calls < pending_calls.len() as u32
+                    {
+                        break;
+                    }
+                    tool_results = {
+                        let workspace_state = handle.state::<WorkspaceState>();
+                        let Ok(workspace) = workspace_state.0.read() else {
+                            break;
+                        };
+                        pending_calls
+                            .iter()
+                            .map(|call| {
+                                serde_json::json!({
+                                    "callId": call.id,
+                                    "result": crate::ai::core::agent::tools::execute_read_call(&workspace, call),
+                                })
+                            })
+                            .collect()
+                    };
+                    agent_steps += 1;
+                    remaining_tool_calls -= pending_calls.len() as u32;
+                    append_ai_event(
+                        &handle,
+                        &run_id,
+                        &serde_json::json!({
+                            "type": "status", "status": "tool_running",
+                            "text": format!("已执行 {} 个检索/读取，继续生成", pending_calls.len())
+                        }),
+                    );
+                } else {
+                    // W7c 写轮由内核接管：Runner 计划驱动——读并行、Auto(L0/L1) 写串行直执
+                    // （预览→planHash→execute，审计/快照/undo 走文件内核既有管线）、
+                    // 未注册/越权/超预算拒绝；仅 L2/L3 写挂起等用户确认（正文只存进程内存）。
+                    let confirmations = std::collections::HashSet::new();
+                    let plan = crate::ai::core::agent::plan_execution(
+                        &tool_registry,
+                        &crate::ai::core::agent::RunnerInput {
+                            calls: &pending_calls,
+                            remaining_tool_calls,
+                            writes_allowed: true,
+                            confirmations_granted: &confirmations,
+                        },
+                    );
+                    let mut results_by_call: std::collections::HashMap<String, serde_json::Value> =
+                        std::collections::HashMap::new();
+                    {
+                        let workspace_state = handle.state::<WorkspaceState>();
+                        let Ok(workspace) = workspace_state.0.read() else {
+                            break;
+                        };
+                        for read in &plan.reads {
+                            if let Some(call) = pending_calls.iter().find(|call| call.id == read.id) {
+                                results_by_call.insert(
+                                    read.id.clone(),
+                                    crate::ai::core::agent::tools::execute_read_call(&workspace, call),
+                                );
+                            }
+                        }
+                        for write in &plan.writes {
+                            if write.gate != crate::ai::core::agent::WriteGate::Auto {
+                                continue; // NeedsConfirmation 在下方挂起；Granted 只出现在确认续跑轮
+                            }
+                            let Some(call) = pending_calls.iter().find(|call| call.id == write.call.id) else {
+                                continue;
+                            };
+                            let key = format!("{run_id}:{}", write.call.id);
+                            results_by_call.insert(
+                                write.call.id.clone(),
+                                crate::ai::core::agent::tools::execute_write_call(&workspace, call, &key),
+                            );
+                            kernel_write_ids.push(write.call.id.clone());
+                            let summary = call
+                                .input
+                                .get("type")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("write");
+                            append_ai_event(
+                                &handle,
+                                &run_id,
+                                &serde_json::json!({
+                                    "type": "status", "status": "tool_running",
+                                    "text": format!("已执行写操作（{summary}），继续任务")
+                                }),
+                            );
+                        }
+                        for rejected in &plan.rejected {
+                            results_by_call.insert(
+                                rejected.id.clone(),
+                                serde_json::json!({ "status": "failed", "error": rejected.reason }),
+                            );
+                        }
+                    }
+                    let needs_confirmation: Vec<crate::ai::core::agent::PendingCall> = plan
+                        .writes
+                        .iter()
+                        .filter(|write| {
+                            matches!(
+                                write.gate,
+                                crate::ai::core::agent::WriteGate::NeedsConfirmation { .. }
+                            )
+                        })
+                        .filter_map(|write| {
+                            pending_calls.iter().find(|call| call.id == write.call.id).cloned()
+                        })
+                        .collect();
+                    if !needs_confirmation.is_empty() {
+                        let mut plan_hashes: Vec<(String, String)> = Vec::new();
+                        let mut confirmed_pending: Vec<crate::ai::core::agent::PendingCall> = Vec::new();
+                        let mut write_requests: Vec<serde_json::Value> = Vec::new();
+                        for write in &plan.writes {
+                            let crate::ai::core::agent::WriteGate::NeedsConfirmation { level, reason } = &write.gate else {
+                                continue;
+                            };
+                            write_requests.push(serde_json::json!({
+                                "id": write.call.id,
+                                "name": write.call.name,
+                                "level": level,
+                                "reason": reason,
+                            }));
+                        }
+                        {
+                            let workspace_state = handle.state::<WorkspaceState>();
+                            if let Ok(workspace) = workspace_state.0.read() {
+                                for call in &needs_confirmation {
+                                    match crate::ai::core::agent::tools::preview_write_call(&workspace, call) {
+                                        Ok(plan_hash) => {
+                                            plan_hashes.push((call.id.clone(), plan_hash));
+                                            confirmed_pending.push(call.clone());
+                                        }
+                                        Err(error) => {
+                                            results_by_call.insert(
+                                                call.id.clone(),
+                                                serde_json::json!({ "status": "failed", "error": error }),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        tool_results = pending_calls
+                            .iter()
+                            .map(|call| {
+                                serde_json::json!({
+                                    "callId": call.id,
+                                    "result": results_by_call.get(&call.id).cloned().unwrap_or_else(|| {
+                                        serde_json::json!({ "status": "failed", "error": "工具未被计划执行" })
+                                    }),
+                                })
+                            })
+                            .collect();
+                        if !confirmed_pending.is_empty() {
+                            let has_delete = confirmed_pending.iter().any(|call| {
+                                call.input.get("type").and_then(serde_json::Value::as_str) == Some("delete")
+                            });
+                            if let Err(error) = runtime.store_pending_writes(
+                                &run_id,
+                                crate::ai::runtime::run_worker::PendingWriteConfirmation {
+                                    continuation_request: current_request.clone(),
+                                    calls: serde_json::Value::Array(calls_value.clone()),
+                                    executed_results: tool_results.clone(),
+                                    pending: confirmed_pending,
+                                    plan_hashes,
+                                    has_delete,
+                                },
+                            ) {
+                                log::warn!("挂起写批次保存失败：{error}");
+                            }
+                            append_ai_event(
+                                &handle,
+                                &run_id,
+                                &serde_json::json!({
+                                    "type": "status", "status": "write_confirmation",
+                                    "text": format!("{} 项写操作等待用户确认", write_requests.len())
+                                }),
+                            );
+                            if let Ok(payload) = result.as_mut() {
+                                payload["meta"]["awaitingConfirmation"] = serde_json::json!(true);
+                                payload["meta"]["completionStatus"] =
+                                    serde_json::json!("waiting_confirmation");
+                                payload["meta"]["kernelManaged"] = serde_json::json!(true);
+                                payload["meta"]["kernelWriteExecuted"] =
+                                    serde_json::json!(kernel_write_ids);
+                                payload["writeRequests"] = serde_json::json!(write_requests);
+                            }
+                            break;
+                        }
+                    } else {
+                        tool_results = pending_calls
+                            .iter()
+                            .map(|call| {
+                                serde_json::json!({
+                                    "callId": call.id,
+                                    "result": results_by_call.get(&call.id).cloned().unwrap_or_else(|| {
+                                        serde_json::json!({ "status": "failed", "error": "工具未被计划执行" })
+                                    }),
+                                })
+                            })
+                            .collect();
+                    }
+                    agent_steps += 1;
+                    remaining_tool_calls -= (plan.reads.len() + plan.writes.len()) as u32;
+                    if agent_steps >= agent_budget.max_steps || remaining_tool_calls == 0 {
+                        // 写轮预算终局：不交回前端绕过预算（预算只收紧），任务直接完成；
+                        // kernelManaged 标注让前端不再对这批 toolCalls 构建执行预览。
+                        append_ai_event(
+                            &handle,
+                            &run_id,
+                            &serde_json::json!({
+                                "type": "status", "status": "completed",
+                                "text": "任务工具预算已达上限，已执行的工具结果生效"
+                            }),
+                        );
+                        if let Ok(payload) = result.as_mut() {
+                            payload["meta"]["kernelManaged"] = serde_json::json!(true);
+                            payload["meta"]["completionStatus"] = serde_json::json!("completed");
+                            payload["meta"]["kernelWriteExecuted"] =
+                                serde_json::json!(kernel_write_ids);
+                        }
+                        write_round_final = true;
+                        break;
+                    }
+                    append_ai_event(
+                        &handle,
+                        &run_id,
+                        &serde_json::json!({
+                            "type": "status", "status": "tool_running",
+                            "text": format!("已执行 {} 项工具（含写操作），继续生成", pending_calls.len())
+                        }),
+                    );
+                }
+                // 续跑请求与 web 旧循环同构（消息文本保持一致以稳定模型行为），
+                // 但由内核构建，前端不再产生伪用户消息
+                let mut continuation = current_request.clone();
+                continuation["message"] =
+                    serde_json::json!("请根据工具执行结果继续完成任务。");
+                continuation["toolCalls"] = serde_json::Value::Array(calls_value.clone());
+                continuation["toolResults"] = serde_json::Value::Array(tool_results);
+                continuation["preferModel"] = serde_json::json!(true);
+                continuation["resumeRun"] = serde_json::json!(true);
+                current_request = continuation;
+                result = tauri::async_runtime::block_on(stream_provider_round(
+                    handle.clone(),
+                    runtime.clone(),
+                    run_id.clone(),
+                    current_request.clone(),
+                    Some(sink.clone()),
+                    false,
+                ));
+            }
+            // 终态 done 统一由 worker 发出（取消轮已自带 done(cancelled)）
+            if let Ok(ref payload) = result {
+                if payload.get("cancelled").and_then(serde_json::Value::as_bool) != Some(true) {
+                    sink(&serde_json::json!({ "type": "done", "payload": payload.clone() }));
+                    let _ = handle.emit(
+                        &format!("ai://stream/{run_id}"),
+                        serde_json::json!({ "type": "done", "payload": payload.clone() }),
+                    );
+                    // W8：run 维度计量落库（正文/凭据永不入库；成本按 W3 目录单价估算）
+                    let trace_model = payload
+                        .pointer("/meta/model")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let trace_cost = if trace_model.is_empty() {
+                        None
+                    } else {
+                        crate::ai::core::trace::estimate_cost_usd(
+                            &crate::ai::core::provider::catalog::ModelCatalog::builtin(),
+                            &trace_model,
+                            trace_prompt_tokens,
+                            trace_completion_tokens,
+                        )
+                    };
+                    let trace_entry = crate::ai::core::trace::TraceEntry {
+                        run_id: run_id.clone(),
+                        task_type: trace_mode.clone(),
+                        provider: "tauri".to_owned(),
+                        model: trace_model,
+                        ttft_ms: trace_ttft_ms,
+                        duration_ms: Some(trace_started.elapsed().as_millis() as u64),
+                        prompt_tokens: Some(trace_prompt_tokens),
+                        completion_tokens: Some(trace_completion_tokens),
+                        total_tokens: Some(trace_total_tokens),
+                        cost_usd: trace_cost,
+                    };
+                    let workspace_state = handle.state::<WorkspaceState>();
+                    if let Ok(workspace) = workspace_state.0.read() {
+                        if let Err(error) = workspace.ai_trace_record(&trace_entry) {
+                            log::warn!("AI 指标落库失败：{}", error.message);
+                        }
+                    }
+                }
+            }
             runtime.finish(&run_id);
 
             if let Ok(workspace) = handle.state::<WorkspaceState>().0.read() {
@@ -1547,29 +2177,37 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                     }
                     Ok(payload) => {
                         let persisted = sanitize_ai_persistence(&payload);
-                        let tool_checkpoint = checkpoint_for_tool_calls(&payload)
-                            .unwrap_or_else(|error| {
-                                log::warn!("AI tool checkpoint 构建失败：{error}");
-                                None
-                            })
-                            .unwrap_or_else(|| serde_json::json!({ "stage": "completed" }));
+                        let tool_checkpoint = if write_round_final {
+                            // W7c：写轮预算终局已无未决工具，检查点直接收口
+                            serde_json::json!({ "stage": "completed" })
+                        } else {
+                            checkpoint_for_tool_calls(&payload)
+                                .unwrap_or_else(|error| {
+                                    log::warn!("AI tool checkpoint 构建失败：{error}");
+                                    None
+                                })
+                                .unwrap_or_else(|| serde_json::json!({ "stage": "completed" }))
+                        };
                         let _ = workspace.jobs().set_checkpoint(&job.id, &tool_checkpoint);
                         let has_tool_calls = payload
                             .get("toolCalls")
                             .and_then(serde_json::Value::as_array)
                             .is_some_and(|calls| !calls.is_empty());
-                        if has_tool_calls {
+                        // W7c：写轮预算终局直接完成；其余带 toolCalls 的终态（读轮交回 /
+                        // 写确认挂起）仍进入等待确认，由前端回放读结果或发送确认。
+                        if has_tool_calls && !write_round_final {
                             let _ = workspace.jobs().wait_for_confirmation(&job.id, &persisted);
                         } else {
                             let _ = workspace.jobs().complete(&job.id, &persisted);
                         }
+                        let waiting = has_tool_calls && !write_round_final;
                         append_ai_event(
                             &handle,
                             &run_id,
                             &serde_json::json!({
                                 "type": "status",
-                                "status": if has_tool_calls { "waiting_confirmation" } else { "completed" },
-                                "text": if has_tool_calls { "等待工具处理或用户确认" } else { "后台任务已完成" }
+                                "status": if waiting { "waiting_confirmation" } else { "completed" },
+                                "text": if waiting { "等待工具处理或用户确认" } else { "后台任务已完成" }
                             }),
                         );
                     }

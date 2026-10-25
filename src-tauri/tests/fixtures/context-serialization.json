@@ -1,0 +1,186 @@
+{
+  "note": "W6 上下文序列化双侧夹具：同一份输入，Rust ai::core::context::ContextComposer 与 web buildAiContext+serializeAiContext 必须产出逐字节相同的 serialized 与相同的块序/截断标志。expected 由 web 实现生成冻结；两侧测试读同一文件断言。tools 条目带预序列化 JSON，避免跨语言键序漂移。",
+  "cases": [
+    {
+      "name": "all-sources-basic",
+      "input": {
+        "system": [
+          "answer clearly",
+          "cite sources"
+        ],
+        "tools": [
+          {
+            "name": "read_note",
+            "serialized": "{\"name\":\"read_note\",\"kind\":\"read\",\"description\":\"读取笔记\"}"
+          }
+        ],
+        "memory": [
+          "prefer tables"
+        ],
+        "retrieval": [
+          {
+            "id": "chunk-1",
+            "content": "retrieved fact about lattice",
+            "citationId": "cite-1"
+          },
+          {
+            "content": "no id retrieval"
+          }
+        ],
+        "history": [
+          "earlier question",
+          "earlier answer"
+        ],
+        "attachments": [
+          "uploaded text"
+        ],
+        "external": [
+          {
+            "id": "mcp-1",
+            "provider": "mcp:linear",
+            "origin": "connector",
+            "content": "external fact"
+          }
+        ]
+      },
+      "maxTokens": null,
+      "expected": {
+        "serialized": "<system id=\"system-1\">\nanswer clearly\n</system>\n\n<system id=\"system-2\">\ncite sources\n</system>\n\n<tool id=\"tool-read_note\">\n{\"name\":\"read_note\",\"kind\":\"read\",\"description\":\"读取笔记\"}\n</tool>\n\n<memory id=\"memory-1\">\nprefer tables\n</memory>\n\n<untrusted_retrieval id=\"chunk-1\">\nretrieved fact about lattice\n</untrusted_retrieval>\n\n<untrusted_retrieval id=\"retrieval-2\">\nno id retrieval\n</untrusted_retrieval>\n\n<history id=\"history-1\">\nearlier question\n</history>\n\n<history id=\"history-2\">\nearlier answer\n</history>\n\n<untrusted_attachment id=\"attachment-1\">\nuploaded text\n</untrusted_attachment>\n\n<untrusted_external id=\"mcp-1\">\nexternal fact\n</untrusted_external>",
+        "blockIds": [
+          "system-1",
+          "system-2",
+          "tool-read_note",
+          "memory-1",
+          "chunk-1",
+          "retrieval-2",
+          "history-1",
+          "history-2",
+          "attachment-1",
+          "mcp-1"
+        ],
+        "truncated": false,
+        "compressedHistory": false,
+        "estimatedTokens": 52
+      }
+    },
+    {
+      "name": "budget-truncation",
+      "input": {
+        "system": [
+          "aaaaaaaaaabbbbbbbbbbcccccccccc"
+        ],
+        "memory": [
+          "short memory"
+        ],
+        "retrieval": [
+          {
+            "id": "r-1",
+            "content": "0123456789012345678901234567890123456789"
+          }
+        ],
+        "attachments": [
+          "tail attachment that will not fit"
+        ]
+      },
+      "maxTokens": 12,
+      "expected": {
+        "serialized": "<system id=\"system-1\">\naaaaaaaaaabbbbbbbbbbcccccccccc\n</system>\n\n<memory id=\"memory-1\">\nshort memory\n</memory>\n\n<untrusted_retrieval id=\"r-1\">\n…[已按\n</untrusted_retrieval>",
+        "blockIds": [
+          "system-1",
+          "memory-1",
+          "r-1"
+        ],
+        "truncated": true,
+        "compressedHistory": false,
+        "estimatedTokens": 12
+      }
+    },
+    {
+      "name": "history-compression",
+      "input": {
+        "system": [
+          "system prompt"
+        ],
+        "history": [
+          "第一轮问题",
+          "第一轮回答",
+          "必须保留原始措辞，不要改写结论",
+          "round 4 content",
+          "round 5 content",
+          "TODO: 完成周报",
+          "round 7 content",
+          "round 8 content",
+          "round 9 content",
+          "round 10 content",
+          "round 11 content",
+          "- [ ] checkbox todo item",
+          "round 13 content",
+          "最后一轮问题",
+          "最后一轮回答"
+        ]
+      },
+      "maxTokens": null,
+      "expected": {
+        "serialized": "<system id=\"system-1\">\nsystem prompt\n</system>\n\n<history id=\"history-1\">\n第一轮问题\n</history>\n\n<history id=\"history-2\">\n第一轮回答\n</history>\n\n<history id=\"history-preserved\">\n[压缩历史中保留的用户约束与待办]\n约束：\n- 必须保留原始措辞，不要改写结论\n待办：\n- TODO: 完成周报\n- - [ ] checkbox todo item\n</history>\n\n<history id=\"history-compressed\">\n[中间历史已压缩，保留 9 条摘要]\n1. 必须保留原始措辞，不要改写结论\n2. round 4 content\n3. round 5 content\n4. TODO: 完成周报\n5. round 7 content\n6. round 8 content\n7. round 9 content\n8. round 10 content\n9. round 11 content\n</history>\n\n<history id=\"history-12\">\n- [ ] checkbox todo item\n</history>\n\n<history id=\"history-13\">\nround 13 content\n</history>\n\n<history id=\"history-14\">\n最后一轮问题\n</history>\n\n<history id=\"history-15\">\n最后一轮回答\n</history>",
+        "blockIds": [
+          "system-1",
+          "history-1",
+          "history-2",
+          "history-preserved",
+          "history-compressed",
+          "history-12",
+          "history-13",
+          "history-14",
+          "history-15"
+        ],
+        "truncated": false,
+        "compressedHistory": true,
+        "estimatedTokens": 90
+      }
+    },
+    {
+      "name": "untrusted-labels",
+      "input": {
+        "retrieval": [
+          {
+            "id": "only-r",
+            "content": "r"
+          }
+        ],
+        "attachments": [
+          "a"
+        ],
+        "external": [
+          {
+            "id": "only-e",
+            "content": "e"
+          }
+        ]
+      },
+      "maxTokens": null,
+      "expected": {
+        "serialized": "<untrusted_retrieval id=\"only-r\">\nr\n</untrusted_retrieval>\n\n<untrusted_attachment id=\"attachment-1\">\na\n</untrusted_attachment>\n\n<untrusted_external id=\"only-e\">\ne\n</untrusted_external>",
+        "blockIds": [
+          "only-r",
+          "attachment-1",
+          "only-e"
+        ],
+        "truncated": false,
+        "compressedHistory": false,
+        "estimatedTokens": 3
+      }
+    },
+    {
+      "name": "empty",
+      "input": {},
+      "maxTokens": null,
+      "expected": {
+        "serialized": "",
+        "blockIds": [],
+        "truncated": false,
+        "compressedHistory": false,
+        "estimatedTokens": 0
+      }
+    }
+  ]
+}

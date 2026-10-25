@@ -7,6 +7,14 @@
 use crate::index::Index;
 use serde::{Deserialize, Serialize};
 
+/// AI 内核（地基方案 §4 的 `ai/core` 根）。
+///
+/// W1 起立目录：配置与密钥（config）先行；provider/目录/发现、prompt、context、
+/// agent、trace 按执行方案 W2–W9 逐批迁入。外部引用一律写全路径
+/// `crate::ai::core::...`，不做跨层快捷重导出。
+pub(crate) mod core;
+pub(crate) mod runtime;
+
 pub(crate) mod embeddings;
 mod retrieval;
 use retrieval::{fuse_search_results, rerank_search_results};

@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// 001：索引投影初版。
 ///
@@ -194,6 +194,33 @@ CREATE INDEX ix_ai_memories_updated ON ai_memories (updated_at DESC);
 CREATE INDEX ix_ai_memories_expires ON ai_memories (expires_at);
 "#;
 
+/// 012：AI 设置与追踪指标（地基方案 §5.2/§5.6，执行方案 W1）。
+///
+/// `ai_settings` 是单行文档表：只存脱敏后的 JSON（API Key 恒为 masked: 尾四位掩码），
+/// 真实密钥只允许存在于进程内存或环境变量。`ai_trace` 供 W8 指标落库使用，
+/// 此处先立表（run 维度一行，按任务类型建索引用于 P50/P95 聚合）。
+const MIGRATION_012: &str = r#"
+CREATE TABLE ai_settings (
+  id         INTEGER PRIMARY KEY CHECK(id = 1),
+  document   TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE ai_trace (
+  run_id            TEXT PRIMARY KEY,
+  task_type         TEXT NOT NULL,
+  provider          TEXT NOT NULL,
+  model             TEXT NOT NULL,
+  ttft_ms           INTEGER,
+  duration_ms       INTEGER,
+  prompt_tokens     INTEGER,
+  completion_tokens INTEGER,
+  total_tokens      INTEGER,
+  cost_usd          REAL,
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX ix_ai_trace_task ON ai_trace (task_type, created_at DESC);
+"#;
+
 /// 打开索引库并把 Schema 迁移到最新版本。
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -275,6 +302,7 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         (9, MIGRATION_009),
         (10, MIGRATION_010),
         (11, MIGRATION_011),
+        (12, MIGRATION_012),
     ];
     for &(target, script) in steps {
         if version < target {

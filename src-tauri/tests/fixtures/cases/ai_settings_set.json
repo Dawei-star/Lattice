@@ -1,0 +1,81 @@
+{
+  "command": "ai_settings_set",
+  "http": {
+    "method": "PUT",
+    "path": "/api/ai/settings",
+    "query": {},
+    "body": {
+      "providers": [
+        {
+          "id": "provider-seed-remote",
+          "name": "DeepSeek 旗舰",
+          "service": "DeepSeek",
+          "endpoint": "https://api.deepseek.com/chat/completions",
+          "model": "deepseek-chat",
+          "authHeader": "bearer",
+          "enabled": true,
+          "apiKey": "demo-key-not-a-secret-abcd",
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "contextWindowTokens": 128000
+        },
+        {
+          "id": "provider-seed-local",
+          "name": "本机 Ollama",
+          "service": "Ollama",
+          "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+          "model": "qwen3:14b",
+          "authHeader": "bearer",
+          "enabled": true,
+          "apiKey": ""
+        }
+      ],
+      "activeProviderId": "provider-seed-remote",
+      "embedding": {
+        "endpoint": "https://api.siliconflow.cn/v1/embeddings",
+        "model": "BAAI/bge-m3",
+        "name": "Embedding",
+        "authHeader": "bearer",
+        "apiKey": "demo-key-not-a-secret-wxyz"
+      }
+    },
+    "status": 200
+  },
+  "data": {
+    "providers": [
+      {
+        "id": "provider-seed-remote",
+        "name": "DeepSeek 旗舰",
+        "service": "DeepSeek",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-chat",
+        "authHeader": "bearer",
+        "enabled": true,
+        "temperature": 0.2,
+        "maxTokens": 4096,
+        "contextWindowTokens": 128000,
+        "apiKey": "masked:abcd"
+      },
+      {
+        "id": "provider-seed-local",
+        "name": "本机 Ollama",
+        "service": "Ollama",
+        "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+        "model": "qwen3:14b",
+        "authHeader": "bearer",
+        "enabled": true,
+        "apiKey": ""
+      }
+    ],
+    "activeProviderId": "provider-seed-remote",
+    "embedding": {
+      "endpoint": "https://api.siliconflow.cn/v1/embeddings",
+      "model": "BAAI/bge-m3",
+      "name": "Embedding",
+      "authHeader": "bearer",
+      "apiKey": "masked:wxyz"
+    }
+  },
+  "schema": {"type":"object","fields":{"providers":{"type":"array","element":{"type":"object","fields":{"id":{"type":"string"},"name":{"type":"string"},"service":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"authHeader":{"type":"string"},"enabled":{"type":"boolean"},"temperature":{"type":"number"},"maxTokens":{"type":"number"},"contextWindowTokens":{"type":"number"},"apiKey":{"type":"string"}}},"length":2},"activeProviderId":{"type":"string"},"embedding":{"type":"object","fields":{"endpoint":{"type":"string"},"model":{"type":"string"},"name":{"type":"string"},"authHeader":{"type":"string"},"apiKey":{"type":"string"}}}}},
+  "volatilePaths": []
+}

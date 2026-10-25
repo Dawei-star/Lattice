@@ -1,0 +1,216 @@
+{
+  "note": "W7a 风险分级双侧夹具：同一份 AiWriteAction 输入，Rust ai::core::agent::risk::classify_write_risk 与 web classifyAiWriteRisk 必须产出完全一致的 level/reversible/requiresConfirmation/reason。expected 由 web 实现生成冻结，两侧测试读同一文件断言。",
+  "cases": [
+    {
+      "name": "read-only-unknown-type",
+      "action": {
+        "type": "search",
+        "query": "x"
+      },
+      "expected": {
+        "level": "L0",
+        "reversible": true,
+        "requiresConfirmation": false,
+        "reason": "只读或非写操作"
+      }
+    },
+    {
+      "name": "empty-type",
+      "action": {},
+      "expected": {
+        "level": "L0",
+        "reversible": true,
+        "requiresConfirmation": false,
+        "reason": "只读或非写操作"
+      }
+    },
+    {
+      "name": "create-ai-owned-draft",
+      "action": {
+        "type": "create",
+        "aiOwnedDraft": true
+      },
+      "expected": {
+        "level": "L1",
+        "reversible": true,
+        "requiresConfirmation": false,
+        "reason": "新建或修改 AI 自己的草稿，可通过快照撤销"
+      }
+    },
+    {
+      "name": "create-target-missing",
+      "action": {
+        "type": "create",
+        "targetExists": false
+      },
+      "expected": {
+        "level": "L1",
+        "reversible": true,
+        "requiresConfirmation": false,
+        "reason": "新建或修改 AI 自己的草稿，可通过快照撤销"
+      }
+    },
+    {
+      "name": "create-target-exists",
+      "action": {
+        "type": "create",
+        "targetExists": true
+      },
+      "expected": {
+        "level": "L2",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "会修改用户已有内容，需要预览差异"
+      }
+    },
+    {
+      "name": "create-default-target-unknown",
+      "action": {
+        "type": "create"
+      },
+      "expected": {
+        "level": "L1",
+        "reversible": true,
+        "requiresConfirmation": false,
+        "reason": "新建或修改 AI 自己的草稿，可通过快照撤销"
+      }
+    },
+    {
+      "name": "update-single",
+      "action": {
+        "type": "update",
+        "path": "Notes/a.md"
+      },
+      "expected": {
+        "level": "L2",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "会修改用户已有内容，需要预览差异"
+      }
+    },
+    {
+      "name": "update-batch-3",
+      "action": {
+        "type": "update",
+        "batchSize": 3
+      },
+      "expected": {
+        "level": "L3",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "批量操作影响范围较大"
+      }
+    },
+    {
+      "name": "batch-from-options",
+      "action": {
+        "type": "move"
+      },
+      "batchSize": 5,
+      "expected": {
+        "level": "L3",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "批量操作影响范围较大"
+      }
+    },
+    {
+      "name": "delete-destructive",
+      "action": {
+        "type": "delete",
+        "path": "Notes/a.md"
+      },
+      "expected": {
+        "level": "L3",
+        "reversible": false,
+        "requiresConfirmation": true,
+        "reason": "删除、外发或权限变更影响不可逆"
+      }
+    },
+    {
+      "name": "send-external-destructive",
+      "action": {
+        "type": "send"
+      },
+      "expected": {
+        "level": "L3",
+        "reversible": false,
+        "requiresConfirmation": true,
+        "reason": "会影响外部系统或其他受众"
+      }
+    },
+    {
+      "name": "publish-external",
+      "action": {
+        "type": "publish"
+      },
+      "expected": {
+        "level": "L3",
+        "reversible": false,
+        "requiresConfirmation": true,
+        "reason": "会影响外部系统或其他受众"
+      }
+    },
+    {
+      "name": "permission-change",
+      "action": {
+        "type": "permission"
+      },
+      "expected": {
+        "level": "L3",
+        "reversible": false,
+        "requiresConfirmation": true,
+        "reason": "会影响外部系统或其他受众"
+      }
+    },
+    {
+      "name": "copy-single",
+      "action": {
+        "type": "copy"
+      },
+      "expected": {
+        "level": "L2",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "会修改用户已有内容，需要预览差异"
+      }
+    },
+    {
+      "name": "archive-single",
+      "action": {
+        "type": "archive"
+      },
+      "expected": {
+        "level": "L2",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "会修改用户已有内容，需要预览差异"
+      }
+    },
+    {
+      "name": "uppercase-type",
+      "action": {
+        "type": "UPDATE"
+      },
+      "expected": {
+        "level": "L2",
+        "reversible": true,
+        "requiresConfirmation": true,
+        "reason": "会修改用户已有内容，需要预览差异"
+      }
+    },
+    {
+      "name": "external-flag-on-update",
+      "action": {
+        "type": "update",
+        "external": true
+      },
+      "expected": {
+        "level": "L3",
+        "reversible": false,
+        "requiresConfirmation": true,
+        "reason": "会影响外部系统或其他受众"
+      }
+    }
+  ]
+}

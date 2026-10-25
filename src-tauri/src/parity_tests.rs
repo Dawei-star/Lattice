@@ -589,6 +589,17 @@ fn run_replay() -> Vec<(String, Value)> {
     // ── jobs（1） ──────────────────────────────────────────────────────
     push("job_list", capture(service.jobs().list(None, None, 50)));
 
+    // ── ai settings（2，W1 新增）───────────────────────────────────────
+    // 先 set 后 get：get 的夹具数据即 set 落盘结果 + keyAvailable。
+    {
+        let case = load_case("ai_settings_set");
+        push(
+            "ai_settings_set",
+            capture(service.ai_settings_save(&case["http"]["body"])),
+        );
+    }
+    push("ai_settings_get", capture(service.ai_settings_load()));
+
     out
 }
 

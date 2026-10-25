@@ -14,7 +14,7 @@ use crate::markdown::{
     MarkdownDocument, normalize_title, parse_frontmatter, sanitize_file_part,
     serialize_markdown_document, strip_frontmatter,
 };
-use crate::memory::{MemoryError, MemoryRecord, MemoryStore};
+use crate::ai::core::context::memory::{MemoryError, MemoryRecord, MemoryStore};
 use crate::time::{iso8601_utc, now_millis};
 use crate::vault::{NoteContents, Vault, VaultInfo};
 use fs2::FileExt;
@@ -274,6 +274,9 @@ pub struct WorkspaceService {
     snapshots: SnapshotStore,
     jobs: JobsQueue,
     memories: MemoryStore,
+    ai_settings: crate::ai::core::config::AiSettingsStore,
+    prompts: crate::ai::core::prompt::PromptRegistry,
+    trace_store: crate::ai::core::trace::TraceStore,
     _lock: File, // 句柄存活期间锁有效；drop 即释放
 }
 
@@ -578,6 +581,16 @@ impl WorkspaceService {
             .map_err(|error| ServiceError::new("JOBS_OPEN_FAILED", error))?;
         let memories = MemoryStore::open(lattice_dir.join("lattice.db").as_path())
             .map_err(|error| ServiceError::new("MEMORY_OPEN_FAILED", error))?;
+        let ai_settings =
+            crate::ai::core::config::AiSettingsStore::open(lattice_dir.join("lattice.db").as_path())
+                .map_err(|error| ServiceError::new("AI_SETTINGS_OPEN_FAILED", error))?;
+        // Prompt 注册表：内置模板启动 fail-fast；用户覆盖文件损坏只跳过不拖垮启动
+        let prompts = crate::ai::core::prompt::PromptRegistry::builtin()
+            .map_err(|error| ServiceError::new("PROMPT_REGISTRY_INVALID", error))?
+            .merged_with_override(&lattice_dir.join("prompts"));
+        let trace_store =
+            crate::ai::core::trace::TraceStore::open(lattice_dir.join("lattice.db").as_path())
+                .map_err(|error| ServiceError::new("TRACE_OPEN_FAILED", error))?;
         let recovered = jobs.recover_interrupted().unwrap_or(0);
         if recovered > 0 {
             log::info!("启动恢复：{recovered} 个中断任务已重排回队列");
@@ -593,6 +606,9 @@ impl WorkspaceService {
             snapshots: SnapshotStore::open(&lattice_dir),
             jobs,
             memories,
+            ai_settings,
+            prompts,
+            trace_store,
             _lock: lock,
         })
     }
@@ -1128,6 +1144,91 @@ impl WorkspaceService {
         self.memories
             .list(include_expired)
             .map_err(|error| ServiceError::new("MEMORY_ERROR", error))
+    }
+
+    /// 读取脱敏设置文档，并为每个 provider 附 `keyAvailable`
+    /// （密钥能否从环境变量解析；真实密钥永不进入返回值）。
+    pub fn ai_settings_load(&self) -> Result<serde_json::Value, ServiceError> {
+        let mut document = self
+            .ai_settings
+            .load()
+            .map_err(|error| ServiceError::new("AI_SETTINGS_ERROR", error))?;
+        if let Some(providers) = document
+            .get_mut("providers")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for provider in providers {
+                let available = provider
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(crate::ai::core::config::env_secret)
+                    .is_some();
+                if let Some(object) = provider.as_object_mut() {
+                    object.insert(
+                        "keyAvailable".to_owned(),
+                        serde_json::Value::Bool(available),
+                    );
+                }
+            }
+        }
+        Ok(document)
+    }
+
+    /// 保存设置：Rust 边界白名单脱敏（真实 Key 只留掩码）后落盘，返回脱敏文档。
+    pub fn ai_settings_save(
+        &self,
+        document: &serde_json::Value,
+    ) -> Result<serde_json::Value, ServiceError> {
+        let sanitized = self
+            .ai_settings
+            .save(document)
+            .map_err(|error| ServiceError::new("AI_SETTINGS_ERROR", error))?;
+        let provider_count = sanitized
+            .get("providers")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let provider_label = provider_count.to_string();
+        self.audit
+            .record("ai_settings_set", &[("providers", &provider_label)]);
+        Ok(sanitized)
+    }
+
+    /// 模型目录（W3）：内置 models.json + `<Vault>/.lattice/models.json` 覆盖，
+    /// 含能力 / 价格 / 开放权重标记。目录是数据不是代码（地基 §5.1）。
+    pub fn ai_models_catalog(&self) -> serde_json::Value {
+        let catalog = crate::ai::core::provider::catalog::ModelCatalog::builtin()
+            .merged_with_override(&self.vault.root().join(".lattice").join("models.json"));
+        serde_json::to_value(catalog).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    /// Prompt 模板状态（W5）：id / 版本 / 是否被 `.lattice/prompts` 覆盖。
+    pub fn ai_prompts_list(&self) -> Vec<crate::ai::core::prompt::PromptStatus> {
+        self.prompts.list()
+    }
+
+    /// 指标落库（W8）：run 维度计量条目，凭据与正文永不入库。
+    pub fn ai_trace_record(
+        &self,
+        entry: &crate::ai::core::trace::TraceEntry,
+    ) -> Result<(), ServiceError> {
+        self.trace_store
+            .record(entry)
+            .map_err(|error| ServiceError::new("TRACE_ERROR", error))
+    }
+
+    /// 指标查询（W8）：最近明细 + 按 task_type 的 P50/P95 汇总。
+    pub fn ai_trace_query(
+        &self,
+        task_type: Option<&str>,
+        limit: u32,
+    ) -> Result<serde_json::Value, ServiceError> {
+        let result = self
+            .trace_store
+            .query(task_type, limit)
+            .map_err(|error| ServiceError::new("TRACE_ERROR", error))?;
+        serde_json::to_value(result)
+            .map_err(|error| ServiceError::new("TRACE_ERROR", format!("指标序列化失败：{error}")))
     }
 
     pub fn memory_save(

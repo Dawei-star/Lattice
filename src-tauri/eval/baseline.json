@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "mode": "anchor-perfect",
+  "description": "确定性锚点满分参照，由 build-baseline.mjs 从 golden-set.json 复算生成；真实跑分对比请用 eval:golden:compare 对两份本地报告，勿与基线比。",
+  "goldenSetHash": "sha256:5a9cd3dcb86ded10fe47486d781d6dd9d445569082a85b79a2a3254998d68840",
+  "generatedAt": "2026-10-25T09:38:47.416Z",
+  "report": {
+    "total": 16,
+    "answered": 16,
+    "missing": 0,
+    "mean": 1,
+    "forbiddenHits": 0,
+    "byCategory": [
+      {
+        "category": "summarize",
+        "answered": 3,
+        "mean": 1
+      },
+      {
+        "category": "knowledge",
+        "answered": 6,
+        "mean": 1
+      },
+      {
+        "category": "writing",
+        "answered": 3,
+        "mean": 1
+      },
+      {
+        "category": "code",
+        "answered": 2,
+        "mean": 1
+      },
+      {
+        "category": "vault",
+        "answered": 2,
+        "mean": 1
+      }
+    ],
+    "items": [
+      {
+        "id": "sum-001",
+        "category": "summarize",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "sum-002",
+        "category": "summarize",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "sum-003",
+        "category": "summarize",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "knw-001",
+        "category": "knowledge",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "knw-002",
+        "category": "knowledge",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "knw-003",
+        "category": "knowledge",
+        "score": 1,
+        "required": 4,
+        "hitCount": 4,
+        "forbiddenHit": null
+      },
+      {
+        "id": "knw-004",
+        "category": "knowledge",
+        "score": 1,
+        "required": 1,
+        "hitCount": 1,
+        "forbiddenHit": null
+      },
+      {
+        "id": "knw-005",
+        "category": "knowledge",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "knw-006",
+        "category": "knowledge",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "wrt-001",
+        "category": "writing",
+        "score": 1,
+        "required": 4,
+        "hitCount": 4,
+        "forbiddenHit": null
+      },
+      {
+        "id": "wrt-002",
+        "category": "writing",
+        "score": 1,
+        "required": 0,
+        "hitCount": 0,
+        "forbiddenHit": null
+      },
+      {
+        "id": "wrt-003",
+        "category": "writing",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "code-001",
+        "category": "code",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "code-002",
+        "category": "code",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "vlt-001",
+        "category": "vault",
+        "score": 1,
+        "required": 1,
+        "hitCount": 1,
+        "forbiddenHit": null
+      },
+      {
+        "id": "vlt-002",
+        "category": "vault",
+        "score": 1,
+        "required": 1,
+        "hitCount": 1,
+        "forbiddenHit": null
+      }
+    ]
+  }
+}

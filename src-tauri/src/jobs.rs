@@ -329,7 +329,11 @@ impl JobsQueue {
         let Some(status) = status else {
             return Ok(None);
         };
-        if matches!(status.as_str(), STATUS_FAILED | STATUS_CANCELLED) {
+        // W7c：等待确认的写批次在用户确认/拒绝后由内核重新入队（保留检查点供恢复 UI）。
+        if matches!(
+            status.as_str(),
+            STATUS_FAILED | STATUS_CANCELLED | STATUS_WAITING_CONFIRMATION
+        ) {
             connection
                 .execute(
                     "UPDATE jobs SET status = 'queued', result = NULL, error = NULL,
@@ -338,7 +342,7 @@ impl JobsQueue {
                 )
                 .map_err(|error| error.to_string())?;
         } else if !matches!(status.as_str(), STATUS_QUEUED | STATUS_RUNNING) {
-            return Err("只有失败、取消或进行中的任务可以恢复".to_owned());
+            return Err("只有失败、取消、等待确认或进行中的任务可以恢复".to_owned());
         }
         self.get_locked(&connection, id)
     }
@@ -726,5 +730,26 @@ mod tests {
         let waiting = queue.get(&job.id).unwrap().unwrap();
         assert_eq!(waiting.status, STATUS_WAITING_CONFIRMATION);
         assert_eq!(waiting.result.unwrap()["toolCalls"][0]["id"], "call-1");
+    }
+
+    #[test]
+    fn waiting_confirmation_job_can_resume_after_user_confirmation() {
+        let (queue, _guard) = open_queue();
+        let job = queue
+            .enqueue("ai-run", Some("run-confirm"), &json!({"message":"task"}))
+            .unwrap();
+        queue.claim_next("ai-run").unwrap();
+        queue
+            .wait_for_confirmation(&job.id, &json!({"toolCalls":[{"id":"call-1"}]}))
+            .unwrap();
+        queue
+            .set_checkpoint(&job.id, &json!({"stage": "waiting_confirmation", "planHash": "abc"}))
+            .unwrap();
+
+        let resumed = queue.resume(&job.id).unwrap().unwrap();
+        assert_eq!(resumed.status, STATUS_QUEUED);
+        assert_eq!(resumed.result, None, "挂起结果已清空，续跑后写入新终态");
+        assert_eq!(resumed.checkpoint.unwrap()["planHash"], "abc", "检查点保留供恢复 UI");
+        assert_eq!(resumed.attempts, 0);
     }
 }

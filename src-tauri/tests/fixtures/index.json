@@ -1,10 +1,10 @@
 {
   "note": "P1-08 功能对齐验证 fixtures 索引。由 src-tauri/tests/tools/record-fixtures.mjs 生成，幂等：重复运行结果一致。",
   "coverage": {
-    "recorded": 50,
+    "recorded": 52,
     "skipped": 9,
-    "registeredCommands": 59,
-    "endpointsWithoutCommand": 20
+    "registeredCommands": 61,
+    "endpointsWithoutCommand": 18
   },
   "domains": {
     "vault": [
@@ -80,9 +80,25 @@
     ],
     "jobs": [
       "job_list"
+    ],
+    "ai": [
+      "ai_settings_get",
+      "ai_settings_set"
     ]
   },
   "cases": [
+    {
+      "command": "ai_settings_get",
+      "domain": "ai",
+      "file": "cases/ai_settings_get.json",
+      "http": "GET /api/ai/settings"
+    },
+    {
+      "command": "ai_settings_set",
+      "domain": "ai",
+      "file": "cases/ai_settings_set.json",
+      "http": "PUT /api/ai/settings"
+    },
     {
       "command": "canvas_delete",
       "domain": "canvas",

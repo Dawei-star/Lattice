@@ -1,0 +1,159 @@
+{
+  "version": "2026-10-25",
+  "note": "内置模型目录（W3）。新模型上架/改价 = 改本文件或放 <Vault>/.lattice/models.json 覆盖，不改编排主干。价格单位为 USD/1k tokens，仅作本地估算种子。",
+  "services": [
+    {
+      "key": "ollama",
+      "label": "Ollama",
+      "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+      "local": true,
+      "hint": "先在 Ollama 中下载模型，再填写本机模型 ID；无需 API Key。",
+      "models": []
+    },
+    {
+      "key": "deepseek",
+      "label": "DeepSeek",
+      "endpoint": "https://api.deepseek.com/chat/completions",
+      "keyUrl": "https://platform.deepseek.com/api_keys",
+      "models": [
+        { "id": "DeepSeek-V4.1-Flash", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00028, "completionCostPer1kUsd": 0.0011 },
+        { "id": "DeepSeek-V4-Flash", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00028, "completionCostPer1kUsd": 0.0011 },
+        { "id": "DeepSeek-V4-Pro", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.0011, "completionCostPer1kUsd": 0.0044 }
+      ]
+    },
+    {
+      "key": "volcengine",
+      "label": "火山引擎",
+      "endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      "keyUrl": "https://console.volcengine.com/ark",
+      "models": [
+        { "id": "doubao-seed-2-1-pro-260915", "contextWindowTokens": 256000, "nativeTools": true, "reasoning": "thinkTags" },
+        { "id": "doubao-seed-2-1-turbo-260915", "contextWindowTokens": 256000, "nativeTools": true, "reasoning": "thinkTags" }
+      ]
+    },
+    {
+      "key": "minimax-cn",
+      "label": "MiniMax CN",
+      "endpoint": "https://api.minimax.cn/v1/chat/completions",
+      "keyUrl": "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+      "models": [
+        { "id": "MiniMax-M3", "contextWindowTokens": 256000, "nativeTools": true, "openWeights": true, "promptCostPer1kUsd": 0.0003, "completionCostPer1kUsd": 0.0012 }
+      ]
+    },
+    {
+      "key": "minimax-global",
+      "label": "MiniMax Global",
+      "endpoint": "https://api.minimax.io/v1/chat/completions",
+      "keyUrl": "https://platform.minimax.io/console/access",
+      "models": [
+        { "id": "MiniMax-M3", "contextWindowTokens": 256000, "nativeTools": true, "openWeights": true }
+      ]
+    },
+    {
+      "key": "bigmodel",
+      "label": "Bigmodel",
+      "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "keyUrl": "https://open.bigmodel.cn/usercenter/apikeys",
+      "models": [
+        { "id": "GLM-5.3", "contextWindowTokens": 200000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00055, "completionCostPer1kUsd": 0.0022 },
+        { "id": "GLM-5.3-Flash", "contextWindowTokens": 200000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true },
+        { "id": "GLM-5.3-FlashX", "contextWindowTokens": 200000, "nativeTools": true, "openWeights": true }
+      ]
+    },
+    {
+      "key": "aliyun",
+      "label": "阿里云",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "keyUrl": "https://bailian.console.aliyun.com/?apiKey=1#/api-key",
+      "models": [
+        { "id": "Qwen3.8-Max", "contextWindowTokens": 262144, "nativeTools": true, "reasoning": "thinkTags", "openWeights": true, "promptCostPer1kUsd": 0.0016, "completionCostPer1kUsd": 0.0064 },
+        { "id": "Qwen3.8-Plus", "contextWindowTokens": 262144, "nativeTools": true, "reasoning": "thinkTags", "openWeights": true, "promptCostPer1kUsd": 0.0004, "completionCostPer1kUsd": 0.0016 },
+        { "id": "Qwen3.8-Flash", "contextWindowTokens": 262144, "nativeTools": true, "reasoning": "thinkTags", "openWeights": true }
+      ]
+    },
+    {
+      "key": "mimo",
+      "label": "Xiaomi MIMO",
+      "endpoint": "https://api.xiaomimimo.com/v1/chat/completions",
+      "keyUrl": "https://platform.xiaomimimo.com/#/console/api-keys",
+      "models": []
+    },
+    {
+      "key": "siliconflow",
+      "label": "硅基流动",
+      "endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+      "keyUrl": "https://cloud.siliconflow.cn/account/ak",
+      "models": [
+        { "id": "DeepSeek-V4.1-Flash", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00028, "completionCostPer1kUsd": 0.0011 },
+        { "id": "Qwen3.8-Flash", "contextWindowTokens": 262144, "nativeTools": true, "reasoning": "thinkTags", "openWeights": true }
+      ]
+    },
+    {
+      "key": "zai",
+      "label": "Z.ai",
+      "endpoint": "https://api.z.ai/api/paas/v4/chat/completions",
+      "keyUrl": "https://z.ai/manage-apikey/apikey-list",
+      "models": [
+        { "id": "GLM-5.3", "contextWindowTokens": 200000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true },
+        { "id": "GLM-5.2", "contextWindowTokens": 128000, "nativeTools": true, "openWeights": true }
+      ]
+    },
+    {
+      "key": "openrouter",
+      "label": "OpenRouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "keyUrl": "https://openrouter.ai/keys",
+      "models": []
+    },
+    {
+      "key": "kimi-cn",
+      "label": "Kimi CN",
+      "endpoint": "https://api.moonshot.cn/v1/chat/completions",
+      "keyUrl": "https://platform.kimi.com/console/api-keys",
+      "models": [
+        { "id": "Kimi-K3", "contextWindowTokens": 256000, "nativeTools": true, "openWeights": true, "promptCostPer1kUsd": 0.0006, "completionCostPer1kUsd": 0.0025 },
+        { "id": "Kimi-K2.8-Preview", "contextWindowTokens": 256000, "nativeTools": true, "openWeights": true }
+      ]
+    },
+    {
+      "key": "kimi-global",
+      "label": "Kimi Global",
+      "endpoint": "https://api.moonshot.ai/v1/chat/completions",
+      "keyUrl": "https://platform.kimi.ai/console/api-keys",
+      "models": [
+        { "id": "Kimi-K3", "contextWindowTokens": 256000, "nativeTools": true, "openWeights": true },
+        { "id": "Kimi-K2.8-Preview", "contextWindowTokens": 256000, "nativeTools": true, "openWeights": true }
+      ]
+    },
+    {
+      "key": "byteplus",
+      "label": "BytePlus",
+      "endpoint": "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions",
+      "keyUrl": "https://ai.byteplus.com/ark/region:ap-southeast-1/apikey",
+      "models": []
+    },
+    {
+      "key": "tencent",
+      "label": "腾讯",
+      "endpoint": "https://tokenhub.tencentmaas.com/v1/chat/completions",
+      "keyUrl": "https://console.cloud.tencent.com/tokenhub/apikey",
+      "models": [
+        { "id": "glm-5.3-flashx", "contextWindowTokens": 200000, "nativeTools": true, "openWeights": true }
+      ]
+    },
+    {
+      "key": "model-force",
+      "label": "模力方舟",
+      "endpoint": "https://ai.gitee.com/v1/chat/completions",
+      "keyUrl": "https://ai.gitee.com/docs/account/access-token",
+      "models": []
+    },
+    {
+      "key": "ppio",
+      "label": "PPIO",
+      "endpoint": "https://api.ppio.com/openai/v1/chat/completions",
+      "keyUrl": "https://ppio.com/console",
+      "models": []
+    }
+  ]
+}

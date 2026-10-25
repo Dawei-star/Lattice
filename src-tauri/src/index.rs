@@ -2361,7 +2361,11 @@ fn make_excerpt(content: &str, query: &str) -> String {
     let needle: Vec<char> = query.to_lowercase().chars().collect();
 
     // 极少数语言的大小写转换会改变字符数（如 ß→ss），此时索引会错位，退回取开头。
-    let position = if !needle.is_empty() && lowercase.len() == original.len() {
+    // 查询词比正文还长时同样直接取开头，否则切片会越界（正文 1 字、查询 2 字即崩）。
+    let position = if !needle.is_empty()
+        && needle.len() <= lowercase.len()
+        && lowercase.len() == original.len()
+    {
         (0..=lowercase.len().saturating_sub(needle.len()))
             .find(|&start| lowercase[start..start + needle.len()] == needle[..])
     } else {
@@ -2692,6 +2696,14 @@ mod tests {
         assert!(excerpt.ends_with('…'));
         assert!(excerpt.contains("命中"));
         assert!(excerpt.chars().count() < 200);
+    }
+
+    #[test]
+    fn excerpt_falls_back_to_head_when_query_longer_than_content() {
+        // 回归：正文比查询词还短时，切片不得越界（此前直接 panic 杀死进程）。
+        assert!(!make_excerpt("短", "短文本搜索").is_empty());
+        assert_eq!(make_excerpt("", "查询"), "");
+        assert!(!make_excerpt("只有一句", "").is_empty());
     }
 
     #[test]
