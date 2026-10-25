@@ -14,4 +14,15 @@ assert.equal(single.requiresRetrieval, true);
 
 const bounded = planAiQueries('A；B；C；D；E；F');
 assert.deepEqual(bounded.subqueries, ['A', 'B', 'C', 'D']);
+
+// 身份/能力元问题：询问对象是 AI 自身，即使撞中「是什么」等检索词也不触发检索
+for (const question of ['你是什么模型', '你是谁', '你能做什么', '你会什么', '你叫什么名字', '请告诉我你是什么模型']) {
+  assert.equal(planAiQueries(question).requiresRetrieval, false, `元问题不应触发检索：${question}`);
+}
+
+// 显式搜索动词优先于元问题判定：「你能帮我搜一下…」仍要检索
+assert.equal(planAiQueries('你能帮我搜一下量子力学的资料吗').requiresRetrieval, true);
+// 知识型「是什么」问题保持检索
+assert.equal(planAiQueries('量子纠缠是什么').requiresRetrieval, true);
+
 console.log('AI query planner tests passed');

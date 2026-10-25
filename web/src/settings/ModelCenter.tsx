@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import Modal from '../ui/Modal.jsx';
+import Modal from '../ui/Modal.tsx';
 import { aiApi } from '../api/ai.ts';
-import { createAiProvider, isMaskedApiKey, loadAiSettings, saveAiSettings, subscribeAiSettings, type AiEmbeddingConfig, type AiProviderConfig, type AiSettings } from './aiSettings.js';
-import { CUSTOM_SERVICE, PROVIDERS, findProviderByService, isLocalOllamaEndpoint, type AiProviderCatalogEntry } from './aiProviders.js';
+import { createAiProvider, isMaskedApiKey, loadAiSettings, saveAiSettings, subscribeAiSettings, type AiEmbeddingConfig, type AiProviderConfig, type AiSettings } from './aiSettings.ts';
+import { CUSTOM_SERVICE, PROVIDERS, findProviderByService, isLocalOllamaEndpoint, type AiCatalogModelInfo, type AiProviderCatalogEntry } from './aiProviders.ts';
+import { countOverriddenPrompts, detectLocalRuntimes, discoverProviderModels, loadModelCatalogEntries, type DiscoveredModel, type LocalRuntimeInfo } from './modelCatalog.ts';
+import { isLoopbackEndpoint } from '../lib/ai-output.ts';
 
-/** 连通性 / embedding 测试的返回结果（服务端结构与状态字段动态）。 */
+/** 连通性 / embedding / 工具能力测试的返回结果（服务端结构与状态字段动态）。 */
 interface ConnectivityResult {
   ok?: boolean;
   error?: string;
   dim?: number;
   latencyMs?: number;
+  /** W7c 能力实测：端点/模型是否接受工具调用面（undefined = 未实测） */
+  nativeTools?: boolean;
 }
 
 /** 添加 / 编辑模型弹窗的表单草稿：供应商配置 + 目录元信息来源。 */
@@ -60,6 +64,7 @@ interface EmbeddingSectionProps {
 interface CustomModelRowProps {
   provider: AiProviderConfig;
   active: boolean;
+  modelInfoIndex: Map<string, AiCatalogModelInfo>;
   onUse: () => void;
   onEdit: () => void;
   onRemove: () => void;
@@ -67,7 +72,12 @@ interface CustomModelRowProps {
 }
 
 interface ProviderChooserProps {
+  entries: AiProviderCatalogEntry[];
+  localRuntimes: LocalRuntimeInfo[] | null;
+  scanning: boolean;
+  onScanLocal: () => void;
   onChoose: (provider: AiProviderCatalogEntry) => void;
+  onPickLocalModel: (endpoint: string, modelId: string) => void;
   onClose: () => void;
 }
 
@@ -89,6 +99,8 @@ interface CustomModelFormProps {
   testResult?: ConnectivityResult | null;
   onBack: () => void;
   onReset: () => void;
+  /** W3：按端点动态拉取真实模型清单（OpenAI 兼容 /models）；失败回退手填 */
+  onDiscoverModels?: (endpoint: string, apiKey: string, authHeader: string) => Promise<DiscoveredModel[]>;
 }
 
 export default function ModelCenter() {
@@ -100,8 +112,33 @@ export default function ModelCenter() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectivityResult | null>(null);
   const [saving, setSaving] = useState(false);
+  // W3：目录数据（桌面 = 内核 JSON + Vault 覆盖；失败回退内置 PROVIDERS）与本机运行时
+  const [catalogEntries, setCatalogEntries] = useState<AiProviderCatalogEntry[]>(PROVIDERS);
+  const [localRuntimes, setLocalRuntimes] = useState<LocalRuntimeInfo[] | null>(null);
+  const [scanningRuntimes, setScanningRuntimes] = useState(false);
+  const [overriddenPrompts, setOverriddenPrompts] = useState(0);
 
   useEffect(() => subscribeAiSettings(setSettings), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadModelCatalogEntries().then((entries) => {
+      if (!cancelled) setCatalogEntries(entries);
+    });
+    void countOverriddenPrompts().then((count) => {
+      if (!cancelled) setOverriddenPrompts(count);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  /** 模型 id → 能力详情（徽标：开放权重等），目录加载后即可用 */
+  const modelInfoIndex = useMemo(() => {
+    const index = new Map<string, AiCatalogModelInfo>();
+    for (const entry of catalogEntries) {
+      for (const info of entry.modelInfo ?? []) index.set(info.id.toLowerCase(), info);
+    }
+    return index;
+  }, [catalogEntries]);
 
   const requestOptions = useMemo(() => {
     const accessToken = settings.accessToken?.trim();
@@ -113,7 +150,7 @@ export default function ModelCenter() {
     setAddStep('chooser');
   };
 
-  const openProviderForm = (provider = PROVIDERS[0]) => {
+  const openProviderForm = (provider: AiProviderCatalogEntry = catalogEntries[0] ?? PROVIDERS[0], prefillModel = '') => {
     setEditingId(null);
     setFormError('');
     setTestResult(null);
@@ -126,7 +163,7 @@ export default function ModelCenter() {
       providerModels: provider.models ?? [],
       service: provider.key === 'custom' ? CUSTOM_SERVICE : provider.label,
       endpoint: provider.endpoint ?? '',
-      model: '',
+      model: prefillModel,
       name: '',
       apiKey: '',
       authHeader: 'bearer',
@@ -157,7 +194,7 @@ export default function ModelCenter() {
   // 表单内直接切换服务商：保留已输入的密钥，重置接口地址与模型选择。
   const switchDraftProvider = (key: string) => {
     setTestResult(null);
-    const provider = PROVIDERS.find((item) => item.key === key) ?? PROVIDERS[0];
+    const provider = catalogEntries.find((item) => item.key === key) ?? PROVIDERS[0];
     setDraft((current) => ({
       ...(current as ModelDraft),
       providerKey: provider.key,
@@ -190,7 +227,17 @@ export default function ModelCenter() {
   const probeProvider = async (provider: { endpoint: string; model: string; apiKey: string; authHeader: string }): Promise<ConnectivityResult> => {
     try {
       const result = await aiApi.test({ provider }, requestOptions);
-      return (result ?? { ok: false, error: '测试请求没有返回结果' }) as ConnectivityResult;
+      const base = (result ?? { ok: false, error: '测试请求没有返回结果' }) as ConnectivityResult;
+      if (!base.ok) return base;
+      // W7c 能力实测：连通成功后带 tools 的最小请求探一次（协商链第三环）。
+      // 上游拒绝工具参数 → nativeTools=false（任务模式置灰）；实测失败不推翻连通结论。
+      try {
+        const toolsProbe = await aiApi.test({ provider, kind: 'tools' }, requestOptions) as { nativeTools?: boolean } | null;
+        base.nativeTools = toolsProbe?.nativeTools === true;
+      } catch {
+        // 视为未知：UI 不置灰，任务模式失败时由内核按未注册/被拒路径兜底
+      }
+      return base;
     } catch (requestError) {
       return { ok: false, error: (requestError as Error)?.message ?? '测试请求失败，请确认本地服务已启动' };
     }
@@ -253,9 +300,11 @@ export default function ModelCenter() {
         return;
       }
       if (editingId) {
-        saveAiSettings({ ...settings, providers: settings.providers.map((provider) => provider.id === editingId ? ({ ...provider, ...next, verified: true } as AiProviderConfig) : provider) });
+        saveAiSettings({ ...settings, providers: settings.providers.map((provider) => provider.id === editingId
+          ? ({ ...provider, ...next, verified: true, ...(result.nativeTools !== undefined ? { nativeTools: result.nativeTools } : {}) } as AiProviderConfig)
+          : provider) });
       } else {
-        const provider = createAiProvider({ ...next, verified: true } as unknown as Partial<AiProviderConfig>);
+        const provider = createAiProvider({ ...next, verified: true, ...(result.nativeTools !== undefined ? { nativeTools: result.nativeTools } : {}) } as unknown as Partial<AiProviderConfig>);
         saveAiSettings({ ...settings, providers: [...settings.providers, provider], activeProviderId: provider.id });
       }
       closeModal();
@@ -279,23 +328,47 @@ export default function ModelCenter() {
     providers: settings.providers.map((item) => item.id === provider.id ? { ...item, enabled: item.enabled === false } : item),
   });
 
+  // W3：扫描本机推理运行时（loopback 端口探测，免密钥，数据不出机器）
+  const scanLocalRuntimes = async () => {
+    if (scanningRuntimes) return;
+    setScanningRuntimes(true);
+    try {
+      setLocalRuntimes(await detectLocalRuntimes());
+    } finally {
+      setScanningRuntimes(false);
+    }
+  };
+
   const formTitle = editingId ? '编辑模型' : draft?.providerKey === 'custom' ? '自定义模型' : '通过服务商添加';
 
   return <div className="model-center">
     <section className="model-center__intro">
-      <div><span className="settings-kicker">MODEL MANAGEMENT</span><h3>模型管理</h3><p>选择服务商并配置 API Key 即可在聊天中使用，浏览器只保留密钥掩码。</p></div>
+      <div><span className="settings-kicker">MODEL MANAGEMENT</span><h3>模型管理</h3><p>选择服务商并配置 API Key 即可在聊天中使用，浏览器只保留密钥掩码。{overriddenPrompts > 0 ? ` Prompt 模板：${overriddenPrompts} 个已被 .lattice/prompts 自定义覆盖。` : ''}</p></div>
       <button type="button" className="btn btn--primary" onClick={openProviderChooser}>＋ 添加模型</button>
     </section>
     <section className="model-center__table" aria-label="模型列表">
       <div className="model-center__thead"><strong>模型</strong><strong>服务商</strong><strong>操作</strong></div>
       {settings.providers.length
-        ? settings.providers.map((provider) => <CustomModelRow key={provider.id} provider={provider} active={provider.id === settings.activeProviderId} onUse={() => saveAiSettings({ ...settings, activeProviderId: provider.id })} onEdit={() => openEdit(provider)} onRemove={() => removeProvider(provider)} onToggle={() => toggleProvider(provider)} />)
+        ? settings.providers.map((provider) => <CustomModelRow key={provider.id} provider={provider} active={provider.id === settings.activeProviderId} modelInfoIndex={modelInfoIndex} onUse={() => saveAiSettings({ ...settings, activeProviderId: provider.id })} onEdit={() => openEdit(provider)} onRemove={() => removeProvider(provider)} onToggle={() => toggleProvider(provider)} />)
         : <div className="model-center__empty"><strong>还没有模型</strong><p>点击右上角“添加模型”，选择服务商并填写 API Key。</p></div>}
     </section>
     {addStep ? <Modal open title={addStep === 'chooser' ? '添加模型' : formTitle} ariaLabel={addStep === 'chooser' ? '添加模型' : formTitle} onClose={closeModal} className="model-center__modal">
       {addStep === 'chooser'
-        ? <ProviderChooser onChoose={openProviderForm} onClose={closeModal} />
-        : <CustomModelForm key={`${draft!.providerKey}-${editingId ?? 'new'}`} draft={draft as ModelDraft} editing={Boolean(editingId)} error={formError} onChange={updateDraft} onSwitchProvider={switchDraftProvider} onSubmit={submitProvider} onTest={runConnectivityTest} testing={testing} saving={saving} testResult={testResult} onBack={() => { setFormError(''); setTestResult(null); setAddStep('chooser'); }} onReset={() => { setTestResult(null); setDraft((current) => ({ ...(current as ModelDraft), endpoint: '', model: '', name: '', apiKey: '' })); }} />}
+        ? <ProviderChooser
+            entries={catalogEntries}
+            localRuntimes={localRuntimes}
+            scanning={scanningRuntimes}
+            onScanLocal={scanLocalRuntimes}
+            onChoose={openProviderForm}
+            onPickLocalModel={(endpoint, modelId) => {
+              const local = catalogEntries.find((entry) => entry.local && entry.endpoint === endpoint)
+                ?? catalogEntries.find((entry) => entry.local)
+                ?? PROVIDERS.find((entry) => entry.key === 'ollama');
+              if (local) openProviderForm(local, modelId);
+            }}
+            onClose={closeModal}
+          />
+        : <CustomModelForm key={`${draft!.providerKey}-${editingId ?? 'new'}`} draft={draft as ModelDraft} editing={Boolean(editingId)} error={formError} onChange={updateDraft} onSwitchProvider={switchDraftProvider} onSubmit={submitProvider} onTest={runConnectivityTest} testing={testing} saving={saving} testResult={testResult} onDiscoverModels={discoverProviderModels} onBack={() => { setFormError(''); setTestResult(null); setAddStep('chooser'); }} onReset={() => { setTestResult(null); setDraft((current) => ({ ...(current as ModelDraft), endpoint: '', model: '', name: '', apiKey: '' })); }} />}
     </Modal> : null}
     <SmallModelSection settings={settings} />
     <EmbeddingSection settings={settings} />
@@ -542,15 +615,17 @@ function TrashIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>;
 }
 
-function CustomModelRow({ provider, active, onUse, onEdit, onRemove, onToggle }: CustomModelRowProps) {
+function CustomModelRow({ provider, active, modelInfoIndex, onUse, onEdit, onRemove, onToggle }: CustomModelRowProps) {
   const match = findProviderByService(provider.service);
   const ready = Boolean(provider.endpoint && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint)) && provider.model);
+  const isLocal = isLoopbackEndpoint(provider.endpoint);
+  const openWeights = modelInfoIndex.get(provider.model.trim().toLowerCase())?.openWeights === true;
   return <div
     className={`model-center__row ${provider.enabled === false ? 'is-disabled' : ''} ${active ? 'is-active' : ''}`}
     onClick={onUse}
     title={active ? '当前使用的模型' : '点击设为当前使用'}
   >
-    <div className="model-center__model-cell"><ProviderLogo logo={match.logo} /><div className="model-center__name"><span className="model-center__name-title"><strong>{provider.name || provider.model || '未命名模型'}</strong>{active ? <span className="model-center__pill model-center__pill--active">使用中</span> : null}</span><small>{provider.model || '未填写模型 ID'}</small></div></div>
+    <div className="model-center__model-cell"><ProviderLogo logo={match.logo} /><div className="model-center__name"><span className="model-center__name-title"><strong>{provider.name || provider.model || '未命名模型'}</strong>{active ? <span className="model-center__pill model-center__pill--active">使用中</span> : null}{isLocal ? <span className="model-center__pill model-center__pill--local" title="本机推理端点，数据不出机器">本机</span> : null}{openWeights ? <span className="model-center__pill model-center__pill--open" title="开放权重模型（GitHub/HuggingFace 可得）">开放权重</span> : null}</span><small>{provider.model || '未填写模型 ID'}</small></div></div>
     <span className="model-center__service"><span className="model-center__service-name">{provider.service || CUSTOM_SERVICE}</span><span className={`model-center__pill ${ready ? 'model-center__pill--ready' : 'model-center__pill--pending'}`}>{ready ? '已配置' : '待完善'}</span></span>
     <div className="model-center__actions" onClick={(event) => event.stopPropagation()}>
       <button type="button" className="model-center__icon" onClick={onEdit} aria-label={`编辑 ${provider.name || '模型'}`} title="编辑"><PencilIcon /></button>
@@ -560,20 +635,36 @@ function CustomModelRow({ provider, active, onUse, onEdit, onRemove, onToggle }:
   </div>;
 }
 
-function ProviderChooser({ onChoose, onClose }: ProviderChooserProps) {
+function ProviderChooser({ entries, localRuntimes, scanning, onScanLocal, onChoose, onPickLocalModel, onClose }: ProviderChooserProps) {
   const [query, setQuery] = useState('');
   const keyword = query.trim().toLowerCase();
   const matches = (provider: AiProviderCatalogEntry) => !keyword || `${provider.label} ${provider.description}`.toLowerCase().includes(keyword);
-  const custom = PROVIDERS[0];
-  const providers = PROVIDERS.slice(1).filter(matches);
+  const custom = entries[0];
+  const providers = entries.slice(1).filter(matches);
   const customVisible = matches(custom);
 
   return <div className="model-center__chooser">
     <header><h3>添加模型</h3><button type="button" className="model-center__close" onClick={onClose} aria-label="关闭">×</button></header>
     <label className="model-center__search"><span aria-hidden="true">⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索服务商..." aria-label="搜索服务商" /></label>
+    <section className="model-center__local-scan" aria-label="本机运行时">
+      <div className="model-center__local-scan-head">
+        <span>本机运行时 · 数据不出机器</span>
+        <button type="button" className="btn btn--sm" onClick={onScanLocal} disabled={scanning}>{scanning ? '扫描中…' : '扫描本机'}</button>
+      </div>
+      {localRuntimes === null
+        ? <small className="model-center__local-hint">已安装 Ollama / LM Studio 等本地推理？点击「扫描本机」自动发现已下载的模型，一键导入。</small>
+        : localRuntimes.length === 0
+          ? <small className="model-center__local-hint">未发现本机运行时。可先安装 Ollama 并拉取模型，或从下方选择云端服务商。</small>
+          : localRuntimes.map((runtime) => <div className="model-center__local-runtime" key={runtime.endpoint}>
+              <strong>{runtime.kind} · {runtime.endpoint}</strong>
+              <div className="model-center__local-models">
+                {runtime.models.map((model) => <button type="button" key={model.id} onClick={() => onPickLocalModel(runtime.endpoint, model.id)} title={model.label ?? model.id}>{model.id}</button>)}
+              </div>
+            </div>)}
+    </section>
     {customVisible ? <button type="button" className="model-center__provider model-center__provider--wide" onClick={() => onChoose(custom)}><ProviderLogo logo={custom.logo} className="provider-logo--card" /><span><strong>{custom.label}</strong><small>{custom.description}</small></span><b>›</b></button> : null}
     {providers.length
-      ? <div className="model-center__provider-grid">{providers.map((provider) => <button type="button" className="model-center__provider" key={provider.key} onClick={() => onChoose(provider)}><ProviderLogo logo={provider.logo} className="provider-logo--card" /><span><strong>{provider.label}</strong><small>{provider.description}</small></span><b>›</b></button>)}</div>
+      ? <div className="model-center__provider-grid">{providers.map((provider) => <button type="button" className="model-center__provider" key={provider.key} onClick={() => onChoose(provider)}><ProviderLogo logo={provider.logo} className="provider-logo--card" /><span><strong>{provider.label}{provider.local ? <em className="model-center__local-mark">本机</em> : null}</strong><small>{provider.description}</small></span><b>›</b></button>)}</div>
       : <p className="model-center__no-match">没有匹配的服务商，试试“自定义模型”。</p>}
   </div>;
 }
@@ -586,21 +677,52 @@ function EyeOffIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10.7 5.2A10.6 10.6 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-2.2 3M6.5 6.5A16.9 16.9 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.5-1.7" /><path d="m3 3 18 18" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>;
 }
 
-function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, onSubmit, onTest, testing = false, saving = false, testResult = null, onBack, onReset }: CustomModelFormProps) {
+function CustomModelForm({ draft, editing, error, onChange, onSwitchProvider, onSubmit, onTest, testing = false, saving = false, testResult = null, onDiscoverModels, onBack, onReset }: CustomModelFormProps) {
   const suggestionsId = 'model-center__model-suggestions';
   const isCustom = draft.providerKey === 'custom';
   const knownModels = draft.providerModels ?? [];
   const [showKey, setShowKey] = useState(false);
   const [useCustomModel, setUseCustomModel] = useState(editing && Boolean(draft.model) && !knownModels.includes(draft.model));
+  // W3：按端点动态拉取真实模型清单；失败回退手填，不阻塞保存
+  const [discovered, setDiscovered] = useState<string[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverError, setDiscoverError] = useState('');
+  const modelOptions = [...new Set([...knownModels, ...discovered])];
+
+  useEffect(() => {
+    setDiscovered([]);
+    setDiscoverError('');
+  }, [draft.endpoint, draft.providerKey]);
+
+  const runDiscover = async () => {
+    if (!onDiscoverModels || discovering) return;
+    setDiscovering(true);
+    setDiscoverError('');
+    try {
+      const models = await onDiscoverModels(draft.endpoint.trim(), draft.apiKey.trim(), draft.authHeader);
+      setDiscovered(models.map((item) => item.id).filter(Boolean));
+      if (!models.length) setDiscoverError('服务未返回模型清单，请手填模型 ID。');
+    } catch (requestError) {
+      setDiscovered([]);
+      setDiscoverError((requestError as Error)?.message || '获取模型列表失败，请手填模型 ID。');
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const discoverAction = draft.endpoint.trim() && onDiscoverModels
+    ? <button type="button" className="model-center__key-link" onClick={runDiscover} disabled={discovering}>{discovering ? '获取中…' : '获取模型列表'}</button>
+    : null;
+  const discoverHint = discoverError ? <small className="model-center__label-hint">{discoverError}</small> : null;
 
   const endpointInput = <input value={draft.endpoint} onChange={(event) => onChange({ endpoint: event.target.value })} placeholder="例如 https://api.openai.com/v1" />;
 
   const modelField = isCustom
-    ? <label><em>*</em> 模型 ID<input value={draft.model} onChange={(event) => onChange({ model: event.target.value })} placeholder="输入模型 ID" list={suggestionsId} /><datalist id={suggestionsId}>{knownModels.map((model) => <option value={model} key={model} />)}</datalist></label>
-    : <label><span className="model-center__label-row"><span><em>*</em> 模型</span>{useCustomModel && knownModels.length ? <button type="button" className="model-center__key-link" onClick={() => setUseCustomModel(false)}>从列表选择</button> : null}</span>
-        {knownModels.length && !useCustomModel
-          ? <select value={draft.model} onChange={(event) => event.target.value === '__custom__' ? (setUseCustomModel(true), onChange({ model: '' })) : onChange({ model: event.target.value })}><option value="" disabled>选择模型</option>{knownModels.map((model) => <option value={model} key={model}>{model}</option>)}<option value="__custom__">自定义模型 ID…</option></select>
-          : <input value={draft.model} onChange={(event) => onChange({ model: event.target.value })} placeholder="输入模型 ID" />}</label>;
+    ? <label><span className="model-center__label-row"><span><em>*</em> 模型 ID</span>{discoverAction}</span><input value={draft.model} onChange={(event) => onChange({ model: event.target.value })} placeholder="输入模型 ID" list={suggestionsId} /><datalist id={suggestionsId}>{modelOptions.map((model) => <option value={model} key={model} />)}</datalist>{discoverHint}</label>
+    : <label><span className="model-center__label-row"><span><em>*</em> 模型</span>{useCustomModel && modelOptions.length ? <button type="button" className="model-center__key-link" onClick={() => setUseCustomModel(false)}>从列表选择</button> : null}{discoverAction}</span>
+        {modelOptions.length && !useCustomModel
+          ? <select value={draft.model} onChange={(event) => event.target.value === '__custom__' ? (setUseCustomModel(true), onChange({ model: '' })) : onChange({ model: event.target.value })}><option value="" disabled>选择模型</option>{modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}<option value="__custom__">自定义模型 ID…</option></select>
+          : <input value={draft.model} onChange={(event) => onChange({ model: event.target.value })} placeholder="输入模型 ID" />}{discoverHint}</label>;
 
   const nameField = <label>模型展示名称<span className="model-center__label-hint">在模型列表中展示的名称，未设置时默认显示 Model ID。</span><input value={draft.name} onChange={(event) => onChange({ name: event.target.value })} placeholder="请输入模型展示名称" maxLength={64} /></label>;
 

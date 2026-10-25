@@ -13,6 +13,8 @@ export interface AiProviderConfig {
   enabled: boolean;
   /** 只有通过「连通性测试」的配置才为 true；界面据此区分「已配置」和「已连接」 */
   verified?: boolean;
+  /** W7c 能力实测：probe 确认端点/模型接受工具调用面。false → 任务模式置灰（能力协商链） */
+  nativeTools?: boolean;
   temperature?: number;
   maxTokens?: number;
   contextWindowTokens?: number;
@@ -177,7 +179,11 @@ export function hasSmallModel(settings?: AiSettings | null): boolean {
 
 export function hasExternalAi(settings?: AiSettings | null): boolean {
   const provider = getActiveAiProvider(settings);
-  return Boolean(provider?.enabled !== false && provider?.endpoint?.trim() && (provider?.apiKey?.trim() || isLocalOllamaEndpoint(provider?.endpoint)) && provider?.model?.trim());
+  if (!provider || provider.enabled === false || !provider.endpoint?.trim() || !provider.model?.trim()) return false;
+  if (isLocalOllamaEndpoint(provider.endpoint)) return true;
+  // 掩码不等于可用：真实 Key 只认内存映射或明文值（重启后只剩掩码时按未配置处理）
+  const apiKey = volatileProviderKeys.get(provider.id) ?? (isActualApiKey(provider.apiKey) ? provider.apiKey : '');
+  return Boolean(apiKey);
 }
 
 export function hasEmbeddingAi(settings?: AiSettings | null): boolean {
@@ -414,6 +420,8 @@ function normalizeProvider(value: any): AiProviderConfig | null {
     enabled: value.enabled !== false,
     // 只有通过「连通性测试」的配置才允许标记为 verified；界面据此区分「已配置」和「已连接」
     verified: value.verified === true,
+    // W7c：probe 实测的工具能力（易失，重启后随下次探测刷新；与服务端无关）
+    ...(value.nativeTools === true || value.nativeTools === false ? { nativeTools: value.nativeTools === true } : {}),
     // 高级参数（缺省 undefined = 沿用服务端默认）；随配置一并同步到服务端
     ...(Number.isFinite(Number(value.temperature)) ? { temperature: Math.min(Math.max(Number(value.temperature), 0), 2) } : {}),
     ...(Number.isFinite(Number(value.maxTokens)) && Number(value.maxTokens) >= 1 ? { maxTokens: Math.floor(Number(value.maxTokens)) } : {}),

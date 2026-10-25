@@ -62,4 +62,29 @@ const preserved = longHistory.blocks.find((item) => item.id === 'history-preserv
 assert.ok(preserved?.compressed);
 assert.match(preserved?.content ?? '', /必须使用表格/);
 assert.match(preserved?.content ?? '', /完成桌面端验收/);
-console.log('AI context tests passed');
+
+// ── W6 双侧夹具：与 Rust ai::core::context::ContextComposer 读同一份 JSON，逐字节互证 ──
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const sharedFixture = JSON.parse(readFileSync(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src-tauri', 'tests', 'fixtures', 'context-serialization.json'),
+  'utf8',
+));
+for (const item of sharedFixture.cases) {
+  const pack = buildAiContext({
+    system: item.input.system,
+    tools: (item.input.tools ?? []).map((tool) => JSON.parse(tool.serialized)),
+    memory: item.input.memory,
+    retrieval: item.input.retrieval,
+    history: item.input.history,
+    attachments: item.input.attachments,
+    external: item.input.external,
+  }, { maxTokens: item.maxTokens });
+  assert.equal(serializeAiContext(pack), item.expected.serialized, `${item.name}: serialized 与冻结契约不一致`);
+  assert.deepEqual(pack.blocks.map((block) => block.id), item.expected.blockIds, `${item.name}: 块序不一致`);
+  assert.equal(pack.truncated, item.expected.truncated, `${item.name}: truncated 不一致`);
+  assert.equal(pack.compressedHistory, item.expected.compressedHistory, `${item.name}: compressedHistory 不一致`);
+  assert.equal(pack.estimatedTokens, item.expected.estimatedTokens, `${item.name}: estimatedTokens 不一致`);
+}
+console.log('AI context tests passed（含 W6 双侧共享夹具）');

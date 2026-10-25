@@ -44,5 +44,23 @@ test('keeps task and quick budgets distinct', () => {
   assert.ok(buildAiAgentBudget('task').maxDurationMs > buildAiAgentBudget('quick').maxDurationMs);
 });
 
-console.log('AI policy tests passed');
+// ── W7a 双侧夹具：与 Rust ai::core::agent::risk 读同一份 JSON，逐字段互证 ──
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const riskFixture = JSON.parse(readFileSync(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src-tauri', 'tests', 'fixtures', 'risk-classification.json'),
+  'utf8',
+));
+test('risk classification matches the frozen shared contract', () => {
+  for (const item of riskFixture.cases) {
+    const assessment = classifyAiWriteRisk(item.action, { batchSize: item.batchSize });
+    assert.equal(assessment.level, item.expected.level, `${item.name}: level 不一致`);
+    assert.equal(assessment.reversible, item.expected.reversible, `${item.name}: reversible 不一致`);
+    assert.equal(assessment.requiresConfirmation, item.expected.requiresConfirmation, `${item.name}: requiresConfirmation 不一致`);
+    assert.equal(assessment.reason, item.expected.reason, `${item.name}: reason 不一致`);
+  }
+});
+
+console.log('AI policy tests passed（含 W7a 双侧共享夹具）');
 

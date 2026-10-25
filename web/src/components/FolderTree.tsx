@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, DragEvent as ReactDragEvent } from 'react';
-import ContextMenu from '../ui/ContextMenu.jsx';
+import ContextMenu from '../ui/ContextMenu.tsx';
 import { nextFolderName } from '../lib/folder-naming.ts';
 import { canvasDisplayName, toCanvasFileName } from '../lib/canvas-naming.ts';
 import type { MenuItemDef } from '../ui/Menu.tsx';

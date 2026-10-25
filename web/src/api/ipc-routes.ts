@@ -276,6 +276,11 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
   { method: 'POST', path: '/ai/test', command: 'ai_provider_test',
     args: (ctx) => ({ request: obj(ctx) }),
     note: '桌面端直接用内存 Provider 配置探测聊天或 embedding endpoint，不落盘请求正文和响应正文' },
+  { method: 'GET', path: '/ai/settings', command: 'ai_settings_get',
+    note: 'SQLite 只存脱敏文档（Key 恒为 masked:尾四位掩码）；providers 附 keyAvailable（env 密钥可解析）' },
+  { method: 'PUT', path: '/ai/settings', command: 'ai_settings_set',
+    args: (ctx) => ({ document: obj(ctx) }),
+    note: 'W1：Rust 边界白名单脱敏——真实 Key 只留掩码；载荷缺 apiKey 时沿用旧掩码（编辑留空保持不变）' },
   { method: 'GET', path: '/ai/index/status', command: 'vault_index_stats',
     envelope: (value) => {
       const stats = value && typeof value === 'object' ? value as { notes?: unknown; dbBytes?: unknown } : {};

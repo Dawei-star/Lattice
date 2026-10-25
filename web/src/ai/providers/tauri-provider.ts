@@ -36,6 +36,10 @@ export interface TauriAiRunClient {
   checkpoint: (runId: string, checkpoint: unknown) => Promise<TauriAiRunRecord | null>;
   cancel: (runId: string) => Promise<TauriAiRunRecord | null>;
   resume: (runId: string, request?: AiProviderRequest) => Promise<TauriAiRunRecord | null>;
+  /** W7c 确认下沉：对挂起的写批次裁决，内核执行（或记录拒绝）并重新入队续跑。 */
+  confirm: (runId: string, approved: boolean, secondConfirmed: boolean, approvedCallIds?: string[]) => Promise<TauriAiRunRecord | null>;
+  /** U3 反馈进 trace：👍/👎 落为 run 的 feedback 事件。 */
+  feedback: (runId: string, rating: 'up' | 'down') => Promise<void>;
 }
 
 /**
@@ -101,6 +105,8 @@ export function createTauriDurableRunClient(input: {
   eventsCommand?: string;
   cancelCommand?: string;
   resumeCommand?: string;
+  confirmCommand?: string;
+  feedbackCommand?: string;
 }): TauriAiRunClient {
   return {
     enqueue: (request: AiProviderRequest) => input.invoke(input.enqueueCommand ?? 'ai_run_enqueue', { request }) as Promise<TauriAiRunRecord>,
@@ -116,6 +122,16 @@ export function createTauriDurableRunClient(input: {
       runId,
       ...(request ? { request } : {}),
     }) as Promise<TauriAiRunRecord | null>,
+    confirm: (runId: string, approved: boolean, secondConfirmed: boolean, approvedCallIds?: string[]) => input.invoke(input.confirmCommand ?? 'ai_run_confirm', {
+      runId,
+      approved,
+      secondConfirmed,
+      ...(approvedCallIds?.length ? { approvedCallIds } : {}),
+    }) as Promise<TauriAiRunRecord | null>,
+    feedback: (runId: string, rating: 'up' | 'down') => input.invoke(input.feedbackCommand ?? 'ai_run_feedback', {
+      runId,
+      rating,
+    }).then(() => undefined),
   };
 }
 

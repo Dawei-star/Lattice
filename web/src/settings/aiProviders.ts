@@ -1,5 +1,17 @@
 // 服务商目录：供“添加模型”弹窗与模型列表展示品牌 Logo、默认接口地址和常用模型建议。
 
+/** 目录模型能力详情（W3，来自内核 ai_models_catalog：上下文/工具/思考流/开放权重/价格）。 */
+export interface AiCatalogModelInfo {
+  id: string;
+  contextWindowTokens?: number;
+  nativeTools?: boolean;
+  vision?: boolean;
+  reasoning?: string;
+  openWeights?: boolean;
+  promptCostPer1kUsd?: number;
+  completionCostPer1kUsd?: number;
+}
+
 /** 服务商目录条目。 */
 export interface AiProviderCatalogEntry {
   key: string;
@@ -10,6 +22,10 @@ export interface AiProviderCatalogEntry {
   models: string[];
   keyUrl?: string;
   hint?: string;
+  /** 本机运行时（loopback、免密钥）——徽标「本机 · 数据不出机器」 */
+  local?: boolean;
+  /** 模型能力详情（W3 目录），供徽标与能力展示 */
+  modelInfo?: AiCatalogModelInfo[];
 }
 
 const LOGO = (name: string): string => `/provider-logos/${name}.svg`;

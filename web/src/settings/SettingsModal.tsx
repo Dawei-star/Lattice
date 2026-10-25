@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
 import { ExternalLink, KeyRound, PlugZap, ShieldCheck } from 'lucide-react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
-import Modal from '../ui/Modal.jsx';
+import Modal from '../ui/Modal.tsx';
 import { mcpApi, type McpInfo } from '../api/mcp.ts';
 import { notesApi, type NoteDetail } from '../api/resources.ts';
 import { memoryApi, type MemoryRecord } from '../api/memory.ts';
@@ -11,9 +11,9 @@ import { resolveAttachmentPath, vaultFiles, type LatticeDesktopBridge, type Latt
 import { buildStaticSite, type StaticSiteResult } from '../lib/static-export.ts';
 import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirectory } from '../lib/static-site.ts';
 import { clearImportedTheme, importThemeFile, loadImportedTheme, type ImportedTheme } from '../lib/theme.ts';
-import { loadSettings, saveSettings, subscribeSettings, type LatticeSettings, type SettingsPatch } from './settings.js';
-import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.js';
-import { MCP_WRITE_TOOL_NAMES, loadMcpSettings, saveMcpSettings, withVisibleServers, type McpServerConfig, type McpSettings, type McpToolInfo } from './mcpSettings.js';
+import { loadSettings, saveSettings, subscribeSettings, type LatticeSettings, type SettingsPatch } from './settings.ts';
+import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.ts';
+import { MCP_WRITE_TOOL_NAMES, loadMcpSettings, saveMcpSettings, withVisibleServers, type McpServerConfig, type McpSettings, type McpToolInfo } from './mcpSettings.ts';
 import {
   MCP_MARKET_CATALOG,
   MCP_MARKET_CATEGORIES,
@@ -21,8 +21,8 @@ import {
   createServerFromMarketEntry,
   isMarketEntryInstalled,
   type McpMarketEntry,
-} from './mcpMarketplace.js';
-import ModelCenter from './ModelCenter.jsx';
+} from './mcpMarketplace.ts';
+import ModelCenter from './ModelCenter.tsx';
 import { clearAiRunMetrics, readAiRunMetrics, summarizeAiRunMetrics, type AiMetricSummary } from '../ai/run-metrics-store.ts';
 import { checkGithubReleases, type GithubReleaseInfo } from '../lib/update.ts';
 import { APP_VERSION } from '../lib/appVersion.ts';

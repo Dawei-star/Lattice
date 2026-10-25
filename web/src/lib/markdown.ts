@@ -8,11 +8,41 @@
  *   @@LATTICE_BLOCK_n@@  独占一行的块级嵌入（渲染成卡片并异步载入目标笔记）
  *   @@LATTICE_TOKEN_n@@  行内的双链 / 行内嵌入
  */
-import { marked } from 'marked';
+import { Marked, marked } from 'marked';
 import { sanitizeHtml } from './sanitize.ts';
+import { highlightCode, isHighlightLanguage, normalizeLanguageLabel } from './highlight.ts';
 
 // headerIds / mangle 在 marked v5+ 已移除，v14 传了也只是静默忽略，不再保留
 marked.setOptions({ gfm: true, breaks: false });
+
+// AI 消息专用实例：代码围栏渲染为带工具栏的增强块（语言标签/复制/换行/高亮）。
+// 笔记正文与静态导出走全局 marked 实例，输出保持 marked 默认，互不影响。
+const TOOLBAR_MARKED = new Marked({ gfm: true, breaks: false });
+TOOLBAR_MARKED.use({
+  renderer: {
+    // 兼容两种签名：v13+ 的 token 对象与旧版的 (code, lang) 位置参数
+    code(tokenOrText: unknown, legacyLang?: string): string {
+      const token = tokenOrText as { text?: unknown; lang?: unknown } | null;
+      const source = token && typeof token === 'object'
+        ? String(token.text ?? '')
+        : String(tokenOrText ?? '');
+      const langRaw = token && typeof token === 'object' ? token.lang : legacyLang;
+      const lang = normalizeLanguageLabel(String(langRaw ?? ''));
+      const codeClass = isHighlightLanguage(lang) ? `hljs language-${lang}` : '';
+      return (
+        '<div class="ai-code">' +
+        '<div class="ai-code__head">' +
+        `<span class="ai-code__lang">${lang ? escapeHtml(lang) : 'text'}</span>` +
+        '<span class="ai-code__tools">' +
+        '<button type="button" class="ai-code-wrap" aria-label="切换自动换行">换行</button>' +
+        '<button type="button" class="ai-code-copy" aria-label="复制代码">复制</button>' +
+        '</span></div>' +
+        `<pre><code${codeClass ? ` class="${codeClass}"` : ''}>${highlightCode(source.replace(/\n$/, ''), lang)}</code></pre>` +
+        '</div>\n'
+      );
+    },
+  },
+});
 
 /** 捕获组：1=是否嵌入(!)，2=目标标题，3=标题锚点，4=显示别名 */
 const WIKI_LINK = /(!?)\[\[([^[\]|#]+?)(?:#([^[\]|]+?))?(?:\|([^[\]]+?))?\]\]/g;
@@ -29,6 +59,8 @@ export interface RenderMarkdownOptions {
   resolveTitle?: (title: string) => unknown;
   /** 资源引用 → 可访问 URL（返回 null 表示无法解析） */
   resolveAsset?: ((reference: string) => string | null) | null;
+  /** AI 消息专用：代码围栏渲染为带语言标签/复制/换行工具栏的增强块（默认 false 走 marked 原样输出） */
+  codeToolbar?: boolean;
 }
 
 /** 编辑器大纲条目（start 为源文本偏移量）。 */
@@ -94,7 +126,7 @@ export function renderMarkdown(source: string | null | undefined, options: Rende
     );
   }));
 
-  const parsed = marked.parse(tokenized, { async: false });
+  const parsed = (options.codeToolbar ? TOOLBAR_MARKED : marked).parse(tokenized, { async: false });
   let html = typeof parsed === 'string' ? parsed : '';
   html = rewriteAssetUrls(html, resolveAsset);
 

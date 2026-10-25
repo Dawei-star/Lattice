@@ -7,8 +7,8 @@ import type { AiSessionSummary, AiStreamEvent, AiStreamFinalPayload } from '../a
 import { expertsApi } from '../api/experts.ts';
 import type { Expert, Skill } from '../api/experts.ts';
 import { filesApi } from '../api/files.ts';
-import { getActiveAiProvider, getActiveAiProviderRuntime, getAiProviderRouteRuntime, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.js';
-import { collectActiveMcpServers, loadMcpSettings, mergeProjectServers } from '../settings/mcpSettings.js';
+import { getActiveAiProvider, getActiveAiProviderRuntime, getAiProviderRouteRuntime, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.ts';
+import { collectActiveMcpServers, loadMcpSettings, mergeProjectServers } from '../settings/mcpSettings.ts';
 import { mcpApi } from '../api/mcp.ts';
 import type { McpServerEntry } from '../api/mcp.ts';
 import { memoryApi, type MemoryRecord } from '../api/memory.ts';
@@ -27,7 +27,10 @@ import { createAiOperationAdapter } from '../ai/ai-operation-adapter.ts';
 import { createAiOperationPlanner, isAutoExecutableL1Plan, type AiOperationPreview } from '../ai/ai-operation-planner.ts';
 import { createProviderReadTools, executeProviderReadToolCalls, isProviderReadToolCall, providerReadCallFromCheckpoint, providerReadCheckpointDescriptor, type ProviderReadExecutionResult } from '../ai/provider-read-tools.ts';
 import { createAiSessionStore } from '../ai/ai-session-store.ts';
-import { appendAiMessage, restoreAiMessages } from '../ai/ai-message-state.ts';
+import { appendAiMessage, attachRegenerateVariant, restoreAiMessages, switchMessageVariant } from '../ai/ai-message-state.ts';
+import { computeVirtualRange } from '../ai/virtual-window.ts';
+import { countDiffLines, estimateCostUsd, isLoopbackEndpoint } from '../lib/ai-output.ts';
+import type { AiFileChange } from './ai/AiFileChangesCard.tsx';
 import { createTauriDurableRunClient, createTauriDurableRunTransport } from '../ai/providers/tauri-provider.ts';
 import { createAiProviderRouterTransport } from '../ai/providers/provider-router.ts';
 import type { AiProviderRequest } from '../ai/providers/provider.ts';
@@ -41,13 +44,27 @@ import AiExecutionSummaryView from './ai/AiExecutionSummary.tsx';
 import AiSessionHistoryView from './ai/AiSessionHistory.tsx';
 import GlimMascot, { GLIM_STATES, useGlimState, type GlimState } from './GlimMascot.tsx';
 import { getClipboardImageFiles } from '../lib/clipboard.ts';
-import Modal from '../ui/Modal.jsx';
+import Modal from '../ui/Modal.tsx';
 import type { RequestOptions } from '../api/client.ts';
 import type { FolderNode, NoteProperties } from '../api/resources.ts';
 import type { NoteDetailRow, NoteIndexRow } from '../hooks/useVault.ts';
 
 /** HTTP 请求失败的常见字段（catch 变量的最小形状）。 */
 interface RequestFailure { status?: number; name?: string; message?: string; }
+
+/** 从 vault 路径派生侧栏工作区显示名：取最后一段非空路径，空则回退。 */
+function deriveWorkspaceLabel(identity: string | null | undefined): string {
+  const parts = (identity ?? '').split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] ?? '我的空间' : '我的空间';
+}
+
+/** 空态欢迎区的起步提示词：一条点击即发送。 */
+const WELCOME_PROMPTS = [
+  { icon: FileText, label: '总结当前笔记', prompt: '请总结当前笔记的要点，并列出待办。' },
+  { icon: BookOpen, label: '检索知识库', prompt: '在我的知识库里检索与当前话题相关的内容，并给出引用。' },
+  { icon: FileSearch, label: '深入研究', prompt: '研究这个问题并整理关键结论：' },
+  { icon: Sparkles, label: '规划项目', prompt: '帮我规划一个项目，给出阶段、任务清单和里程碑。' },
+] as const;
 
 /** API 响应信封（data 字段包裹）。 */
 interface HttpEnvelope { data?: unknown; [key: string]: unknown; }
@@ -103,6 +120,9 @@ interface AiMessage {
   references?: AiReference[];
   reasoning?: string;
   meta?: AiMessageMeta | null;
+  /** U3 变体切换（会话内存）：完整版本组（含当前显示版本）+ 当前显示下标 */
+  variants?: AiMessage[];
+  variantIndex?: number;
 }
 
 interface AiAction {
@@ -234,6 +254,8 @@ interface AIAssistantPanelProps {
   folders?: FolderNode[];
   activeNote?: NoteDetailRow | null;
   onOpenNote?: (noteId: string | null, target?: AiNoteNavigationTarget) => void | Promise<unknown>;
+  /** 把一条 AI 回答保存为笔记（引用自动转 [[双链]] 来源节） */
+  onSaveToNote?: (draft: { title: string; content: string }) => void | Promise<unknown>;
   onOperationComplete?: () => void | Promise<unknown>;
   initialPrompt?: string;
   initialPromptPreferModel?: boolean;
@@ -644,7 +666,7 @@ function failProgress(steps: ProgressStep[], detail: string | null | undefined):
     : step);
 }
 
-export default function AIAssistantPanel({ open, onClose, onNewChat, initialSessionId, onSessionChange, noteIndex = [], folders = [], activeNote, onOpenNote, onOperationComplete, initialPrompt = '', initialPromptPreferModel = false, onInitialPromptConsumed, expertId = 'general', expert = null, experts = [], onSelectExpert, onOpenExpertManager, onOpenSettings, workspaceIdentity = null }: AIAssistantPanelProps) {
+export default function AIAssistantPanel({ open, onClose, onNewChat, initialSessionId, onSessionChange, noteIndex = [], folders = [], activeNote, onOpenNote, onSaveToNote, onOperationComplete, initialPrompt = '', initialPromptPreferModel = false, onInitialPromptConsumed, expertId = 'general', expert = null, experts = [], onSelectExpert, onOpenExpertManager, onOpenSettings, workspaceIdentity = null }: AIAssistantPanelProps) {
   const sessionStorageKey = `${aiStorageKey(LAST_SESSION_KEY, workspaceIdentity)}:${expertId}`;
   const draftStorageKey = `${aiStorageKey(LAST_DRAFT_KEY, workspaceIdentity)}:${expertId}`;
   const storageNamespace = workspaceIdentity;
@@ -734,6 +756,18 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   const streamTextRef = useRef('');
   const streamStatusRef = useRef('');
   const reasoningRef = useRef('');
+  // U2：思考流起点（首个 reasoning 事件），流式徽标实时显示已思考时长，done 时落 meta.reasoningMs
+  const reasoningStartedAtRef = useRef(0);
+  // U2 FileChangesCard：预览构建时统计 ±行数的文件变更，随执行后续跑的 done 挂到回答 meta
+  const pendingFileChangesRef = useRef<AiFileChange[]>([]);
+  // U3 变体切换：重新生成时被替换的回答（会话内存，不进持久化会话）
+  const replacedAnswerRef = useRef<AiMessage | null>(null);
+  // U3 虚拟列表：长会话窗口化（超过阈值才启用，常规会话行为零变化）
+  const virtualScrollRef = useRef({ offset: 0, viewport: 0 });
+  const [virtualScrollTick, setVirtualScrollTick] = useState(0);
+  const measuredHeightsRef = useRef(new Map<number, number>());
+  // U3 反馈：每条回答至多一次 👍/👎（会话内存）
+  const [feedbackGivenMap, setFeedbackGivenMap] = useState<Record<string, 'up' | 'down'>>({});
   const runMetricsRef = useRef<AiRunMetrics | null>(null);
   const streamFrameRef = useRef(0);
   const stickToBottomRef = useRef(true);
@@ -771,8 +805,12 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       ? (activeTaskMode ? 'writing' : 'thinking')
       : 'idle';
   const avatarState = useGlimState(avatarBase);
+  const workspaceLabel = useMemo(() => deriveWorkspaceLabel(workspaceIdentity), [workspaceIdentity]);
   const attachmentsRequireExternalModel = attachments.length > 0 && !hasExternalAi(settings);
-  const taskModeEnabled = settings.interactionMode === 'task' || settings.autoApprove === true;
+  // W7c 能力协商：probe 实测 nativeTools=false 的模型不支持工具调用面，
+  // 任务模式显式降级（置灰 + 原因），而不是静默失败。
+  const taskModeUnsupported = activeProvider?.nativeTools === false;
+  const taskModeEnabled = (settings.interactionMode === 'task' || settings.autoApprove === true) && !taskModeUnsupported;
   const approvalLabel = taskModeEnabled ? '自动' : '为我审核';
   const activeSessionTitle = safeSessionTitle(sessions.find((session) => session.id === sessionId)?.title, '新对话');
 
@@ -1347,6 +1385,9 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     const message = String(value).trim() || (requestAttachments.length ? '请识别并分析我上传的附件。' : '');
     if (!message || (composerBusy && !options.continuation) || sendInFlightRef.current) return;
     sendInFlightRef.current = true;
+    // U2：全新发送时清掉上一轮预览遗留的文件变更（续跑/确认通道保留，供执行后挂卡）
+    if (!options.resumeRun && !options.continuation) pendingFileChangesRef.current = [];
+    reasoningStartedAtRef.current = 0;
     const preferModel = options.preferModel ?? (forceModelRef.current || settings.preferModel === true || requestAttachments.length > 0);
     if (requestAttachments.length > 0 && !hasExternalAi(settings)) {
       setAttachmentError('图片识别需要已配置的外部视觉模型。请先在模型设置中配置支持图片的模型。');
@@ -1603,6 +1644,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
           }
           else if (event.type === 'reasoning') {
             reasoningRef.current += String(event.text ?? '');
+            if (!reasoningStartedAtRef.current) reasoningStartedAtRef.current = Date.now();
             queueStreamFlush();
           }
           else if (event.type === 'round') {
@@ -1666,9 +1708,25 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       }
       durableRunCompleted = payload?.cancelled !== true;
       retryRunIdRef.current = null;
-      const providerActions = actionsFromProviderToolCalls(payload?.toolCalls);
-      const providerReadCalls = (payload?.toolCalls ?? []).filter((call) => isProviderReadToolCall(call));
-      if (payload?.toolCalls?.length) pendingToolCallsRef.current = payload.toolCalls;
+      // W7c：写轮终态由内核托管（meta.kernelManaged）——待确认写以 meta.writeRequests
+      // 为准，内核已执行/已拒绝的调用不再进入前端预览与执行；读轮交回行为不变。
+      const kernelManaged = payload?.meta?.kernelManaged === true;
+      const kernelWriteExecuted = Array.isArray(payload?.meta?.kernelWriteExecuted)
+        ? (payload.meta.kernelWriteExecuted as unknown[]).map((id) => String(id))
+        : [];
+      const writeRequestIds = Array.isArray(payload?.meta?.writeRequests)
+        ? (payload.meta.writeRequests as Array<{ id?: unknown }>)
+          .map((item) => String(item?.id ?? ''))
+          .filter(Boolean)
+        : [];
+      const providerActions = kernelManaged
+        ? actionsFromProviderToolCalls(payload?.toolCalls).filter((action) => writeRequestIds.includes(String(action.id)))
+        : actionsFromProviderToolCalls(payload?.toolCalls).filter((action) => !kernelWriteExecuted.includes(String(action.id)));
+      const providerReadCalls = kernelManaged
+        ? []
+        : (payload?.toolCalls ?? []).filter((call) => isProviderReadToolCall(call));
+      if (kernelManaged && !writeRequestIds.length) pendingToolCallsRef.current = [];
+      else if (payload?.toolCalls?.length) pendingToolCallsRef.current = payload.toolCalls;
       pendingReadToolResultsRef.current = [];
       const plannedActions = payload?.actions?.length ? payload.actions : providerActions;
       const pendingWrites = Array.isArray(plannedActions) && plannedActions.some((action) => (
@@ -1724,6 +1782,13 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
            : completeProgress(progressStepsRef.current, { awaitingConfirmation }))
          : [];
        const { progress: _serverProgress, ...metaWithoutProgress } = payload?.meta ?? {};
+       // 成本与出处：按 done 载荷的模型名回查本次路由里的供应商配置（覆盖降级命中的候选），
+       // 价格未配置时 costUsd 为 null（界面只显示 token，不估算金额）
+       const servedUsage = (payload?.meta?.usage ?? null) as { prompt_tokens?: number; completion_tokens?: number } | null;
+       const servedModel = String(payload?.meta?.model ?? '');
+       const servedProvider = getAiProviderRouteRuntime(settings).find((item) => item.model === servedModel) ?? null;
+       const modelLocal = servedProvider ? isLoopbackEndpoint(servedProvider.endpoint) : false;
+       const costUsd = servedProvider && servedUsage ? estimateCostUsd(servedUsage, servedProvider) : null;
        const assistantMeta = {
          ...metaWithoutProgress,
          taskMode,
@@ -1731,20 +1796,39 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
          awaitingConfirmation,
          ...(runMetricsRef.current ? { metrics: runMetricsRef.current } : {}),
          ...(taskMode && persistedProgress.length ? { progress: persistedProgress } : {}),
+         ...(modelLocal ? { modelLocal: true } : {}),
+         ...(costUsd !== null ? { costUsd } : {}),
+         // U2：思考流时长（首个 reasoning 事件起算；本轮无思考流则缺省）
+         ...(reasoningStartedAtRef.current ? { reasoningMs: Date.now() - reasoningStartedAtRef.current } : {}),
+         // U2 FileChangesCard：预览/执行阶段统计的文件变更挂到本轮回答
+         ...(pendingFileChangesRef.current.length ? { fileChanges: pendingFileChangesRef.current } : {}),
        };
+      pendingFileChangesRef.current = [];
       commitProgressSteps(persistedProgress);
+      // 引用兜底只在回答真的用了来源时挂载：检索注入过上下文但正文没有 [n] 标记、
+      // 模型也没显式返回 references 时，来源清单不显示（避免身份类问题挂无关引用）。
+      const assistantContent = String(payload?.reply ?? payload?.text ?? payload?.content ?? '').trim() || '未收到有效回答，请重试。';
+      const answerCitesSources = /\[\d{1,2}\]/.test(assistantContent);
       let assistant: AiMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
         // 服务端 SSE 使用 text，旧 HTTP 接口才可能返回 reply；桌面端一直走 text。
-        content: String(payload?.reply ?? payload?.text ?? payload?.content ?? '').trim() || '未收到有效回答，请重试。',
+        content: assistantContent,
         suggestions: payload?.suggestions ?? [],
         references: Array.isArray(payload?.references) && payload.references.length
           ? payload.references
-          : retrievedReferences,
+          : answerCitesSources
+            ? retrievedReferences
+            : [],
         reasoning: payload?.reasoning ?? '',
-        meta: assistantMeta,
+        meta: { ...assistantMeta, ...(isTauri() ? { runId } : {}) },
       };
+      // U3 变体切换：重新生成的回答并入被替换回答的变体组（会话内存）
+      if (options.regenerate && replacedAnswerRef.current) {
+        const group = attachRegenerateVariant(replacedAnswerRef.current.variants, replacedAnswerRef.current, assistant);
+        assistant = { ...assistant, variants: group.variants, variantIndex: group.variantIndex };
+        replacedAnswerRef.current = null;
+      }
       setAttachments([]);
       setAttachmentError('');
       if (providerReadCalls.length && !plannedActions?.length) {
@@ -1759,6 +1843,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       if (plannedActions?.length) {
         const previewResponse = await aiOperationPlanner.build(plannedActions, requestOptions, LOCAL_OWNER_ROLE, aiPermissionContext.allowedPaths);
         if (stale()) return;
+        // U2：预览构建时统计每个文件操作的 ±行数；执行后续跑的 done 挂到回答的 FileChangesCard
+        collectFileChanges(previewResponse);
         const toolCheckpoint = checkpointForPlan(toolCheckpointRef.current, previewResponse?.aiPlanHash);
         await persistToolCheckpoint({
           ...toolCheckpoint,
@@ -2149,7 +2235,47 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setRecoverableRuns((current) => current.filter((candidate) => candidate.runId !== runId));
   };
 
+  // W7c 确认下沉：对内核挂起的写批次发送裁决。内核执行（或记录拒绝）后注册续跑
+  // 请求并重新入队，这里走 resumeRun 通道回放后续事件（ai_run_resume 会跳过
+  // 重复注册与重复入队，直接续播内核续跑）。
+  const confirmProviderRun = async (approved: boolean, additionalConfirmed: boolean, approvedCallIds?: string[]) => {
+    const runId = activeRunIdRef.current;
+    if (!runId || !isTauri() || sendInFlightRef.current) return;
+    setSending(true);
+    setStreamStatus(approved ? '正在执行已确认的写操作…' : '已拒绝写操作，正在告知模型…');
+    setError('');
+    if (!approved) pendingFileChangesRef.current = [];
+    try {
+      await tauriAiRunClient.confirm(runId, approved, additionalConfirmed, approvedCallIds);
+    } catch (confirmError: any) {
+      setSending(false);
+      setStreamStatus('');
+      setError(confirmError?.message ?? '写操作确认失败，请重试');
+      return;
+    }
+    pendingToolCallsRef.current = [];
+    setPreview(null);
+    await send(approved ? '已确认写操作，请继续。' : '用户拒绝了该写操作，请调整方案。', {
+      runId,
+      resumeRun: true,
+      mode: 'task',
+      preferModel: true,
+      skipUserMessage: true,
+      attachments: [],
+      context: lastRunRequestRef.current?.context,
+    });
+  };
+
   const cancelOperationPreview = () => {
+    if (isTauri() && pendingToolCallsRef.current.length) {
+      // W7c：挂起的写批次「取消预览」改为拒绝语义——告知模型由内核续跑收尾，
+      // 不再把任务遗留成可恢复的悬挂状态。
+      pendingFileChangesRef.current = [];
+      void confirmProviderRun(false, false);
+      setPreview(null);
+      return;
+    }
+    pendingFileChangesRef.current = [];
     const runId = activeRunIdRef.current;
     if (runId) forgetDurableRun(runId, storageNamespace);
     setPreview(null);
@@ -2157,6 +2283,38 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
 
   // 重新生成最后一条回答：移除旧回答（保留 user 消息），带 regenerate 标记重发，
   // 服务端会同步移除会话里的上一轮，避免同一问题在模型上下文里出现两遍
+  // U3 虚拟列表：长会话（>60 条）窗口化渲染——只挂载可见区 ± 缓冲，其余用占位高度。
+  // 常规会话行为零变化；高度模型 = 实测回填 + 估计兜底（流式面板场景足够稳定）。
+  const VIRTUAL_THRESHOLD = 60;
+  const virtualEnabled = messages.length > VIRTUAL_THRESHOLD;
+  const virtualRange = virtualEnabled
+    ? computeVirtualRange({
+      itemCount: messages.length,
+      scrollOffset: virtualScrollRef.current.offset,
+      viewportHeight: virtualScrollRef.current.viewport || messagesRef.current?.clientHeight || 640,
+      estimatedItemHeight: 160,
+      measuredHeights: measuredHeightsRef.current,
+    })
+    : null;
+  const visibleMessages = virtualRange ? messages.slice(virtualRange.start, virtualRange.end) : messages;
+  const handleMessagesScroll = () => {
+    const container = messagesRef.current;
+    if (!container) return;
+    virtualScrollRef.current = { offset: container.scrollTop, viewport: container.clientHeight };
+    setVirtualScrollTick((tick) => tick + 1);
+  };
+  // 渲染后回填实测高度（下一帧窗口计算用）
+  useEffect(() => {
+    if (!virtualEnabled) return;
+    const container = messagesRef.current;
+    if (!container) return;
+    container.querySelectorAll<HTMLElement>('[data-message-index]').forEach((node) => {
+      const index = Number(node.dataset.messageIndex);
+      if (Number.isFinite(index) && node.offsetHeight > 0) measuredHeightsRef.current.set(index, node.offsetHeight);
+    });
+  });
+  void virtualScrollTick;
+
   const lastAssistantIndex = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       if (messages[index].role === 'assistant' && messages[index].id !== WELCOME_MESSAGE.id) return index;
@@ -2171,8 +2329,36 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       if (messages[index].role === 'user') { lastUser = messages[index]; break; }
     }
     if (!lastUser) return;
+    // U3 变体切换：旧回答不丢弃，待新回答完成后并入变体组（会话内存）
+    replacedAnswerRef.current = messages[lastAssistantIndex];
     setMessages(messages.slice(0, lastAssistantIndex));
     send(lastUser.content, { regenerate: true, skipUserMessage: true });
+  };
+
+  // U3 变体切换：在版本组内切换显示版本（组对象共享，O(1)）
+  const switchVariant = (messageId: string, index: number) => {
+    setMessages((current) => current.map((item) => {
+      if (item.id !== messageId || !item.variants) return item;
+      const switched = switchMessageVariant(item.variants, index);
+      return switched ? { ...switched } as AiMessage : item;
+    }));
+  };
+
+  // U3 反馈进 trace：👍/👎 落为 run 的 feedback 事件（每条回答至多一次）
+  const sendFeedback = async (message: AiMessage, rating: 'up' | 'down') => {
+    const runId = typeof message.meta?.runId === 'string' ? message.meta.runId : '';
+    if (!runId || !isTauri() || feedbackGivenMap[message.id]) return;
+    setFeedbackGivenMap((current) => ({ ...current, [message.id]: rating }));
+    try {
+      await tauriAiRunClient.feedback(runId, rating);
+    } catch (feedbackError: any) {
+      setFeedbackGivenMap((current) => {
+        const next = { ...current };
+        delete next[message.id];
+        return next;
+      });
+      toast.info?.(feedbackError?.message ?? '反馈发送失败');
+    }
   };
 
   const retryFailedRun = () => {
@@ -2361,8 +2547,31 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     }
   };
 
+  // U2 FileChangesCard：把预览的文件操作映射为变更卡数据（±行数按内核 diff 统计）
+  const collectFileChanges = (previewResponse: OperationPreviewData | null | undefined) => {
+    pendingFileChangesRef.current = (previewResponse?.fileOperations ?? [])
+      .map((operation) => ({
+        id: operation.id,
+        type: String(operation.originalType ?? operation.type ?? 'update'),
+        path: String(operation.path ?? operation.action?.path ?? ''),
+        targetPath: operation.targetPath ?? operation.action?.targetPath ?? null,
+        diff: operation.diff || undefined,
+        ...countDiffLines(operation.diff),
+      }))
+      .filter((change) => change.path);
+  };
+
   const executePreview = async ({ additionalConfirmed = false, actions }: { additionalConfirmed?: boolean; actions?: AiAction[] } = {}) => {
     if (!preview || preview.blocked || sending || (actions && !actions.length)) return;
+    if (isTauri() && pendingToolCallsRef.current.length) {
+      // W7c：provider run 的写执行已下沉内核——前端只发送裁决（含部分接受的调用
+      // 白名单），由 ai_run_confirm 执行并续跑；本地不再重复执行文件操作。
+      const approvedCallIds = actions
+        ? actions.map((action) => String(action.id ?? '')).filter(Boolean)
+        : undefined;
+      await confirmProviderRun(true, additionalConfirmed, approvedCallIds);
+      return;
+    }
     const executionRunId = activeRunIdRef.current ?? `operation-${Date.now()}`;
     let continuationStarted = false;
     setSending(true);
@@ -2377,6 +2586,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         setPreview(executionPreview);
         throw new Error('已接受的操作当前不可执行，请更新预览');
       }
+      collectFileChanges(executionPreview);
       const toolCheckpoint = checkpointForPlan(toolCheckpointRef.current, executionPreview.aiPlanHash);
       await persistToolCheckpoint({
         ...toolCheckpoint,
@@ -2568,6 +2778,13 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     }
   };
 
+  // U2：按路径打开 Vault 内笔记（FileChangesCard「打开」与执行摘要共用）
+  const openPathInVault = (path: string) => {
+    const note = noteIndex.find((item) => item.filePath === path || item.title === path);
+    if (note) onOpenNote?.(note.id);
+    else setError(`未找到目标笔记：${path}`);
+  };
+
   const refreshOperationPreview = async (actions: AiAction[]) => {
     if (!Array.isArray(actions) || !actions.length || sending) return null;
     setSending(true);
@@ -2575,6 +2792,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setError('');
     try {
       const next = await aiOperationPlanner.build(actions, requestOptions, LOCAL_OWNER_ROLE, aiPermissionContext.allowedPaths);
+      collectFileChanges(next);
       setPreview(next);
       return next;
     } catch (requestError: any) {
@@ -2734,7 +2952,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         <div className="notion-workspace__head">
           <button type="button" className="notion-workspace__identity" onClick={onClose} title="返回知识库">
             <span className="notion-workspace__icon" aria-hidden="true">N</span>
-            <strong>yirong cao’s Space</strong>
+            <strong>{workspaceLabel}</strong>
             <ChevronDown size={14} aria-hidden="true" />
           </button>
         </div>
@@ -2884,34 +3102,65 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
               </div>
             ) : null}
 
-            <div className="ai-assistant__messages" aria-live="polite" ref={messagesRef}>
+            <div
+              className="ai-assistant__messages"
+              aria-live="polite"
+              ref={messagesRef}
+              onScroll={virtualEnabled ? handleMessagesScroll : undefined}
+            >
               {messages.length === 1 && messages[0]?.id === WELCOME_MESSAGE.id && !sending ? (
                 <div className="ai-welcome">
                   <button type="button" className="ai-welcome__avatar-button" onClick={openPersonalization} aria-label="个性化你的 Lattice AI" title="个性化你的 Lattice AI">
                     <LatticeAiAvatar size="hero" state={avatarState} />
                   </button>
+                  <p className="ai-welcome__eyebrow">Lattice AI · 格物知识库</p>
                   <h1>下一个目的地，现在启航!</h1>
+                  <p className="ai-welcome__subtitle">笔记、任务与灵感都在这里——从一条提问开始。</p>
+                  <div className="ai-welcome__prompts">
+                    {WELCOME_PROMPTS.map((item) => (
+                      <button type="button" key={item.label} disabled={composerBusy} onClick={() => send(item.prompt)}>
+                        <item.icon size={14} aria-hidden="true" />
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              ) : messages.map((message, index) => (
-                <AiMessageView
-                  key={message.id}
-                  message={message}
-                  onSuggestion={send}
-                  onOpenNote={onOpenNote}
-                  isLastAssistant={index === lastAssistantIndex}
-                  onRegenerate={regenerateLast}
-                  busy={composerBusy}
-                  onUndoExecuted={() => undoTaskModeOperations(message)}
-                  undoExecutedBusy={taskUndoBusyId === message.id}
-                  undoExecutedDone={undoneTaskMessages.has(message.id)}
-                />
-              ))}
+              ) : (
+                <>
+                  {virtualRange && virtualRange.topSpacerHeight > 0 ? <div style={{ height: virtualRange.topSpacerHeight }} aria-hidden="true" /> : null}
+                  {visibleMessages.map((message, relativeIndex) => {
+                    const index = (virtualRange?.start ?? 0) + relativeIndex;
+                    return (
+                      <div key={message.id} data-message-index={virtualRange ? index : undefined}>
+                        <AiMessageView
+                          message={message}
+                          onSuggestion={send}
+                          onOpenNote={onOpenNote}
+                          onSaveToNote={onSaveToNote}
+                          isLastAssistant={index === lastAssistantIndex}
+                          onRegenerate={regenerateLast}
+                          busy={composerBusy}
+                          onUndoExecuted={() => undoTaskModeOperations(message)}
+                          undoExecutedBusy={taskUndoBusyId === message.id}
+                          undoExecutedDone={undoneTaskMessages.has(message.id)}
+                          onOpenPath={openPathInVault}
+                          onSwitchVariant={(index) => switchVariant(message.id, index)}
+                          onFeedback={(rating) => void sendFeedback(message, rating)}
+                          feedbackGiven={feedbackGivenMap[message.id] ?? null}
+                        />
+                      </div>
+                    );
+                  })}
+                  {virtualRange && virtualRange.bottomSpacerHeight > 0 ? <div style={{ height: virtualRange.bottomSpacerHeight }} aria-hidden="true" /> : null}
+                </>
+              )}
               {sending ? (
                 <AiStreamingMessageView
                   taskMode={activeTaskMode}
                   progress={progressSteps}
                   reasoningText={reasoningText}
                   reasoningOpen={reasoningOpen}
+                  reasoningStartedAt={reasoningStartedAtRef.current || undefined}
                   streamText={displayStreamText(streamText)}
                   streamStatus={streamStatus}
                   onReasoningToggle={setReasoningOpen}
@@ -2930,11 +3179,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                   ))}
                 undoBusy={undoBusyAll}
                 onUndo={undoExecution}
-                onOpenPath={(path) => {
-                  const note = noteIndex.find((item) => item.filePath === path || item.title === path);
-                  if (note) onOpenNote?.(note.id);
-                  else setError(`未找到目标笔记：${path}`);
-                }}
+                onOpenPath={openPathInVault}
               />
             ) : null}
             {error ? (
@@ -3096,30 +3341,45 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                         <button type="button" role="menuitemradio" aria-checked={!taskModeEnabled} className={!taskModeEnabled ? 'is-selected' : ''} onClick={() => { setSettings((current) => saveAiSettings({ ...current, interactionMode: 'quick', autoApprove: false })); setComposerMenu(null); }}>
                           <span>为我审核</span><small>仅在涉及潜在不安全操作时询问我</small>{!taskModeEnabled ? <Check size={16} /> : null}
                         </button>
-                        <button type="button" className="is-warning" role="menuitemradio" aria-checked={taskModeEnabled} onClick={() => { setSettings((current) => saveAiSettings({ ...current, interactionMode: 'task', autoApprove: true, preferModel: true })); setComposerMenu(null); }}>
-                          <span>跳过所有审批</span><small>直接执行，无需询问。请谨慎使用。</small>{taskModeEnabled ? <Check size={16} /> : null}
+                        <button
+                          type="button"
+                          className="is-warning"
+                          role="menuitemradio"
+                          aria-checked={taskModeEnabled}
+                          disabled={taskModeUnsupported}
+                          title={taskModeUnsupported ? '当前模型不支持工具调用（连通性测试实测），任务模式不可用' : undefined}
+                          onClick={() => { if (taskModeUnsupported) return; setSettings((current) => saveAiSettings({ ...current, interactionMode: 'task', autoApprove: true, preferModel: true })); setComposerMenu(null); }}
+                        >
+                          <span>跳过所有审批</span><small>{taskModeUnsupported ? '当前模型不支持工具调用，任务模式不可用' : '直接执行，无需询问。请谨慎使用。'}</small>{taskModeEnabled ? <Check size={16} /> : null}
                         </button>
                       </div>
                     ) : null}
                   </div>
                   <div className="ai-assistant__composer-menu-wrap">
                     <button type="button" className={`ai-assistant__composer-picker ai-assistant__model-picker ${composerMenu === 'model' ? 'is-open' : ''}`} onClick={() => { setAttachmentMenuOpen(false); setComposerMenu((current) => current === 'model' ? null : 'model'); }} aria-expanded={composerMenu === 'model'}>
-                      <span>{activeProvider?.model && connectionState !== 'local' ? activeProvider.model : '自动'}</span><ChevronDown size={13} />
+                      <span>{settings.preferModel === true && activeProvider?.model && connectionState !== 'local' ? activeProvider.model : '自动'}</span><ChevronDown size={13} />
                     </button>
                     {composerMenu === 'model' ? (
                       <div className="ai-assistant__menu ai-assistant__menu--model" role="menu" aria-label="模型">
                         <div className="notion-model__heading"><strong>自动</strong><small>平衡速度、工作量和费用。</small></div>
-                        <span className="ai-assistant__menu-label">推荐</span>
                         <button type="button" role="menuitemradio" aria-checked={settings.preferModel !== true} className={settings.preferModel !== true ? 'is-selected' : ''} onClick={() => { if (settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>自动</span><small>平衡速度和质量</small>{settings.preferModel !== true ? <Check size={15} /> : null}</button>
-                        <button type="button" role="menuitemradio" aria-checked={settings.preferModel === true} className={settings.preferModel === true ? 'is-selected' : ''} onClick={() => { if (!settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>{activeProvider?.model || '已配置模型'}</span><small>{connectionState === 'connected' ? '已连接' : '需要配置或测试连接'}</small>{settings.preferModel === true ? <Check size={15} /> : null}</button>
-                        <span className="ai-assistant__menu-label">Claude</span>
-                        <button type="button" role="menuitem" onClick={() => { if (!settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>Sonnet 5.5</span><small>测试版</small></button>
-                        <button type="button" role="menuitem" onClick={() => { if (!settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>Haiku 5.5</span><small>新建</small></button>
-                        <span className="ai-assistant__menu-label">GPT</span>
-                        <button type="button" role="menuitem" onClick={() => { if (!settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>GPT-5.6 Terra</span></button>
-                        <span className="ai-assistant__menu-label">开放模型</span>
-                        <button type="button" role="menuitem" onClick={() => { if (!settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>DeepSeek V4.1 Flash</span><Check size={15} /></button>
-                        <button type="button" role="menuitem" onClick={() => { if (!settings.preferModel) togglePreferModel(); setComposerMenu(null); }}><Sparkles size={14} /><span>GLM 5.3</span></button>
+                        <span className="ai-assistant__menu-label">已配置模型</span>
+                        {settings.providers.filter((provider) => provider.enabled !== false).map((provider) => {
+                          const configured = Boolean(provider.endpoint?.trim() && provider.model?.trim());
+                          const isSelected = settings.preferModel === true && provider.id === settings.activeProviderId;
+                          return (
+                            <button key={provider.id} type="button" role="menuitemradio" aria-checked={isSelected} className={isSelected ? 'is-selected' : ''}
+                              onClick={() => {
+                                if (!configured) { setComposerMenu(null); onOpenSettings?.('ai'); return; }
+                                setSettings((current) => saveAiSettings({ ...current, activeProviderId: provider.id, preferModel: true }));
+                                setComposerMenu(null);
+                              }}>
+                              <Sparkles size={14} /><span>{provider.model || provider.name || '未命名模型'}</span>
+                              <small>{!configured ? '未配置' : provider.verified ? '已连接' : '需要测试连接'}</small>
+                              {isSelected ? <Check size={15} /> : null}
+                            </button>
+                          );
+                        })}
                         <button type="button" className="ai-assistant__menu-link" onClick={() => { setComposerMenu(null); onOpenSettings?.('ai'); }}>打开模型设置</button>
                       </div>
                     ) : null}

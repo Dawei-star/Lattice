@@ -860,6 +860,15 @@ export default function App() {
     }
   }, [createNote, openInTab, targetFolderId, toast]);
 
+  /** AI 面板「存为笔记」：回答正文 + 引用双链来源节，走正常创建与审计路径 */
+  const handleAiSaveToNote = useCallback(async (draft: { title: string; content: string }) => {
+    const created = await createNote({ title: draft.title, content: draft.content, folderId: targetFolderId });
+    if (!created) throw new Error('已取消创建');
+    openInTab(created.id);
+    setView('notes');
+    toast.success(`已保存为笔记「${created.title}」`);
+  }, [createNote, openInTab, targetFolderId, toast]);
+
   const handleCaptureInbox = useCallback(async ({ title, content }: { title: string; content: string }) => {
     setInboxBusy(true);
     try {
@@ -1681,6 +1690,7 @@ export default function App() {
           folders={folders}
           activeNote={activeNote}
           onOpenNote={handleOpenNote}
+          onSaveToNote={handleAiSaveToNote}
           onOperationComplete={handleAiOperationComplete}
           initialPrompt={aiInitialPrompt}
           initialPromptPreferModel

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { BookOpen, Check, Copy, Layers3, Link2, Plus, RefreshCw, Save, Search, Settings2, ShieldCheck, Sparkles, Trash2, Wrench, X } from 'lucide-react';
-import Modal from '../ui/Modal.jsx';
+import Modal from '../ui/Modal.tsx';
 import { expertsApi, type Expert as ApiExpert, type Skill as ApiSkill } from '../api/experts.ts';
 import { McpToolsCenter } from '../settings/SettingsModal.tsx';
 import type { FileConfirmationResult, FileOperationInput } from '../hooks/useFileConfirmation.tsx';

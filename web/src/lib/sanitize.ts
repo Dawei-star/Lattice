@@ -19,6 +19,8 @@ const ALLOWED_TAGS = new Set([
   'A', 'IMG',
   'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD',
   'INPUT', 'DETAILS', 'SUMMARY',
+  // 仅用于我们自己生成的 AI 代码块工具栏；on* 事件属性天然被剔除，按钮无行为
+  'BUTTON',
 ]);
 
 /** 命中即整个子树删除的标签（连内容一起丢弃） */
@@ -41,6 +43,7 @@ const TAG_ATTRS: Record<string, Set<string>> = {
   PRE: new Set(['class']),
   SPAN: new Set(['class']),
   DIV: new Set(['class']),
+  BUTTON: new Set(['type']),
   DETAILS: new Set(['open']),
 };
 
