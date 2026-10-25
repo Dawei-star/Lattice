@@ -31,6 +31,9 @@ impl std::fmt::Display for SecretStoreError {
 }
 
 /// 环境变量密钥源（只读覆盖源）。
+/// 生产路径直接消费 `env_secret`/`resolve_secret` 自由函数；本结构体与
+/// `KeyringSecretsVault` 是「新增来源 = 实现 trait」扩展缝的具名实现（地基 §5.2）。
+#[allow(dead_code)]
 pub struct EnvSecretsVault;
 
 impl SecretsVault for EnvSecretsVault {
@@ -92,6 +95,8 @@ fn keyring_entry(provider_id: &str) -> Result<keyring::Entry, SecretStoreError> 
 
 /// 系统密钥服务源（W1b）：Windows 凭据管理器 / macOS 钥匙串。
 /// 平台无可用后端时（如 Linux 未启用 feature，回退 mock store）读取恒为 None。
+/// 生产路径直接消费 `keyring_secret`/`store_secret` 自由函数（见 EnvSecretsVault 注）。
+#[allow(dead_code)]
 pub struct KeyringSecretsVault;
 
 impl SecretsVault for KeyringSecretsVault {
@@ -146,6 +151,8 @@ pub fn store_secret(provider_id: &str, secret: &str) -> Result<(), SecretStoreEr
 }
 
 /// 删除密钥服务中的条目；条本就不存在视为成功（返回 false 供调用方知悉）。
+/// 预留：provider 删除后的密钥清理 UI（keyring 无枚举 API，按 id 定点删）。
+#[allow(dead_code)]
 pub fn delete_secret(provider_id: &str) -> Result<bool, SecretStoreError> {
     let entry = keyring_entry(provider_id)?;
     match entry.delete_credential() {
