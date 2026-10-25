@@ -100,12 +100,14 @@ mod tests {
             .iter()
             .find(|service| service.key == "deepseek")
             .expect("内置目录应有 DeepSeek");
-        assert!(deepseek.models.len() >= 3);
+        assert!(deepseek.models.len() >= 2);
+        // DeepSeek API 实际接受的模型名（小写）——用户实测 400 报错原文钉死，
+        // 不用 PascalCase 的展示名/快照名（上游会 400）
         let flash = deepseek
             .models
             .iter()
-            .find(|model| model.id == "DeepSeek-V4.1-Flash")
-            .expect("应含 DeepSeek-V4.1-Flash");
+            .find(|model| model.id == "deepseek-flash")
+            .expect("应含 deepseek-flash");
         assert!(flash.capabilities.native_tools);
         assert!(flash.capabilities.open_weights);
         assert!(flash.capabilities.prompt_cost_per_1k_usd.is_some());

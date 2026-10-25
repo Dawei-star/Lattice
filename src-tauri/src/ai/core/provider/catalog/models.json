@@ -16,9 +16,8 @@
       "endpoint": "https://api.deepseek.com/chat/completions",
       "keyUrl": "https://platform.deepseek.com/api_keys",
       "models": [
-        { "id": "DeepSeek-V4.1-Flash", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00028, "completionCostPer1kUsd": 0.0011 },
-        { "id": "DeepSeek-V4-Flash", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00028, "completionCostPer1kUsd": 0.0011 },
-        { "id": "DeepSeek-V4-Pro", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.0011, "completionCostPer1kUsd": 0.0044 }
+        { "id": "deepseek-flash", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.00028, "completionCostPer1kUsd": 0.0011 },
+        { "id": "deepseek-v4-pro", "contextWindowTokens": 128000, "nativeTools": true, "reasoning": "reasoningContent", "openWeights": true, "promptCostPer1kUsd": 0.0011, "completionCostPer1kUsd": 0.0044 }
       ]
     },
     {

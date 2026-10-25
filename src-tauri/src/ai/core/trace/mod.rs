@@ -272,8 +272,8 @@ mod tests {
     #[test]
     fn cost_estimation_uses_catalog_pricing() {
         let catalog = ModelCatalog::builtin();
-        // 目录种子：DeepSeek-V4.1-Flash = 0.00028 / 0.0011
-        let cost = estimate_cost_usd(&catalog, "DeepSeek-V4.1-Flash", 1000, 1000).unwrap();
+        // 目录种子：deepseek-flash = 0.00028 / 0.0011
+        let cost = estimate_cost_usd(&catalog, "deepseek-flash", 1000, 1000).unwrap();
         assert!((cost - 0.00138).abs() < 1e-9);
         // 未入目录的模型 → None（本机/未知模型零成本显示）
         assert_eq!(estimate_cost_usd(&catalog, "unknown-model", 100, 100), None);

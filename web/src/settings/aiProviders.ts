@@ -49,7 +49,7 @@ export function isLocalOllamaEndpoint(value: string | null | undefined): boolean
 export const PROVIDERS: AiProviderCatalogEntry[] = [
   { key: 'custom', label: '自定义模型', description: 'OpenAI Compatible', logo: LOGO('custom'), endpoint: '', models: [] },
   { key: 'ollama', label: 'Ollama', description: '本机离线模型', logo: LOGO('custom'), endpoint: 'http://127.0.0.1:11434/v1', models: [], hint: '先在 Ollama 中下载模型，再填写本机模型 ID；无需 API Key。' },
-  { key: 'deepseek', label: 'DeepSeek', description: 'DeepSeek API', logo: LOGO('deepseek'), endpoint: 'https://api.deepseek.com/chat/completions', models: ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Flash', 'DeepSeek-V4-Pro'], keyUrl: 'https://platform.deepseek.com/api_keys' },
+  { key: 'deepseek', label: 'DeepSeek', description: 'DeepSeek API', logo: LOGO('deepseek'), endpoint: 'https://api.deepseek.com/chat/completions', models: ['deepseek-flash', 'deepseek-v4-pro'], keyUrl: 'https://platform.deepseek.com/api_keys' },
   { key: 'volcengine', label: '火山引擎', description: '火山方舟', logo: LOGO('volcengine'), endpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions', models: ['doubao-seed-2-1-pro-260915', 'doubao-seed-2-1-turbo-260915'], keyUrl: 'https://console.volcengine.com/ark' },
   { key: 'minimax-cn', label: 'MiniMax CN', description: 'MiniMax 国内', logo: LOGO('minimax'), endpoint: 'https://api.minimax.cn/v1/chat/completions', models: ['MiniMax-M3'], keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key' },
   { key: 'minimax-global', label: 'MiniMax Global', description: 'MiniMax Global', logo: LOGO('minimax'), endpoint: 'https://api.minimax.io/v1/chat/completions', models: ['MiniMax-M3'], keyUrl: 'https://platform.minimax.io/console/access' },
