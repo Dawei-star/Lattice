@@ -117,8 +117,29 @@ export default function ModelCenter() {
   const [localRuntimes, setLocalRuntimes] = useState<LocalRuntimeInfo[] | null>(null);
   const [scanningRuntimes, setScanningRuntimes] = useState(false);
   const [overriddenPrompts, setOverriddenPrompts] = useState(0);
+  const [storageWarning, setStorageWarning] = useState('');
 
   useEffect(() => subscribeAiSettings(setSettings), []);
+
+  // 密钥写入系统密钥服务失败时内核会在保存回执里带 secretStoreWarnings；
+  // 这里提示用户密钥未持久化，并给出环境变量兜底方式。
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ secretStoreWarnings?: Array<{ providerId?: string }> }>).detail;
+      const warnings = Array.isArray(detail?.secretStoreWarnings) ? detail.secretStoreWarnings : [];
+      if (!warnings.length) {
+        setStorageWarning('');
+        return;
+      }
+      const providers = [...new Set(warnings.map((warning) => warning.providerId).filter(Boolean))].join('、');
+      setStorageWarning(
+        `系统密钥服务不可用，${providers ? `模型 ${providers} 的` : ''}API Key 未能持久保存。`
+        + '请安装或启动 GNOME Keyring / KWallet（Secret Service），或改用环境变量 LATTICE_PROVIDER__<ID>__API_KEY 提供密钥。',
+      );
+    };
+    window.addEventListener('lattice:ai-server-sync', handler);
+    return () => window.removeEventListener('lattice:ai-server-sync', handler);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -346,6 +367,7 @@ export default function ModelCenter() {
       <div><span className="settings-kicker">MODEL MANAGEMENT</span><h3>模型管理</h3><p>选择服务商并配置 API Key 即可在聊天中使用，浏览器只保留密钥掩码。{overriddenPrompts > 0 ? ` Prompt 模板：${overriddenPrompts} 个已被 .lattice/prompts 自定义覆盖。` : ''}</p></div>
       <button type="button" className="btn btn--primary" onClick={openProviderChooser}>＋ 添加模型</button>
     </section>
+    {storageWarning ? <p className="model-center__storage-warning" role="alert">{storageWarning}</p> : null}
     <section className="model-center__table" aria-label="模型列表">
       <div className="model-center__thead"><strong>模型</strong><strong>服务商</strong><strong>操作</strong></div>
       {settings.providers.length

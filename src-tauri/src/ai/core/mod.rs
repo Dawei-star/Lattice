@@ -4,6 +4,7 @@ pub(crate) mod agent;
 pub(crate) mod config;
 pub(crate) mod context;
 pub(crate) mod expert;
+pub(crate) mod mcp;
 pub(crate) mod prompt;
 pub(crate) mod provider;
 pub(crate) mod trace;

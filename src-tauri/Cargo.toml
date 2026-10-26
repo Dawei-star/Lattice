@@ -1,6 +1,6 @@
 [package]
 name = "lattice"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first knowledge workspace"
 license = "MulanPSL-2.0"
 repository = "https://github.com/Dawei-star/Lattice"
@@ -42,6 +42,19 @@ regex = "1"
 # 不依赖系统 sqlite3.dll，符合「零外部依赖」的本地优先目标。
 rusqlite = { version = "0.40", features = ["bundled"] }
 # OpenAI-compatible desktop streaming; API keys are used in memory only.
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "default-tls"] }
-# W1b 密钥服务：Windows 凭据管理器 / macOS 钥匙串（linux 无 feature 时回退 mock，读取恒空）
-keyring = { version = "3", features = ["windows-native", "apple-native"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "default-tls", "query"] }
+# W1b 密钥服务：Windows 凭据管理器 / macOS 钥匙串 /
+# Linux Secret Service（zbus 同步持久后端；crypto-rust 避免引入 libssl）
+keyring = { version = "3", features = [
+    "windows-native",
+    "apple-native",
+    "linux-native-sync-persistent",
+    "crypto-rust",
+] }
+rmcp = { version = "3.7.0", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "which-command",
+] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "process", "io-util", "time", "sync", "macros"] }

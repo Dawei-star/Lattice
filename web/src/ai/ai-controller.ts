@@ -122,6 +122,7 @@ export function planAiRequest(input: AiControllerInput): AiControllerPlan {
     mcpServers: input.mcpServers,
     regenerate: input.regenerate,
     attachments: input.attachments,
+    invokedSkills: input.invokedSkills,
   }));
   return { request, routing, budget };
 }

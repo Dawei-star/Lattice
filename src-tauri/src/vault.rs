@@ -199,7 +199,7 @@ impl Vault {
     pub fn save_profile(&self, profile: serde_json::Value) -> Result<VaultInfo, String> {
         let normalized = normalize_profile(&profile)?;
         let directory = self.root.join(".lattice");
-        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        crate::fs_perm::create_private_dir(&directory).map_err(|error| error.to_string())?;
         let mut temporary = NamedTempFile::new_in(&directory).map_err(|error| error.to_string())?;
         let raw = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
         temporary
@@ -363,6 +363,7 @@ impl Vault {
             return Err("Note was removed before saving".into());
         }
         let parent = path.parent().ok_or("Invalid note path")?;
+        let previous_mode = crate::fs_perm::existing_mode(&path);
         let mut temporary = NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
         temporary
             .write_all(raw.as_bytes())
@@ -374,6 +375,7 @@ impl Vault {
         temporary
             .persist(&path)
             .map_err(|error| error.to_string())?;
+        crate::fs_perm::restore_written_mode(&path, previous_mode);
         Ok(NoteContents {
             path: relative.into(),
             sha256: checksum(raw.as_bytes()),
@@ -657,9 +659,26 @@ mod tests {
         assert_eq!(vault.read("notes/first.md").unwrap().raw, "second");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn excludes_internal_paths_and_rejects_traversal() {
+    fn note_write_uses_0644_for_new_files_and_keeps_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
+        let vault = Vault::open(directory.path().into()).unwrap();
+        vault.write("note.md", "first", None).unwrap();
+        let path = directory.path().join("note.md");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, crate::fs_perm::new_file_mode());
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let first = vault.read("note.md").unwrap();
+        vault.write("note.md", "second", Some(&first.sha256)).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "覆盖写保留原有 mode");
+    }
+
+    #[test]
+    fn excludes_internal_paths_and_rejects_traversal() {        let directory = tempfile::tempdir().unwrap();
         let vault = Vault::open(directory.path().into()).unwrap();
         std::fs::create_dir(directory.path().join(".lattice")).unwrap();
         std::fs::write(directory.path().join(".lattice/private.md"), "secret").unwrap();

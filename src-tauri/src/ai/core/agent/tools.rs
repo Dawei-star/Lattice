@@ -142,6 +142,18 @@ pub fn execute_read_call(workspace: &WorkspaceService, call: &PendingCall) -> Va
     }
 }
 
+/// 执行 MCP 工具调用（`mcp__<server>__<tool>`）：结果与读工具同形状，
+/// 失败也只回填不中断 run；`sink` 用于把 elicitation 表单转发给当前 run。
+pub fn execute_mcp_call(
+    call: &PendingCall,
+    sink: Option<crate::ai::core::mcp::client::ElicitationSink>,
+) -> Value {
+    match crate::ai::core::mcp::client::call_external(&call.name, &call.input, sink) {
+        Ok(value) => bounded_json(value),
+        Err(error) => failed(error),
+    }
+}
+
 fn bounded_json(value: Value) -> Value {
     let serialized = value.to_string();
     if serialized.chars().count() <= MAX_RESULT_CHARS {

@@ -241,7 +241,8 @@ export function mergeProjectServers(userServers: unknown, projectServers: unknow
 
 /**
  * 挑出「配置完整且已启用」的外部 MCP Server，整理为 AI 请求中的连接配置。
- * 当前 Rust AI 运行时不会据此启动外部进程；真正的工具调用需等待受控 MCP sidecar。
+ * 请求会随 run 传给 Rust 运行时：stdio 条目按 command 拉起子进程，
+ * 带 url 的条目（UI 仍叫 sse）走 Streamable HTTP（E4）。
  *
  * 内置 Lattice Server 不带：助手对知识库的原生工具（检索/读取/写操作）与之完全重叠，
  * 没有必要再为同样的能力记录一份外部进程配置。
@@ -272,6 +273,80 @@ export function collectActiveMcpServers(settings: McpSettings | null = null): Mc
     });
   }
   return out.slice(0, 8);
+}
+
+/** 解析 `mcpServers` 粘贴导入的结果（E3：Claude Desktop / Cursor 同形配置）。 */
+export interface McpConfigImportResult {
+  servers: McpServerConfig[];
+  /** 同名已存在或缺少 command / url 的 key */
+  skipped: string[];
+  error: string;
+}
+
+/**
+ * 粘贴导入：接受完整 `{ "mcpServers": {...} }` 或裸 map（Claude Desktop / Cursor 同形）。
+ * 已存在的同 key 跳过；超过 8 个上限只取前 8 个，避免一次导入撑爆工具面。
+ */
+export function parseClaudeMcpConfig(text: string, existing: McpServerConfig[] = []): McpConfigImportResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { servers: [], skipped: [], error: 'JSON 解析失败，请粘贴完整的 mcpServers 配置。' };
+  }
+  const root = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  const nested = root?.mcpServers;
+  // 裸 map：每个值都是对象（Claude Desktop `mcpServers` 内层结构直接粘贴）
+  const bare = root && Object.values(root).every((value) => value && typeof value === 'object' && !Array.isArray(value));
+  const map = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)
+    : bare ? root : null;
+  if (!map || Array.isArray(map)) {
+    return { servers: [], skipped: [], error: '没有找到 mcpServers 对象。' };
+  }
+  const existingKeys = new Set(existing.map((server) => server.key));
+  const servers: McpServerConfig[] = [];
+  const skipped: string[] = [];
+  for (const [rawKey, raw] of Object.entries(map)) {
+    if (existing.length + servers.length >= 8) break;
+    const key = rawKey.trim();
+    const entry = raw && typeof raw === 'object' ? (raw as Record<string, any>) : null;
+    if (!key || !entry) continue;
+    if (existingKeys.has(key)) {
+      skipped.push(key);
+      continue;
+    }
+    const url = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url.trim()) ? entry.url.trim() : '';
+    const command = typeof entry.command === 'string' ? entry.command.trim() : '';
+    if (!command && !url) {
+      skipped.push(key);
+      continue;
+    }
+    const args = Array.isArray(entry.args) ? entry.args.filter((item: unknown) => typeof item === 'string') : [];
+    const env = entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env)
+      ? Object.fromEntries(Object.entries(entry.env).filter(([, value]) => typeof value === 'string')) as Record<string, string>
+      : {};
+    servers.push(createMcpServer({
+      key,
+      name: key,
+      description: '从 Claude Desktop / Cursor 配置导入',
+      command: command || 'node',
+      args,
+      env,
+      url,
+      transport: url ? 'sse' : 'stdio',
+      enabled: true,
+    }));
+    existingKeys.add(key);
+  }
+  if (!servers.length) {
+    return {
+      servers,
+      skipped,
+      error: skipped.length ? '同名 Server 已存在，或缺少 command / url。' : '没有可导入的 Server。',
+    };
+  }
+  return { servers, skipped, error: '' };
 }
 
 /**

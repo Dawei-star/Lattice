@@ -14,6 +14,7 @@
  * 参考实现，没有独立品牌，统一用 modelcontextprotocol 官方标识。
  */
 import { createMcpServer, withVisibleServers, type McpRequiredArg, type McpRequiredEnv, type McpServerConfig } from './mcpSettings.ts';
+import type { RegistryServerEntry } from '../api/mcp.ts';
 
 // 品牌 logo 与模型中心同一约定：静态文件放 web/public 下，用绝对路径引用。
 const LOGO = (name: string): string => `/mcp-logos/${name}.svg`;
@@ -376,6 +377,32 @@ export function createServerFromMarketEntry(entry: McpMarketEntry, context: Mark
 /** 已添加判定：命中市场固定 id，或 key 相同（含从配置文件导入的同名 Server）。 */
 export function isMarketEntryInstalled(servers: Pick<McpServerConfig, 'id' | 'key'>[] | null | undefined, entry: McpMarketEntry): boolean {
   return (servers ?? []).some((server) => server.id === MARKET_ID_PREFIX + entry.key || server.key === entry.key);
+}
+
+/**
+ * 官方 Registry 条目 → 市场条目（E3 ⑤）。
+ * Registry 只给启动命令与必需环境变量，工具清单要等首次连接后由 tools/list 填充；
+ * key 加 `registry-` 前缀，避免与 12 条静态精选撞名。
+ */
+export function marketEntryFromRegistry(entry: RegistryServerEntry): McpMarketEntry {
+  const requiredEnv: McpRequiredEnv[] = entry.requiredEnv
+    .filter((item) => item.required)
+    .map((item) => ({ name: item.name, hint: item.hint || (item.secret ? '密钥，仅保存在本机' : '启动必需的环境变量') }));
+  return {
+    key: 'registry-' + entry.key,
+    logo: LOGO('mcp'),
+    name: entry.name || entry.fullName,
+    category: '在线目录',
+    runtime: entry.command === 'uvx' ? 'python' : 'node',
+    tagline: entry.description || entry.fullName,
+    description: entry.description || '来自官方 MCP Registry 的 Server。',
+    command: entry.command,
+    args: entry.args,
+    env: {},
+    requiresEnv: requiredEnv,
+    tools: [],
+    docs: entry.docs,
+  };
 }
 
 /**

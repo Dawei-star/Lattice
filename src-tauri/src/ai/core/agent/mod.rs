@@ -44,6 +44,8 @@ pub struct ToolDescriptor {
     pub description: String,
     pub timeout_ms: u64,
     pub idempotent: bool,
+    /// 显式风险等级：仅 MCP 等外部工具声明（内置工具仍走 `classify_write_risk`）。
+    pub risk_level: Option<RiskLevel>,
 }
 
 impl ToolDescriptor {
@@ -54,6 +56,7 @@ impl ToolDescriptor {
             description: description.to_owned(),
             timeout_ms: 10_000,
             idempotent: true,
+            risk_level: None,
         }
     }
 
@@ -64,11 +67,12 @@ impl ToolDescriptor {
             description: description.to_owned(),
             timeout_ms: 30_000,
             idempotent: false,
+            risk_level: None,
         }
     }
 }
 
-/// 工具注册表：内置工具在启动时注册；MCP / 联网工具（W7b 后）运行时追加。
+/// 工具注册表：内置工具在启动时注册；MCP 工具在 run 内按连接结果追加。
 #[derive(Debug, Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, ToolDescriptor>,
@@ -111,6 +115,7 @@ impl ToolRegistry {
 
 #[cfg(test)]
 mod tests {
+    use super::ToolDescriptor;
     use super::ToolKind;
     use super::ToolRegistry;
 
@@ -125,5 +130,13 @@ mod tests {
         );
         assert_eq!(registry.get("skill_load").unwrap().kind, ToolKind::Read);
         assert!(registry.get("not-a-tool").is_none());
+    }
+
+    #[test]
+    fn mcp_descriptor_carries_explicit_risk() {
+        let mut descriptor = ToolDescriptor::read("mcp__fs__read_file", "外部工具");
+        descriptor.risk_level = Some(super::RiskLevel::L0);
+        assert_eq!(descriptor.risk_level, Some(super::RiskLevel::L0));
+        assert!(descriptor.idempotent);
     }
 }

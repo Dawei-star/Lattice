@@ -3,7 +3,7 @@ import type { ChangeEvent, ReactNode } from 'react';
 import { ExternalLink, KeyRound, PlugZap, ShieldCheck } from 'lucide-react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import Modal from '../ui/Modal.tsx';
-import { mcpApi, type McpInfo } from '../api/mcp.ts';
+import { mcpApi, type McpInfo, type McpServerEntry, type McpServerStatus, type RegistryServerEntry } from '../api/mcp.ts';
 import { notesApi, type NoteDetail } from '../api/resources.ts';
 import { memoryApi, type MemoryRecord } from '../api/memory.ts';
 import { vaultApi, type VaultProfile } from '../api/vault.ts';
@@ -13,18 +13,19 @@ import { downloadStaticSite, serializeStaticSiteFiles, writeStaticSiteToDirector
 import { clearImportedTheme, importThemeFile, loadImportedTheme, type ImportedTheme } from '../lib/theme.ts';
 import { loadSettings, saveSettings, subscribeSettings, type LatticeSettings, type SettingsPatch } from './settings.ts';
 import { createAiProvider, getActiveAiProvider, loadAiSettings, saveAiSettings, subscribeAiSettings } from './aiSettings.ts';
-import { MCP_WRITE_TOOL_NAMES, loadMcpSettings, saveMcpSettings, withVisibleServers, type McpServerConfig, type McpSettings, type McpToolInfo } from './mcpSettings.ts';
+import { MCP_WRITE_TOOL_NAMES, collectActiveMcpServers, loadMcpSettings, parseClaudeMcpConfig, saveMcpSettings, withVisibleServers, type McpServerConfig, type McpSettings, type McpToolInfo } from './mcpSettings.ts';
 import {
   MCP_MARKET_CATALOG,
   MCP_MARKET_CATEGORIES,
   appendMarketServer,
   createServerFromMarketEntry,
   isMarketEntryInstalled,
+  marketEntryFromRegistry,
   type McpMarketEntry,
 } from './mcpMarketplace.ts';
 import ModelCenter from './ModelCenter.tsx';
 import { clearAiRunMetrics, readAiRunMetrics, summarizeAiRunMetrics, type AiMetricSummary } from '../ai/run-metrics-store.ts';
-import { checkGithubReleases, type GithubReleaseInfo } from '../lib/update.ts';
+import { checkGithubReleases, desktopPlatformLabel, installerLabel, type GithubReleaseInfo } from '../lib/update.ts';
 import { APP_VERSION } from '../lib/appVersion.ts';
 import type { FileConfirmationResult, FileOperationInput } from '../hooks/useFileConfirmation.tsx';
 
@@ -605,6 +606,17 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
   const [authorizingServerId, setAuthorizingServerId] = useState<string | null>(null);
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState(false);
+  // E3：运行态（只查已缓存连接，不启动子进程）与用户主动「测试连接」的瞬时状态。
+  const [serverStatuses, setServerStatuses] = useState<Record<string, McpServerStatus>>({});
+  const [testingServerId, setTestingServerId] = useState('');
+  // E3：官方 Registry 在线目录与「Claude / Cursor 配置」粘贴导入
+  const [registryQuery, setRegistryQuery] = useState('');
+  const [registryEntries, setRegistryEntries] = useState<RegistryServerEntry[]>([]);
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const [registryError, setRegistryError] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importNotice, setImportNotice] = useState('');
 
   const updateSettings = (updater: McpSettings | ((current: McpSettings) => McpSettings)) => {
     setSettings((current) => {
@@ -687,9 +699,79 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
     ?? info?.tools
     ?? DEFAULT_MCP_TOOLS;
 
+  // E3：首屏只查已缓存连接（不启动子进程）；真正连接发生在任务模式首次需要 MCP 工具时。
+  useEffect(() => {
+    const connections = collectActiveMcpServers(settings);
+    if (!connections.length) return;
+    mcpApi
+      .statuses(connections as unknown as McpServerEntry[])
+      .then((list) => setServerStatuses(Object.fromEntries(list.map((item) => [item.key, item]))))
+      .catch(() => {});
+  }, [settings.servers]);
+
+  const testServer = async (server: McpServerConfig) => {
+    const connection = collectActiveMcpServers(settings).find((item) => item.key === server.key);
+    if (!connection) {
+      setNotice({ tone: 'warning', text: `${server.name} 的连接配置还不完整，请先补齐命令 / URL。` });
+      return;
+    }
+    setTestingServerId(server.id);
+    try {
+      const status = await mcpApi.test(connection as unknown as McpServerEntry);
+      setServerStatuses((current) => ({ ...current, [status.key]: status }));
+      setNotice({
+        tone: status.state === 'connected' ? 'success' : 'warning',
+        text: status.state === 'connected'
+          ? `${server.name} 连接成功，可用 ${status.toolCount} 个工具。`
+          : `${server.name} 连接失败：${status.error ?? 'Server 未响应'}`,
+      });
+    } catch (error) {
+      setNotice({
+        tone: 'danger',
+        text: `${server.name} 连接失败：${error instanceof Error ? error.message : '未知错误'}`,
+      });
+    } finally {
+      setTestingServerId('');
+    }
+  };
+
   const openAuthorization = (server: McpServerConfig) => {
     setAuthorizingServerId(server.id);
     setCredentialValues(Object.fromEntries((server.requiresEnv ?? []).map((item) => [item.name, server.env?.[item.name] ?? ''])));
+  };
+
+  // E3 ⑤：官方 Registry 在线搜索（断网时保留静态目录，不影响已配置项）。
+  const searchRegistry = async () => {
+    setRegistryLoading(true);
+    setRegistryError('');
+    try {
+      setRegistryEntries(await mcpApi.registry(registryQuery.trim(), 20));
+    } catch (error) {
+      setRegistryEntries([]);
+      setRegistryError(`在线目录不可用：${error instanceof Error ? error.message : '网络错误'}。下方精选目录仍可离线使用。`);
+    } finally {
+      setRegistryLoading(false);
+    }
+  };
+
+  // E3 ⑤：粘贴 Claude Desktop / Cursor 同形 mcpServers 配置。
+  const importConfig = () => {
+    const result = parseClaudeMcpConfig(importText, managedServers);
+    if (!result.servers.length) {
+      setImportNotice(result.error);
+      return;
+    }
+    updateSettings((current) => ({
+      ...current,
+      servers: withVisibleServers(current.servers, managedServers, (base) => [...base, ...result.servers]),
+    }));
+    setImportText('');
+    setImportOpen(false);
+    setImportNotice('');
+    setNotice({
+      tone: 'success',
+      text: `已导入 ${result.servers.length} 个 Server${result.skipped.length ? `，跳过 ${result.skipped.length} 个（同名或缺少 command / url）` : ''}。`,
+    });
   };
 
   const installFromMarket = (entry: McpMarketEntry) => {
@@ -719,8 +801,8 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
       dbFile: info?.dbFile,
       notionCalendarServerPath: info?.notionCalendarServerPath,
     });
-    // 保留兼容配置形态供设置页展示和后续 sidecar 使用；当前 Tauri 桌面端不会
-    // 据此启动 MCP 进程，也不会要求这里的命令立即可执行。
+    // E3：内核按配置内的 command/args/env 启动 stdio 子进程；此处仅补齐默认命令，
+    // 命令是否可执行由「测试连接」或任务运行时的连接结果反馈。
     if (entry.key === 'notion-calendar' && info?.command) {
       server.command = info.command;
       if (info.electronRuntime) server.env = { ...server.env, ELECTRON_RUN_AS_NODE: '1' };
@@ -737,9 +819,9 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
       openAuthorization(server);
       setNotice({ tone: 'warning', text: `${entry.name} 需要一次授权，其他配置已保存。` });
     } else if (missingArgs.length) {
-      setNotice({ tone: 'warning', text: `${entry.name} 配置已保存，但还缺少必要参数；当前不会自动启动或重试。` });
+      setNotice({ tone: 'warning', text: `${entry.name} 配置已保存，但还缺少必要参数；补齐后即可测试连接。` });
     } else {
-      setNotice({ tone: 'success', text: `${entry.name} 配置已保存；外部 MCP Server 将在 sidecar 能力交付后启用。` });
+      setNotice({ tone: 'success', text: `${entry.name} 配置已保存；可在「已配置工具」里点「测试连接」验证。` });
     }
   };
 
@@ -759,7 +841,7 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
     }));
     setAuthorizingServerId(null);
     setCredentialValues({});
-    setNotice({ tone: 'success', text: `${server.name} 授权配置已保存；当前不会启动外部 MCP Server。` });
+    setNotice({ tone: 'success', text: `${server.name} 授权配置已保存；可点「测试连接」验证服务可用性。` });
   };
 
   const marketQuery = marketSearch.trim().toLowerCase();
@@ -793,7 +875,7 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
 
   return <div className="mcp-settings mcp-manager mcp-tools-center">
     <section className="mcp-tools-center__hero">
-       <div><span className="settings-kicker">MCP TOOLS</span><h3>MCP 工具</h3><p>管理 AI 可使用的 MCP 配置。当前桌面端只保存和读取配置，不会启动外部 MCP Server。</p></div>
+       <div><span className="settings-kicker">MCP TOOLS</span><h3>MCP 工具</h3><p>管理 AI 可使用的 MCP 服务。外部 MCP Server 在任务模式按需连接（stdio 子进程 / Streamable HTTP），工具调用受风险分级与确认门约束。</p></div>
        <div className="mcp-tools-center__stats"><div><strong>{enabledToolCount + activeServers.length}</strong><span>已配置</span></div><div><strong>{MCP_MARKET_CATALOG.length}</strong><span>工具目录</span></div></div>
     </section>
     <div className="mcp-tools-center__toolbar">
@@ -803,7 +885,7 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
     </div>
 
     <section className="mcp-tools-center__section">
-       <div className="mcp-manager__section-head"><div><h4>已配置工具</h4><p>内置知识库能力由桌面 AI 直接提供；外部 MCP 仅保存连接配置，待 sidecar 支持后执行。</p></div><span className="settings-value">{activeServers.length + 1} 项</span></div>
+       <div className="mcp-manager__section-head"><div><h4>已配置工具</h4><p>内置知识库能力由桌面 AI 直接提供；外部 MCP 在任务中按需连接，可先用「测试连接」验证。</p></div><span className="settings-value">{activeServers.length + 1} 项</span></div>
       <div className="mcp-tools-center__enabled-grid">
         <article className="mcp-tools-center__enabled-card is-native">
           <McpIconBox fallback="L" />
@@ -812,9 +894,17 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
         </article>
         {activeServers.filter((server) => !search.trim() || `${server.name} ${server.description}`.toLowerCase().includes(search.trim().toLowerCase())).map((server) => {
           const entry = MCP_MARKET_CATALOG.find((item) => isMarketEntryInstalled([server], item));
+          const status = serverStatuses[server.key];
           return <article className="mcp-tools-center__enabled-card" key={server.id}>
             <McpIconBox logo={entry?.logo ?? ''} fallback={server.name.slice(0, 2)} />
-            <div><strong>{server.name}</strong><p>{entry?.tagline ?? server.description}</p><div className="mcp-tools-center__tool-tags">{(entry?.tools ?? server.tools ?? []).slice(0, 4).map((tool) => <span key={tool.name}>{tool.name}</span>)}</div></div>
+            <div><strong>{server.name}</strong><p>{entry?.tagline ?? server.description}</p><div className="mcp-tools-center__tool-tags">{(entry?.tools ?? server.tools ?? []).slice(0, 4).map((tool) => <span key={tool.name}>{tool.name}</span>)}</div>
+              <div className="mcp-tools-center__server-actions">
+                <button type="button" className="btn btn--sm btn--ghost" onClick={() => testServer(server)} disabled={testingServerId === server.id}>
+                  <PlugZap size={13} aria-hidden="true" />{testingServerId === server.id ? '测试中…' : '测试连接'}
+                </button>
+                {status ? <span className="settings-value">{status.state === 'connected' ? `已连接 · ${status.toolCount} 个工具` : status.state === 'idle' ? '未连接（任务中按需连接）' : status.error ?? status.state}</span> : null}
+              </div>
+            </div>
             <McpToggle checked onChange={() => toggleServer(server.id)} label={'停用 ' + server.name} />
           </article>;
         })}
@@ -823,7 +913,7 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
 
     {authorizingServer ? <section className="mcp-tools-center__auth" data-testid="mcp-authorization">
       <div className="mcp-tools-center__auth-head">
-         <div><span className="settings-kicker">CONFIGURE SERVICE</span><h4>配置 {authorizingServer.name}</h4><p>授权信息只保存在本机。完成后会保存 MCP 连接配置；当前桌面端不会启动外部 MCP Server。</p></div>
+         <div><span className="settings-kicker">CONFIGURE SERVICE</span><h4>配置 {authorizingServer.name}</h4><p>授权信息只保存在本机。保存后可点「测试连接」启动服务并读取工具清单。</p></div>
         {authorizingEntry?.authorization ? <a className="mcp-tools-center__auth-link" href={authorizingEntry.authorization.url} target="_blank" rel="noreferrer">
           <ExternalLink size={14} aria-hidden="true" />
           {authorizingEntry.authorization.label}
@@ -838,7 +928,27 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
     </section> : null}
 
     <section className="mcp-tools-center__section" data-testid="mcp-market">
-       <div className="mcp-manager__section-head"><div><h4>工具目录</h4><p>按需保存工具配置；完整的自动调用能力待 MCP sidecar 支持。</p></div><span className="settings-value">{MCP_MARKET_CATALOG.length} 个 · 已配置 {marketInstalledCount}</span></div>
+       <div className="mcp-manager__section-head"><div><h4>工具目录</h4><p>按需安装工具配置；stdio 与 Streamable HTTP（url）服务均可在任务中自动调用。</p></div><span className="settings-value">{MCP_MARKET_CATALOG.length} 个 · 已配置 {marketInstalledCount}</span></div>
+      <div className="mcp-market__registry" data-testid="mcp-registry">
+        <div className="mcp-market__filters">
+          <label className="mcp-manager__search mcp-market__search"><span aria-hidden="true">⌕</span><input value={registryQuery} onChange={(event) => setRegistryQuery(event.target.value)} placeholder="搜索官方 Registry（如 filesystem、github）" aria-label="搜索官方 Registry" /></label>
+          <button type="button" className="btn btn--sm" onClick={searchRegistry} disabled={registryLoading}>{registryLoading ? '搜索中…' : '搜索在线目录'}</button>
+          <button type="button" className="btn btn--sm btn--ghost" aria-expanded={importOpen} onClick={() => setImportOpen((open) => !open)}>{importOpen ? '收起导入' : '从 Claude / Cursor 导入'}</button>
+        </div>
+        {registryError ? <p className="mcp-tools-center__catalog-note">{registryError}</p> : null}
+        {registryEntries.length ? <div className="mcp-market__grid">{registryEntries.map((raw) => {
+          const entry = marketEntryFromRegistry(raw);
+          const installed = isMarketEntryInstalled(managedServers, entry);
+          return <article className="mcp-market__card" key={raw.fullName + '@' + raw.version}>
+            <div><strong>{entry.name}</strong><p className="mcp-market__detail-text">{raw.description || raw.fullName}</p></div>
+            <footer className="mcp-market__card-foot"><span className="mcp-market__category">{raw.command}{raw.version ? ' · v' + raw.version : ''}</span><div className="mcp-market__card-actions"><button type="button" className={'btn btn--sm' + (installed ? '' : ' btn--primary')} onClick={() => installFromMarket(entry)}>{installed ? '已添加' : '添加'}</button></div></footer>
+          </article>;
+        })}</div> : null}
+        {importOpen ? <div className="mcp-tools-center__import">
+          <label className="settings-memory-form__content"><span>mcpServers JSON</span><textarea rows={6} value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={'{\n  "mcpServers": {\n    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] }\n  }\n}'} aria-label="Claude 或 Cursor 的 mcpServers 配置" /></label>
+          <div className="mcp-tools-center__auth-actions"><button type="button" className="btn btn--sm btn--primary" onClick={importConfig} disabled={!importText.trim()}>导入配置</button>{importNotice ? <span className="settings-value">{importNotice}</span> : null}</div>
+        </div> : null}
+      </div>
       <div className="mcp-market mcp-tools-center__catalog">
         <div className="mcp-market__filters"><div className="mcp-market__chips" role="group" aria-label="工具分类">{['全部', ...MCP_MARKET_CATEGORIES].map((category) => <button key={category} type="button" className={'mcp-market__chip' + (marketCategory === category ? ' is-active' : '')} onClick={() => setMarketCategory(category)}>{category}</button>)}</div><label className="mcp-manager__search mcp-market__search"><span aria-hidden="true">⌕</span><input value={marketSearch} onChange={(event) => setMarketSearch(event.target.value)} placeholder="搜索工具..." aria-label="搜索工具目录" /></label></div>
         <div className="mcp-market__grid">{marketEntries.map((entry) => {
@@ -860,7 +970,7 @@ export function McpToolsCenter({ vaultPath }: McpToolsCenterProps) {
               <footer className="mcp-market__card-foot"><span className="mcp-market__category">{entry.category}</span><div className="mcp-market__card-actions"><button type="button" className="btn btn--sm btn--ghost" aria-expanded={expanded} aria-label={(expanded ? '收起 ' : '查看 ') + entry.name + ' 说明'} onClick={() => setExpandedMarketKey(expanded ? '' : entry.key)}>{expanded ? '收起' : '详情'}</button><button type="button" className={'btn btn--sm' + (configured ? '' : ' btn--primary')} aria-label={actionLabel + ' ' + entry.name} onClick={() => installFromMarket(entry)}>{configured ? <ShieldCheck size={14} aria-hidden="true" /> : <PlugZap size={14} aria-hidden="true" />}{actionLabel}</button></div></footer>
           </article>;
         })}{!marketEntries.length ? <div className="mcp-manager__empty mcp-market__empty"><strong>没有匹配的工具</strong><span>换个关键词或分类试试。</span></div> : null}</div>
-         <p className="mcp-tools-center__catalog-note">Lattice 当前负责保存连接配置和授权信息。需要账号的工具只在配置时请求授权；外部 MCP Server 的启动、生命周期和工具调用待 sidecar 支持。</p>
+         <p className="mcp-tools-center__catalog-note">Lattice 负责保存连接配置和授权信息。需要账号的工具只在配置时请求授权；外部 MCP Server 在任务中按需启动，可随时「测试连接」验证可用性。</p>
       </div>
     </section>
 
@@ -888,7 +998,7 @@ function About({ settings, onChange, onCheckUpdate, updateState }: AboutProps) {
   const updateInfo = typeof updateState === 'object' ? updateState : undefined;
   const status = updateInfo?.status;
   const release = updateInfo?.release;
-  return <><Section title="关于 Lattice"><div className="settings-about"><img className="settings-about__mark" src={LATTICE_ICON_URL} alt="Lattice" /><div><h3>Lattice</h3><p>本地优先的双链知识库。</p><span>当前版本 {APP_VERSION} · Windows Desktop</span></div><button type="button" className="btn" onClick={onCheckUpdate} disabled={isChecking}>{isChecking ? '检查中...' : '检查更新'}</button></div><UpdateResult status={status} release={release} message={updateInfo?.message} /><Row title="官方网站" description="查阅使用文档、更新说明与常见问题。"><a className="settings-update__link" href="https://dawei-star.github.io/Lattice/website/lattice-docs.html" target="_blank" rel="noreferrer">打开文档站点</a></Row><Row title="自动保存" description="编辑内容会在短暂空闲后自动保存。"><Toggle checked={settings.autoSave} onChange={(value) => onChange('autoSave', value)} /></Row><Row title="快捷切换" description="允许使用 Ctrl / Cmd + K 打开快速切换器。"><Toggle checked={settings.quickSwitcher} onChange={(value) => onChange('quickSwitcher', value)} /></Row></Section><Section title="账户"><Row title="本地工作区" description="Lattice 不要求登录，数据默认保存在本机。"><span className="settings-value">离线可用</span></Row></Section></>;
+  return <><Section title="关于 Lattice"><div className="settings-about"><img className="settings-about__mark" src={LATTICE_ICON_URL} alt="Lattice" /><div><h3>Lattice</h3><p>本地优先的双链知识库。</p><span>当前版本 {APP_VERSION} · {desktopPlatformLabel()}</span></div><button type="button" className="btn" onClick={onCheckUpdate} disabled={isChecking}>{isChecking ? '检查中...' : '检查更新'}</button></div><UpdateResult status={status} release={release} message={updateInfo?.message} /><Row title="官方网站" description="查阅使用文档、更新说明与常见问题。"><a className="settings-update__link" href="https://dawei-star.github.io/Lattice/website/lattice-docs.html" target="_blank" rel="noreferrer">打开文档站点</a></Row><Row title="自动保存" description="编辑内容会在短暂空闲后自动保存。"><Toggle checked={settings.autoSave} onChange={(value) => onChange('autoSave', value)} /></Row><Row title="快捷切换" description="允许使用 Ctrl / Cmd + K 打开快速切换器。"><Toggle checked={settings.quickSwitcher} onChange={(value) => onChange('quickSwitcher', value)} /></Row></Section><Section title="账户"><Row title="本地工作区" description="Lattice 不要求登录，数据默认保存在本机。"><span className="settings-value">离线可用</span></Row></Section></>;
 }
 
 function UpdateResult({ status, release, message }: UpdateResultProps) {
@@ -897,7 +1007,7 @@ function UpdateResult({ status, release, message }: UpdateResultProps) {
 
   const releaseLink = <a className="settings-update__link" href={release.htmlUrl} target="_blank" rel="noreferrer">查看 GitHub 发布页</a>;
   if (status === 'available') {
-    return <Notice tone="success"><div className="settings-update"><div><strong>发现新版本 {release.name}</strong><p>当前版本 {APP_VERSION}，可从 GitHub 下载 Windows 安装包。</p></div><div className="settings-update__actions">{release.installer ? <a className="btn btn--primary" href={release.downloadUrl} target="_blank" rel="noreferrer">下载 Windows 安装包</a> : null}{releaseLink}</div></div></Notice>;
+    return <Notice tone="success"><div className="settings-update"><div><strong>发现新版本 {release.name}</strong><p>当前版本 {APP_VERSION}，可从 GitHub 下载适用于当前系统的安装包。</p></div><div className="settings-update__actions">{release.installer ? <a className="btn btn--primary" href={release.downloadUrl} target="_blank" rel="noreferrer">{installerLabel(release.installer.name)}</a> : null}{releaseLink}</div></div></Notice>;
   }
 
   return <Notice tone="success"><div className="settings-update"><div><strong>当前版本 {APP_VERSION} 已是最新</strong><p>已从 GitHub Releases 检查到 {release.name}。</p></div><div className="settings-update__actions">{releaseLink}</div></div></Notice>;

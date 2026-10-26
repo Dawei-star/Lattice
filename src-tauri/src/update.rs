@@ -81,7 +81,77 @@ fn github_url(value: Option<&str>) -> Option<String> {
     Some(url.to_string())
 }
 
-fn parse_release(release: GithubRelease, current: [u64; 3]) -> Option<(UpdateInfo, [u64; 3])> {
+/// 目标平台（函数参数化，便于在任意平台单测三套资产规则）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetPlatform {
+    Windows,
+    Linux,
+    Macos,
+}
+
+impl TargetPlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "windows") {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::Macos
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+fn is_asset_for(platform: TargetPlatform, lower: &str) -> bool {
+    match platform {
+        TargetPlatform::Windows => lower.ends_with(".exe") || lower.ends_with(".msi"),
+        TargetPlatform::Linux => {
+            lower.ends_with(".deb") || lower.ends_with(".appimage") || lower.ends_with(".rpm")
+        }
+        TargetPlatform::Macos => lower.ends_with(".dmg"),
+    }
+}
+
+/// 按平台优先级选出 installer / portable。
+/// Linux：`.deb` > `.AppImage` > `.rpm`，AppImage 同时映射为 portable（免安装）；
+/// Windows：`setup` > 其他 `.exe/.msi`，`portable` 单独识别；
+/// macOS：`.dmg` 为 installer，无 portable 概念。
+fn select_assets(
+    platform: TargetPlatform,
+    assets: Vec<UpdateAsset>,
+) -> (Option<UpdateAsset>, Option<UpdateAsset>) {
+    let by_suffix = |suffix: &str| {
+        assets
+            .iter()
+            .find(|asset| asset.name.to_ascii_lowercase().ends_with(suffix))
+            .cloned()
+    };
+    let installer = match platform {
+        TargetPlatform::Windows => assets
+            .iter()
+            .find(|asset| asset.name.to_ascii_lowercase().contains("setup"))
+            .cloned()
+            .or_else(|| assets.first().cloned()),
+        TargetPlatform::Linux => by_suffix(".deb")
+            .or_else(|| by_suffix(".appimage"))
+            .or_else(|| by_suffix(".rpm")),
+        TargetPlatform::Macos => by_suffix(".dmg"),
+    };
+    let portable = match platform {
+        TargetPlatform::Windows => assets
+            .iter()
+            .find(|asset| asset.name.to_ascii_lowercase().contains("portable"))
+            .cloned(),
+        TargetPlatform::Linux => by_suffix(".appimage"),
+        TargetPlatform::Macos => None,
+    };
+    (installer, portable)
+}
+
+fn parse_release(
+    release: GithubRelease,
+    current: [u64; 3],
+    platform: TargetPlatform,
+) -> Option<(UpdateInfo, [u64; 3])> {
     let version = release_version(&release)?;
     let html_url = github_url(release.html_url.as_deref())?;
     let assets: Vec<UpdateAsset> = release
@@ -92,18 +162,10 @@ fn parse_release(release: GithubRelease, current: [u64; 3]) -> Option<(UpdateInf
             let name = asset.name.unwrap_or_default();
             let url = github_url(asset.browser_download_url.as_deref())?;
             let lower = name.to_ascii_lowercase();
-            lower.ends_with(".exe").then_some(UpdateAsset { name, url })
+            is_asset_for(platform, &lower).then_some(UpdateAsset { name, url })
         })
         .collect();
-    let installer = assets
-        .iter()
-        .find(|asset| asset.name.to_ascii_lowercase().contains("setup"))
-        .cloned()
-        .or_else(|| assets.first().cloned());
-    let portable = assets
-        .iter()
-        .find(|asset| asset.name.to_ascii_lowercase().contains("portable"))
-        .cloned();
+    let (installer, portable) = select_assets(platform, assets);
     let version_string = format!("{}.{}.{}", version[0], version[1], version[2]);
     let tag_name = release
         .tag_name
@@ -153,7 +215,7 @@ pub async fn check(current: Option<&str>) -> Result<UpdateInfo, String> {
     releases
         .into_iter()
         .filter(|release| !release.draft.unwrap_or(false))
-        .filter_map(|release| parse_release(release, current))
+        .filter_map(|release| parse_release(release, current, TargetPlatform::current()))
         .max_by(|left, right| left.1.cmp(&right.1))
         .map(|(info, _)| info)
         .ok_or_else(|| "GitHub Releases 中没有可用的版本".to_owned())
@@ -161,12 +223,135 @@ pub async fn check(current: Option<&str>) -> Result<UpdateInfo, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::version_parts;
+    use super::{
+        GithubAsset, GithubRelease, TargetPlatform, UpdateAsset, parse_release, version_parts,
+    };
+
+    fn release_with_assets(names: &[&str]) -> GithubRelease {
+        GithubRelease {
+            tag_name: Some("v0.3.0".to_owned()),
+            name: Some("Lattice 0.3.0".to_owned()),
+            html_url: Some("https://github.com/Dawei-star/Lattice/releases/tag/v0.3.0".to_owned()),
+            published_at: None,
+            draft: Some(false),
+            assets: Some(
+                names
+                    .iter()
+                    .map(|name| GithubAsset {
+                        name: Some((*name).to_owned()),
+                        browser_download_url: Some(format!(
+                            "https://github.com/Dawei-star/Lattice/releases/download/v0.3.0/{name}"
+                        )),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn assets_for(
+        platform: TargetPlatform,
+        names: &[&str],
+    ) -> (Option<UpdateAsset>, Option<UpdateAsset>) {
+        let (info, _) = parse_release(release_with_assets(names), [0, 2, 0], platform)
+            .expect("release 应可解析");
+        (info.installer, info.portable)
+    }
 
     #[test]
     fn parses_release_versions_with_prefix_and_suffix() {
         assert_eq!(version_parts("v0.2.0"), Some([0, 2, 0]));
         assert_eq!(version_parts("Lattice 1.4.2-beta.1"), Some([1, 4, 2]));
         assert_eq!(version_parts("not-a-version"), None);
+    }
+
+    #[test]
+    fn linux_prefers_deb_then_appimage_and_maps_appimage_to_portable() {
+        let (installer, portable) = assets_for(
+            TargetPlatform::Linux,
+            &[
+                "Lattice_0.3.0_amd64.AppImage",
+                "Lattice-0.3.0-1.x86_64.rpm",
+                "Lattice_0.3.0_amd64.deb",
+                "Lattice_0.3.0_x64-setup.exe",
+            ],
+        );
+        assert_eq!(
+            installer.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_amd64.deb")
+        );
+        assert_eq!(
+            portable.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_amd64.AppImage")
+        );
+    }
+
+    #[test]
+    fn linux_falls_back_to_appimage_then_rpm() {
+        let (installer, portable) = assets_for(
+            TargetPlatform::Linux,
+            &["Lattice-0.3.0-1.x86_64.rpm", "Lattice_0.3.0_amd64.AppImage"],
+        );
+        assert_eq!(
+            installer.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_amd64.AppImage")
+        );
+        assert_eq!(
+            portable.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_amd64.AppImage")
+        );
+
+        let (rpm_only, portable) =
+            assets_for(TargetPlatform::Linux, &["Lattice-0.3.0-1.x86_64.rpm"]);
+        assert_eq!(
+            rpm_only.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice-0.3.0-1.x86_64.rpm")
+        );
+        assert!(portable.is_none(), "rpm 不是免安装包");
+    }
+
+    #[test]
+    fn linux_ignores_non_linux_assets_and_falls_back_to_release_page() {
+        let release = release_with_assets(&["Lattice_0.3.0_x64-setup.exe"]);
+        let (info, _) = parse_release(release, [0, 2, 0], TargetPlatform::Linux).unwrap();
+        assert!(info.installer.is_none());
+        assert!(info.portable.is_none());
+        assert_eq!(info.download_url, info.html_url, "无资产时回落到发布页");
+        assert!(info.is_update_available);
+    }
+
+    #[test]
+    fn windows_keeps_setup_and_portable_priority() {
+        let (installer, portable) = assets_for(
+            TargetPlatform::Windows,
+            &[
+                "Lattice_0.3.0_x64_en-US.msi",
+                "Lattice_0.3.0_portable.exe",
+                "Lattice_0.3.0_x64-setup.exe",
+            ],
+        );
+        assert_eq!(
+            installer.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_x64-setup.exe")
+        );
+        assert_eq!(
+            portable.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_portable.exe")
+        );
+    }
+
+    #[test]
+    fn macos_uses_dmg_as_installer() {
+        let (installer, portable) = assets_for(
+            TargetPlatform::Macos,
+            &[
+                "Lattice_0.3.0_aarch64.dmg",
+                "Lattice_0.3.0_aarch64.app.tar.gz",
+            ],
+        );
+        assert_eq!(
+            installer.as_ref().map(|asset| asset.name.as_str()),
+            Some("Lattice_0.3.0_aarch64.dmg")
+        );
+        assert!(portable.is_none());
     }
 }

@@ -37,7 +37,7 @@ jobs:
 
   rust-test:
     # Tauri 2 依赖 WebView2，Windows runner 无需额外系统包；
-    # Mac/Linux 三平台构建环境在 P1-10 前另备（计划 10.3）。
+    # Linux 另设 rust-test-linux（同一套测试 + WebKitGTK 系统依赖）。
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +58,30 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy -- -D warnings
+
+  rust-test-linux:
+    # 22.04 与产物构建基线一致（glibc 2.35），验证 Linux 专属 cfg 分支
+    # （Secret Service 后端、Unix 权限）在 CI 环境可编译、测试可过。
+    # 真实密钥服务回环测试默认跳过（LATTICE_KEYRING_TEST 未设置）。
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-gate-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --release
 
   desktop-build:
     name: desktop-build (${{ matrix.os }})
@@ -84,7 +108,20 @@ jobs:
       - name: Install web dependencies
         run: npm --prefix web ci
       - name: Build desktop bundle
+        env:
+          # Vite 生产构建 7000+ 模块，默认堆在 2GB 级 runner 上可能触顶
+          NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build:desktop
+      - name: Upload Linux bundles
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattice-linux-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: warn
 
   typecheck:
     runs-on: ubuntu-latest

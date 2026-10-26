@@ -26,6 +26,8 @@ export interface AiRequest {
   budget: AiAgentBudget;
   context?: Record<string, unknown>;
   attachments?: Array<Record<string, unknown>>;
+  /** 用户通过 `/` 面板显式调用的技能 id：本轮注入正文，与专家绑定无关。 */
+  invokedSkills?: string[];
 }
 
 /**

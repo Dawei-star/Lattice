@@ -88,8 +88,8 @@ for (const command of IPC_PENDING_COMMANDS) {
 
 // --- 5. 口径自洽 -------------------------------------------------------------
 expect(
-  IPC_ROUTES.length + IPC_EXCLUDED_ROUTES.length === 80,
-  `进表 ${IPC_ROUTES.length} + 排除 ${IPC_EXCLUDED_ROUTES.length} ≠ 80（W1 纳入 /ai/settings GET+PUT；E2 纳入技能导入预览与导出；sidecar 信息/启动仍待 P4）`,
+  IPC_ROUTES.length + IPC_EXCLUDED_ROUTES.length === 88,
+  `进表 ${IPC_ROUTES.length} + 排除 ${IPC_EXCLUDED_ROUTES.length} ≠ 88（W1 纳入 /ai/settings GET+PUT；E2 纳入技能导入预览与导出；E3 纳入 MCP 状态/测试/工具清单/Registry；E4 纳入专家导出/角色卡导入、Claude 技能发现与 elicitation 回复）`,
 );
 
 if (failure.length) {

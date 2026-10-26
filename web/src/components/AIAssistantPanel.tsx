@@ -18,6 +18,7 @@ import { buildAiRunStages, type AiRunStage, type AiRunStageStatus } from '../lib
 import { createAiController } from '../ai/ai-controller.ts';
 import { planAiQueries } from '../ai/query-planner.ts';
 import { routeAiRequest, type AiRouteDecision } from '../lib/ai-policy.ts';
+import { addInvokedSkill, filterInvocableSkills, parseSkillSlash, removeInvokedSkill, skillDisplayName } from '../lib/skill-invocation.ts';
 import { createAiRetrievalCache } from '../ai/retrieval-cache.ts';
 import { createSmallModelClient } from '../ai/small-model.ts';
 import { createRunId, type AiPermissionContext, type AiRunEvent, type AiRunMetrics } from '../ai/contracts.ts';
@@ -222,6 +223,7 @@ interface SendOptions {
   toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   toolResults?: Array<{ callId: string; result: Record<string, unknown> }>;
   continuation?: boolean;
+  invokedSkills?: string[];
 }
 
 interface ProviderContinuation {
@@ -239,6 +241,8 @@ interface AiStreamPayload extends AiStreamFinalPayload {
   actions?: AiAction[];
   toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   meta?: AiMessageMeta | null;
+  /** 桌面内核把待确认写放在 done 载荷顶层（与 meta 平级），两处都要兼容读取 */
+  writeRequests?: Array<{ id?: unknown }> | null;
 }
 
 interface SessionMessagesResponse { session?: AiSessionSummary | null; data?: { session?: AiSessionSummary | null } | null; [key: string]: unknown; }
@@ -262,6 +266,8 @@ interface AIAssistantPanelProps {
   expertId?: string;
   expert?: PanelExpert | null;
   experts?: PanelExpert[];
+  /** 全部技能：`/` 面板只展示启用中的条目。 */
+  skills?: Skill[];
   onSelectExpert?: (expertId: string) => void;
   onOpenExpertManager?: (tab?: 'experts' | 'skills' | 'mcp') => void;
   onOpenSettings?: (section?: unknown) => void;
@@ -393,6 +399,43 @@ const LATTICE_FILE_OPERATION_TOOL = {
   supportsUndo: true,
   idempotent: true,
 } as const;
+
+/** 把执行结果（成功/失败）回写到文件变更卡：按目标路径对账，未知状态保持原样。 */
+function applyFileChangeStatus(
+  changes: AiFileChange[],
+  results: Array<{ path?: string | null; targetPath?: string | null; status?: string; error?: string }>,
+): AiFileChange[] {
+  if (!changes.length || !results.length) return changes;
+  const byPath = new Map<string, { status?: string; error?: string }>();
+  for (const result of results) {
+    const key = String(result.targetPath || result.path || '');
+    if (key) byPath.set(key, { status: result.status, error: result.error });
+  }
+  return changes.map((change) => {
+    const hit = byPath.get(String(change.targetPath || change.path || ''));
+    return hit ? { ...change, ...(hit.status ? { status: hit.status } : {}), ...(hit.error ? { error: hit.error } : {}) } : change;
+  });
+}
+
+/** 内核直接执行（审批档「自动」）的写调用没有预览 diff：用 content 行数补出文件卡。 */
+function executedWriteActionsToChanges(actions: AiAction[]): AiFileChange[] {
+  return actions.map((action) => {
+    const type = String(action.type ?? 'update');
+    const content = typeof action.content === 'string' ? action.content : '';
+    const additions = content && ['create', 'update', 'write'].includes(type)
+      ? content.replace(/\r\n/g, '\n').split('\n').length
+      : 0;
+    return {
+      id: action.id,
+      type,
+      path: String(action.path ?? ''),
+      targetPath: action.targetPath ?? null,
+      additions,
+      deletions: 0,
+      status: 'completed',
+    };
+  }).filter((change) => change.path);
+}
 
 function actionsFromProviderToolCalls(calls: AiStreamPayload['toolCalls']): AiAction[] {
   if (!Array.isArray(calls)) return [];
@@ -665,7 +708,7 @@ function failProgress(steps: ProgressStep[], detail: string | null | undefined):
     : step);
 }
 
-export default function AIAssistantPanel({ open, onClose, onNewChat, initialSessionId, onSessionChange, noteIndex = [], folders = [], activeNote, onOpenNote, onSaveToNote, onOperationComplete, initialPrompt = '', initialPromptPreferModel = false, onInitialPromptConsumed, expertId = 'general', expert = null, experts = [], onSelectExpert, onOpenExpertManager, onOpenSettings, workspaceIdentity = null }: AIAssistantPanelProps) {
+export default function AIAssistantPanel({ open, onClose, onNewChat, initialSessionId, onSessionChange, noteIndex = [], folders = [], activeNote, onOpenNote, onSaveToNote, onOperationComplete, initialPrompt = '', initialPromptPreferModel = false, onInitialPromptConsumed, expertId = 'general', expert = null, experts = [], skills = [], onSelectExpert, onOpenExpertManager, onOpenSettings, workspaceIdentity = null }: AIAssistantPanelProps) {
   const sessionStorageKey = `${aiStorageKey(LAST_SESSION_KEY, workspaceIdentity)}:${expertId}`;
   const draftStorageKey = `${aiStorageKey(LAST_DRAFT_KEY, workspaceIdentity)}:${expertId}`;
   const storageNamespace = workspaceIdentity;
@@ -722,16 +765,25 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     }
   });
   const [preview, setPreview] = useState<OperationPreviewData | null>(null);
+  // E3：内核挂起的 MCP 写类调用（没有文件预览，用独立确认卡）
+  const [mcpPendingWrites, setMcpPendingWrites] = useState<Array<{ id: string; name: string; level?: string; reason?: string }>>([]);
+  // E4：MCP elicitation（server 请求用户填写表单；挂起等待本面板回复）
+  const [mcpElicitation, setMcpElicitation] = useState<{ id: string; server: string; message: string; schema: Record<string, unknown> } | null>(null);
+  const [mcpElicitationValues, setMcpElicitationValues] = useState<Record<string, string>>({});
   const [undoBusyAll, setUndoBusyAll] = useState(false);
   const [execution, setExecution] = useState<ExecutionResult | null>(null);
   const [error, setError] = useState('');
   const [retryMessage, setRetryMessage] = useState('');
-  const lastRunRequestRef = useRef<{ runId: string; message: string; sessionId: string; context?: Record<string, unknown>; mode: string } | null>(null);
+  const lastRunRequestRef = useRef<{ runId: string; message: string; sessionId: string; context?: Record<string, unknown>; mode: string; invokedSkills?: string[] } | null>(null);
   const retryRunIdRef = useRef<string | null>(null);
   const [related, setRelated] = useState<RelatedNote[]>([]);
   const [relatedOpen, setRelatedOpen] = useState(false);
-  // 通用专家下发送消息后，按 routing 关键词给出的切换建议（服务端 /experts/route 打分）
-  const [expertSuggestion, setExpertSuggestion] = useState<Expert | null>(null);
+  // 专家是显式选择：输入框常驻芯片，不再按消息关键词自动建议/切换。
+  const [expertMenuOpen, setExpertMenuOpen] = useState(false);
+  // `/` 技能面板：手点按钮或输入 `/` 都能打开；选中项作为本轮消息的显式调用。
+  const [skillPaletteOpen, setSkillPaletteOpen] = useState(false);
+  const [skillPaletteIndex, setSkillPaletteIndex] = useState(0);
+  const [invokedSkillIds, setInvokedSkillIds] = useState<string[]>([]);
   // 会话重命名：Electron 不支持 window.prompt，改用面板内 Modal
   const [sessionRename, setSessionRename] = useState<SessionRenameState | null>(null);
   const [sessionRenameSaving, setSessionRenameSaving] = useState(false);
@@ -854,7 +906,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   }, []);
 
   useEffect(() => {
-    setExpertSuggestion(null);
+    setExpertMenuOpen(false);
+    setSkillPaletteOpen(false);
   }, [expertId]);
 
   useEffect(() => {
@@ -872,6 +925,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setPreview(null);
     setExecution(null);
     setRoutingClarification(null);
+    setInvokedSkillIds([]);
+    setSkillPaletteOpen(false);
      commitProgressSteps([]);
     setError('');
     setSessionId(() => {
@@ -1255,6 +1310,19 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     };
   }, [expert, expertId]);
 
+  const skillSlash = useMemo(() => parseSkillSlash(draft), [draft]);
+  const availableSkills = useMemo(() => filterInvocableSkills(skills, skillSlash.query), [skills, skillSlash.query]);
+  const invokedSkills = useMemo(
+    () => invokedSkillIds
+      .map((id) => skills.find((skill) => skill.id === id))
+      .filter((skill): skill is Skill => Boolean(skill)),
+    [invokedSkillIds, skills],
+  );
+  const skillPaletteVisible = skillPaletteOpen || skillSlash.active;
+  const activeSkillIndex = availableSkills.length
+    ? Math.min(skillPaletteIndex, availableSkills.length - 1)
+    : 0;
+
   const context = useMemo(() => ({
     activeFile: activeNote?.filePath ?? activeNote?.title ?? null,
     activeFileContent: typeof activeNote?.content === 'string' ? activeNote.content.slice(0, 12_000) : null,
@@ -1434,11 +1502,59 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setAttachmentError('');
   };
 
+  /** 快捷指令只填入输入框，不直接发送：用户可以补充细节后再自己按发送。 */
+  const fillComposer = (value: string) => {
+    // 已点过同一快捷指令就只聚焦，避免重复追加同一句话
+    const nextDraft = draft.includes(value) ? draft : draft.trim() ? `${draft.trimEnd()}\n${value}` : value;
+    setDraft(nextDraft);
+    writeStoredDraft(draftStorageKey, nextDraft);
+    setAttachmentMenuOpen(false);
+    setComposerMenu(null);
+    setExpertMenuOpen(false);
+    setSkillPaletteOpen(false);
+    requestAnimationFrame(() => {
+      const node = draftRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(nextDraft.length, nextDraft.length);
+    });
+  };
+
+  const selectInvokedSkill = (skill: Skill) => {
+    setInvokedSkillIds((current) => addInvokedSkill(current, skill.id));
+    if (skillSlash.active) {
+      setDraft('');
+      writeStoredDraft(draftStorageKey, '');
+    }
+    setSkillPaletteOpen(false);
+    setSkillPaletteIndex(0);
+    draftRef.current?.focus();
+  };
+
+  const dismissSkillPalette = () => {
+    setSkillPaletteOpen(false);
+    if (skillSlash.active) {
+      setDraft('');
+      writeStoredDraft(draftStorageKey, '');
+    }
+  };
+
+  const toggleSkillPalette = () => {
+    setAttachmentMenuOpen(false);
+    setComposerMenu(null);
+    setExpertMenuOpen(false);
+    setSkillPaletteOpen((current) => !current);
+    setSkillPaletteIndex(0);
+    draftRef.current?.focus();
+  };
+
   const send = async (value: string = draft, options: SendOptions = {}) => {
     const requestAttachments = options.attachments ?? (options.resumeRun ? [] : attachments);
     const message = String(value).trim() || (requestAttachments.length ? '请识别并分析我上传的附件。' : '');
     if (!message || (composerBusy && !options.continuation) || sendInFlightRef.current) return;
     sendInFlightRef.current = true;
+    // `/` 技能是"本轮一次性"调用：续跑沿用恢复记录里的清单，新消息用当前芯片。
+    const requestedSkills = options.resumeRun ? (options.invokedSkills ?? []) : invokedSkillIds;
     // U2：全新发送时清掉上一轮预览遗留的文件变更（续跑/确认通道保留，供执行后挂卡）
     if (!options.resumeRun && !options.continuation) pendingFileChangesRef.current = [];
     reasoningStartedAtRef.current = 0;
@@ -1511,11 +1627,12 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setRoutingClarification(null);
     setDraft('');
     writeStoredDraft(draftStorageKey, '');
+    if (!options.resumeRun && !options.continuation) setInvokedSkillIds([]);
+    setSkillPaletteOpen(false);
     setError('');
     setRetryMessage('');
     setExecution(null);
     setPreview(null);
-    setExpertSuggestion(null);
     setActiveTaskMode(taskMode);
     commitProgressSteps(taskMode ? createInitialProgress() : []);
     streamTextRef.current = '';
@@ -1533,16 +1650,6 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setSending(true);
     const controller = new AbortController();
     abortRef.current = controller;
-
-    // 通用专家下顺带问一次路由建议：不阻塞发送、失败静默，仅在有候选时提示切换
-    if (expertId === 'general' && experts.length > 1) {
-      expertsApi.route({ message, excludeId: expertId })
-        .then((data) => {
-          const candidates = Array.isArray(data) ? data : [];
-          if (!stale() && candidates.length) setExpertSuggestion(candidates[0]);
-        })
-        .catch(() => {});
-    }
 
       let durableRunCompleted = false;
       try {
@@ -1626,13 +1733,21 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         const provider = providerCandidates[0] ?? (isTauri() && preferModel ? getActiveAiProviderRuntime(settings) : null);
         traceModel = provider?.model ?? traceModel;
         const requestController = isTauri() ? tauriAiController : aiController;
-        lastRunRequestRef.current = { runId, message, sessionId: requestSessionId, context: requestContext, mode: requestMode };
+        lastRunRequestRef.current = {
+          runId,
+          message,
+          sessionId: requestSessionId,
+          context: requestContext,
+          mode: requestMode,
+          ...(requestedSkills.length ? { invokedSkills: requestedSkills } : {}),
+        };
         if (isTauri()) {
           rememberDurableRun({
             runId,
             sessionId: requestSessionId,
             createdAt: new Date().toISOString(),
             expertId,
+            ...(requestedSkills.length ? { invokedSkills: requestedSkills } : {}),
             workspaceId: workspaceIdentity ?? undefined,
             permissionScopeId: aiPermissionContext.scopeId,
             permissionVersion: aiPermissionContext.permissionVersion,
@@ -1646,6 +1761,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
           sessionId: requestSessionId,
           mode: requestMode as 'quick' | 'task',
           expertId,
+          ...(requestedSkills.length ? { invokedSkills: requestedSkills } : {}),
           preferModel,
           ...(remoteRouting ? { routingOverride: remoteRouting } : {}),
           autoApprove: taskModeEnabled && approvalPolicy === 'skip',
@@ -1719,6 +1835,43 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
             setReasoningOpen(true);
             streamStatusRef.current = `第 ${event.round} 轮 · 继续执行任务…`;
             queueStreamFlush();
+          } else if (event.type === 'mcp_connected') {
+            // E3：MCP 连接结果（只报 server 名/状态，不含工具参数与返回值）。
+            const servers = Array.isArray(event.servers) ? event.servers as Array<Record<string, unknown>> : [];
+            const connected = servers.filter((server) => server.state === 'connected');
+            const failed = servers.filter((server) => server.state === 'error');
+            const names = connected.map((server) => String(server.name ?? server.key ?? '')).filter(Boolean).join('、');
+            if (names) streamStatusRef.current = `已连接 MCP：${names}（${Number(event.toolCount ?? 0)} 个工具）`;
+            else if (failed.length) streamStatusRef.current = `MCP 连接失败：${failed.map((server) => String(server.name ?? server.key ?? '')).join('、')}`;
+            if (names || failed.length) queueStreamFlush();
+          } else if (event.type === 'mcp_elicitation') {
+            // E4：MCP Server 请求用户输入；表单挂起在此，回复走 mcp_elicitation_reply。
+            // 只接管「当前正在跑」的 run：历史事件重放时不再弹旧表单（后端会超时按拒绝）。
+            if (!sendInFlightRef.current) return;
+            const id = String(event.id ?? '');
+            if (!id) return;
+            const schema = event.requestedSchema && typeof event.requestedSchema === 'object'
+              ? event.requestedSchema as Record<string, unknown>
+              : {};
+            const properties = schema.properties && typeof schema.properties === 'object'
+              ? schema.properties as Record<string, Record<string, unknown>>
+              : {};
+            const defaults: Record<string, string> = {};
+            for (const [key, spec] of Object.entries(properties)) {
+              const fallback = spec?.default;
+              defaults[key] = spec?.type === 'boolean'
+                ? String(fallback === true)
+                : fallback === undefined || fallback === null ? '' : String(fallback);
+            }
+            setMcpElicitation({
+              id,
+              server: String(event.server ?? ''),
+              message: String(event.message ?? 'MCP Server 请求补充信息'),
+              schema,
+            });
+            setMcpElicitationValues(defaults);
+            streamStatusRef.current = '等待你填写 MCP 输入请求…';
+            queueStreamFlush();
           } else if (event.type === 'status') {
             // 历史兼容：E1 首版把「专家已注入」写成 status，旧会话回放时不要再显示成
             // 一条对话状态行（专家是设置，不是一次工具调用）。新事件类型是 expert_loaded。
@@ -1730,6 +1883,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
              commitProgressSteps((current) => mergeProgressStep(current, event));
           } else if (event.type === 'done') {
             streamStatusRef.current = '';
+            setMcpElicitation(null);
+            setMcpElicitationValues({});
             const finalProgress = (event.payload?.meta as AiMessageMeta | undefined)?.progress;
              if (Array.isArray(finalProgress) && finalProgress.length) commitProgressSteps(finalProgress);
             queueStreamFlush();
@@ -1783,11 +1938,27 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       const kernelWriteExecuted = Array.isArray(payload?.meta?.kernelWriteExecuted)
         ? (payload.meta.kernelWriteExecuted as unknown[]).map((id) => String(id))
         : [];
-      const writeRequestIds = Array.isArray(payload?.meta?.writeRequests)
-        ? (payload.meta.writeRequests as Array<{ id?: unknown }>)
-          .map((item) => String(item?.id ?? ''))
-          .filter(Boolean)
-        : [];
+      // 桌面内核写在 payload.writeRequests（顶层）；Web/旧实现写在 meta.writeRequests。
+      const writeRequests = Array.isArray(payload?.writeRequests)
+        ? payload.writeRequests
+        : Array.isArray(payload?.meta?.writeRequests)
+          ? (payload.meta.writeRequests as Array<{ id?: unknown }>)
+          : [];
+      const writeRequestIds = writeRequests
+        .map((item) => String(item?.id ?? ''))
+        .filter(Boolean);
+      // E3：MCP 写类调用没有文件预览，走独立确认卡（否则内核挂起后没有可点的确认入口）。
+      setMcpPendingWrites(kernelManaged
+        ? writeRequests
+          .map((item) => item as Record<string, unknown>)
+          .filter((item) => String(item.name ?? '').startsWith('mcp__'))
+          .map((item) => ({
+            id: String(item.id ?? ''),
+            name: String(item.name ?? ''),
+            level: typeof item.level === 'string' ? item.level : undefined,
+            reason: typeof item.reason === 'string' ? item.reason : undefined,
+          }))
+        : []);
       const providerActions = kernelManaged
         ? actionsFromProviderToolCalls(payload?.toolCalls).filter((action) => writeRequestIds.includes(String(action.id)))
         : actionsFromProviderToolCalls(payload?.toolCalls).filter((action) => !kernelWriteExecuted.includes(String(action.id)));
@@ -1900,6 +2071,12 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       }
       setAttachments([]);
       setAttachmentError('');
+      // 桌面内核在「自动」档会直接执行写，done 里没有 writeRequests；用 kernelWriteExecuted 补文件卡
+      const kernelExecutedChanges = kernelManaged && kernelWriteExecuted.length
+        ? executedWriteActionsToChanges(
+            actionsFromProviderToolCalls(payload?.toolCalls).filter((action) => kernelWriteExecuted.includes(String(action.id))),
+          )
+        : [];
       if (providerReadCalls.length && !plannedActions?.length) {
         const readResults = pendingReadToolResultsRef.current;
         pendingReadToolResultsRef.current = [];
@@ -2015,6 +2192,15 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
               notifiedRunIds: notifiedRunIdsRef.current,
             });
             setPreview(previewResponse);
+            assistant = {
+              ...assistant,
+              meta: {
+                ...assistant.meta,
+                ...(pendingFileChangesRef.current.length
+                  ? { fileChanges: applyFileChangeStatus(pendingFileChangesRef.current, autoResults) }
+                  : {}),
+              },
+            };
           } else {
             await persistToolCheckpoint({
               ...(toolCheckpointRef.current ?? toolCheckpoint),
@@ -2038,6 +2224,10 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                 executedFailed,
                 executedOperations,
                 autoExecuted: true,
+                // 自动执行发生在 assistantMeta 构建之后，这里补挂文件变更卡
+                ...(pendingFileChangesRef.current.length
+                  ? { fileChanges: applyFileChangeStatus(pendingFileChangesRef.current, autoResults) }
+                  : {}),
               },
             };
             setExecution(autoExecution);
@@ -2071,9 +2261,25 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
               stage: 'waiting_confirmation',
               ...(previewResponse.aiPlanHash ? { planHash: previewResponse.aiPlanHash } : {}),
             });
+            // 待确认的写入同样要在这条回答里显示文件卡（否则只有底部预览，看起来像"没生成文件"）
+            if (pendingFileChangesRef.current.length) {
+              assistant = {
+                ...assistant,
+                meta: {
+                  ...assistant.meta,
+                  fileChanges: pendingFileChangesRef.current.map((change) => ({ ...change, status: 'pending' })),
+                },
+              };
+            }
           }
           setPreview(previewResponse);
         }
+      }
+      // 内核已执行但无预览的写入：把文件卡挂到本轮回答（有预览卡时保留预览态）
+      if (kernelExecutedChanges.length) {
+        assistant = { ...assistant, meta: { ...assistant.meta, fileChanges: kernelExecutedChanges } };
+      } else if (!assistant.meta?.fileChanges && pendingFileChangesRef.current.length) {
+        assistant = { ...assistant, meta: { ...assistant.meta, fileChanges: pendingFileChangesRef.current } };
       }
       if (durableRunCompleted) forgetDurableRun(runId, storageNamespace);
       if (stale()) persistSessionRecord(requestSessionId, assistant);
@@ -2320,6 +2526,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         preferModel: true,
         skipUserMessage: true,
         attachments: [],
+        ...(candidate.invokedSkills?.length ? { invokedSkills: candidate.invokedSkills } : {}),
         toolCheckpoint: normalizeToolCheckpoint(candidate.run.checkpoint),
       });
       if (isTauri()) setRecoverableRuns(await scanDurableRuns(tauriAiRunClient, storageNamespace));
@@ -2353,6 +2560,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     }
     pendingToolCallsRef.current = [];
     setPreview(null);
+    setMcpPendingWrites([]);
     await send(approved ? '已确认写操作，请继续。' : '用户拒绝了该写操作，请调整方案。', {
       runId,
       resumeRun: true,
@@ -2361,7 +2569,56 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       skipUserMessage: true,
       attachments: [],
       context: lastRunRequestRef.current?.context,
+      ...(lastRunRequestRef.current?.invokedSkills?.length ? { invokedSkills: lastRunRequestRef.current.invokedSkills } : {}),
     });
+  };
+
+  /** E4：读取 elicitation 表单值；必填项缺失或数字非法时返回 null（已提示）。 */
+  const readElicitationContent = (): Record<string, unknown> | null => {
+    if (!mcpElicitation) return null;
+    const properties = mcpElicitation.schema.properties && typeof mcpElicitation.schema.properties === 'object'
+      ? mcpElicitation.schema.properties as Record<string, Record<string, unknown>>
+      : {};
+    const required = Array.isArray(mcpElicitation.schema.required)
+      ? (mcpElicitation.schema.required as unknown[]).map(String)
+      : [];
+    const content: Record<string, unknown> = {};
+    for (const [key, spec] of Object.entries(properties)) {
+      const raw = String(mcpElicitationValues[key] ?? '').trim();
+      if (!raw) {
+        if (required.includes(key)) {
+          toast.error(`请填写「${String(spec?.title ?? key)}」`);
+          return null;
+        }
+        continue;
+      }
+      const type = String(spec?.type ?? 'string');
+      if (type === 'boolean') content[key] = raw === 'true';
+      else if (type === 'number' || type === 'integer') {
+        const value = Number(raw);
+        if (!Number.isFinite(value)) {
+          toast.error(`「${String(spec?.title ?? key)}」需要填写数字`);
+          return null;
+        }
+        content[key] = value;
+      } else content[key] = raw;
+    }
+    return content;
+  };
+
+  /** E4：回复 MCP elicitation（accept 必须带对象 content）。 */
+  const replyMcpElicitation = async (action: 'accept' | 'decline' | 'cancel') => {
+    if (!mcpElicitation) return;
+    const content = action === 'accept' ? readElicitationContent() : null;
+    if (action === 'accept' && !content) return;
+    try {
+      await mcpApi.replyElicitation(mcpElicitation.id, action, content);
+      setMcpElicitation(null);
+      setMcpElicitationValues({});
+      setStreamStatus(action === 'accept' ? '已提交 MCP 输入，继续执行…' : '已拒绝 MCP 输入请求');
+    } catch (replyError: any) {
+      toast.error(replyError?.message ?? 'MCP 输入回复失败');
+    }
   };
 
   const cancelOperationPreview = () => {
@@ -2475,6 +2732,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       preferModel: true,
       skipUserMessage: true,
       attachments: [],
+      ...(request.invokedSkills?.length ? { invokedSkills: request.invokedSkills } : {}),
     });
   };
 
@@ -2520,7 +2778,6 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
     setExecution(null);
     setError('');
     setRetryMessage('');
-    setExpertSuggestion(null);
     setRoutingClarification(null);
     setSessionBrowserOpen(false);
     try {
@@ -2657,6 +2914,22 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         ...countDiffLines(operation.diff),
       }))
       .filter((change) => change.path);
+  };
+
+  // 执行完成后把回答里的"待确认"文件卡更新为真实结果
+  const markFileChangesExecuted = (results: Array<{ path?: string | null; targetPath?: string | null; status?: string; error?: string }>) => {
+    if (!results.length) return;
+    setMessages((current) => {
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const message = current[index];
+        const changes = Array.isArray(message.meta?.fileChanges) ? (message.meta.fileChanges as AiFileChange[]) : [];
+        if (!changes.length) continue;
+        const updated = [...current];
+        updated[index] = { ...message, meta: { ...message.meta, fileChanges: applyFileChangeStatus(changes, results) } };
+        return updated;
+      }
+      return current;
+    });
   };
 
   const executePreview = async ({ additionalConfirmed = false, actions }: { additionalConfirmed?: boolean; actions?: AiAction[] } = {}) => {
@@ -2839,6 +3112,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         ...(result.failed ? { lastError: `${result.failed} 项操作失败` } : {}),
       });
       setExecution(result);
+      markFileChangesExecuted(result.results ?? []);
       setPreview(result.failed ? executionPreview : null);
       appendMessage({
         id: `system-${Date.now()}`,
@@ -3267,6 +3541,72 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
             </div>
 
             {preview ? <AiOperationPreviewView preview={preview} onConfirm={executePreview} onRefresh={refreshOperationPreview} onCancel={cancelOperationPreview} disabled={sending} /> : null}
+            {!preview && mcpElicitation ? (
+              <div className="ai-mcp-confirm" role="group" aria-label="MCP 输入请求">
+                <strong>{mcpElicitation.server ? `${mcpElicitation.server} 请求补充信息` : 'MCP Server 请求补充信息'}</strong>
+                <p>{mcpElicitation.message}</p>
+                <div style={{ display: 'grid', gap: '10px', margin: '12px 0' }}>
+                  {Object.entries(
+                    mcpElicitation.schema.properties && typeof mcpElicitation.schema.properties === 'object'
+                      ? mcpElicitation.schema.properties as Record<string, Record<string, unknown>>
+                      : {},
+                  ).map(([key, spec]) => {
+                    const label = String(spec?.title ?? key);
+                    const type = String(spec?.type ?? 'string');
+                    const options = Array.isArray(spec?.enum) ? (spec.enum as unknown[]).map(String) : null;
+                    const value = mcpElicitationValues[key] ?? '';
+                    return (
+                      <label key={key} style={{ display: 'grid', gap: '4px' }}>
+                        <span style={{ fontSize: 12, opacity: 0.75 }}>
+                          {label}{Array.isArray(mcpElicitation.schema.required) && (mcpElicitation.schema.required as unknown[]).map(String).includes(key) ? ' *' : ''}
+                        </span>
+                        {options ? (
+                          <select value={value} onChange={(event) => setMcpElicitationValues((current) => ({ ...current, [key]: event.target.value }))}>
+                            <option value="">请选择</option>
+                            {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        ) : type === 'boolean' ? (
+                          <select value={value || 'false'} onChange={(event) => setMcpElicitationValues((current) => ({ ...current, [key]: event.target.value }))}>
+                            <option value="true">是</option>
+                            <option value="false">否</option>
+                          </select>
+                        ) : (
+                          <input
+                            type={type === 'number' || type === 'integer' ? 'number' : 'text'}
+                            value={value}
+                            onChange={(event) => setMcpElicitationValues((current) => ({ ...current, [key]: event.target.value }))}
+                            placeholder={String(spec?.description ?? '')}
+                          />
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                <p>这些信息会发送给外部 MCP Server；不要在此填写密码等敏感内容。</p>
+                <div className="ai-mcp-confirm__actions">
+                  <button type="button" className="btn" onClick={() => void replyMcpElicitation('decline')}>拒绝</button>
+                  <button type="button" className="btn btn--primary" onClick={() => void replyMcpElicitation('accept')}>提交</button>
+                </div>
+              </div>
+            ) : null}
+            {!preview && mcpPendingWrites.length ? (
+              <div className="ai-mcp-confirm" role="group" aria-label="MCP 工具调用确认">
+                <strong>MCP 工具调用等待确认</strong>
+                <ul>
+                  {mcpPendingWrites.map((call) => (
+                    <li key={call.id}>
+                      <code>{call.name}</code>
+                      {call.reason ? <span>{call.reason}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+                <p>这些工具来自外部 MCP Server，可能读写本机以外或被托管的数据。</p>
+                <div className="ai-mcp-confirm__actions">
+                  <button type="button" className="btn" onClick={() => void confirmProviderRun(false, false)} disabled={sending}>拒绝</button>
+                  <button type="button" className="btn btn--primary" onClick={() => void confirmProviderRun(true, false)} disabled={sending}>允许执行</button>
+                </div>
+              </div>
+            ) : null}
             {irreversiblePromptOpen ? (
               <Modal
                 open
@@ -3318,16 +3658,6 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
               </div>
             ) : null}
 
-            {expertSuggestion ? (
-              <div className="ai-assistant__expert-suggestion" role="status">
-                <span className="ai-assistant__expert-suggestion-copy">
-                  这条消息命中了「{expertSuggestion.name}」的路由关键词{Array.isArray(expertSuggestion.matched) && expertSuggestion.matched.length ? `（${expertSuggestion.matched.slice(0, 3).join('、')}）` : ''}，切换后它会带着专属 Skill 和权限处理后续请求。
-                </span>
-                <button type="button" className="btn btn--sm" onClick={() => { onSelectExpert?.(expertSuggestion.id); setExpertSuggestion(null); }}>切换</button>
-                <button type="button" className="icon-btn" onClick={() => setExpertSuggestion(null)} aria-label="忽略专家建议" title="忽略">×</button>
-              </div>
-            ) : null}
-
             {routingClarification ? (
               <div className="ai-assistant__routing-clarification" role="group" aria-labelledby="ai-routing-clarification-title">
                 <CircleHelp size={17} strokeWidth={1.8} aria-hidden="true" />
@@ -3348,10 +3678,10 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
 
             <div className="ai-assistant__composer">
               <div className="ai-assistant__quick-actions">
-                <button type="button" disabled={composerBusy} onClick={() => send('创建一份幻灯片')}><LayoutGrid size={15} />创建幻灯片</button>
-                <button type="button" disabled={composerBusy} onClick={() => send('创建一个表格')}><Table2 size={15} />表格</button>
-                <button type="button" disabled={composerBusy} onClick={() => send('研究这个问题并整理关键结论')}><FileSearch size={15} />研究</button>
-                <button type="button" disabled={composerBusy} onClick={() => send('将这些内容可视化')}><WandSparkles size={15} />可视化</button>
+                <button type="button" disabled={composerBusy} onClick={() => fillComposer('创建一份幻灯片')} title="填入输入框，补充要求后再发送"><LayoutGrid size={15} />创建幻灯片</button>
+                <button type="button" disabled={composerBusy} onClick={() => fillComposer('创建一个表格')} title="填入输入框，补充要求后再发送"><Table2 size={15} />表格</button>
+                <button type="button" disabled={composerBusy} onClick={() => fillComposer('研究这个问题并整理关键结论')} title="填入输入框，补充要求后再发送"><FileSearch size={15} />研究</button>
+                <button type="button" disabled={composerBusy} onClick={() => fillComposer('将这些内容可视化')} title="填入输入框，补充要求后再发送"><WandSparkles size={15} />可视化</button>
               </div>
               <form
                 className={composerDragActive ? 'is-dragging' : ''}
@@ -3390,6 +3720,55 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                   </div>
                 ) : null}
                 {composerDragActive ? <div className="ai-assistant__drop-hint">松开以添加图片或文件</div> : null}
+                {skillPaletteVisible ? (
+                  <div className="ai-assistant__skill-palette" role="listbox" aria-label="调用技能">
+                    <div className="ai-assistant__skill-palette-head">
+                      <span>调用技能</span>
+                      <small>{availableSkills.length ? '↑↓ 选择 · Enter 加入 · Esc 关闭' : 'Esc 关闭'}</small>
+                    </div>
+                    {availableSkills.length ? availableSkills.slice(0, 8).map((skill, index) => (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        role="option"
+                        aria-selected={index === activeSkillIndex}
+                        className={`ai-assistant__skill-option${index === activeSkillIndex ? ' is-active' : ''}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onMouseEnter={() => setSkillPaletteIndex(index)}
+                        onClick={() => selectInvokedSkill(skill)}
+                      >
+                        <WandSparkles size={14} aria-hidden="true" />
+                        <span>{skillDisplayName(skill)}</span>
+                        <small>{skill.description?.trim() || skill.id}</small>
+                      </button>
+                    )) : <p className="ai-assistant__skill-palette-empty">{skillSlash.query ? `没有匹配「${skillSlash.query}」的启用技能` : '还没有可调用的技能，点下方「管理技能」导入'}</p>}
+                    <button
+                      type="button"
+                      className="ai-assistant__skill-palette-manage"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => { dismissSkillPalette(); onOpenExpertManager?.('skills'); }}
+                    >
+                      <WandSparkles size={13} aria-hidden="true" />
+                      <span>管理技能</span>
+                    </button>
+                  </div>
+                ) : null}
+                {invokedSkills.length ? (
+                  <div className="ai-assistant__invoked-skills" aria-label="本条消息调用的技能">
+                    {invokedSkills.map((skill) => (
+                      <span className="ai-assistant__invoked-skill" key={skill.id}>
+                        <WandSparkles size={12} aria-hidden="true" />
+                        <span>{skillDisplayName(skill)}</span>
+                        <button
+                          type="button"
+                          onClick={() => setInvokedSkillIds((current) => removeInvokedSkill(current, skill.id))}
+                          aria-label={`移除技能 ${skillDisplayName(skill)}`}
+                          title="移除"
+                        ><X size={11} /></button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 <textarea
                   ref={draftRef}
                   value={draft}
@@ -3397,8 +3776,32 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                     const nextDraft = event.target.value;
                     setDraft(nextDraft);
                     writeStoredDraft(draftStorageKey, nextDraft);
+                    setSkillPaletteIndex(0);
                   }}
                   onKeyDown={(event) => {
+                    if (skillPaletteVisible && !event.nativeEvent.isComposing) {
+                      if (event.key === 'ArrowDown' && availableSkills.length) {
+                        event.preventDefault();
+                        setSkillPaletteIndex((current) => (current + 1) % availableSkills.length);
+                        return;
+                      }
+                      if (event.key === 'ArrowUp' && availableSkills.length) {
+                        event.preventDefault();
+                        setSkillPaletteIndex((current) => (current - 1 + availableSkills.length) % availableSkills.length);
+                        return;
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        dismissSkillPalette();
+                        return;
+                      }
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        if (availableSkills.length) selectInvokedSkill(availableSkills[activeSkillIndex]);
+                        else dismissSkillPalette();
+                        return;
+                      }
+                    }
                     // Enter 发送、Shift+Enter 换行；中文输入法组词期间的回车不发送
                     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                       event.preventDefault();
@@ -3411,14 +3814,14 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                     event.preventDefault();
                     void addAiFiles(imageFiles);
                   }}
-                  placeholder="询问 Lattice AI"
+                  placeholder="询问 Lattice AI（输入 / 调用技能）"
                   rows={1}
                   aria-label="输入 AI 指令"
                   disabled={composerBusy}
                 />
                 <div className="ai-assistant__composer-footer">
                   <div className="ai-assistant__attachment-menu-wrap">
-                    <button type="button" className={`ai-assistant__attachment-trigger ${attachmentMenuOpen ? 'is-open' : ''}`} onClick={() => { setComposerMenu(null); setAttachmentMenuOpen((current) => !current); }} aria-expanded={attachmentMenuOpen} aria-label="添加附件" title="添加照片和文件">
+                    <button type="button" className={`ai-assistant__attachment-trigger ${attachmentMenuOpen ? 'is-open' : ''}`} onClick={() => { setComposerMenu(null); setExpertMenuOpen(false); setSkillPaletteOpen(false); setAttachmentMenuOpen((current) => !current); }} aria-expanded={attachmentMenuOpen} aria-label="添加附件" title="添加照片和文件">
                       <Plus size={16} aria-hidden="true" />
                     </button>
                     {attachmentMenuOpen ? (
@@ -3453,8 +3856,71 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                     />
                   </div>
                   {attachmentError ? <span className="ai-assistant__attachment-error" role="alert">{attachmentError}</span> : null}
+                  <button
+                    type="button"
+                    className={`ai-assistant__attachment-trigger ${skillPaletteVisible ? 'is-open' : ''}`}
+                    onClick={toggleSkillPalette}
+                    aria-expanded={skillPaletteVisible}
+                    aria-label="调用技能"
+                    title="调用技能（输入 / 也可打开）"
+                  >
+                    <WandSparkles size={16} aria-hidden="true" />
+                  </button>
                   <div className="ai-assistant__composer-menu-wrap">
-                    <button type="button" className={`ai-assistant__composer-picker ${composerMenu === 'approval' ? 'is-open' : ''}`} onClick={() => { setAttachmentMenuOpen(false); setComposerMenu((current) => current === 'approval' ? null : 'approval'); }} aria-expanded={composerMenu === 'approval'}>
+                    <button
+                      type="button"
+                      className={`ai-assistant__composer-picker ai-assistant__expert-picker ${expertMenuOpen ? 'is-open' : ''}`}
+                      onClick={() => { setAttachmentMenuOpen(false); setComposerMenu(null); setSkillPaletteOpen(false); setExpertMenuOpen((current) => !current); }}
+                      aria-expanded={expertMenuOpen}
+                      aria-haspopup="menu"
+                      title={expertSummary.kind === '通用助手' ? '当前未挂载专家' : `${expertSummary.kind} · 技能 ${expertSummary.skillCount} · ${expertSummary.contexts || '默认范围'} · ${expertSummary.writePolicy}`}
+                    >
+                      <UserRound size={14} aria-hidden="true" />
+                      <span>{expertId === 'general' ? '通用助手' : (expert?.name?.trim() || expertId)}</span>
+                      <ChevronDown size={13} />
+                    </button>
+                    {expertMenuOpen ? (
+                      <div className="ai-assistant__menu ai-assistant__menu--expert" role="menu" aria-label="选择专家">
+                        <div className="notion-menu__intro">
+                          <span>专家只对当前对话生效，随时可切换</span>
+                          <button type="button" onClick={() => { setExpertMenuOpen(false); onOpenExpertManager?.('experts'); }}>管理</button>
+                        </div>
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={expertId === 'general'}
+                          className={expertId === 'general' ? 'is-selected' : ''}
+                          onClick={() => { onSelectExpert?.('general'); setExpertMenuOpen(false); }}
+                        >
+                          <UserRound size={14} aria-hidden="true" />
+                          <span className="ai-assistant__expert-option">
+                            <strong>通用助手</strong>
+                            <small>不附加专家提示词，按消息自行判断</small>
+                          </span>
+                          {expertId === 'general' ? <Check size={15} /> : null}
+                        </button>
+                        {experts.filter((item) => item.id !== 'general').map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={item.id === expertId}
+                            className={item.id === expertId ? 'is-selected' : ''}
+                            onClick={() => { onSelectExpert?.(item.id); setExpertMenuOpen(false); }}
+                          >
+                            <Sparkles size={14} aria-hidden="true" />
+                            <span className="ai-assistant__expert-option">
+                              <strong>{item.name?.trim() || item.id}</strong>
+                              <small>{item.description?.trim() || '专家'}</small>
+                            </span>
+                            {item.id === expertId ? <Check size={15} /> : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="ai-assistant__composer-menu-wrap">
+                    <button type="button" className={`ai-assistant__composer-picker ${composerMenu === 'approval' ? 'is-open' : ''}`} onClick={() => { setAttachmentMenuOpen(false); setExpertMenuOpen(false); setSkillPaletteOpen(false); setComposerMenu((current) => current === 'approval' ? null : 'approval'); }} aria-expanded={composerMenu === 'approval'}>
                       <span>{approvalLabel}</span><ChevronDown size={13} />
                     </button>
                     {composerMenu === 'approval' ? (
@@ -3526,7 +3992,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                     ) : null}
                   </div>
                   <div className="ai-assistant__composer-menu-wrap">
-                    <button type="button" className={`ai-assistant__composer-picker ai-assistant__model-picker ${composerMenu === 'model' ? 'is-open' : ''}`} onClick={() => { setAttachmentMenuOpen(false); setComposerMenu((current) => current === 'model' ? null : 'model'); }} aria-expanded={composerMenu === 'model'}>
+                    <button type="button" className={`ai-assistant__composer-picker ai-assistant__model-picker ${composerMenu === 'model' ? 'is-open' : ''}`} onClick={() => { setAttachmentMenuOpen(false); setExpertMenuOpen(false); setSkillPaletteOpen(false); setComposerMenu((current) => current === 'model' ? null : 'model'); }} aria-expanded={composerMenu === 'model'}>
                       <span>{settings.preferModel === true && activeProvider?.model && connectionState !== 'local' ? activeProvider.model : '自动'}</span><ChevronDown size={13} />
                     </button>
                     {composerMenu === 'model' ? (

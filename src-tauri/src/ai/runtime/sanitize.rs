@@ -169,6 +169,20 @@ pub fn redact_request_secrets(request: &Value) -> Value {
             copy_field(source, &mut persisted, key);
         }
     }
+    // 用户显式调用的技能 id 是恢复运行所需的元数据（正文不落盘）。
+    if let Some(items) = source.get("invokedSkills").and_then(Value::as_array) {
+        let ids: Vec<Value> = items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && id.chars().count() <= 120)
+            .take(8)
+            .map(|id| Value::String(id.to_owned()))
+            .collect();
+        if !ids.is_empty() {
+            persisted.insert("invokedSkills".to_owned(), Value::Array(ids));
+        }
+    }
     for (key, sanitizer) in [
         ("provider", sanitize_provider as fn(&Value) -> Option<Value>),
         ("context", sanitize_context_metadata),

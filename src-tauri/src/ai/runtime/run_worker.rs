@@ -144,6 +144,7 @@ pub async fn ai_chat_stream(
         let workspace_state = app.state::<crate::WorkspaceState>();
         if let Ok(workspace) = workspace_state.0.read() {
             crate::ai::core::expert::apply_request(&workspace, &mut request);
+            crate::ai::core::expert::apply_invoked_skills(&workspace, &mut request);
         }
     }
     state.start(&run_id)?;

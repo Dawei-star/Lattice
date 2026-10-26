@@ -83,6 +83,10 @@ export default function ExpertManager({ open, initialTab = 'experts', onClose, e
   const [importOpen, setImportOpen] = useState(false);
   const [importSource, setImportSource] = useState<SkillImportSource>('text');
   const [importValue, setImportValue] = useState('');
+  const [expertImportOpen, setExpertImportOpen] = useState(false);
+  const [expertImportValue, setExpertImportValue] = useState('');
+  const [claudeOpen, setClaudeOpen] = useState(false);
+  const [claudeSkills, setClaudeSkills] = useState<Array<{ document: SkillDoc; markdown: string; installed: boolean }>>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -91,6 +95,10 @@ export default function ExpertManager({ open, initialTab = 'experts', onClose, e
     setExpertDraft(null);
     setSkillDraft(null);
     setNotice('');
+    setExpertImportOpen(false);
+    setExpertImportValue('');
+    setClaudeOpen(false);
+    setClaudeSkills([]);
   }, [initialTab, open]);
 
   useEffect(() => {
@@ -115,6 +123,8 @@ export default function ExpertManager({ open, initialTab = 'experts', onClose, e
     setExpertDraft(null);
     setSkillDraft(null);
     setNotice('');
+    setExpertImportOpen(false);
+    setClaudeOpen(false);
     setSelectedId(next === 'experts' ? experts[0]?.id ?? '' : next === 'skills' ? skills[0]?.id ?? '' : '');
   };
 
@@ -210,6 +220,65 @@ export default function ExpertManager({ open, initialTab = 'experts', onClose, e
       title: `${String(skill.title ?? skill.name ?? skill.id)} 副本`,
       source: undefined,
     }));
+  };
+
+  /** E4：专家导出为 .md（frontmatter + 正文），复制到剪贴板。 */
+  const exportExpert = async (expert: ExpertDoc) => {
+    setBusy(true);
+    try {
+      const data = await expertsApi.exportExpert(expert.id);
+      const copied = await copyToClipboard(String(data.markdown ?? ''));
+      setNotice(copied ? `已复制 ${data.filename ?? '专家.md'}` : '浏览器不允许写剪贴板，请手动复制');
+    } catch (error) {
+      setNotice((error as Error)?.message ?? '导出失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** E4：LobeChat 角色卡 → 专家草稿（不落盘）。 */
+  const importExpertCard = async () => {
+    if (!expertImportValue.trim()) {
+      setNotice('请粘贴 LobeChat 角色卡 JSON');
+      return;
+    }
+    setBusy(true);
+    try {
+      const preview = await expertsApi.importExpertCard(expertImportValue);
+      if (!preview.document) throw new Error('角色卡没有解析出专家');
+      setExpertDraft(draftFromExpert(preview.document as unknown as ExpertDoc));
+      setSelectedId('');
+      setExpertImportOpen(false);
+      setExpertImportValue('');
+      setNotice('已解析为草稿：检查提示词与能力后点「保存专家」');
+    } catch (error) {
+      setNotice((error as Error)?.message ?? '角色卡导入失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** E4：只读扫描 ~/.claude/skills，列出可导入候选。 */
+  const discoverClaude = async () => {
+    setBusy(true);
+    try {
+      const list = await expertsApi.discoverClaudeSkills();
+      setClaudeSkills(list);
+      setClaudeOpen(true);
+      setSkillDraft(null);
+      setSelectedId('');
+      setNotice(list.length ? `发现 ${list.length} 个 Claude 技能` : '~/.claude/skills 下没有可导入的技能');
+    } catch (error) {
+      setNotice((error as Error)?.message ?? 'Claude 技能发现失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useClaudeSkill = (document: SkillDoc) => {
+    setSkillDraft(skillDraftFrom(document, { source: undefined }));
+    setClaudeOpen(false);
+    setNotice('已载入草稿：确认后点「保存 Skill」写入知识库');
   };
 
   /** 导入：先解析成草稿（不落盘），保存仍走确认流程。 */
@@ -368,6 +437,8 @@ export default function ExpertManager({ open, initialTab = 'experts', onClose, e
             <div className="expert-manager__list-head">
               <div><strong>{tab === 'experts' ? '专家目录' : 'Skill 目录'}</strong><small>{tab === 'experts' ? '选择后在右侧配置' : '可复用的工作方法'}</small></div>
               <div className="expert-manager__list-actions">
+                {tab === 'experts' ? <button type="button" className="icon-btn" onClick={() => { setExpertImportOpen(true); setExpertDraft(null); setSelectedId(''); setNotice(''); }} aria-label="导入角色卡" title="导入 LobeChat 角色卡"><Upload size={16} /></button> : null}
+                {tab === 'skills' ? <button type="button" className="icon-btn" onClick={() => void discoverClaude()} disabled={busy} aria-label="从 ~/.claude/skills 导入" title="从 ~/.claude/skills 导入"><FileDown size={16} /></button> : null}
                 {tab === 'skills' ? <button type="button" className="icon-btn" onClick={() => { setImportOpen(true); setSkillDraft(null); setSelectedId(''); setNotice(''); }} aria-label="导入 SKILL.md" title="导入 SKILL.md"><Upload size={16} /></button> : null}
                 <button type="button" className="icon-btn" onClick={tab === 'experts' ? newExpert : newSkill} aria-label={tab === 'experts' ? '添加专家' : '添加 Skill'} title={tab === 'experts' ? '添加专家' : '添加 Skill'}><Plus size={16} /></button>
               </div>
@@ -377,7 +448,7 @@ export default function ExpertManager({ open, initialTab = 'experts', onClose, e
           </aside> : null}
           <section className="expert-manager__detail" aria-label={tab === 'experts' ? '专家配置' : tab === 'skills' ? 'Skill 配置' : 'MCP 工具中心'}>
             {notice ? <div className="expert-manager__notice" role="status">{notice}</div> : null}
-            {tab === 'mcp' ? <div className="expert-manager__mcp"><McpToolsCenter vaultPath={vaultDir ?? ''} /></div> : tab === 'experts' ? (expertDraft ? <ExpertForm draft={expertDraft} skills={skills} busy={busy} onChange={setExpertDraft} onCancel={() => { setExpertDraft(null); setNotice(''); }} onSubmit={saveExpert} /> : selectedExpert ? <ExpertSummary expert={selectedExpert} active={selectedExpert.id === activeExpertId} onUse={() => { onSelectExpert(selectedExpert.id); onClose(); }} onEdit={() => editExpert(selectedExpert)} onCopy={() => copyExpert(selectedExpert)} onRemove={() => void removeItem(selectedExpert, 'experts')} /> : <ManagerEmpty kind="experts" onCreate={newExpert} />) : (importOpen ? <SkillImportPanel source={importSource} value={importValue} busy={busy} onSource={setImportSource} onValue={setImportValue} onSubmit={() => void importSkill()} onCancel={() => { setImportOpen(false); setImportValue(''); }} /> : skillDraft ? <SkillForm draft={skillDraft} busy={busy} onChange={setSkillDraft} onCancel={() => setSkillDraft(null)} onSubmit={saveSkill} /> : selectedSkill ? <SkillSummary skill={selectedSkill} onEdit={() => void editSkill(selectedSkill)} onCopy={() => copySkill(selectedSkill)} onExport={() => void exportSkill(selectedSkill)} onRemove={() => void removeItem(selectedSkill, 'skills')} /> : <ManagerEmpty kind="skills" onCreate={newSkill} />)}
+            {tab === 'mcp' ? <div className="expert-manager__mcp"><McpToolsCenter vaultPath={vaultDir ?? ''} /></div> : tab === 'experts' ? (expertImportOpen ? <ExpertCardImportPanel value={expertImportValue} busy={busy} onValue={setExpertImportValue} onSubmit={() => void importExpertCard()} onCancel={() => { setExpertImportOpen(false); setExpertImportValue(''); }} /> : expertDraft ? <ExpertForm draft={expertDraft} skills={skills} busy={busy} onChange={setExpertDraft} onCancel={() => { setExpertDraft(null); setNotice(''); }} onSubmit={saveExpert} /> : selectedExpert ? <ExpertSummary expert={selectedExpert} active={selectedExpert.id === activeExpertId} onUse={() => { onSelectExpert(selectedExpert.id); onClose(); }} onEdit={() => editExpert(selectedExpert)} onCopy={() => copyExpert(selectedExpert)} onExport={() => void exportExpert(selectedExpert)} onRemove={() => void removeItem(selectedExpert, 'experts')} /> : <ManagerEmpty kind="experts" onCreate={newExpert} />) : (claudeOpen ? <ClaudeSkillsPanel items={claudeSkills} onUse={useClaudeSkill} onClose={() => setClaudeOpen(false)} /> : importOpen ? <SkillImportPanel source={importSource} value={importValue} busy={busy} onSource={setImportSource} onValue={setImportValue} onSubmit={() => void importSkill()} onCancel={() => { setImportOpen(false); setImportValue(''); }} /> : skillDraft ? <SkillForm draft={skillDraft} busy={busy} onChange={setSkillDraft} onCancel={() => setSkillDraft(null)} onSubmit={saveSkill} /> : selectedSkill ? <SkillSummary skill={selectedSkill} onEdit={() => void editSkill(selectedSkill)} onCopy={() => copySkill(selectedSkill)} onExport={() => void exportSkill(selectedSkill)} onRemove={() => void removeItem(selectedSkill, 'skills')} /> : <ManagerEmpty kind="skills" onCreate={newSkill} />)}
           </section>
         </div>
       </div>
@@ -399,7 +470,7 @@ function CapabilityMap({ tab }: { tab: ManagerTab }) {
   );
 }
 
-function ExpertSummary({ expert, active, onUse, onEdit, onCopy, onRemove }: { expert: ExpertDoc; active: boolean; onUse: () => void; onEdit: () => void; onCopy: () => void; onRemove: () => void }) {
+function ExpertSummary({ expert, active, onUse, onEdit, onCopy, onExport, onRemove }: { expert: ExpertDoc; active: boolean; onUse: () => void; onEdit: () => void; onCopy: () => void; onExport: () => void; onRemove: () => void }) {
   const draft = draftFromExpert(expert);
   const builtin = expert.source !== 'workspace';
   return <div className="expert-manager__summary">
@@ -416,6 +487,7 @@ function ExpertSummary({ expert, active, onUse, onEdit, onCopy, onRemove }: { ex
     <div className="expert-manager__summary-actions">
       <button type="button" className="btn btn--sm btn--primary" onClick={onUse}><Check size={15} />{active ? '继续使用' : '使用这个专家'}</button>
       <button type="button" className="btn btn--sm" onClick={onEdit}>{builtin ? '另存为副本' : '编辑配置'}</button>
+      <button type="button" className="btn btn--sm" onClick={onExport}><FileDown size={15} />导出 .md</button>
       <button type="button" className="icon-btn" onClick={onCopy} title="复制专家" aria-label="复制专家"><Copy size={15} /></button>
       <button type="button" className="icon-btn icon-btn--danger" onClick={onRemove} disabled={builtin} title={builtin ? '内置专家不可删除' : '删除专家'} aria-label="删除专家"><Trash2 size={15} /></button>
     </div>
@@ -629,6 +701,46 @@ function SkillImportPanel({ source, value, busy, onSource, onValue, onSubmit, on
         <button type="button" className="btn btn--sm" onClick={onCancel}>取消</button>
         <button type="button" className="btn btn--sm btn--primary" disabled={busy} onClick={onSubmit}><Upload size={15} />解析为草稿</button>
       </div>
+    </div>
+  );
+}
+
+/** E4：LobeChat 角色卡导入（粘贴 JSON → 解析成专家草稿）。 */
+function ExpertCardImportPanel({ value, busy, onValue, onSubmit, onCancel }: { value: string; busy: boolean; onValue: (value: string) => void; onSubmit: () => void; onCancel: () => void }) {
+  return (
+    <div className="expert-manager__form">
+      <div className="expert-manager__detail-head">
+        <div><span className="expert-manager__eyebrow">IMPORT CHARACTER CARD</span><h1>导入 LobeChat 角色卡</h1><p>粘贴单张角色卡 JSON（或数组取第一张）：标题 → 名称，systemRole → 提示词，tags → 路由关键词。</p></div>
+        <button type="button" className="icon-btn" onClick={onCancel} aria-label="取消导入" title="取消"><X size={16} /></button>
+      </div>
+      <fieldset className="expert-form__section">
+        <legend><span>01</span>角色卡 JSON</legend>
+        <textarea className="expert-manager__skill-editor" rows={14} value={value} onChange={(event) => onValue(event.target.value)} placeholder={'{\n  "identifier": "rust-reviewer",\n  "meta": { "title": "Rust 评审", "tags": ["rust"] },\n  "config": { "systemRole": "你是一位严谨的 Rust 工程师。" }\n}'} />
+        <p className="expert-manager__hint">只解析成草稿，不直接落盘；保存仍走文件确认。</p>
+      </fieldset>
+      <div className="expert-manager__form-actions">
+        <button type="button" className="btn btn--sm" onClick={onCancel}>取消</button>
+        <button type="button" className="btn btn--sm btn--primary" disabled={busy} onClick={onSubmit}><Upload size={15} />解析为草稿</button>
+      </div>
+    </div>
+  );
+}
+
+/** E4：`~/.claude/skills` 发现结果（只读列出，单个载入成 Skill 草稿）。 */
+function ClaudeSkillsPanel({ items, onUse, onClose }: { items: Array<{ document: SkillDoc; markdown: string; installed: boolean }>; onUse: (document: SkillDoc) => void; onClose: () => void }) {
+  return (
+    <div className="expert-manager__form">
+      <div className="expert-manager__detail-head">
+        <div><span className="expert-manager__eyebrow">DISCOVER · ~/.claude/skills</span><h1>Claude 技能</h1><p>只读扫描；选择一个载入草稿，确认后写入你自己的知识库。</p></div>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭列表" title="关闭"><X size={16} /></button>
+      </div>
+      {items.length ? <div className="expert-manager__items" role="listbox" aria-label="Claude 技能列表">{items.map((item) => (
+        <button type="button" role="option" aria-selected={false} className="expert-manager__item" key={item.document.id} onClick={() => onUse(item.document)}>
+          <BookOpen size={15} />
+          <span><strong>{String(item.document.title ?? item.document.name ?? item.document.id)}</strong><small>{item.document.description || '未填写说明'}</small></span>
+          {item.installed ? <em>已导入</em> : null}
+        </button>
+      ))}</div> : <p className="expert-manager__hint">~/.claude/skills 下没有找到 SKILL.md。</p>}
     </div>
   );
 }

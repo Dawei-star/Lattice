@@ -6,6 +6,7 @@ import {
   createMcpServer,
   loadMcpSettings,
   mergeProjectServers,
+  parseClaudeMcpConfig,
   pendingArgTokens,
   readEnvValue,
   resolveServerArgs,
@@ -200,6 +201,32 @@ test('mergeProjectServers lets user-level win on key collision and drops disable
   assert.equal(mergeProjectServers(null, project)[0].name, 'Git(项目级)');
   assert.deepEqual(mergeProjectServers(user, null).map((server) => server.key), ['git', 'fetch']);
   assert.equal(mergeProjectServers(user, project).length <= 8, true);
+});
+
+test('Claude / Cursor mcpServers paste import keeps stdio and url entries', () => {
+  const text = JSON.stringify({
+    mcpServers: {
+      filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'], env: { DEBUG: '1' } },
+      remote: { url: 'https://example.com/mcp' },
+      broken: { transport: 'stdio' },
+      git: { command: 'uvx', args: ['mcp-server-git'] },
+    },
+  });
+  const existing = [{ key: 'git', name: 'Git' }];
+  const result = parseClaudeMcpConfig(text, existing);
+  assert.equal(result.error, '');
+  assert.deepEqual(result.servers.map((server) => server.key), ['filesystem', 'remote']);
+  assert.deepEqual(result.servers[0].args, ['-y', '@modelcontextprotocol/server-filesystem', '/tmp']);
+  assert.equal(result.servers[0].env.DEBUG, '1');
+  assert.equal(result.servers[1].transport, 'sse');
+  assert.equal(result.servers[1].url, 'https://example.com/mcp');
+  assert.deepEqual(result.skipped.sort(), ['broken', 'git']);
+
+  // 裸 map（直接粘贴内层结构）也能导入
+  assert.equal(parseClaudeMcpConfig(JSON.stringify({ docs: { command: 'node', args: ['server.js'] } })).servers.length, 1);
+  assert.match(parseClaudeMcpConfig('{oops').error, /JSON/);
+  assert.match(parseClaudeMcpConfig('[]').error, /mcpServers/);
+  assert.match(parseClaudeMcpConfig('{"mcpServers": {}}').error, /没有可导入/);
 });
 
 test('serversToProjectDocument round-trips internal servers into the disk shape', () => {

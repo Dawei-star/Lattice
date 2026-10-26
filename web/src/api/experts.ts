@@ -118,4 +118,13 @@ export const expertsApi = {
   importSkill: (input: SkillImportInput, options: RequestOptions = {}): Promise<{ document: Skill; markdown: string }> => http.post('/experts/skills/import', input, { retries: 0, ...options }),
   /** 导出：返回规范化 SKILL.md 全文与 references 清单。 */
   exportSkill: (id: string, options: RequestOptions = {}): Promise<{ id: string; filename: string; markdown: string; references: string[] }> => http.get(`/experts/skills/${encodeURIComponent(id)}/export`, options),
+  /** E4：导出专家为 .md（frontmatter + 正文），可直接再导入。 */
+  exportExpert: (id: string, options: RequestOptions = {}): Promise<{ id: string; filename: string; markdown: string }> =>
+    http.get(`/experts/${encodeURIComponent(id)}/export`, options),
+  /** E4：LobeChat 角色卡导入预览（只解析，不落盘；保存走 create/update）。 */
+  importExpertCard: (raw: string, options: RequestOptions = {}): Promise<{ document: Expert; markdown: string }> =>
+    http.post('/experts/import', { raw }, { retries: 0, ...options }),
+  /** E4：只读扫描 ~/.claude/skills，返回可导入候选。 */
+  discoverClaudeSkills: (options: RequestOptions = {}): Promise<Array<{ document: Skill; markdown: string; installed: boolean }>> =>
+    http.get('/experts/skills/claude', options),
 };

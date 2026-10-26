@@ -24,6 +24,12 @@ pub const EXPERT_SKILL_CATALOG_MAX_CHARS: usize = 4_000;
 pub const SKILL_LOAD_MAX_CHARS: usize = 8_000;
 /// 内核注入的技能加载工具名（E2 渐进披露的 L2）。
 pub const SKILL_LOAD_TOOL: &str = "skill_load";
+/// 用户通过 `/` 显式调用的技能：单个正文上限（与 skill_load 一致）。
+pub const INVOKED_SKILL_MAX_CHARS: usize = 8_000;
+/// 用户显式调用技能的 system 总预算（超出的技能整条跳过）。
+pub const INVOKED_SKILLS_MAX_CHARS: usize = 24_000;
+/// 单条消息最多显式调用的技能数（防止误粘贴导致提示词膨胀）。
+pub const INVOKED_SKILLS_MAX_COUNT: usize = 8;
 
 /// 目录常驻的技能摘要（L1）：只带 id / 标题 / 一句话说明。
 #[derive(Debug, Clone)]
@@ -51,6 +57,9 @@ pub struct ExpertRuntime {
     pub scope_exclude: Vec<String>,
     /// discoverable 绑定的技能（只常驻目录，模型按需 `skill_load`）。
     pub exposed_skills: Vec<SkillBrief>,
+    /// E3：允许暴露的 MCP Server（`mcp.servers` 的 key/name；`*` = 全部）。
+    /// 空表 = 不暴露任何 MCP 工具（工具面与调度层一致裁剪）。
+    pub mcp_servers: Vec<String>,
 }
 
 /// 写策略（E1 起从展示标签变成运行时策略）。
@@ -273,6 +282,22 @@ pub fn resolve(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    // E3：MCP 绑定写在 Frontmatter `mcp.servers`（也兼容平铺 `mcpServers`）。
+    let mcp_servers = document
+        .pointer("/mcp/servers")
+        .or_else(|| document.get("mcpServers"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .take(crate::ai::core::mcp::MAX_SERVERS)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Some(ExpertRuntime {
         expert_id: expert_id.to_owned(),
         expert_name,
@@ -287,6 +312,7 @@ pub fn resolve(
             .clamp(1, 12) as u32,
         scope_exclude,
         exposed_skills,
+        mcp_servers,
     })
 }
 
@@ -294,6 +320,28 @@ impl ExpertRuntime {
     /// 是否允许写（写工具面 + 内核调度两个闸门共用）。
     pub fn writes_allowed(&self) -> bool {
         self.write_policy.allows_writes()
+    }
+
+    /// E3：该 MCP Server 是否被专家绑定（key/name 均可，支持 `*`）。
+    pub fn mcp_allows_server(&self, key: &str, name: &str) -> bool {
+        self.mcp_servers.iter().any(|item| {
+            item == "*"
+                || item == name
+                || crate::ai::core::mcp::slug(item) == crate::ai::core::mcp::slug(key)
+        })
+    }
+
+    /// E3：该 `mcp__<server>__<tool>` 是否落在绑定范围内。
+    pub fn mcp_allows_tool(&self, external_name: &str) -> bool {
+        let Some(rest) = external_name.strip_prefix("mcp__") else {
+            return false;
+        };
+        let Some((server, _)) = rest.split_once("__") else {
+            return false;
+        };
+        self.mcp_servers
+            .iter()
+            .any(|item| item == "*" || crate::ai::core::mcp::slug(item) == server)
     }
 
     /// trace 用：system 首个非空行（≤160 字符）。正文全文不入库，只留可对照的摘要。
@@ -363,10 +411,14 @@ pub fn apply(request: &mut Value, runtime: &ExpertRuntime) {
     }
     if let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) {
         tools.retain(|tool| {
-            tool.get("name")
-                .and_then(Value::as_str)
-                .map(|name| tool_allowed(name, &runtime.capabilities, runtime.write_policy))
-                .unwrap_or(true)
+            let Some(name) = tool.get("name").and_then(Value::as_str) else {
+                return true;
+            };
+            // E3：MCP 工具面按 `mcp.servers` 绑定裁剪（未绑定 = 不可见）。
+            if crate::ai::core::mcp::is_mcp_tool(name) {
+                return runtime.mcp_allows_tool(name);
+            }
+            tool_allowed(name, &runtime.capabilities, runtime.write_policy)
         });
         // L2 加载入口由内核补进工具面：前端不知道专家绑了哪些可发现技能。
         if runtime.capabilities.iter().any(|item| item == SKILL_LOAD_TOOL)
@@ -415,6 +467,122 @@ pub fn apply_request(workspace: &WorkspaceService, request: &mut Value) -> Optio
     let runtime = resolve_for_request(workspace, request)?;
     apply(request, &runtime);
     Some(runtime)
+}
+
+fn requested_skill_ids(request: &Value) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    request
+        .get("invokedSkills")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.chars().count() <= 120)
+                .filter(|id| seen.insert((*id).to_owned()))
+                .take(INVOKED_SKILLS_MAX_COUNT)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn skill_display_name(skill: &Value, fallback: &str) -> String {
+    skill
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| skill.get("name").and_then(Value::as_str))
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+/// 用户从 `/` 面板显式调用的技能：把 SKILL.md 正文追加进本次 run 的 system。
+/// 与模型侧的 `skill_load` 相互独立——不依赖专家绑定，也不改变工具面。
+/// 返回实际注入的技能 id；重复调用靠正文标记判重，不会叠加。
+pub fn apply_invoked_skills(workspace: &WorkspaceService, request: &mut Value) -> Vec<String> {
+    if !request.is_object() {
+        return Vec::new();
+    }
+    let ids = requested_skill_ids(request);
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let mut system = request
+        .get("system")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default();
+    if system.trim().is_empty() {
+        let model = request.pointer("/provider/model").and_then(Value::as_str);
+        system = runtime_guard(model);
+    }
+    let mut used = system.chars().count();
+    let mut applied = Vec::new();
+    for id in ids {
+        let Ok(skill) = workspace.skill_get(&id) else {
+            log::warn!("显式调用的技能不存在，已忽略：{id}");
+            continue;
+        };
+        if skill.get("enabled").and_then(Value::as_bool) == Some(false) {
+            log::warn!("显式调用的技能已停用，已忽略：{id}");
+            continue;
+        }
+        let name = skill_display_name(&skill, &id);
+        let marker = format!("【已调用技能：{name}（{id}）】");
+        if system.contains(&marker) {
+            continue;
+        }
+        let content = skill
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if content.is_empty() {
+            continue;
+        }
+        let content: String = content.chars().take(INVOKED_SKILL_MAX_CHARS).collect();
+        let block = format!("\n\n{marker}\n{content}");
+        if used + block.chars().count() > INVOKED_SKILLS_MAX_CHARS {
+            log::warn!("显式技能 {id} 超出本次 system 预算，已跳过");
+            continue;
+        }
+        used += block.chars().count();
+        system.push_str(&block);
+        applied.push(id);
+    }
+    if !applied.is_empty() {
+        request["system"] = Value::String(system.trim_start().to_owned());
+    }
+    applied
+}
+
+/// run 事件 `skills_invoked`：记录用户显式调用了哪些技能（只留 id/标题/版本，
+/// 正文已在 system 里，不再落库）。
+pub fn invoked_event(workspace: &WorkspaceService, request: &Value) -> Option<Value> {
+    let skills: Vec<Value> = requested_skill_ids(request)
+        .into_iter()
+        .filter_map(|id| {
+            let skill = workspace.skill_get(&id).ok()?;
+            if skill.get("enabled").and_then(Value::as_bool) == Some(false) {
+                return None;
+            }
+            Some(serde_json::json!({
+                "id": id,
+                "title": skill_display_name(&skill, &id),
+                "version": skill.get("version").and_then(Value::as_str).unwrap_or("1.0.0"),
+            }))
+        })
+        .collect();
+    if skills.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "skills_invoked",
+        "count": skills.len(),
+        "skills": skills,
+    }))
 }
 
 /// run 事件 `expert_loaded`：把「哪个专家、什么版本、注入了多少内容」写进
@@ -540,6 +708,7 @@ mod tests {
             max_rounds: 6,
             scope_exclude: scope_exclude.iter().map(|item| item.to_string()).collect(),
             exposed_skills: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -748,5 +917,58 @@ mod tests {
         assert_eq!(normalize_scope_path("\\.lattice\\x"), ".lattice/x");
         assert_eq!(normalize_scope_path("./_templates/a.md"), "_templates/a.md");
         assert_eq!(normalize_scope_path("  /a/b  "), "a/b");
+    }
+
+    #[test]
+    fn invoked_skills_inject_without_expert_and_stay_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let service =
+            crate::workspace::WorkspaceService::open(directory.path().into()).unwrap();
+        let skill_dir = directory.path().join(".lattice/skills/note-format");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: note-format\ndescription: 整理笔记结构\nmetadata:\n  lattice.title: 笔记格式\n---\n先给结论，再给证据。\n",
+        )
+        .unwrap();
+
+        let mut request = serde_json::json!({
+            "invokedSkills": ["note-format", "missing-skill", "note-format"],
+            "provider": { "model": "test-model" },
+        });
+        let applied = super::apply_invoked_skills(&service, &mut request);
+        assert_eq!(applied, vec!["note-format"], "未知技能被忽略、重复 id 去重");
+        let system = request["system"].as_str().unwrap();
+        assert!(system.contains("【已调用技能：笔记格式（note-format）】"));
+        assert!(system.contains("先给结论，再给证据。"));
+        assert!(system.contains("test-model"), "无专家时仍带运行环境事实块");
+
+        // 重复应用不叠加（续跑/恢复会重复走注入路径）。
+        assert!(super::apply_invoked_skills(&service, &mut request).is_empty());
+        let system = request["system"].as_str().unwrap();
+        assert_eq!(system.matches("【已调用技能：").count(), 1);
+
+        let event = super::invoked_event(&service, &request).unwrap();
+        assert_eq!(event["type"], serde_json::json!("skills_invoked"));
+        assert_eq!(event["count"], serde_json::json!(1));
+        assert_eq!(event["skills"][0]["id"], serde_json::json!("note-format"));
+    }
+
+    #[test]
+    fn invoked_skills_skip_disabled_skills() {
+        let directory = tempfile::tempdir().unwrap();
+        let service =
+            crate::workspace::WorkspaceService::open(directory.path().into()).unwrap();
+        let skill_dir = directory.path().join(".lattice/skills/off-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: off-skill\ndescription: 已停用\nmetadata:\n  lattice.title: 停用技能\n  lattice.enabled: false\n---\n不应被注入。\n",
+        )
+        .unwrap();
+
+        let mut request = serde_json::json!({ "invokedSkills": ["off-skill"] });
+        assert!(super::apply_invoked_skills(&service, &mut request).is_empty());
+        assert!(request.get("system").is_none());
     }
 }

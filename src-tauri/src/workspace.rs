@@ -69,10 +69,18 @@ pub struct AuditLog {
 
 impl AuditLog {
     fn open(lattice_dir: &Path) -> Result<Self, ServiceError> {
-        fs::create_dir_all(lattice_dir)?;
-        Ok(Self {
-            path: lattice_dir.join("audit.jsonl"),
-        })
+        crate::fs_perm::create_private_dir(lattice_dir)?;
+        let path = lattice_dir.join("audit.jsonl");
+        // 审计只记路径与动作，仍按内部状态文件收紧；失败不阻断工作区打开。
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(_) => {
+                if let Err(error) = crate::fs_perm::restrict_private_file(&path) {
+                    log::warn!("收紧审计日志权限失败（{}）：{error}", path.display());
+                }
+            }
+            Err(error) => log::warn!("创建审计日志失败（{}）：{error}", path.display()),
+        }
+        Ok(Self { path })
     }
 
     fn record(&self, action: &str, fields: &[(&str, &str)]) {
@@ -559,13 +567,16 @@ impl WorkspaceService {
     /// 第二实例收到 `VAULT_LOCKED`，绝不静默共写。
     pub fn open(root: PathBuf) -> Result<Self, ServiceError> {
         let lattice_dir = root.join(".lattice");
-        fs::create_dir_all(&lattice_dir)?;
+        crate::fs_perm::create_private_dir(&lattice_dir)?;
         let lock_path = lattice_dir.join("workspace.lock");
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(&lock_path)?;
+        if let Err(error) = crate::fs_perm::restrict_private_file(&lock_path) {
+            log::warn!("收紧单实例锁权限失败（{}）：{error}", lock_path.display());
+        }
         lock.try_lock_exclusive().map_err(|_| {
             ServiceError::new(
                 "VAULT_LOCKED",
@@ -1182,28 +1193,6 @@ impl WorkspaceService {
         &self,
         document: &serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
-        if let Some(providers) = document
-            .get("providers")
-            .and_then(serde_json::Value::as_array)
-        {
-            for provider in providers {
-                let Some(id) = provider.get("id").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let Some(key) = provider.get("apiKey").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let trimmed = key.trim();
-                if trimmed.is_empty() || trimmed.starts_with("masked:") {
-                    continue; // 空值 = 沿用已存密钥；掩码 = 服务端回显，均不入密钥服务
-                }
-                if let Err(error) =
-                    crate::ai::core::config::store_secret(id, trimmed)
-                {
-                    log::warn!("密钥写入系统密钥服务失败（provider={id}）：{error}");
-                }
-            }
-        }
         let sanitized = self
             .ai_settings
             .save(document)
@@ -2082,6 +2071,7 @@ impl WorkspaceService {
                     "画布已在其他窗口被修改，请刷新后再保存",
                 ));
             }
+            let previous_mode = crate::fs_perm::existing_mode(&file);
             let mut temporary = tempfile::NamedTempFile::new_in(
                 file.parent()
                     .ok_or_else(|| ServiceError::new("IO_ERROR", "无效路径"))?,
@@ -2094,12 +2084,14 @@ impl WorkspaceService {
             temporary
                 .persist(&file)
                 .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            crate::fs_perm::restore_written_mode(&file, previous_mode);
         } else {
             if let Some(parent) = file.parent() {
                 fs::create_dir_all(parent)?;
             }
             std::fs::write(&file, &raw)
                 .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+            crate::fs_perm::restore_written_mode(&file, None);
         }
         self.audit
             .record("canvas_write", &[("path", path), ("actor", "ui")]);
@@ -4787,6 +4779,101 @@ impl WorkspaceService {
         Ok(serde_json::json!({ "id": resolved, "deleted": true }))
     }
 
+    /// E4：导出专家 `.md`（frontmatter 往返可再导入；内置专家也可导出为副本）。
+    pub fn expert_export(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
+        let expert = self.read_expert(id)?;
+        let resolved = expert["id"].as_str().unwrap_or_default().to_owned();
+        Ok(serde_json::json!({
+            "id": resolved,
+            "filename": format!("{resolved}.md"),
+            "markdown": expert_to_markdown(&expert),
+        }))
+    }
+
+    /// E4：LobeChat 角色卡导入预览（不落盘）。
+    ///
+    /// 接受单张角色卡对象或数组（取第一张），映射：
+    /// `meta.title → name`、`meta.description → description`、
+    /// `meta.tags → routing.keywords`、`config.systemRole → systemPrompt`、
+    /// `config.tools → capabilities.tools`；`identifier` 清洗成合法专家 id。
+    pub fn expert_import_preview(&self, raw: &str) -> Result<serde_json::Value, ServiceError> {
+        let parsed: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|_| {
+            ServiceError::new("VALIDATION", "不是合法的 LobeChat 角色卡 JSON")
+        })?;
+        let card = match &parsed {
+            serde_json::Value::Array(items) => items.first().cloned(),
+            serde_json::Value::Object(_) => Some(parsed.clone()),
+            _ => None,
+        }
+        .ok_or_else(|| ServiceError::new("VALIDATION", "角色卡为空"))?;
+        let meta = card.get("meta").cloned().unwrap_or(serde_json::Value::Null);
+        let config = card.get("config").cloned().unwrap_or(serde_json::Value::Null);
+        let system_prompt = config
+            .get("systemRole")
+            .and_then(|value| value.as_str())
+            .or_else(|| card.get("systemRole").and_then(|value| value.as_str()))
+            .unwrap_or_default();
+        if system_prompt.trim().is_empty() {
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "角色卡缺少 config.systemRole（没有可用的专家提示词）",
+            ));
+        }
+        let title = meta
+            .get("title")
+            .and_then(|value| value.as_str())
+            .or_else(|| card.get("title").and_then(|value| value.as_str()))
+            .unwrap_or_default();
+        let identifier = card
+            .get("identifier")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(title);
+        let id = expert_slug(identifier);
+        let tags = meta
+            .get("tags")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .take(40)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let tools = config
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .take(60)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec!["read", "search"]);
+        let document = expert_normalize(
+            &serde_json::json!({
+                "id": id,
+                "name": if title.trim().is_empty() { id.clone() } else { title.to_owned() },
+                "description": meta.get("description").and_then(|value| value.as_str()).unwrap_or_default(),
+                "systemPrompt": system_prompt,
+                "keywords": tags,
+                "capabilities": {
+                    "tools": tools,
+                    "writePolicy": "confirm",
+                },
+            }),
+            &id,
+            "workspace",
+        )
+        .map_err(|error| ServiceError::new("VALIDATION", error))?;
+        Ok(serde_json::json!({
+            "document": document.clone(),
+            "markdown": expert_to_markdown(&document),
+        }))
+    }
+
     /// 契约 POST /api/experts/route：关键词命中数 ≥ EXPERT_ROUTE_MIN_KEYWORDS 即建议，
     /// score = 命中×100 + priority。E1 起 threshold 字段退役，阈值改为显式常量。
     pub fn expert_route(
@@ -4987,6 +5074,59 @@ impl WorkspaceService {
             "document": document.clone(),
             "markdown": skill_to_markdown(&document),
         }))
+    }
+
+    /// E4：扫描 `~/.claude/skills/*/SKILL.md`（只读），作为可导入候选。
+    /// 不自动落盘：前端拿到 document 后走既有导入预览 → 确认保存流程。
+    pub fn skill_discover_claude(&self) -> Result<Vec<serde_json::Value>, ServiceError> {
+        match claude_skills_dir() {
+            Some(directory) => Ok(self.skill_discover_in(&directory)),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// 扫描指定目录（测试可注入临时目录，避免改进程 HOME）。
+    fn skill_discover_in(&self, directory: &Path) -> Vec<serde_json::Value> {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(String, serde_json::Value)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path().join("SKILL.md");
+            if !path.is_file() {
+                continue;
+            }
+            let Some(id_hint) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > 2 * 1024 * 1024 {
+                continue; // 单文件 2MB 上限：异常大文件直接跳过
+            }
+            let Ok(raw) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(document) =
+                skill_document_from_markdown(&raw, &id_hint, "claude", &path.to_string_lossy())
+            else {
+                continue;
+            };
+            found.push((id_hint, document));
+        }
+        found.sort_by(|left, right| left.0.cmp(&right.0));
+        found
+            .into_iter()
+            .take(100)
+            .map(|(_, document)| {
+                serde_json::json!({
+                    "installed": self.skill_exists(document["id"].as_str().unwrap_or_default()),
+                    "markdown": skill_to_markdown(&document),
+                    "document": document,
+                })
+            })
+            .collect()
     }
 
     /// 导出（E2）：返回 SKILL.md 全文与 `references/` 文件清单。
@@ -5268,6 +5408,36 @@ fn expert_assert_id(value: &str) -> Result<String, String> {
         return Err("ID 只能包含小写字母、数字、连字符和下划线".into());
     }
     Ok(trimmed.to_owned())
+}
+
+/// `~/.claude/skills`（Claude Code 的技能目录）；无 HOME 时返回 None。
+fn claude_skills_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".claude").join("skills"))
+}
+
+/// 第三方角色卡的标识 → 合法专家 id（小写、非法字符转 `-`、截断 79）。
+fn expert_slug(value: &str) -> String {
+    let mut slug = String::new();
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 79 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-').to_owned();
+    if slug.is_empty() {
+        "imported-expert".to_owned()
+    } else if slug.len() < 2 {
+        format!("expert-{slug}")
+    } else {
+        slug
+    }
 }
 
 /// 内置专家 id 清单（E1 起从 .md frontmatter 解析）。
@@ -7858,7 +8028,6 @@ mod tests {
     use super::{BUILTIN_EXPERTS, BUILTIN_SKILLS};
     use super::parse_expert_markdown;
     use super::skill_document_from_markdown;
-    use super::builtin_skill_ids;
     use super::{FileAction, SNAPSHOT_LIMIT, ServiceError, WorkspaceService, fc_batch_outcome};
 
     fn open_service(directory: &Path) -> WorkspaceService {
@@ -7890,6 +8059,25 @@ mod tests {
             let _first = open_service(directory.path());
         }
         let _second = open_service(directory.path()); // 不应报 VAULT_LOCKED
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_lattice_directory_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let _service = open_service(directory.path());
+        let lattice_dir = directory.path().join(".lattice");
+        let mode = fs::metadata(&lattice_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "内部目录不得对组/其他用户开放");
+        for name in ["audit.jsonl", "workspace.lock"] {
+            let file_mode = fs::metadata(lattice_dir.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(file_mode, 0o600, "{name} 应为内部状态文件权限");
+        }
     }
 
     #[test]
@@ -8793,6 +8981,82 @@ mod tests {
         assert_eq!(read["capabilities"]["maxRounds"], serde_json::json!(5));
         assert_eq!(read["routing"]["keywords"][0], serde_json::json!("往返"));
         assert_eq!(read["routing"]["priority"], serde_json::json!(66));
+    }
+
+    #[test]
+    fn expert_export_and_lobechat_import_roundtrip() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        service
+            .expert_save(
+                serde_json::json!({
+                    "id": "export-me",
+                    "name": "导出专家",
+                    "systemPrompt": "按步骤回答。",
+                    "capabilities": { "tools": ["read"], "writePolicy": "disabled" }
+                }),
+                None,
+                true,
+            )
+            .unwrap();
+        let exported = service.expert_export("export-me").unwrap();
+        assert_eq!(exported["filename"], serde_json::json!("export-me.md"));
+        let markdown = exported["markdown"].as_str().unwrap();
+        assert!(markdown.starts_with("---\nid: export-me\n"));
+        assert!(markdown.ends_with("按步骤回答。\n"));
+
+        let preview = service
+            .expert_import_preview(
+                &serde_json::json!({
+                    "identifier": "Lobe Coder",
+                    "meta": {
+                        "title": "代码助手",
+                        "description": "写代码与评审",
+                        "tags": ["code", "rust"]
+                    },
+                    "config": {
+                        "systemRole": "你是一位严谨的 Rust 工程师。",
+                        "tools": ["read", "search", "write"]
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+        assert_eq!(preview["document"]["id"], serde_json::json!("lobe-coder"));
+        assert_eq!(preview["document"]["name"], serde_json::json!("代码助手"));
+        assert_eq!(
+            preview["document"]["systemPrompt"],
+            serde_json::json!("你是一位严谨的 Rust 工程师。")
+        );
+        assert_eq!(
+            preview["document"]["routing"]["keywords"],
+            serde_json::json!(["code", "rust"])
+        );
+        assert_eq!(preview["document"]["capabilities"]["tools"][2], serde_json::json!("write"));
+        assert!(preview["markdown"].as_str().unwrap().contains("tools: [read, search, write]"));
+        assert!(service.expert_import_preview("{\"meta\":{}}").is_err(), "缺提示词应拒绝");
+    }
+
+    #[test]
+    fn claude_skill_discovery_reads_only_valid_skill_dirs() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let claude = directory.path().join("claude-skills");
+        fs::create_dir_all(claude.join("web-research")).unwrap();
+        fs::write(
+            claude.join("web-research/SKILL.md"),
+            "---\nname: web-research\ndescription: 检索并汇总\n---\n步骤一：先检索。\n",
+        )
+        .unwrap();
+        fs::create_dir_all(claude.join("broken")).unwrap();
+        fs::write(claude.join("broken/SKILL.md"), "没有 frontmatter").unwrap();
+        fs::create_dir_all(claude.join("empty")).unwrap();
+
+        let found = service.skill_discover_in(&claude);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["document"]["id"], serde_json::json!("web-research"));
+        assert_eq!(found[0]["installed"], serde_json::json!(false));
+        assert!(found[0]["markdown"].as_str().unwrap().contains("步骤一"));
     }
 
     #[test]

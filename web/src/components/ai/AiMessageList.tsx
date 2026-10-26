@@ -386,7 +386,13 @@ export default function AiMessage({ message, onSuggestion, onOpenNote, onSaveToN
           {blocks.map(renderBlock)}
         </div>
         {message.attachments?.length ? <div className="ai-message__attachments" aria-label="本条消息的附件">{message.attachments.map((attachment) => attachment.kind === 'image' ? <img key={attachment.id} src={attachment.dataUrl} alt={attachment.name} title={attachment.name} /> : <span key={attachment.id} title={attachment.name}><FileText size={14} />{attachment.name}</span>)}</div> : null}
-        {fileChanges.length ? <AiFileChangesCard changes={fileChanges} onOpenPath={onOpenPath} /> : null}
+        {fileChanges.length ? (
+          <AiFileChangesCard
+            changes={fileChanges}
+            onOpenPath={onOpenPath}
+            pending={Boolean(message.meta?.awaitingConfirmation) || fileChanges.some((change) => change.status === 'pending')}
+          />
+        ) : null}
         {metaLine ? <span className="ai-message__meta">{metaLine}</span> : null}
         {message.references?.length ? <div className="ai-message__references">{message.references.map((reference, index) => <button type="button" key={reference.id ?? `${reference.title}-${index}`} data-ref={String(reference.number ?? index + 1)} onClick={() => reference.id && onOpenNote?.(reference.id, { heading: reference.anchor, excerpt: reference.excerpt })} title={reference.excerpt ?? ''}><span>{reference.inferred ? '◇' : `[${reference.number ?? index + 1}]`}</span><strong>{reference.title}</strong><small>{reference.anchor ? `${reference.anchor} · ` : ''}{reference.excerpt ? reference.excerpt.slice(0, 60) : (reference.path ?? '来源笔记')}</small></button>)}</div> : null}
         {message.suggestions?.length ? <div className="ai-message__suggestions">{message.suggestions.map((suggestion, index) => { const label = typeof suggestion === 'string' ? suggestion : suggestion.title; const detail = typeof suggestion === 'string' ? '' : suggestion.detail; return <button type="button" key={`${label}-${index}`} onClick={() => label && onSuggestion(label)}><span>＋</span><span><strong>{label}</strong>{detail ? <small>{detail}</small> : null}</span></button>; })}</div> : null}

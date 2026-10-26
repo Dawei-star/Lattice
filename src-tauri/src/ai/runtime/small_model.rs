@@ -139,12 +139,16 @@ mod tests {
         assert_eq!(config.temperature, Some(0.1));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn small_model_resolves_keyring_key_by_provider_id() {
+        if !crate::ai::core::config::secrets::keyring_roundtrip_enabled() {
+            eprintln!("跳过真实密钥服务回环：设置 LATTICE_KEYRING_TEST=1 后重跑");
+            return;
+        }
         let _guard = crate::ai::core::config::secrets::KEYRING_TEST_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let fake = format!("w1b-small-{}key", "demo-");
-        crate::ai::core::config::store_secret("w1b-small-model-resolve", &fake)
+        crate::ai::core::config::secrets::store_secret("w1b-small-model-resolve", &fake)
             .expect("写入凭据管理器");
         let parsed = provider(json!({
             "id": "w1b-small-model-resolve",
@@ -166,7 +170,7 @@ mod tests {
             config = resolve_small_model_config(parsed);
         }
         assert_eq!(config.api_key, fake, "掩码按 provider id 从密钥服务补齐");
-        crate::ai::core::config::delete_secret("w1b-small-model-resolve").unwrap();
+        crate::ai::core::config::secrets::delete_secret("w1b-small-model-resolve").unwrap();
     }
 
     #[cfg(windows)]

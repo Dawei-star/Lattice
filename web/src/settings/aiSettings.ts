@@ -227,7 +227,7 @@ function pushToServer(settings: AiSettings) {
   clearTimeout(pushTimer as number);
   pushTimer = setTimeout(async () => {
     try {
-      await aiApi.putSettings({
+      const saved = await aiApi.putSettings({
         providers: (settings.providers ?? [])
           .filter((provider) => provider.endpoint && (provider.apiKey || isLocalOllamaEndpoint(provider.endpoint)))
           .map((provider) => ({
@@ -254,7 +254,11 @@ function pushToServer(settings: AiSettings) {
             }
           : null,
       });
-      window.dispatchEvent(new CustomEvent('lattice:ai-server-sync', { detail: { ok: true } }));
+      // 密钥服务不可用时内核仍会保存脱敏配置，但会回传未能持久化的 provider 列表；
+      // 设置界面据此提示用户改用环境变量或修复 Secret Service。
+      const payload = (saved as any)?.data ?? saved;
+      const secretStoreWarnings = Array.isArray(payload?.secretStoreWarnings) ? payload.secretStoreWarnings : [];
+      window.dispatchEvent(new CustomEvent('lattice:ai-server-sync', { detail: { ok: true, secretStoreWarnings } }));
       // W1b：保存会触发内核把真实密钥写入密钥服务——回读 keyAvailable 让新密钥
       // 立即可用（不必重启）。只在 false→true 翻转时回写，避免循环。
       void refreshKeyAvailabilityFromServer();

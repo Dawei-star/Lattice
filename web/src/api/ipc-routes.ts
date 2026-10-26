@@ -111,6 +111,41 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
   { method: 'GET', path: '/meta/overview', command: 'meta_overview' },
   { method: 'GET', path: '/mcp/project', command: 'mcp_project_get',
     note: '只读取 Vault/.lattice/mcp.json；不会启动外部 MCP Server' },
+  // E3：MCP 运行态查询（不启动子进程）与用户主动「测试连接」（会启动并读取 tools/list）
+  { method: 'POST', path: '/mcp/status', command: 'mcp_servers_status',
+    args: (ctx) => {
+      const body = obj(ctx);
+      return Array.isArray(body.servers) ? { servers: body.servers } : undefined;
+    },
+    note: '不传 servers 时读项目级配置；只报告已缓存连接，不启动子进程' },
+  { method: 'POST', path: '/mcp/test', command: 'mcp_server_test',
+    args: (ctx) => ({ server: obj(ctx).server ?? {} }),
+    note: '用户点「测试连接」：会启动子进程并读取 tools/list' },
+  { method: 'GET', path: '/mcp/tools', command: 'mcp_tools_list',
+    args: (ctx) => {
+      const server = asString(ctx.query.server);
+      return server ? { server } : undefined;
+    } },
+  // E3：官方 Registry 在线目录；断网/超时由前端回退静态目录（不阻断市场）
+  { method: 'GET', path: '/mcp/registry', command: 'mcp_registry_search',
+    args: (ctx) => {
+      const query = optionalString(ctx.query.q);
+      const limit = optionalNumber(ctx.query.limit);
+      return { ...(query ? { query } : {}), ...(limit ? { limit } : {}) };
+    },
+    note: '免认证官方 Registry；网络失败返回错误，前端保留静态目录兜底' },
+  // E4：前端对 MCP elicitation 表单的裁决（事件里带 id）
+  { method: 'POST', path: '/mcp/elicitation', command: 'mcp_elicitation_reply',
+    args: (ctx) => {
+      const body = obj(ctx);
+      const id = optionalString(body.id);
+      if (!id) return undefined;
+      const action = asString(body.action);
+      if (!['accept', 'decline', 'cancel'].includes(action)) return undefined;
+      const content = body.content && typeof body.content === 'object' ? body.content : null;
+      return { id, action, content };
+    },
+    note: 'accept 必须携带对象 content；超时或未知 id 的错误直接回给调用方' },
   // note_index 于 P1-08 第 2 步回收：Rust 侧补上 `properties` 对象后与 Express 结构完全对齐
   // （`npm run test:desktop` 的 parity 测试确认 `note_index` 已不在差异清单内）
   { method: 'GET', path: '/notes/index', command: 'note_index' },
@@ -153,6 +188,9 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
   { method: 'GET', path: '/files/log', command: 'file_log',
     args: (ctx) => ({ limit: optionalNumber(ctx.query.limit) }) },
   { method: 'GET', path: '/experts/skills', command: 'skill_list' },
+  // E4：只读扫描 ~/.claude/skills，返回可导入候选（不落盘）
+  { method: 'GET', path: '/experts/skills/claude', command: 'skill_discover_claude',
+    note: '只读扫描 ~/.claude/skills/*/SKILL.md；导入仍需前端确认后走 skill_save' },
   { method: 'GET', path: '/experts', command: 'expert_list' },
   { method: 'GET', path: '/review/health', command: 'review_health',
     args: (ctx) => ({
@@ -175,6 +213,9 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
   { method: 'GET', path: /^\/experts\/skills\/(?<id>[^/]+)\/export$/, command: 'skill_export',
     args: (ctx) => ({ id: asString(ctx.params.id) }),
     note: '导出 = 规范化 SKILL.md 全文 + references 清单；打包成 zip 留待后续' },
+  { method: 'GET', path: /^\/experts\/(?<id>[^/]+)\/export$/, command: 'expert_export',
+    args: (ctx) => ({ id: asString(ctx.params.id) }),
+    note: '导出专家为 frontmatter + 正文的 .md；可再导入，内置专家导出为副本' },
   { method: 'GET', path: /^\/experts\/skills\/(?<id>[^/]+)$/, command: 'skill_get',
     args: (ctx) => ({ id: asString(ctx.params.id) }) },
   { method: 'GET', path: /^\/experts\/(?<id>[^/]+)$/, command: 'expert_get',
@@ -364,6 +405,13 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
   { method: 'POST', path: '/experts/skills/import', command: 'skill_import_preview',
     args: (ctx) => ({ source: asString(obj(ctx).source), value: asString(obj(ctx).value) }),
     note: '只解析预览，不落盘；保存仍走 skill_save 的确认流程' },
+  // E4：LobeChat 角色卡导入预览（JSON 字符串，不落盘）
+  { method: 'POST', path: '/experts/import', command: 'expert_import_preview',
+    args: (ctx) => {
+      const raw = obj(ctx).raw;
+      return typeof raw === 'string' && raw.trim() ? { raw } : undefined;
+    },
+    note: '只解析角色卡并映射为专家文档；保存仍走 expert_save 的确认流程' },
   { method: 'POST', path: '/experts/skills', command: 'skill_save',
     args: (ctx) => ({ skill: ctx.body, confirmed: flag(obj(ctx).confirmed) }),
     note: '整体载荷作为 skill 传入；confirmed 由 Rust 白名单化，不会落盘' },

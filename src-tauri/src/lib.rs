@@ -14,6 +14,7 @@
 mod ai;
 mod ai_runtime;
 mod db;
+mod fs_perm;
 mod index;
 mod jobs;
 mod markdown;
@@ -190,17 +191,25 @@ pub fn run() {
             expert_save,
             expert_delete,
             expert_route,
+            expert_export,
+            expert_import_preview,
             skill_list,
             skill_get,
             skill_save,
             skill_import_preview,
             skill_export,
+            skill_discover_claude,
             skill_delete,
             review_health,
             review_plan,
             review_execute,
             mcp_project_get,
             mcp_project_set,
+            mcp_servers_status,
+            mcp_server_test,
+            mcp_tools_list,
+            mcp_registry_search,
+            mcp_elicitation_reply,
             update_check
         ])
         .run(tauri::generate_context!())
@@ -234,6 +243,69 @@ fn mcp_project_set(
 }
 
 #[tauri::command]
+fn mcp_servers_status(
+    state: State<'_, WorkspaceState>,
+    servers: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, String> {
+    let configs = match servers {
+        Some(items) => items
+            .iter()
+            .filter_map(|item| crate::ai::core::mcp::McpServerConfig::from_value(None, item))
+            .collect::<Vec<_>>(),
+        None => with_workspace(state, |workspace| workspace.mcp_project_get())?
+            .servers
+            .iter()
+            .filter_map(|server| {
+                serde_json::to_value(server)
+                    .ok()
+                    .and_then(|value| crate::ai::core::mcp::McpServerConfig::from_value(None, &value))
+            })
+            .collect(),
+    };
+    let statuses = crate::ai::core::mcp::client::statuses(&configs, false);
+    serde_json::to_value(statuses).map_err(|error| error.to_string())
+}
+
+/// 强制连接一次（用户点「测试连接」）：会启动子进程并读取 tools/list。
+#[tauri::command]
+fn mcp_server_test(server: serde_json::Value) -> Result<serde_json::Value, String> {
+    let config = crate::ai::core::mcp::McpServerConfig::from_value(None, &server)
+        .ok_or_else(|| "连接配置不完整（stdio 需 command，URL 需 http/https）".to_owned())?;
+    let status = crate::ai::core::mcp::client::server_test(&config)?;
+    serde_json::to_value(status).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn mcp_tools_list(server: String) -> Result<serde_json::Value, String> {
+    let tools = crate::ai::core::mcp::client::tools_for(&server);
+    serde_json::to_value(tools).map_err(|error| error.to_string())
+}
+
+/// E4：前端对 MCP elicitation 表单的裁决（accept/decline/cancel）。
+#[tauri::command]
+fn mcp_elicitation_reply(
+    id: String,
+    action: String,
+    content: Option<serde_json::Value>,
+) -> Result<(), String> {
+    crate::ai::core::mcp::client::reply_elicitation(&id, &action, content)
+}
+
+/// 官方 Registry 在线目录（免认证）。断网 / 超时返回错误，前端回退静态目录。
+#[tauri::command]
+async fn mcp_registry_search(
+    query: Option<String>,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let entries = crate::ai::core::mcp::registry::fetch(
+        query.as_deref().unwrap_or_default(),
+        limit.unwrap_or(20) as usize,
+    )
+    .await?;
+    Ok(serde_json::Value::Array(entries))
+}
+
+#[tauri::command]
 fn memory_list(
     state: State<'_, WorkspaceState>,
     include_expired: Option<bool>,
@@ -249,14 +321,25 @@ fn ai_settings_get(state: State<'_, WorkspaceState>) -> Result<serde_json::Value
     with_workspace(state, |workspace| workspace.ai_settings_load())
 }
 
-/// 保存设置：真实 Key 在 Rust 边界替换为掩码后落盘，返回脱敏文档。
+/// 保存设置：真实 Key 写入系统密钥服务，文档脱敏后落盘，返回脱敏文档。
+/// 密钥服务不可用时配置仍保存，并在 `secretStoreWarnings` 中如实回传。
 #[tauri::command]
 fn ai_settings_set(
     state: State<'_, WorkspaceState>,
     document: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     with_workspace(state, |workspace| {
-        workspace.ai_settings_save(&document)
+        let mut saved = workspace.ai_settings_save(&document)?;
+        let warnings = crate::ai::core::config::secrets::store_document_secrets(&document);
+        if !warnings.is_empty()
+            && let Some(object) = saved.as_object_mut()
+        {
+            object.insert(
+                "secretStoreWarnings".to_owned(),
+                serde_json::Value::Array(warnings),
+            );
+        }
+        Ok(saved)
     })
 }
 
@@ -488,6 +571,8 @@ fn ai_run_enqueue(
     // 入队请求就是 worker 与恢复路径的同一份请求，续跑轮克隆它时策略自然继承。
     if let Ok(workspace) = state.0.read() {
         crate::ai::core::expert::apply_request(&workspace, &mut request);
+        // 用户从 `/` 面板显式调用的技能与专家相互独立：没有专家也要生效。
+        crate::ai::core::expert::apply_invoked_skills(&workspace, &mut request);
     }
     runtime.register_pending_request(&run_id, request.clone())?;
     let persisted = redact_request_secrets(&request);
@@ -617,6 +702,7 @@ fn ai_run_resume(
             // 专家提示词与工具面静默丢失（正是本次重构要消灭的那类断线）。
             if let Ok(workspace) = state.0.read() {
                 crate::ai::core::expert::apply_request(&workspace, &mut request);
+                crate::ai::core::expert::apply_invoked_skills(&workspace, &mut request);
             }
             runtime.register_pending_request(&run_id, request)?;
         }
@@ -672,15 +758,18 @@ fn ai_run_confirm(
         .take_pending_writes(&run_id)
         .ok_or_else(|| "该任务没有待确认的写操作".to_owned())?;
     let workspace_state = handle.state::<WorkspaceState>();
-    let workspace = workspace_state
-        .0
-        .read()
-        .map_err(|_| "工作区不可用".to_owned())?;
-    let job = workspace
-        .jobs()
-        .get_by_kind_key("ai-run", &run_id)
-        .map_err(|error| ServiceError::new("AI_RUN_ERROR", error).message)?
-        .ok_or_else(|| "任务不存在".to_owned())?;
+    // 先做状态校验并释放工作区读锁：MCP 调用可能长达数十秒，不能占着锁。
+    let job = {
+        let workspace = workspace_state
+            .0
+            .read()
+            .map_err(|_| "工作区不可用".to_owned())?;
+        workspace
+            .jobs()
+            .get_by_kind_key("ai-run", &run_id)
+            .map_err(|error| ServiceError::new("AI_RUN_ERROR", error).message)?
+            .ok_or_else(|| "任务不存在".to_owned())?
+    };
     if job.status != jobs::STATUS_WAITING_CONFIRMATION {
         return Err("任务不在等待确认状态".to_owned());
     }
@@ -688,6 +777,14 @@ fn ai_run_confirm(
     let mut tool_results = pending.executed_results.clone();
     let approved_ids: Option<std::collections::HashSet<String>> = approved_call_ids
         .map(|ids| ids.into_iter().collect());
+    // E4：确认后执行的 MCP 工具同样支持 elicitation
+    let mcp_sink = crate::ai::core::mcp::client::ElicitationSink::new(run_id.clone(), {
+        let handle = handle.clone();
+        let run_id = run_id.clone();
+        std::sync::Arc::new(move |event: serde_json::Value| {
+            append_ai_event(&handle, &run_id, &event);
+        })
+    });
     let mut executed_count = 0usize;
     let mut failed_count = 0usize;
     if approved {
@@ -709,19 +806,41 @@ fn ai_run_confirm(
                 }));
                 continue;
             };
+            if crate::ai::core::mcp::is_mcp_tool(&call.name) {
+                let result = crate::ai::core::agent::tools::execute_mcp_call(call, Some(mcp_sink.clone()));
+                if result.get("status").and_then(serde_json::Value::as_str) == Some("completed") {
+                    executed_count += 1;
+                } else {
+                    failed_count += 1;
+                }
+                tool_results.push(serde_json::json!({ "callId": call.id, "result": result }));
+                continue;
+            }
             let key = format!("{run_id}:{}", call.id);
-            match workspace.file_execute_with_context(
-                crate::ai::core::agent::tools::write_action_from_call(call),
-                None,
-                true,
-                second_confirmed || !pending.has_delete,
-                None,
-                Some(plan_hash.clone()),
-                "local-user",
-                "editor",
-                None,
-                Some(&key),
-            ) {
+            let action = crate::ai::core::agent::tools::write_action_from_call(call);
+            let executed = {
+                let Ok(workspace) = workspace_state.0.read() else {
+                    failed_count += 1;
+                    tool_results.push(serde_json::json!({
+                        "callId": call.id,
+                        "result": { "status": "failed", "error": "工作区不可用" },
+                    }));
+                    continue;
+                };
+                workspace.file_execute_with_context(
+                    action,
+                    None,
+                    true,
+                    second_confirmed || !pending.has_delete,
+                    None,
+                    Some(plan_hash.clone()),
+                    "local-user",
+                    "editor",
+                    None,
+                    Some(&key),
+                )
+            };
+            match executed {
                 Ok(result) => {
                     executed_count += 1;
                     tool_results.push(serde_json::json!({ "callId": call.id, "result": result }));
@@ -745,6 +864,10 @@ fn ai_run_confirm(
     }
 
     // 确认/拒绝事件（路径与结果统计，不含写入正文）
+    let workspace = workspace_state
+        .0
+        .read()
+        .map_err(|_| "工作区不可用".to_owned())?;
     let sequence = workspace.jobs().ai_event_count(&run_id).unwrap_or(0) + 1;
     let (status, text) = if approved {
         (
@@ -1510,6 +1633,20 @@ fn expert_delete(
 }
 
 #[tauri::command]
+fn expert_export(state: State<'_, WorkspaceState>, id: String) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.expert_export(&id))
+}
+
+/// E4：LobeChat 角色卡导入预览（只解析，不落盘）。
+#[tauri::command]
+fn expert_import_preview(
+    state: State<'_, WorkspaceState>,
+    raw: String,
+) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.expert_import_preview(&raw))
+}
+
+#[tauri::command]
 fn expert_route(
     state: State<'_, WorkspaceState>,
     message: String,
@@ -1654,6 +1791,14 @@ async fn fetch_remote_skill(url: &str) -> Result<String, String> {
 #[tauri::command]
 fn skill_export(state: State<'_, WorkspaceState>, id: String) -> Result<serde_json::Value, String> {
     with_workspace(state, |workspace| workspace.skill_export(&id))
+}
+
+/// E4：只读扫描 `~/.claude/skills`，返回可导入候选（不落盘）。
+#[tauri::command]
+fn skill_discover_claude(
+    state: State<'_, WorkspaceState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    with_workspace(state, |workspace| workspace.skill_discover_claude())
 }
 
 #[tauri::command]
@@ -1903,6 +2048,17 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
             if let Some(runtime_expert) = &expert_runtime {
                 append_ai_event(&handle, &run_id, &crate::ai::core::expert::loaded_event(runtime_expert));
             }
+            // 用户显式调用的技能单独留一条溯源事件（正文已在 system，不入库）。
+            let invoked_skills_event = {
+                let workspace_state = handle.state::<WorkspaceState>();
+                match workspace_state.0.read() {
+                    Ok(workspace) => crate::ai::core::expert::invoked_event(&workspace, &request),
+                    Err(_) => None,
+                }
+            };
+            if let Some(event) = &invoked_skills_event {
+                append_ai_event(&handle, &run_id, event);
+            }
             // W7b：Agent 读工具循环下沉 worker——关面板不再中断多轮检索/读取。
             // 只有「全部为已注册读工具且预算允许」才内核续跑；出现写工具、
             // 预算耗尽或解析异常时按原行为收尾（done 带原 toolCalls 交回前端）。
@@ -1914,6 +2070,109 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                 request.get("budget").unwrap_or(&serde_json::Value::Null),
             );
             let tool_registry = crate::ai::core::agent::ToolRegistry::builtin();
+            // E3：MCP 工具在本 run 首次出现时连接（懒启动），按 `mcp.servers` 绑定裁剪。
+            // 连接失败只降级该 server，不阻断 run；工具定义直接追加进本次请求工具面。
+            let mut request = request;
+            let mcp_plan = {
+                let configs = crate::ai::core::mcp::McpServerConfig::from_request(&request);
+                let filtered: Vec<_> = match &expert_runtime {
+                    Some(runtime_expert) => configs
+                        .into_iter()
+                        .filter(|config| runtime_expert.mcp_allows_server(&config.key, &config.name))
+                        .collect(),
+                    None => configs,
+                };
+                if filtered.is_empty() {
+                    crate::ai::core::mcp::McpRunPlan::default()
+                } else {
+                    crate::ai::core::mcp::client::prepare(&filtered)
+                }
+            };
+            let mut tool_registry = tool_registry;
+            // writePolicy 为 never 的专家只拿 MCP 只读工具（与内置工具面同一把闸）。
+            let mcp_visible: Vec<_> = mcp_plan
+                .tools
+                .iter()
+                .filter(|tool| {
+                    expert_runtime
+                        .as_ref()
+                        .map(|runtime_expert| runtime_expert.writes_allowed())
+                        .unwrap_or(true)
+                        || matches!(
+                            tool.risk_level,
+                            crate::ai::core::agent::RiskLevel::L0
+                                | crate::ai::core::agent::RiskLevel::L1
+                        )
+                })
+                .collect();
+            if !mcp_visible.is_empty() {
+                if !request.get("tools").map(serde_json::Value::is_array).unwrap_or(false) {
+                    request["tools"] = serde_json::json!([]);
+                }
+                if let Some(tools) = request.get_mut("tools").and_then(serde_json::Value::as_array_mut) {
+                    let room = 60usize.saturating_sub(tools.len());
+                    for tool in mcp_visible.iter().take(room) {
+                        tools.push(serde_json::json!({
+                            "name": tool.external_name,
+                            "description": tool.description,
+                            "inputSchema": tool.input_schema,
+                        }));
+                    }
+                }
+                for tool in mcp_visible {
+                    let mut descriptor = match tool.risk_level {
+                        crate::ai::core::agent::RiskLevel::L0
+                        | crate::ai::core::agent::RiskLevel::L1 => {
+                            crate::ai::core::agent::ToolDescriptor::read(
+                                &tool.external_name,
+                                &tool.description,
+                            )
+                        }
+                        _ => crate::ai::core::agent::ToolDescriptor::write(
+                            &tool.external_name,
+                            &tool.description,
+                        ),
+                    };
+                    descriptor.risk_level = Some(tool.risk_level);
+                    descriptor.idempotent = tool.risk_level == crate::ai::core::agent::RiskLevel::L0;
+                    descriptor.timeout_ms = 120_000;
+                    tool_registry.register(descriptor);
+                }
+            }
+            if !mcp_plan.statuses.is_empty() {
+                let summary: Vec<serde_json::Value> = mcp_plan
+                    .statuses
+                    .iter()
+                    .map(|status| {
+                        serde_json::json!({
+                            "key": status.key,
+                            "name": status.name,
+                            "state": status.state,
+                            "toolCount": status.tool_count,
+                            "error": status.error,
+                        })
+                    })
+                    .collect();
+                append_ai_event(
+                    &handle,
+                    &run_id,
+                    &serde_json::json!({
+                        "type": "mcp_connected",
+                        "servers": summary,
+                        "toolCount": mcp_plan.tools.len(),
+                    }),
+                );
+            }
+
+            // E4：MCP elicitation 表单转发到当前 run 的事件流
+            let mcp_sink = crate::ai::core::mcp::client::ElicitationSink::new(run_id.clone(), {
+                let handle = handle.clone();
+                let run_id = run_id.clone();
+                std::sync::Arc::new(move |event: serde_json::Value| {
+                    append_ai_event(&handle, &run_id, &event);
+                })
+            });
+
             // W8：跨轮累计用量与首字延迟，run 结束一次性落 ai_trace
             let trace_mode = request
                 .get("mode")
@@ -2016,16 +2275,22 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                     }
                     tool_results = {
                         let workspace_state = handle.state::<WorkspaceState>();
-                        let Ok(workspace) = workspace_state.0.read() else {
-                            break;
-                        };
                         pending_calls
                             .iter()
                             .map(|call| {
-                                serde_json::json!({
-                                    "callId": call.id,
-                                    "result": crate::ai::core::agent::tools::execute_read_call(&workspace, call),
-                                })
+                                let executed = if crate::ai::core::mcp::is_mcp_tool(&call.name) {
+                                    crate::ai::core::agent::tools::execute_mcp_call(call, Some(mcp_sink.clone()))
+                                } else {
+                                    match workspace_state.0.read() {
+                                        Ok(workspace) => {
+                                            crate::ai::core::agent::tools::execute_read_call(&workspace, call)
+                                        }
+                                        Err(_) => serde_json::json!({
+                                            "status": "failed", "error": "工作区不可用"
+                                        }),
+                                    }
+                                };
+                                serde_json::json!({ "callId": call.id, "result": executed })
                             })
                             .collect()
                     };
@@ -2074,15 +2339,21 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                         std::collections::HashMap::new();
                     {
                         let workspace_state = handle.state::<WorkspaceState>();
-                        let Ok(workspace) = workspace_state.0.read() else {
-                            break;
-                        };
                         for read in &plan.reads {
                             if let Some(call) = pending_calls.iter().find(|call| call.id == read.id) {
-                                results_by_call.insert(
-                                    read.id.clone(),
-                                    crate::ai::core::agent::tools::execute_read_call(&workspace, call),
-                                );
+                                let executed = if crate::ai::core::mcp::is_mcp_tool(&call.name) {
+                                    crate::ai::core::agent::tools::execute_mcp_call(call, Some(mcp_sink.clone()))
+                                } else {
+                                    match workspace_state.0.read() {
+                                        Ok(workspace) => {
+                                            crate::ai::core::agent::tools::execute_read_call(&workspace, call)
+                                        }
+                                        Err(_) => serde_json::json!({
+                                            "status": "failed", "error": "工作区不可用"
+                                        }),
+                                    }
+                                };
+                                results_by_call.insert(read.id.clone(), executed);
                             }
                         }
                         for write in &plan.writes {
@@ -2093,16 +2364,30 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                                 continue;
                             };
                             let key = format!("{run_id}:{}", write.call.id);
-                            results_by_call.insert(
-                                write.call.id.clone(),
-                                crate::ai::core::agent::tools::execute_write_call(&workspace, call, &key),
-                            );
+                            let executed = if crate::ai::core::mcp::is_mcp_tool(&call.name) {
+                                crate::ai::core::agent::tools::execute_mcp_call(call, Some(mcp_sink.clone()))
+                            } else {
+                                match workspace_state.0.read() {
+                                    Ok(workspace) => crate::ai::core::agent::tools::execute_write_call(
+                                        &workspace,
+                                        call,
+                                        &key,
+                                    ),
+                                    Err(_) => serde_json::json!({
+                                        "status": "failed", "error": "工作区不可用"
+                                    }),
+                                }
+                            };
+                            results_by_call.insert(write.call.id.clone(), executed);
                             kernel_write_ids.push(write.call.id.clone());
-                            let summary = call
-                                .input
-                                .get("type")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("write");
+                            let summary = if crate::ai::core::mcp::is_mcp_tool(&call.name) {
+                                call.name.as_str()
+                            } else {
+                                call.input
+                                    .get("type")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("write")
+                            };
                             append_ai_event(
                                 &handle,
                                 &run_id,
@@ -2149,19 +2434,35 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                         }
                         {
                             let workspace_state = handle.state::<WorkspaceState>();
-                            if let Ok(workspace) = workspace_state.0.read() {
-                                for call in &needs_confirmation {
-                                    match crate::ai::core::agent::tools::preview_write_call(&workspace, call) {
-                                        Ok(plan_hash) => {
-                                            plan_hashes.push((call.id.clone(), plan_hash));
-                                            confirmed_pending.push(call.clone());
+                            for call in &needs_confirmation {
+                                if crate::ai::core::mcp::is_mcp_tool(&call.name) {
+                                    // MCP 没有文件预览：确认卡展示工具名与参数，确认后直接调用。
+                                    plan_hashes.push((call.id.clone(), format!("mcp:{}", call.id)));
+                                    confirmed_pending.push(call.clone());
+                                    continue;
+                                }
+                                match workspace_state.0.read() {
+                                    Ok(workspace) => {
+                                        match crate::ai::core::agent::tools::preview_write_call(&workspace, call) {
+                                            Ok(plan_hash) => {
+                                                plan_hashes.push((call.id.clone(), plan_hash));
+                                                confirmed_pending.push(call.clone());
+                                            }
+                                            Err(error) => {
+                                                results_by_call.insert(
+                                                    call.id.clone(),
+                                                    serde_json::json!({ "status": "failed", "error": error }),
+                                                );
+                                            }
                                         }
-                                        Err(error) => {
-                                            results_by_call.insert(
-                                                call.id.clone(),
-                                                serde_json::json!({ "status": "failed", "error": error }),
-                                            );
-                                        }
+                                    }
+                                    Err(_) => {
+                                        results_by_call.insert(
+                                            call.id.clone(),
+                                            serde_json::json!({
+                                                "status": "failed", "error": "工作区不可用"
+                                            }),
+                                        );
                                     }
                                 }
                             }

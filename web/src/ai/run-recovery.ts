@@ -7,6 +7,8 @@ export interface DurableRunIndexRecord {
   sessionId: string;
   createdAt: string;
   expertId?: string;
+  /** 用户显式调用的技能，恢复运行时需要重新注入。 */
+  invokedSkills?: string[];
   workspaceId?: string;
   permissionScopeId?: string;
   permissionVersion?: string;
@@ -129,6 +131,7 @@ export function rememberDurableRun(record: DurableRunIndexRecord, namespace?: st
     sessionId: record.sessionId,
     createdAt: record.createdAt,
     ...(record.expertId ? { expertId: record.expertId } : {}),
+    ...(record.invokedSkills?.length ? { invokedSkills: record.invokedSkills.slice(0, 8) } : {}),
     ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
     ...(record.permissionScopeId ? { permissionScopeId: record.permissionScopeId } : {}),
     ...(record.permissionVersion ? { permissionVersion: record.permissionVersion } : {}),

@@ -11,6 +11,7 @@ import {
   appendMarketServer,
   createServerFromMarketEntry,
   isMarketEntryInstalled,
+  marketEntryFromRegistry,
   resolveMarketArgs,
   unresolvedMarketArgs,
 } from '../src/settings/mcpMarketplace.ts';
@@ -236,4 +237,39 @@ test('appending a market server keeps the builtin entry when the list has not lo
   const saved = [builtin, { id: 'mcp-import-x', key: 'x' }];
   assert.deepEqual(appendMarketServer(saved, [builtin], server), [...saved, server]);
   assert.equal(appendMarketServer(saved, [builtin], server).length, 3);
+});
+
+test('official registry entries become installable market configs', () => {
+  const entry = marketEntryFromRegistry({
+    key: 'com-pulsemcp-files',
+    name: 'files',
+    fullName: 'com.pulsemcp/files',
+    description: '文件工具',
+    version: '1.2.0',
+    command: 'npx',
+    args: ['-y', 'files-mcp'],
+    docs: 'https://github.com/pulsemcp/files',
+    requiredEnv: [
+      { name: 'FILES_TOKEN', hint: '访问令牌', required: true, secret: true },
+      { name: 'OPTIONAL_FLAG', hint: '', required: false, secret: false },
+    ],
+  });
+
+  assert.equal(entry.key, 'registry-com-pulsemcp-files');
+  assert.equal(entry.category, '在线目录');
+  assert.equal(entry.runtime, 'node');
+  // 只把必需变量放进「待补密钥」，可选变量不阻塞安装
+  assert.deepEqual(entry.requiresEnv.map((item) => item.name), ['FILES_TOKEN']);
+  assert.equal(entry.command, 'npx');
+
+  const server = createServerFromMarketEntry(entry);
+  assert.equal(server.id, MARKET_ID_PREFIX + entry.key);
+  assert.deepEqual(server.args, ['-y', 'files-mcp']);
+  // 缺必需密钥时先停用，等用户填完再开
+  assert.equal(server.enabled, false);
+  assert.equal(isMarketEntryInstalled([server], entry), true);
+
+  const pythonEntry = marketEntryFromRegistry({ ...entry, key: 'p', command: 'uvx', requiredEnv: [] });
+  assert.equal(pythonEntry.runtime, 'python');
+  assert.equal(createServerFromMarketEntry(pythonEntry).enabled, true);
 });

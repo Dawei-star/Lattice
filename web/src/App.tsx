@@ -36,7 +36,6 @@ import type { NoteCardNote } from './components/NoteListPane.tsx';
 
 const THEME_STORAGE_KEY = 'lattice-theme';
 const FAVORITE_FOLDERS_STORAGE_KEY = 'lattice-favorite-folders';
-const ACTIVE_EXPERT_STORAGE_KEY = 'lattice-active-expert';
 
 const GraphView = lazy(() => import('./components/GraphView.tsx'));
 const CanvasView = lazy(() => import('./components/CanvasView.tsx'));
@@ -160,13 +159,8 @@ export default function App() {
   const [aiInitialPrompt, setAiInitialPrompt] = useState('');
   const [experts, setExperts] = useState<Expert[]>([]);
   const [expertSkills, setExpertSkills] = useState<Skill[]>([]);
-  const [activeExpertId, setActiveExpertId] = useState(() => {
-    try {
-      return localStorage.getItem(ACTIVE_EXPERT_STORAGE_KEY) || 'general';
-    } catch {
-      return 'general';
-    }
-  });
+  // 专家是显式选择：新会话从不继承上一个会话的选择，默认通用助手。
+  const [activeExpertId, setActiveExpertId] = useState('general');
   const [expertsCenterOpen, setExpertsCenterOpen] = useState(false);
   const [expertsCenterInitialTab, setExpertsCenterInitialTab] = useState<'experts' | 'skills' | 'mcp'>('experts');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -209,14 +203,6 @@ export default function App() {
   useEffect(() => {
     void refreshExperts({ silent: true });
   }, [refreshExperts]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(ACTIVE_EXPERT_STORAGE_KEY, activeExpertId);
-    } catch {
-      // localStorage may be unavailable in restricted browser contexts.
-    }
-  }, [activeExpertId]);
 
   useEffect(() => {
     const actions = registerPwa({
@@ -586,7 +572,7 @@ export default function App() {
       : tab));
   }, [activeAiTabId]);
 
-  const createAiTab = useCallback(({ expertId = activeExpertId, prompt = '' }: { expertId?: string; prompt?: string } = {}) => {
+  const createAiTab = useCallback(({ expertId = 'general', prompt = '' }: { expertId?: string; prompt?: string } = {}) => {
     if (!confirmNavigation()) return null;
     const tab: AiWorkspaceTab = {
       id: aiTabSeq.current++,
@@ -600,7 +586,7 @@ export default function App() {
     setAiInitialPrompt(prompt);
     setAiOpen(true);
     return tab;
-  }, [activeExpertId, confirmNavigation]);
+  }, [confirmNavigation]);
 
   const handleNewAiTab = useCallback(() => {
     createAiTab();
@@ -612,8 +598,8 @@ export default function App() {
       if (!confirmNavigation()) return;
       const tab = tabs.find((t) => t.id === tabId);
       if (tab) {
-        // AI 工作区打开时，点周围的知识库标签只在后台切换，不打断当前 AI 会话；
-        // 关闭走显式出口：AI 面板「返回知识库」、Lattice AI 标签 ×、Ctrl+J。
+        // 点知识库标签即离开 AI 工作区回到笔记；AI 会话本身保留在 Lattice AI 标签里。
+        if (aiOpen) setAiOpen(false);
         activateTab(tab);
       }
     },
@@ -628,6 +614,7 @@ export default function App() {
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
     setActiveNote(null);
+    if (aiOpen) setAiOpen(false);
   }, [tabs, activeTabId, aiOpen, confirmNavigation, setActiveNote]);
 
   const handleSelectAiTab = useCallback((tabId?: number) => {
@@ -1702,6 +1689,7 @@ export default function App() {
           workspaceIdentity={vaultDir}
           expert={activeExpert}
           experts={experts}
+          skills={expertSkills}
           onSelectExpert={handleSelectExpert}
           onOpenExpertManager={handleOpenExpertsCenter}
           onOpenSettings={handleOpenSettings}

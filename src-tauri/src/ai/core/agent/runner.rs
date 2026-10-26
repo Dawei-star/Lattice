@@ -148,23 +148,36 @@ pub fn plan_execution(registry: &ToolRegistry, input: &RunnerInput) -> Execution
                     });
                     continue;
                 }
-                let assessment = classify_write_risk(&write_action_from(call));
+                // MCP 等外部工具的风险由描述符显式声明（注解缺省不可信）；
+                // 内置写工具仍按参数分类。
+                let (level, requires_confirmation, reason) = match descriptor.risk_level {
+                    Some(level) => (
+                        level,
+                        matches!(level, RiskLevel::L2 | RiskLevel::L3),
+                        "外部 MCP 工具按高风险处理，需确认".to_owned(),
+                    ),
+                    None => {
+                        let assessment = classify_write_risk(&write_action_from(call));
+                        (
+                            assessment.level,
+                            assessment.requires_confirmation,
+                            assessment.reason.to_owned(),
+                        )
+                    }
+                };
                 let gate = if input.confirmations_granted.contains(&call.id) {
                     WriteGate::Granted
                 } else if input.confirm_all_writes {
                     // 「始终询问」不看风险等级：新建草稿也要先给用户看预览。
                     WriteGate::NeedsConfirmation {
-                        level: assessment.level,
-                        reason: assessment.reason.to_owned(),
+                        level,
+                        reason,
                     }
-                } else if assessment.requires_confirmation
-                    && !(input.auto_approve_l2 && assessment.level == RiskLevel::L2)
-                    && !(input.allow_irreversible && assessment.level == RiskLevel::L3)
+                } else if requires_confirmation
+                    && !(input.auto_approve_l2 && level == RiskLevel::L2)
+                    && !(input.allow_irreversible && level == RiskLevel::L3)
                 {
-                    WriteGate::NeedsConfirmation {
-                        level: assessment.level,
-                        reason: assessment.reason.to_owned(),
-                    }
+                    WriteGate::NeedsConfirmation { level, reason }
                 } else {
                     WriteGate::Auto
                 };

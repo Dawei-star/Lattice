@@ -24,6 +24,28 @@ export interface CheckGithubReleasesOptions {
   httpImpl?: typeof http;
 }
 
+/** 安装包按钮文案：按资产扩展名给出准确格式，避免在 Linux 上仍显示“Windows 安装包”。 */
+export function installerLabel(assetName?: string | null): string {
+  const lower = (assetName ?? '').toLowerCase();
+  if (lower.endsWith('.deb')) return '下载 .deb 安装包';
+  if (lower.endsWith('.appimage')) return '下载 AppImage';
+  if (lower.endsWith('.rpm')) return '下载 RPM 包';
+  if (lower.endsWith('.msi')) return '下载 MSI 安装包';
+  if (lower.endsWith('.dmg')) return '下载 macOS 安装包';
+  if (lower.endsWith('.exe')) return '下载 Windows 安装包';
+  return '下载安装包';
+}
+
+/** 当前桌面平台文案（仅用于“关于”页展示）。 */
+export function desktopPlatformLabel(
+  userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent,
+): string {
+  if (/macintosh|mac os x/i.test(userAgent)) return 'macOS Desktop';
+  if (/linux/i.test(userAgent)) return 'Linux Desktop';
+  if (/windows/i.test(userAgent)) return 'Windows Desktop';
+  return 'Desktop';
+}
+
 export async function checkGithubReleases({ currentVersion, httpImpl = http }: CheckGithubReleasesOptions = {}): Promise<GithubReleaseInfo> {
   try {
     return await httpImpl.get<GithubReleaseInfo>('/update/check', {
