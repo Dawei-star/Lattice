@@ -35,6 +35,17 @@ export interface AiEmbeddingConfig {
   name?: string;
 }
 
+/**
+ * 审批策略：写操作前 Lattice AI 如何征求同意。
+ * - `always`：任何写操作都先出预览，等用户确认（含新建草稿）
+ * - `review`：低风险（L1，新建/改自己的草稿）直接执行，L2/L3 预览确认
+ * - `skip`：L1/L2 直接执行，L3（删除、外发、改权限、批量）仍挂起确认
+ *
+ * 真实执行门控分布在前端 L1 自动执行判定、后端 RunnerInput.auto_approve_l2。
+ * 该字段是这两处的唯一事实源，不再由 interactionMode 推导。
+ */
+export type AiApprovalPolicy = 'always' | 'review' | 'skip';
+
 /** AI 设置（localStorage 界面状态缓存 + 服务端同步的客户端形态）。 */
 export interface AiSettings {
   providers: AiProviderConfig[];
@@ -43,7 +54,13 @@ export interface AiSettings {
   accessToken: string;
   preferModel: boolean;
   interactionMode: 'quick' | 'task';
-  autoApprove: boolean;
+  approvalPolicy: AiApprovalPolicy;
+  /**
+   * 高危豁免：允许 L3（删除 / 外发 / 改权限 / 批量）在「自动执行」档下也不询问。
+   * 与审批档位正交：档位管"日常打扰程度"，这个开关管"要不要放弃最后一道防线"。
+   * 默认关闭；开启需在界面上二次确认。
+   */
+  allowIrreversible: boolean;
   smallModelEnabled: boolean;
   smallModelProviderId: string;
   smallModelName: string;
@@ -87,8 +104,10 @@ export const DEFAULT_AI_SETTINGS: Readonly<AiSettings> = Object.freeze({
   preferModel: false,
   // 交互模式：快速模式跳过检索和工具；任务模式允许多轮工具执行。
   interactionMode: 'quick',
-  // 任务模式：勾选后 AI 以 agent 循环检索和读取；写操作仍必须经过确认预览
-  autoApprove: false,
+  // 默认「为我审核」：L1 草稿直执行，L2/L3 预览确认。
+  approvalPolicy: 'review',
+  // 不放弃最后一道防线：L3 恒定确认，由用户显式开启才放开。
+  allowIrreversible: false,
   smallModelEnabled: false,
   smallModelProviderId: '',
   smallModelName: '',
@@ -408,6 +427,16 @@ function serializedApiKey(provider: AiProviderConfig | AiEmbeddingConfig, volati
   return {};
 }
 
+/**
+ * 归一化审批策略。老数据只有布尔 autoApprove：true 时按「自动执行」迁移，
+ * 其余一律回落「为我审核」，避免升级后默认从审核变成全自动。
+ */
+export function normalizeApprovalPolicy(value: any): AiApprovalPolicy {
+  const raw = value?.approvalPolicy;
+  if (raw === 'always' || raw === 'review' || raw === 'skip') return raw;
+  return value?.autoApprove === true ? 'skip' : 'review';
+}
+
 function normalize(value: any): AiSettings {
   const legacyProvider = value?.providers
     ? null
@@ -429,8 +458,12 @@ function normalize(value: any): AiSettings {
     embedding: normalizeEmbedding(value?.embedding),
     accessToken: typeof value?.accessToken === 'string' ? value.accessToken.slice(0, 500) : '',
     preferModel: value?.preferModel === true,
-    interactionMode: value?.interactionMode === 'task' || value?.autoApprove === true ? 'task' : 'quick',
-    autoApprove: value?.autoApprove === true,
+    // 只读 value 本字段：旧版把 autoApprove 推导成 task，会让升级后的用户
+    // 在菜单里选「只对话」时被重新推回 task（点不动）。老数据本身已存了
+    // interactionMode，迁移不依赖布尔。
+    interactionMode: value?.interactionMode === 'task' ? 'task' : 'quick',
+    approvalPolicy: normalizeApprovalPolicy(value),
+    allowIrreversible: value?.allowIrreversible === true,
     smallModelEnabled: value?.smallModelEnabled === true,
     smallModelProviderId: typeof value?.smallModelProviderId === 'string' ? value.smallModelProviderId.trim().slice(0, 120) : '',
     smallModelName: typeof value?.smallModelName === 'string' ? value.smallModelName.trim().slice(0, 120) : '',

@@ -8,6 +8,7 @@ import { expertsApi } from '../api/experts.ts';
 import type { Expert, Skill } from '../api/experts.ts';
 import { filesApi } from '../api/files.ts';
 import { getActiveAiProvider, getActiveAiProviderRuntime, getAiProviderRouteRuntime, hasExternalAi, hydrateAiSettingsFromServer, loadAiSettings, saveAiSettings, subscribeAiSettings } from '../settings/aiSettings.ts';
+import { findProviderByService } from '../settings/aiProviders.ts';
 import { collectActiveMcpServers, loadMcpSettings, mergeProjectServers } from '../settings/mcpSettings.ts';
 import { mcpApi } from '../api/mcp.ts';
 import type { McpServerEntry } from '../api/mcp.ts';
@@ -178,14 +179,12 @@ interface SessionMessage {
 
 interface AiDigestResult { created?: boolean; title?: string; modifiedCount?: number; aiOverview?: boolean; noteId?: string | null; [key: string]: unknown; }
 
-interface PanelExpertCapabilities { context?: string[]; writePolicy?: string; [key: string]: unknown; }
-
-interface PanelExpert extends Expert {
-  description?: string;
-  skillCount?: number;
-  skills?: Skill[];
-  capabilities?: PanelExpertCapabilities;
-}
+/**
+ * 面板侧只做展示，不再自带一套字段定义：结构一律来自 `api/experts.ts` 的
+ * `Expert` 契约（E1 合并三处重复的读写形态）。别名而非 `Omit`——
+ * 契约带字符串索引签名，`Omit` 会把具名属性全部抹成 `unknown`。
+ */
+type PanelExpert = Expert;
 
 interface PanelNote {
   id: string;
@@ -687,6 +686,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   const [reasoningOpen, setReasoningOpen] = useState(true);
   const [settings, setSettings] = useState(() => loadAiSettings());
   const [composerMenu, setComposerMenu] = useState<'model' | 'approval' | null>(null);
+  // 高危豁免的开启确认弹窗：不可逆操作没有快照兜底，必须让用户看见后果。
+  const [irreversiblePromptOpen, setIrreversiblePromptOpen] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [personalizationOpen, setPersonalizationOpen] = useState(false);
   const [personalizationName, setPersonalizationName] = useState('');
@@ -810,8 +811,22 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   // W7c 能力协商：probe 实测 nativeTools=false 的模型不支持工具调用面，
   // 任务模式显式降级（置灰 + 原因），而不是静默失败。
   const taskModeUnsupported = activeProvider?.nativeTools === false;
-  const taskModeEnabled = (settings.interactionMode === 'task' || settings.autoApprove === true) && !taskModeUnsupported;
-  const approvalLabel = taskModeEnabled ? '自动' : '为我审核';
+  // 审批策略是独立维度：「只对话」由 interactionMode 表达，三档审批只决定
+  // 写操作要不要先问，不再和模型选择、任务模式互相裹挟。
+  const approvalPolicy = settings.approvalPolicy ?? 'review';
+  const allowIrreversible = settings.allowIrreversible === true;
+  const chatOnlyMode = settings.interactionMode !== 'task';
+  const taskModeEnabled = !chatOnlyMode && !taskModeUnsupported;
+  // 高危豁免只在「自动执行」档有意义：其余档位本来就要问，开了也不改变行为。
+  const skipPolicySelected = taskModeEnabled && approvalPolicy === 'skip';
+  const approvalLabel = chatOnlyMode
+    ? '只对话'
+    : approvalPolicy === 'skip'
+      ? '自动执行'
+      : approvalPolicy === 'always'
+        ? '始终询问'
+        : '为我审核';
+  /** 写入能力：只要不是「只对话」就有工具面；审批档位只管门控。 */
   const activeSessionTitle = safeSessionTitle(sessions.find((session) => session.id === sessionId)?.title, '新对话');
 
   useEffect(() => {
@@ -847,6 +862,11 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   }, [draftStorageKey]);
 
   useEffect(() => {
+    // 回声防护：面板每次切换会话都会经 onSessionChange → App tab → initialSessionId
+    // 原样传回。若不拦截，桌面端（IPC 拒绝快于 App 回传）本地恢复先完成后，这次
+    // prop 变化会把消息清成欢迎页，而 setSessionId 同值跳出渲染使恢复 effect 不再
+    // 重跑——历史会话从此停在欢迎页，表现为"点哪个会话数据都没了"。
+    if (initialSessionId?.trim() && initialSessionId.trim() === sessionIdRef.current && expertIdRef.current === expertId) return;
     loadedSessionRef.current = null;
     setMessages([WELCOME_MESSAGE]);
     setPreview(null);
@@ -1026,9 +1046,11 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   useEffect(() => {
     if (!open || !sessionId || !sessionsReady) return;
     // 刷新会话列表不等于切换会话；避免覆盖正在等待确认的文件预览。
+    // 标记在恢复真正落地后才写入：发起时就标记会把"加载中被依赖变化打断"的
+    // 会话也挡在门外，重跑时直接 return，视图永远停在欢迎页。
     if (loadedSessionRef.current === sessionId) return;
-    loadedSessionRef.current = sessionId;
     if (!sessions.some((session) => session.id === sessionId)) {
+      loadedSessionRef.current = sessionId;
       setMessages((current) => restoreAiMessages(current, [], WELCOME_MESSAGE));
       setPreview(null);
       setExecution(null);
@@ -1045,6 +1067,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
       try {
         const restoredMessages = await sessionStore.select(sessionId);
         if (cancelled) return;
+        loadedSessionRef.current = sessionId;
         const restored: AiMessage[] = restoredMessages.map((message) => ({
           id: message.id,
           role: message.role as AiMessageRole,
@@ -1317,6 +1340,37 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  // 把一条消息直接写进目标会话的本地持久化行，不触碰当前视图。
+  // 用于运行结束时视图已切走（stale）的场景：回答/失败记录属于发起请求的
+  // 会话，写进当前会话会串会话，不写则原会话只剩用户提问，看起来像记录丢失。
+  const persistSessionRecord = useCallback((targetSessionId: string, message: AiMessage) => {
+    if (!targetSessionId) return;
+    const record: SessionMessage = {
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      ...(message.attachments?.length ? {
+        attachmentMeta: message.attachments.map(({ id, name, type, size, kind }) => ({ id, name, type, size, kind })),
+      } : {}),
+      payload: {
+        suggestions: message.suggestions ?? [],
+        references: message.references ?? [],
+        reasoning: message.reasoning ?? '',
+        meta: message.meta ?? null,
+      },
+    } as SessionMessage;
+    const rows = readLocalAiSessions(expertId, storageNamespace);
+    const existing = rows.find((row) => row.id === targetSessionId);
+    if (!existing) return;
+    const nextRow: LocalAiSession = {
+      ...existing,
+      updatedAt: new Date().toISOString(),
+      messages: [...existing.messages, record],
+    };
+    writeLocalAiSessions(expertId, [nextRow, ...rows.filter((row) => row.id !== targetSessionId)], storageNamespace);
+    setSessions((currentSessions) => currentSessions.map((row) => row.id === targetSessionId ? nextRow : row));
+  }, [expertId, storageNamespace]);
 
   // 项目级 MCP Server（.lattice/mcp.json）缓存：打开面板时重取，发送时直接用。
   // 读取失败不阻断发送——只降级为用户级配置。
@@ -1594,7 +1648,9 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
           expertId,
           preferModel,
           ...(remoteRouting ? { routingOverride: remoteRouting } : {}),
-          autoApprove: taskMode,
+          autoApprove: taskModeEnabled && approvalPolicy === 'skip',
+          approvalPolicy,
+          allowIrreversible: skipPolicySelected && allowIrreversible,
           ...(webSearchEnabled ? { webSearch: true } : {}),
           actor: 'local-user',
           role: LOCAL_OWNER_ROLE,
@@ -1664,6 +1720,9 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
             streamStatusRef.current = `第 ${event.round} 轮 · 继续执行任务…`;
             queueStreamFlush();
           } else if (event.type === 'status') {
+            // 历史兼容：E1 首版把「专家已注入」写成 status，旧会话回放时不要再显示成
+            // 一条对话状态行（专家是设置，不是一次工具调用）。新事件类型是 expert_loaded。
+            if (event.status === 'expert_loaded') return;
             streamStatusRef.current = event.text ?? '';
              commitProgressSteps((current) => updateProgressDetail(current, event.text));
             queueStreamFlush();
@@ -1861,7 +1920,8 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
           stage: 'tool_execution',
           ...(previewResponse?.aiPlanHash ? { planHash: previewResponse.aiPlanHash } : {}),
         });
-        if (previewResponse && isAutoExecutableL1Plan(previewResponse)) {
+        // 「始终询问」档连 L1 草稿也要先出预览；其余档位沿用 L1 自动执行。
+        if (previewResponse && approvalPolicy !== 'always' && isAutoExecutableL1Plan(previewResponse)) {
           const autoResults: OperationResult[] = [];
           for (const operation of previewResponse.fileOperations) {
             const step = {
@@ -2016,12 +2076,16 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
         }
       }
       if (durableRunCompleted) forgetDurableRun(runId, storageNamespace);
-      appendMessage(assistant);
+      if (stale()) persistSessionRecord(requestSessionId, assistant);
+      else appendMessage(assistant);
       refreshSessions();
     } catch (requestError: any) {
       if (requestError?.name === 'AbortError') {
         traceFinishMetadata = { status: 'cancelled', terminationReason: 'cancelled', errorKind: 'abort' };
-        if (stale()) return;
+        if (stale()) {
+          persistSessionRecord(requestSessionId, { id: `system-${Date.now()}`, role: 'system', content: '已停止生成。' });
+          return;
+        }
         appendMessage({ id: `system-${Date.now()}`, role: 'system', content: '已停止生成。' });
       } else {
         traceFinishMetadata = { status: 'failed', terminationReason: 'error', errorKind: requestError?.name ?? 'request_error' };
@@ -2034,11 +2098,34 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
           toast,
           notifiedRunIds: notifiedRunIdsRef.current,
         });
-        if (stale()) return;
+        if (stale()) {
+          persistSessionRecord(requestSessionId, {
+            id: `assistant-failed-${Date.now()}`,
+            role: 'assistant',
+            content: `这条回答没有生成成功：${requestError?.message ?? 'AI 请求失败，请稍后重试'}`,
+            meta: {
+              completionStatus: 'failed',
+              ...(isTauri() ? { runId } : {}),
+            },
+          });
+          return;
+        }
         setError(requestError?.message ?? 'AI 请求失败，请稍后重试');
         setRetryMessage(message);
         retryRunIdRef.current = isTauri() ? runId : null;
          commitProgressSteps((current) => failProgress(current, requestError?.message));
+        // 失败也要落进会话记录：错误横幅只在本轮可见，重开会话/切回会话后
+        // 若没有这条记录，会话里就只剩用户提问，看起来像"回答记录丢了"。
+        // 落成 assistant 消息还会带上"重新生成"入口，比只在横幅里提示更可操作。
+        appendMessage({
+          id: `assistant-failed-${Date.now()}`,
+          role: 'assistant',
+          content: `这条回答没有生成成功：${requestError?.message ?? 'AI 请求失败，请稍后重试'}`,
+          meta: {
+            completionStatus: 'failed',
+            ...(isTauri() ? { runId } : {}),
+          },
+        });
       }
     } finally {
       trace('run_finished', { ...traceFinishMetadata, ...traceMetrics(runMetricsRef.current) });
@@ -3180,6 +3267,33 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
             </div>
 
             {preview ? <AiOperationPreviewView preview={preview} onConfirm={executePreview} onRefresh={refreshOperationPreview} onCancel={cancelOperationPreview} disabled={sending} /> : null}
+            {irreversiblePromptOpen ? (
+              <Modal
+                open
+                title="开启不可逆操作豁免"
+                ariaLabel="开启不可逆操作豁免"
+                onClose={() => setIrreversiblePromptOpen(false)}
+                className="ai-assistant__irreversible-modal"
+              >
+                <div className="ai-assistant__irreversible-body">
+                  <p>开启后，Lattice AI 在「自动执行」档下可以直接<strong>删除文件、批量写入知识库</strong>，不再逐项询问你。</p>
+                  <p className="ai-assistant__irreversible-warn">这些操作有快照可以撤销，但执行后不会自动提示你去找回。将来接入外发、分享这类能力后，这个开关同样会让它们不再确认——而那部分无法收回。</p>
+                  <div className="ai-assistant__irreversible-actions">
+                    <button type="button" className="btn" onClick={() => setIrreversiblePromptOpen(false)}>取消</button>
+                    <button
+                      type="button"
+                      className="btn btn--danger"
+                      onClick={() => {
+                        setSettings((current) => saveAiSettings({ ...current, allowIrreversible: true }));
+                        setIrreversiblePromptOpen(false);
+                      }}
+                    >
+                      我已了解，开启
+                    </button>
+                  </div>
+                </div>
+              </Modal>
+            ) : null}
             {execution ? (
               <AiExecutionSummaryView
                 result={execution}
@@ -3345,24 +3459,69 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                     </button>
                     {composerMenu === 'approval' ? (
                       <div className="ai-assistant__menu ai-assistant__menu--workload" role="menu" aria-label="审批模式">
-                        <div className="notion-menu__intro"><span>Lattice AI 应如何请求批准?</span><button type="button" onClick={() => toast.info('写入操作会在执行前显示预览')}>了解更多</button></div>
-                        <button type="button" role="menuitemradio" aria-checked={false} onClick={() => { setSettings((current) => saveAiSettings({ ...current, interactionMode: 'quick', autoApprove: false })); setComposerMenu(null); }}>
-                          <span>始终询问</span><small>在进行更改或共享内容前询问我</small>
+                        <div className="notion-menu__intro"><span>Lattice AI 应如何请求批准?</span><button type="button" onClick={() => toast.info('低风险草稿可自动执行；改动已有内容前先出预览；删除、外发、改权限与批量操作始终需要你确认。')}>了解更多</button></div>
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={chatOnlyMode}
+                          className={chatOnlyMode ? 'is-selected' : ''}
+                          onClick={() => { setSettings((current) => saveAiSettings({ ...current, interactionMode: 'quick' })); setComposerMenu(null); }}
+                        >
+                          <span>只对话</span><small>只检索和回答，不新建或改动任何文件</small>{chatOnlyMode ? <Check size={16} /> : null}
                         </button>
-                        <button type="button" role="menuitemradio" aria-checked={!taskModeEnabled} className={!taskModeEnabled ? 'is-selected' : ''} onClick={() => { setSettings((current) => saveAiSettings({ ...current, interactionMode: 'quick', autoApprove: false })); setComposerMenu(null); }}>
-                          <span>为我审核</span><small>仅在涉及潜在不安全操作时询问我</small>{!taskModeEnabled ? <Check size={16} /> : null}
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={!chatOnlyMode && approvalPolicy === 'always'}
+                          className={!chatOnlyMode && approvalPolicy === 'always' ? 'is-selected' : ''}
+                          disabled={taskModeUnsupported}
+                          title={taskModeUnsupported ? '当前模型不支持工具调用（连通性测试实测），无法写入' : undefined}
+                          onClick={() => { if (taskModeUnsupported) return; setSettings((current) => saveAiSettings({ ...current, interactionMode: 'task', approvalPolicy: 'always' })); setComposerMenu(null); }}
+                        >
+                          <span>始终询问</span><small>任何写入前都先给你看预览</small>{!chatOnlyMode && approvalPolicy === 'always' ? <Check size={16} /> : null}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={!chatOnlyMode && approvalPolicy === 'review'}
+                          className={!chatOnlyMode && approvalPolicy === 'review' ? 'is-selected' : ''}
+                          disabled={taskModeUnsupported}
+                          title={taskModeUnsupported ? '当前模型不支持工具调用（连通性测试实测），无法写入' : undefined}
+                          onClick={() => { if (taskModeUnsupported) return; setSettings((current) => saveAiSettings({ ...current, interactionMode: 'task', approvalPolicy: 'review' })); setComposerMenu(null); }}
+                        >
+                          <span>为我审核</span><small>低风险草稿直接写，改动已有内容时询问我</small>{!chatOnlyMode && approvalPolicy === 'review' ? <Check size={16} /> : null}
                         </button>
                         <button
                           type="button"
                           className="is-warning"
                           role="menuitemradio"
-                          aria-checked={taskModeEnabled}
+                          aria-checked={!chatOnlyMode && approvalPolicy === 'skip'}
                           disabled={taskModeUnsupported}
-                          title={taskModeUnsupported ? '当前模型不支持工具调用（连通性测试实测），任务模式不可用' : undefined}
-                          onClick={() => { if (taskModeUnsupported) return; setSettings((current) => saveAiSettings({ ...current, interactionMode: 'task', autoApprove: true, preferModel: true })); setComposerMenu(null); }}
+                          title={taskModeUnsupported ? '当前模型不支持工具调用（连通性测试实测），无法写入' : undefined}
+                          onClick={() => { if (taskModeUnsupported) return; setSettings((current) => saveAiSettings({ ...current, interactionMode: 'task', approvalPolicy: 'skip' })); setComposerMenu(null); }}
                         >
-                          <span>跳过所有审批</span><small>{taskModeUnsupported ? '当前模型不支持工具调用，任务模式不可用' : '直接执行，无需询问。请谨慎使用。'}</small>{taskModeEnabled ? <Check size={16} /> : null}
+                          <span>自动执行</span><small>{taskModeUnsupported ? '当前模型不支持工具调用，无法写入' : '低风险直接执行；删除、外发仍会拦一道'}</small>{!chatOnlyMode && approvalPolicy === 'skip' ? <Check size={16} /> : null}
                         </button>
+                        <div className="ai-assistant__menu-sep" role="separator" />
+                        <button
+                          type="button"
+                          role="menuitemcheckbox"
+                          aria-checked={allowIrreversible}
+                          disabled={!skipPolicySelected}
+                          className={`ai-assistant__danger-toggle${allowIrreversible ? ' is-on' : ''}${skipPolicySelected ? '' : ' is-disabled'}`}
+                          onClick={() => {
+                            if (!skipPolicySelected) return;
+                            if (allowIrreversible) {
+                              setSettings((current) => saveAiSettings({ ...current, allowIrreversible: false }));
+                              return;
+                            }
+                            setIrreversiblePromptOpen(true);
+                          }}
+                        >
+                          <i className="ai-assistant__check-box" aria-hidden="true" />
+                          <span>允许不可逆操作不询问</span>
+                        </button>
+                        <p className="ai-assistant__danger-hint">{skipPolicySelected ? '删除与批量写入将不再询问' : '仅在「自动执行」档下可用'}</p>
                       </div>
                     ) : null}
                   </div>
@@ -3378,6 +3537,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                         {settings.providers.filter((provider) => provider.enabled !== false).map((provider) => {
                           const configured = Boolean(provider.endpoint?.trim() && provider.model?.trim());
                           const isSelected = settings.preferModel === true && provider.id === settings.activeProviderId;
+                          const vendor = findProviderByService(provider.service);
                           return (
                             <button key={provider.id} type="button" role="menuitemradio" aria-checked={isSelected} className={isSelected ? 'is-selected' : ''}
                               onClick={() => {
@@ -3385,7 +3545,7 @@ export default function AIAssistantPanel({ open, onClose, onNewChat, initialSess
                                 setSettings((current) => saveAiSettings({ ...current, activeProviderId: provider.id, preferModel: true }));
                                 setComposerMenu(null);
                               }}>
-                              <Sparkles size={14} /><span>{provider.model || provider.name || '未命名模型'}</span>
+                              <span className="provider-logo" aria-hidden="true"><img src={vendor.logo} alt="" loading="lazy" /></span><span>{provider.model || provider.name || '未命名模型'}</span>
                               <small>{!configured ? '未配置' : provider.verified ? '已连接' : '需要测试连接'}</small>
                               {isSelected ? <Check size={15} /> : null}
                             </button>

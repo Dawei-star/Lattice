@@ -1,5 +1,299 @@
 {
   "commands": {
+    "expert_get": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.capabilities.scopeExclude",
+        "rust": "array"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.routing.confidenceThreshold",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.scope",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].config",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.skills[0].mode",
+        "rust": "string"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].priority",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.skills[0].skill.allowedTools",
+        "rust": "array"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].skill.inputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.skills[0].skill.metadata",
+        "rust": "object"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].skill.outputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].skill.permissions",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.skills[0].skill.title",
+        "rust": "string"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].skill.tools",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.skills[0].skill.triggers",
+        "rust": "absent"
+      }
+    ],
+    "expert_list": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data[0].capabilities.scopeExclude",
+        "rust": "array"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].routing.confidenceThreshold",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].scope",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].skills[0].config",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data[0].skills[0].mode",
+        "rust": "string"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].skills[0].priority",
+        "rust": "absent"
+      }
+    ],
+    "expert_save": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.capabilities.scopeExclude",
+        "rust": "array"
+      },
+      {
+        "express": "number",
+        "kind": "missing-in-rust",
+        "path": "$.data.routing.confidenceThreshold",
+        "rust": "absent"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.scope",
+        "rust": "absent"
+      }
+    ],
+    "skill_get": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.allowedTools",
+        "rust": "array"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.inputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.metadata",
+        "rust": "object"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.outputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.permissions",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.title",
+        "rust": "string"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.tools",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.triggers",
+        "rust": "absent"
+      }
+    ],
+    "skill_list": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data[0].allowedTools",
+        "rust": "array"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].inputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data[0].metadata",
+        "rust": "object"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].outputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].permissions",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data[0].title",
+        "rust": "string"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].tools",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data[0].triggers",
+        "rust": "absent"
+      }
+    ],
+    "skill_save": [
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.allowedTools",
+        "rust": "array"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.inputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.metadata",
+        "rust": "object"
+      },
+      {
+        "express": "object",
+        "kind": "missing-in-rust",
+        "path": "$.data.outputSchema",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.permissions",
+        "rust": "absent"
+      },
+      {
+        "express": "absent",
+        "kind": "extra-in-rust",
+        "path": "$.data.title",
+        "rust": "string"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.tools",
+        "rust": "absent"
+      },
+      {
+        "express": "array",
+        "kind": "missing-in-rust",
+        "path": "$.data.triggers",
+        "rust": "absent"
+      }
+    ],
     "vault_read_asset": [
       {
         "express": "string",

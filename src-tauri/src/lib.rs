@@ -193,6 +193,8 @@ pub fn run() {
             skill_list,
             skill_get,
             skill_save,
+            skill_import_preview,
+            skill_export,
             skill_delete,
             review_health,
             review_plan,
@@ -479,9 +481,14 @@ fn append_ai_event(handle: &tauri::AppHandle, run_id: &str, payload: &serde_json
 fn ai_run_enqueue(
     state: State<'_, WorkspaceState>,
     runtime: State<'_, AiRuntimeState>,
-    request: serde_json::Value,
+    mut request: serde_json::Value,
 ) -> Result<Job, String> {
     let run_id = request_run_id(&request)?;
+    // E1：专家策略在入队时解析并注入（system 文本 / 工具面白名单 / 轮数收紧）。
+    // 入队请求就是 worker 与恢复路径的同一份请求，续跑轮克隆它时策略自然继承。
+    if let Ok(workspace) = state.0.read() {
+        crate::ai::core::expert::apply_request(&workspace, &mut request);
+    }
     runtime.register_pending_request(&run_id, request.clone())?;
     let persisted = redact_request_secrets(&request);
     let job = with_workspace(state, |workspace| {
@@ -601,10 +608,15 @@ fn ai_run_resume(
     // 忽略前端附带请求，也不重复 resume，前端直接进入事件回放。
     let kernel_continuation = runtime.take_kernel_continuation(&run_id);
     if !kernel_continuation {
-        if let Some(request) = request {
+        if let Some(mut request) = request {
             let request_run = request_run_id(&request)?;
             if request_run != run_id {
                 return Err("恢复请求的 runId 与目标任务不一致".to_owned());
+            }
+            // E1：恢复请求与首发走同一条注入路径——否则「关面板再打开」会让
+            // 专家提示词与工具面静默丢失（正是本次重构要消灭的那类断线）。
+            if let Ok(workspace) = state.0.read() {
+                crate::ai::core::expert::apply_request(&workspace, &mut request);
             }
             runtime.register_pending_request(&run_id, request)?;
         }
@@ -1530,6 +1542,120 @@ fn skill_save(
     })
 }
 
+/// 导入 SKILL.md：`source` = text / path / url；只解析预览，不落盘。
+/// 保存仍由前端走 `skill_save` 的确认流程（唯一写路径）。
+#[tauri::command]
+async fn skill_import_preview(
+    state: State<'_, WorkspaceState>,
+    source: String,
+    value: String,
+) -> Result<serde_json::Value, String> {
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        return Err("导入内容不能为空".to_owned());
+    }
+    let (raw, id_hint) = match source.as_str() {
+        "text" => (value, None),
+        "path" => {
+            let path = std::path::PathBuf::from(&value);
+            let file = if path.is_dir() {
+                path.join("SKILL.md")
+            } else {
+                path
+            };
+            let raw = std::fs::read_to_string(&file)
+                .map_err(|error| format!("读取 SKILL.md 失败：{error}"))?;
+            let hint = file
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .map(|name| name.to_string_lossy().to_string());
+            (raw, hint)
+        }
+        "url" => {
+            let raw = fetch_remote_skill(&value).await?;
+            (raw, skill_id_hint_from_url(&value))
+        }
+        other => return Err(format!("不支持的导入来源：{other}")),
+    };
+    with_workspace(state, move |workspace| {
+        workspace.skill_import_preview(&raw, id_hint.as_deref())
+    })
+}
+
+/// GitHub 的 `blob` 页面地址换成 raw 内容地址（用户最常粘贴的是浏览器地址栏）。
+fn normalize_skill_url(url: &str) -> String {
+    let trimmed = url.trim();
+    let Some(rest) = trimmed.strip_prefix("https://github.com/") else {
+        return trimmed.to_owned();
+    };
+    let parts: Vec<&str> = rest.splitn(5, '/').collect();
+    if parts.len() == 5 && parts[2] == "blob" {
+        return format!(
+            "https://raw.githubusercontent.com/{}/{}/{}/{}",
+            parts[0], parts[1], parts[3], parts[4]
+        );
+    }
+    trimmed.to_owned()
+}
+
+/// 从链接末段推 id（`.../skills/pdf/SKILL.md` → `pdf`）。
+fn skill_id_hint_from_url(url: &str) -> Option<String> {
+    let path = normalize_skill_url(url);
+    let mut segments: Vec<&str> = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(&path)
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let last = segments.pop()?;
+    let candidate = if last.eq_ignore_ascii_case("SKILL.md") {
+        segments.pop()?
+    } else {
+        last.trim_end_matches(".md")
+    };
+    let candidate = candidate.trim();
+    // 同 id 字符集（小写字母/数字/-/_）：`https://example.com/` 这类拿不到提示
+    let valid = !candidate.is_empty()
+        && candidate
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    valid.then(|| candidate.to_owned())
+}
+
+/// 拉取远端 SKILL.md（20s 超时、200k 字符上限；失败给可操作提示）。
+async fn fetch_remote_skill(url: &str) -> Result<String, String> {
+    let target = normalize_skill_url(url);
+    if !target.starts_with("https://") && !target.starts_with("http://") {
+        return Err("导入链接必须是 http(s) 地址".to_owned());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|_| "无法初始化网络请求".to_owned())?;
+    let response = client
+        .get(&target)
+        .send()
+        .await
+        .map_err(|_| "无法连接技能来源，请检查链接与网络".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!("技能来源返回 HTTP {}", response.status().as_u16()));
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|_| "读取远端内容失败".to_owned())?;
+    if text.chars().count() > 200_000 {
+        return Err("远端 SKILL.md 过大（超过 200k 字符），请改用本地导入".to_owned());
+    }
+    Ok(text)
+}
+
+#[tauri::command]
+fn skill_export(state: State<'_, WorkspaceState>, id: String) -> Result<serde_json::Value, String> {
+    with_workspace(state, |workspace| workspace.skill_export(&id))
+}
+
 #[tauri::command]
 fn skill_delete(
     state: State<'_, WorkspaceState>,
@@ -1754,14 +1880,38 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                 }
                 continue;
             }
+            // 用户级审批策略：skip 时 L2 免确认，always 时连 L1 草稿也走确认门。
+            // L3（删除/外发/权限/批量）在 runner 的判定里固定不放开，两档都改不到它。
+            let request_approval_policy = request
+                .get("approvalPolicy")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let request_skips_l2_approval = request_approval_policy.as_deref() == Some("skip");
+            let request_confirms_all_writes = request_approval_policy.as_deref() == Some("always");
+            // 高危豁免只在「自动执行」档下生效：其他档位本来就要问，开关不改行为。
+            let request_allows_irreversible = request_skips_l2_approval
+                && request.get("allowIrreversible").and_then(serde_json::Value::as_bool) == Some(true);
+            // E1：专家策略在本 run 解析一次。入队时已写进请求（system/工具面/轮数），
+            // 这里拿到的运行时对象供内核调度用：写策略、路径黑名单、轮数上限与 trace。
+            let expert_runtime = {
+                let workspace_state = handle.state::<WorkspaceState>();
+                match workspace_state.0.read() {
+                    Ok(workspace) => crate::ai::core::expert::resolve_for_request(&workspace, &request),
+                    Err(_) => None,
+                }
+            };
+            if let Some(runtime_expert) = &expert_runtime {
+                append_ai_event(&handle, &run_id, &crate::ai::core::expert::loaded_event(runtime_expert));
+            }
             // W7b：Agent 读工具循环下沉 worker——关面板不再中断多轮检索/读取。
             // 只有「全部为已注册读工具且预算允许」才内核续跑；出现写工具、
             // 预算耗尽或解析异常时按原行为收尾（done 带原 toolCalls 交回前端）。
-            let agent_budget = crate::ai::core::agent::budget_for_mode(
+            let agent_budget = crate::ai::core::agent::budget_with_overrides(
                 request
                     .get("mode")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("quick"),
+                request.get("budget").unwrap_or(&serde_json::Value::Null),
             );
             let tool_registry = crate::ai::core::agent::ToolRegistry::builtin();
             // W8：跨轮累计用量与首字延迟，run 结束一次性落 ai_trace
@@ -1894,12 +2044,29 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                     // （预览→planHash→execute，审计/快照/undo 走文件内核既有管线）、
                     // 未注册/越权/超预算拒绝；仅 L2/L3 写挂起等用户确认（正文只存进程内存）。
                     let confirmations = std::collections::HashSet::new();
+                    let empty_scope: Vec<String> = Vec::new();
                     let plan = crate::ai::core::agent::plan_execution(
                         &tool_registry,
                         &crate::ai::core::agent::RunnerInput {
                             calls: &pending_calls,
                             remaining_tool_calls,
-                            writes_allowed: true,
+                            // 专家 writePolicy=disabled（或角色禁写）时由专家策略直接剥夺；
+                            // 无专家时保持既有行为（允许写、按风险分级）。
+                            writes_allowed: expert_runtime
+                                .as_ref()
+                                .map(crate::ai::core::expert::ExpertRuntime::writes_allowed)
+                                .unwrap_or(true),
+                            auto_approve_l2: expert_runtime
+                                .as_ref()
+                                .map(|expert| expert.write_policy.auto_approves_l2())
+                                .unwrap_or(false)
+                                || request_skips_l2_approval,
+                            confirm_all_writes: request_confirms_all_writes,
+                            allow_irreversible: request_allows_irreversible,
+                            write_scope_exclude: expert_runtime
+                                .as_ref()
+                                .map(|expert| expert.scope_exclude.as_slice())
+                                .unwrap_or(empty_scope.as_slice()),
                             confirmations_granted: &confirmations,
                         },
                     );
@@ -2144,6 +2311,14 @@ fn spawn_ai_worker(handle: tauri::AppHandle) {
                         completion_tokens: Some(trace_completion_tokens),
                         total_tokens: Some(trace_total_tokens),
                         cost_usd: trace_cost,
+                        // E1：专家与提示词版本进 trace（正文不入库，见 expert_loaded 事件）
+                        expert: expert_runtime
+                            .as_ref()
+                            .map(|expert| expert.expert_id.clone()),
+                        prompt_versions: expert_runtime
+                            .as_ref()
+                            .map(|expert| expert.prompt_versions.clone())
+                            .unwrap_or_default(),
                     };
                     let workspace_state = handle.state::<WorkspaceState>();
                     if let Ok(workspace) = workspace_state.0.read() {
@@ -2301,4 +2476,38 @@ fn vault_open(
     let mut current = state.0.write().map_err(|error| error.to_string())?;
     *current = next;
     Ok(info)
+}
+
+#[cfg(test)]
+mod skill_import_tests {
+    use super::{normalize_skill_url, skill_id_hint_from_url};
+
+    #[test]
+    fn github_blob_urls_become_raw_content_urls() {
+        assert_eq!(
+            normalize_skill_url("https://github.com/anthropics/skills/blob/main/pdf/SKILL.md"),
+            "https://raw.githubusercontent.com/anthropics/skills/main/pdf/SKILL.md"
+        );
+        // 已经是 raw / 其他站点：原样返回
+        let raw = "https://raw.githubusercontent.com/anthropics/skills/main/pdf/SKILL.md";
+        assert_eq!(normalize_skill_url(raw), raw);
+        assert_eq!(normalize_skill_url("https://example.com/SKILL.md"), "https://example.com/SKILL.md");
+    }
+
+    #[test]
+    fn id_hint_comes_from_skill_directory_or_filename() {
+        assert_eq!(
+            skill_id_hint_from_url("https://raw.githubusercontent.com/o/r/main/pdf/SKILL.md").as_deref(),
+            Some("pdf")
+        );
+        assert_eq!(
+            skill_id_hint_from_url("https://example.com/skills/my-skill.md").as_deref(),
+            Some("my-skill")
+        );
+        assert_eq!(
+            skill_id_hint_from_url("https://github.com/o/r/blob/main/skills/my-skill/SKILL.md").as_deref(),
+            Some("my-skill")
+        );
+        assert_eq!(skill_id_hint_from_url("https://example.com/"), None);
+    }
 }

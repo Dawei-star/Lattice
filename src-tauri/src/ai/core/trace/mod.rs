@@ -25,6 +25,10 @@ pub struct TraceEntry {
     pub completion_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
+    /// E1：本次 run 使用的专家 id（无专家为 None）。
+    pub expert: Option<String>,
+    /// E1：注入的提示词/技能版本串（`expert:<id>@<ver>` / `skill:<id>@<ver>`）。
+    pub prompt_versions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,8 +107,9 @@ impl TraceStore {
         connection
             .execute(
                 "INSERT INTO ai_trace (run_id, task_type, provider, model, ttft_ms, duration_ms,
-                     prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at,
+                     expert, prompt_versions)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(run_id) DO UPDATE SET
                    task_type = excluded.task_type,
                    provider = excluded.provider,
@@ -115,7 +120,9 @@ impl TraceStore {
                    completion_tokens = excluded.completion_tokens,
                    total_tokens = excluded.total_tokens,
                    cost_usd = excluded.cost_usd,
-                   created_at = excluded.created_at",
+                   created_at = excluded.created_at,
+                   expert = excluded.expert,
+                   prompt_versions = excluded.prompt_versions",
                 rusqlite::params![
                     entry.run_id,
                     entry.task_type,
@@ -128,6 +135,8 @@ impl TraceStore {
                     entry.total_tokens.map(|value| value as i64),
                     entry.cost_usd,
                     iso8601_utc(now_millis()),
+                    entry.expert,
+                    (!entry.prompt_versions.is_empty()).then(|| entry.prompt_versions.join(",")),
                 ],
             )
             .map_err(|error| format!("AI 指标落库失败：{error}"))?;
@@ -146,7 +155,8 @@ impl TraceStore {
             let mut statement = connection
                 .prepare(
                     "SELECT run_id, task_type, provider, model, ttft_ms, duration_ms,
-                            prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at
+                            prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at,
+                            expert, prompt_versions
                      FROM ai_trace
                      WHERE (?1 IS NULL OR task_type = ?1)
                      ORDER BY created_at DESC, run_id DESC
@@ -170,6 +180,10 @@ impl TraceStore {
                         "totalTokens": integer(8)?,
                         "costUsd": row.get::<_, Option<f64>>(9)?,
                         "createdAt": row.get::<_, String>(10)?,
+                        "expert": row.get::<_, Option<String>>(11)?,
+                        "promptVersions": row.get::<_, Option<String>>(12)?
+                            .map(|value| value.split(',').filter(|item| !item.is_empty()).map(str::to_owned).collect::<Vec<_>>())
+                            .unwrap_or_default(),
                     }))
                 })
                 .map_err(|error| format!("AI 指标查询失败：{error}"))?;
@@ -257,6 +271,8 @@ mod tests {
             completion_tokens: Some(tokens / 4),
             total_tokens: Some(tokens + tokens / 4),
             cost_usd: None,
+            expert: None,
+            prompt_versions: Vec::new(),
         }
     }
 
@@ -277,6 +293,32 @@ mod tests {
         assert!((cost - 0.00138).abs() < 1e-9);
         // 未入目录的模型 → None（本机/未知模型零成本显示）
         assert_eq!(estimate_cost_usd(&catalog, "unknown-model", 100, 100), None);
+    }
+
+    #[test]
+    fn record_keeps_expert_and_prompt_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = TraceStore::open(&directory.path().join("lattice.db")).unwrap();
+        let mut item = entry("run-expert", "task", 120, 800);
+        item.expert = Some("task-executor".to_owned());
+        item.prompt_versions = vec![
+            "expert:task-executor@2.0.0".to_owned(),
+            "skill:task-round-discipline@1.0.0".to_owned(),
+        ];
+        store.record(&item).unwrap();
+
+        let result = store.query(Some("task"), 10).unwrap();
+        let row = &result.entries[0];
+        assert_eq!(row["expert"], "task-executor");
+        assert_eq!(row["promptVersions"][0], "expert:task-executor@2.0.0");
+        assert_eq!(row["promptVersions"][1], "skill:task-round-discipline@1.0.0");
+
+        // 无专家的 run：空数组而非 null（前端不必再判空形态）
+        store.record(&entry("run-plain", "task", 90, 400)).unwrap();
+        let plain = store.query(Some("task"), 10).unwrap();
+        let plain_row = plain.entries.iter().find(|row| row["runId"] == "run-plain").unwrap();
+        assert!(plain_row["promptVersions"].as_array().unwrap().is_empty());
+        assert!(plain_row["expert"].is_null());
     }
 
     #[test]

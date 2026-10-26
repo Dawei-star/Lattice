@@ -187,10 +187,24 @@ pub(crate) fn provider_tools(request: &Value) -> Result<Option<Value>, String> {
 fn continuation_messages(request: &Value, message: &str) -> Result<Value, String> {
     use super::MAX_PROVIDER_TOOLS;
 
-    let mut messages = vec![json!({
+    let mut messages = Vec::with_capacity(4);
+    // E1：专家 system 块（人格提示词 + 预载技能）由内核写进请求的 `system` 字段。
+    // 它必须排在全部对话消息之前——续跑轮同样带 system，模型不会在中途丢失人设。
+    if let Some(system) = request
+        .get("system")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        messages.push(json!({
+            "role": "system",
+            "content": system.chars().take(crate::ai::core::expert::EXPERT_SYSTEM_MAX_CHARS).collect::<String>(),
+        }));
+    }
+    messages.push(json!({
         "role": "user",
         "content": message_content(request, message),
-    })];
+    }));
     let Some(calls) = request.get("toolCalls") else {
         return Ok(Value::Array(messages));
     };
@@ -473,6 +487,27 @@ mod tests {
     use super::{ProviderConfig, ReasoningSplitter, provider_tools, finish_tool_calls, append_tool_call_deltas, ToolCallAccumulator};
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn system_block_leads_the_message_list_and_is_optional() {
+        let with_system = super::continuation_messages(
+            &json!({ "system": "你是任务执行专家。", "toolCalls": [{ "id": "c1", "name": "lattice_note_read", "input": {} }] }),
+            "继续",
+        )
+        .unwrap();
+        assert_eq!(with_system[0]["role"], "system");
+        assert_eq!(with_system[0]["content"], "你是任务执行专家。");
+        assert_eq!(with_system[1]["role"], "user");
+
+        // 没有 system 的请求保持旧形状：首条仍是 user
+        let without = super::continuation_messages(&json!({}), "你好").unwrap();
+        assert_eq!(without[0]["role"], "user");
+        assert_eq!(without.as_array().unwrap().len(), 1);
+
+        // 空白 system 不产生空消息（部分上游会拒绝空 system）
+        let blank = super::continuation_messages(&json!({ "system": "   " }), "你好").unwrap();
+        assert_eq!(blank[0]["role"], "user");
+    }
 
     #[test]
     fn provider_tools_are_reduced_to_a_safe_function_shape() {

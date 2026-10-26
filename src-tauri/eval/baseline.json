@@ -2,11 +2,11 @@
   "version": 1,
   "mode": "anchor-perfect",
   "description": "确定性锚点满分参照，由 build-baseline.mjs 从 golden-set.json 复算生成；真实跑分对比请用 eval:golden:compare 对两份本地报告，勿与基线比。",
-  "goldenSetHash": "sha256:5a9cd3dcb86ded10fe47486d781d6dd9d445569082a85b79a2a3254998d68840",
-  "generatedAt": "2026-10-25T09:38:47.416Z",
+  "goldenSetHash": "sha256:3de085ae01b8c1b9d06be6b72ac22fba3605be8ae9307add31145da354f69b26",
+  "generatedAt": "2026-10-26T02:23:23.812Z",
   "report": {
-    "total": 16,
-    "answered": 16,
+    "total": 18,
+    "answered": 18,
     "missing": 0,
     "mean": 1,
     "forbiddenHits": 0,
@@ -33,6 +33,11 @@
       },
       {
         "category": "vault",
+        "answered": 2,
+        "mean": 1
+      },
+      {
+        "category": "skill",
         "answered": 2,
         "mean": 1
       }
@@ -164,6 +169,22 @@
         "score": 1,
         "required": 1,
         "hitCount": 1,
+        "forbiddenHit": null
+      },
+      {
+        "id": "skl-001",
+        "category": "skill",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
+        "forbiddenHit": null
+      },
+      {
+        "id": "skl-002",
+        "category": "skill",
+        "score": 1,
+        "required": 2,
+        "hitCount": 2,
         "forbiddenHit": null
       }
     ]

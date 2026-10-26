@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lattice AI 权限判定链路 · 时序图</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #f2f5f9;
+    padding: 32px 20px 48px;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1040px; margin: 0 auto; }
+  @media (max-width: 720px) { body { padding: 16px 10px 28px; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div id="perm-flow-viz">
+  <div class="af-head">
+    <div class="af-head-left">
+      <h3>Lattice AI 权限判定链路<span class="af-badge">桌面端 · Tauri</span></h3>
+      <p class="af-sub">一次写操作从意图到落盘：6 个阶段 · 4 类参与者 · 18 个步骤</p>
+    </div>
+    <div class="af-controls">
+      <button class="af-btn af-icon" id="af-prev" type="button" aria-label="上一步">
+        <svg viewBox="0 0 16 16" class="af-ic" aria-hidden="true"><path d="M10 3L5.5 8 10 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="af-btn af-btn-primary" id="af-play" type="button">
+        <svg id="af-ic-play" viewBox="0 0 16 16" class="af-ic" aria-hidden="true"><path d="M4.8 3.2v9.6L12.6 8z" fill="currentColor"/></svg>
+        <svg id="af-ic-pause" viewBox="0 0 16 16" class="af-ic" aria-hidden="true" hidden><rect x="4.2" y="3.2" width="2.9" height="9.6" rx="1" fill="currentColor"/><rect x="8.9" y="3.2" width="2.9" height="9.6" rx="1" fill="currentColor"/></svg>
+        <span id="af-play-text">播放</span>
+      </button>
+      <button class="af-btn af-icon" id="af-next" type="button" aria-label="下一步">
+        <svg viewBox="0 0 16 16" class="af-ic" aria-hidden="true"><path d="M6 3l4.5 5L6 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="af-bar">
+    <div class="af-progress" id="af-progress"></div>
+    <span class="af-status" id="af-status"></span>
+  </div>
+
+  <div class="af-detail" id="af-detail">
+    <div class="af-detail-main" id="af-detail-main">
+      <div class="af-detail-top">
+        <span class="af-detail-title" id="af-detail-title"></span>
+        <span class="af-phase-chip" id="af-phase-chip"></span>
+      </div>
+      <div class="af-detail-text" id="af-detail-text"></div>
+    </div>
+  </div>
+
+  <div class="diag-scroll">
+    <div class="diag" id="af-diag">
+      <svg class="lanes" id="af-svg" aria-hidden="true"></svg>
+      <div class="diag-head" id="af-head">
+        <div class="chip" data-p="user"><div class="c-name"><i class="dot"></i>用户</div></div>
+        <div class="chip" data-p="web"><div class="c-name"><i class="dot"></i>WebView 前端</div><div class="c-sub">工具网关 · 预览卡片</div></div>
+        <div class="chip" data-p="rust"><div class="c-name"><i class="dot"></i>Tauri 内核</div><div class="c-sub">AI Runtime · Runner</div></div>
+        <div class="chip" data-p="vault"><div class="c-name"><i class="dot"></i>工作区</div><div class="c-sub">文件内核 · 快照</div></div>
+      </div>
+      <div class="diag-body" id="af-body">
+        <div class="lifeline" style="left:12.5%" data-lp="user"></div>
+        <div class="lifeline" style="left:37.5%" data-lp="web"></div>
+        <div class="lifeline" style="left:62.5%" data-lp="rust"></div>
+        <div class="lifeline" style="left:87.5%" data-lp="vault"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="af-legend">
+    <span class="lg"><i class="solid"></i>调用 / 回传</span>
+    <span class="lg"><i class="dash"></i>挂起 / 确认</span>
+    <span class="lg"><i class="bar"></i>兜底规则</span>
+    <span class="lg"><i class="self"></i>进程内判定</span>
+  </div>
+  <p class="af-foot">图示为桌面端内核托管写轮。浏览器开发模式直连 HTTP，无挂起写批次与断点续跑，判定链其余部分一致。</p>
+  <div class="sr-only">时序图：用户下达会动文件的指令后，前端按审批档位决定是否注入写工具，工具网关先行拦截越权与非法参数；模型返回写调用后由内核接管，逐个做风险分级，再按审批策略决定挂起或放行；挂起时前端渲染预览，用户确认后携带计划指纹继续执行，工作区写前生成快照并返回操作号；L3 操作不受任何档位影响，恒定需要确认。</div>
+</div>
+
+<style>
+#perm-flow-viz{
+  --af-fg:#161a20;
+  --af-muted:#6b7280;
+  --af-border:#e4e8ef;
+  --af-card:#ffffff;
+  --af-blue:#2563eb;
+  color:var(--af-fg);
+  font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+  font-size:13px;
+  line-height:1.5;
+  background:var(--af-card);
+  border:1px solid var(--af-border);
+  border-radius:18px;
+  padding:20px 22px 18px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04), 0 18px 40px -28px rgba(16,24,40,.28);
+}
+#perm-flow-viz *, #perm-flow-viz *::before, #perm-flow-viz *::after{box-sizing:border-box;}
+#perm-flow-viz [hidden]{display:none !important;}
+#perm-flow-viz .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
+
+/* ---------- header ---------- */
+#perm-flow-viz .af-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;justify-content:space-between;}
+#perm-flow-viz .af-head-left{min-width:0;}
+#perm-flow-viz h3{
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  margin:0;font-size:16px;font-weight:650;letter-spacing:-.01em;line-height:1.35;
+}
+#perm-flow-viz .af-badge{
+  font-size:10.5px;font-weight:500;line-height:1;padding:5px 8px;border-radius:999px;
+  color:#4b5563;background:#f3f6fa;border:1px solid #e6eaf1;white-space:nowrap;
+}
+#perm-flow-viz .af-sub{margin:6px 0 0;font-size:12.5px;color:var(--af-muted);}
+
+/* ---------- controls ---------- */
+#perm-flow-viz .af-controls{display:flex;align-items:center;gap:7px;flex:0 0 auto;}
+#perm-flow-viz .af-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:5px;
+  height:31px;min-width:31px;padding:0 11px;
+  font-family:inherit;font-size:12px;font-weight:500;line-height:1;
+  color:var(--af-fg);background:#fff;border:1px solid var(--af-border);border-radius:9px;
+  cursor:pointer;
+  transition:background .15s,border-color .15s,box-shadow .15s,transform .06s;
+}
+#perm-flow-viz .af-btn:hover:not(:disabled){background:#f7f9fc;border-color:#d3dae4;}
+#perm-flow-viz .af-btn:active:not(:disabled){transform:translateY(1px);}
+#perm-flow-viz .af-btn:disabled{opacity:.42;cursor:not-allowed;}
+#perm-flow-viz .af-btn:focus-visible{outline:2px solid #9dbcfa;outline-offset:2px;}
+#perm-flow-viz .af-btn-primary{
+  background:linear-gradient(180deg,#3d82f7,#2563eb);
+  border-color:#1d4ed8;color:#fff;
+  box-shadow:0 1px 2px rgba(37,99,235,.35),inset 0 1px 0 rgba(255,255,255,.22);
+}
+#perm-flow-viz .af-btn-primary:hover:not(:disabled){background:linear-gradient(180deg,#4c8cf8,#2f6fe8);border-color:#1d4ed8;}
+#perm-flow-viz .af-icon{padding:0;}
+#perm-flow-viz .af-ic{width:13px;height:13px;display:block;flex:0 0 auto;}
+
+/* ---------- progress ---------- */
+#perm-flow-viz .af-bar{display:flex;align-items:center;gap:14px;margin:16px 0 10px;}
+#perm-flow-viz .af-progress{display:flex;align-items:center;gap:4px;flex:1 1 auto;height:12px;}
+#perm-flow-viz .af-tick{
+  flex:1 1 6px;min-width:0;height:6px;padding:0;border:0;border-radius:999px;
+  background:#e8ecf3;cursor:pointer;
+  transition:background .18s,height .18s,box-shadow .18s,opacity .18s;
+}
+#perm-flow-viz .af-tick.gap{margin-left:7px;}
+#perm-flow-viz .af-tick:hover{background:#cfd7e3;}
+#perm-flow-viz .af-tick.is-past{background:var(--tc);opacity:.42;}
+#perm-flow-viz .af-tick.is-past:hover{opacity:.62;}
+#perm-flow-viz .af-tick.is-active{background:var(--tc);height:9px;opacity:1;box-shadow:0 0 0 3px var(--tt);}
+#perm-flow-viz .af-tick:focus-visible{outline:2px solid #9dbcfa;outline-offset:3px;}
+#perm-flow-viz .af-status{
+  margin-left:auto;font-size:11.5px;color:var(--af-muted);white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ---------- detail ---------- */
+#perm-flow-viz .af-detail{
+  position:relative;display:flex;gap:10px;align-items:flex-start;
+  padding:11px 14px 12px 16px;min-height:66px;
+  border:1px solid var(--af-border);border-radius:12px;
+  background:linear-gradient(180deg,#fbfcfe,#fff);
+}
+#perm-flow-viz .af-detail::before{
+  content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;
+  background:var(--dc,#2563eb);transition:background .2s;
+}
+#perm-flow-viz .af-detail-main{flex:1;min-width:0;}
+#perm-flow-viz .af-detail-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;}
+#perm-flow-viz .af-detail-title{font-size:13px;font-weight:600;line-height:1.4;}
+#perm-flow-viz .af-phase-chip{
+  font-size:10.5px;font-weight:500;line-height:1;padding:4px 7px;border-radius:999px;
+  color:#2563eb;background:rgba(37,99,235,.07);white-space:nowrap;
+}
+#perm-flow-viz .af-detail-text{font-size:12.5px;line-height:1.65;color:var(--af-muted);}
+#perm-flow-viz .af-detail-text code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;
+  padding:1px 4px;border-radius:4px;background:#f1f4f9;color:#3c4655;
+}
+#perm-flow-viz .af-detail-main.anim{animation:afFade .3s ease both;}
+@keyframes afFade{from{opacity:0;transform:translateY(3px);}to{opacity:1;transform:none;}}
+
+/* ---------- diagram ---------- */
+#perm-flow-viz .diag-scroll{overflow-x:auto;margin-top:12px;padding-bottom:2px;scrollbar-width:thin;}
+#perm-flow-viz .diag{position:relative;min-width:640px;}
+#perm-flow-viz .diag-head{
+  position:relative;display:grid;grid-template-columns:repeat(4,1fr);
+  align-items:stretch;padding:4px 0 2px;
+}
+#perm-flow-viz .chip{
+  position:relative;justify-self:center;display:flex;flex-direction:column;justify-content:center;
+  min-height:46px;max-width:100%;min-width:54px;padding:7px 12px 8px;
+  text-align:center;
+  border:1px solid var(--af-border);border-radius:12px;background:#fff;
+  box-shadow:0 1px 2px rgba(16,24,40,.04);
+  transition:border-color .18s,background .18s,box-shadow .18s,transform .18s;
+}
+#perm-flow-viz .chip[data-p="user"]{--pc:#475569;--pt:rgba(71,85,105,.07);}
+#perm-flow-viz .chip[data-p="web"]{--pc:#2563eb;--pt:rgba(37,99,235,.07);}
+#perm-flow-viz .chip[data-p="rust"]{--pc:#c2410c;--pt:rgba(194,65,12,.07);}
+#perm-flow-viz .chip[data-p="vault"]{--pc:#0d9488;--pt:rgba(13,148,136,.07);}
+#perm-flow-viz .chip.hot{
+  border-color:var(--pc);background:#fff;
+  box-shadow:inset 0 0 0 1px var(--pc),0 6px 16px -10px rgba(16,24,40,.45);
+  transform:translateY(-1px);
+}
+#perm-flow-viz .dot{
+  display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--pc);margin-right:5px;vertical-align:1px;
+  transition:box-shadow .2s;
+}
+#perm-flow-viz .chip.hot .dot{box-shadow:0 0 0 3px var(--pt);}
+#perm-flow-viz .c-name{font-size:12px;font-weight:600;line-height:16px;white-space:nowrap;}
+#perm-flow-viz .c-sub{font-size:10.5px;line-height:14px;color:var(--af-muted);margin-top:1px;}
+#perm-flow-viz .diag-body{position:relative;padding:2px 0 6px;}
+#perm-flow-viz .lifeline{
+  position:absolute;top:0;bottom:0;width:0;
+  border-left:1px dashed #dfe5ee;
+  transition:border-color .2s;
+}
+#perm-flow-viz .lifeline.hot{border-left-color:var(--lc,#9db4f0);}
+#perm-flow-viz svg.lanes{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;}
+
+/* phase blocks */
+#perm-flow-viz .phase-block{
+  position:relative;border-radius:12px;
+  padding:1px 8px 4px 12px;margin:6px 0;
+  background:linear-gradient(180deg,var(--pt) 0,rgba(255,255,255,0) 62%);
+}
+#perm-flow-viz .phase-block::before{
+  content:"";position:absolute;left:0;top:13px;bottom:9px;width:2px;border-radius:2px;
+  background:var(--dc,#2563eb);opacity:.3;
+}
+#perm-flow-viz .phase-row{
+  display:flex;align-items:center;gap:9px;
+  margin:9px 0 2px;padding-left:1px;
+  font-size:10.5px;font-weight:600;letter-spacing:.06em;
+  color:var(--dc,#2563eb);
+}
+#perm-flow-viz .phase-row::after{
+  content:"";flex:1;height:1px;
+  background:linear-gradient(90deg,#e5eaf1,rgba(229,234,241,0));
+}
+
+/* rows */
+#perm-flow-viz .row{position:relative;transition:opacity .22s ease;}
+#perm-flow-viz .msg-row{padding:7px 0 5px;}
+#perm-flow-viz .m-label{margin-bottom:2px;text-align:center;}
+#perm-flow-viz .lbl{
+  display:inline-block;max-width:100%;
+  padding:2px 9px;border-radius:999px;
+  font-size:11.5px;font-weight:500;line-height:16px;
+  color:var(--af-fg);background:#fff;border:1px solid var(--af-border);
+  transition:color .18s,border-color .18s,background .18s,box-shadow .18s;
+}
+#perm-flow-viz .lane{height:16px;}
+#perm-flow-viz .m-sub{
+  margin-top:3px;text-align:center;
+  font-size:10.5px;line-height:14px;color:var(--af-muted);
+}
+#perm-flow-viz .self-row{padding:4px 0;}
+#perm-flow-viz .self-pill{
+  position:relative;width:max-content;max-width:min(300px,80%);
+  margin-left:0;transform:translateX(-50%);
+  padding:6px 12px 7px;text-align:center;
+  border:1px solid var(--af-border);border-radius:11px;
+  background:#f8fafc;
+  transition:border-color .18s,background .18s,box-shadow .18s;
+}
+#perm-flow-viz .self-pill .s-label{font-size:11.5px;font-weight:600;line-height:16px;}
+#perm-flow-viz .self-pill .s-sub{font-size:10.5px;line-height:14px;color:var(--af-muted);margin-top:1px;}
+
+#perm-flow-viz .row.step-past{opacity:.62;}
+#perm-flow-viz .row.step-future{opacity:.42;}
+#perm-flow-viz .row.step-active .lbl{
+  color:var(--dc);border-color:var(--dc);background:var(--dt);
+  box-shadow:0 1px 8px -4px var(--dc);
+}
+#perm-flow-viz .row.step-active .self-pill{
+  border-color:var(--dc);background:var(--dt);
+  box-shadow:0 0 0 3px var(--dt),0 3px 10px -6px var(--dc);
+}
+#perm-flow-viz .row.step-active .m-sub,
+#perm-flow-viz .row.step-active .s-sub{color:#5a6472;}
+
+/* legend / foot */
+#perm-flow-viz .af-legend{
+  display:flex;flex-wrap:wrap;gap:7px 18px;
+  margin:14px 0 0;padding-top:12px;border-top:1px dashed var(--af-border);
+  font-size:11px;color:var(--af-muted);
+}
+#perm-flow-viz .lg{display:inline-flex;align-items:center;gap:6px;}
+#perm-flow-viz .lg i{display:inline-block;flex:0 0 auto;}
+#perm-flow-viz .lg i.solid{width:22px;height:2px;border-radius:2px;background:#c3cbd8;}
+#perm-flow-viz .lg i.dash{
+  width:22px;height:2px;
+  background-image:linear-gradient(90deg,#c3cbd8 0 5px,transparent 5px 10px);
+  background-size:10px 2px;
+}
+#perm-flow-viz .lg i.bar{width:3px;height:13px;border-radius:2px;background:rgba(190,18,60,.42);}
+#perm-flow-viz .lg i.self{width:14px;height:10px;border-radius:3px;border:1px solid #d5dce7;background:#f5f7fa;}
+#perm-flow-viz .af-foot{
+  margin:10px 0 0;padding:8px 10px;
+  font-size:11px;line-height:1.6;color:var(--af-muted);
+  background:#f8fafc;border:1px solid #eef2f7;border-radius:9px;
+}
+
+/* svg animations */
+#perm-flow-viz .af-march{animation:afMarch .6s linear infinite;}
+@keyframes afMarch{to{stroke-dashoffset:-10;}}
+
+@media (max-width:720px){
+  #perm-flow-viz{padding:16px 14px 14px;border-radius:14px;}
+  #perm-flow-viz h3{font-size:15px;}
+  #perm-flow-viz .af-head{gap:10px;}
+  #perm-flow-viz .af-bar{flex-wrap:wrap;gap:7px 10px;}
+  #perm-flow-viz .af-status{width:100%;margin-left:0;}
+}
+@media (prefers-reduced-motion:reduce){
+  #perm-flow-viz .row,
+  #perm-flow-viz .chip,
+  #perm-flow-viz .self-pill,
+  #perm-flow-viz .af-detail-main{transition:none;animation:none !important;}
+  #perm-flow-viz .af-march{animation:none;}
+}
+</style>
+
+<script>
+(function () {
+  var root = document.getElementById('perm-flow-viz');
+  if (!root) return;
+
+  var X = { user: 12.5, web: 37.5, rust: 62.5, vault: 87.5 };
+  var PH = [
+    { c: '#2563eb', t: 'rgba(37,99,235,.05)' },
+    { c: '#0891b2', t: 'rgba(8,145,178,.055)' },
+    { c: '#d97706', t: 'rgba(217,119,6,.055)' },
+    { c: '#7c3aed', t: 'rgba(124,58,237,.05)' },
+    { c: '#059669', t: 'rgba(5,150,105,.055)' },
+    { c: '#be123c', t: 'rgba(190,18,60,.045)' }
+  ];
+  var LANE_C = { user: '#98a3b3', web: '#8fb0f2', rust: '#e3a37c', vault: '#7fcbc2' };
+
+  var steps = [
+    { phase: '① 能力边界', name: '能力边界', ph: 0 },
+    { ph: 0, from: 'user', to: 'web', label: '下达会动文件的指令', sub: '例：把这篇笔记改成一页纸', detail: '用户只说要什么，不说怎么改。此刻还没有任何文件被触碰。' },
+    { ph: 0, self: 'web', label: '档位决定工具面', sub: '只对话 → 不注入写工具', detail: '「只对话」时模型看不到 <code>lattice_file_operation</code>，连"想写"都表达不出来——能力层的闸先于策略层。' },
+    { ph: 0, self: 'web', label: '工具网关 preflight', sub: '角色 · 路径范围 · 必填参数', detail: '未知工具、<code>viewer</code> 角色、越界路径、缺参数一律当场拒绝，不进模型循环。路径必须落在 <code>allowedPaths</code> 前缀内。' },
+    { ph: 0, self: 'web', label: '高危豁免（可选）', sub: '独立开关 · 默认关 · 二次确认', detail: '与档位正交的一把钥匙：只决定"要不要放弃最后一道防线"。默认关闭，开启需弹窗确认后果。' },
+
+    { phase: '② 提出与预检', name: '提出与预检', ph: 1 },
+    { ph: 1, from: 'web', to: 'rust', label: '模型返回写调用', sub: 'toolCalls：type + path', detail: '模型只表达意图。请求里还没有任何已变更的文件，这不构成"写过了"。' },
+    { ph: 1, self: 'rust', label: '内核接管写轮', sub: '读并行 · 写串行', detail: '写调用由内核按计划逐个过闸，不再回前端执行。前端的"我已经判过了"不构成依据。' },
+
+    { phase: '③ 风险定级', name: '风险定级', ph: 2 },
+    { ph: 2, self: 'rust', label: 'classify_write_risk', sub: '类型 × 外部性 × 批量', detail: '判定顺序不可交换：未识别 → L0；外发/删除权限/批量 > 1 → L3；新建草稿 → L1；其余 → L2。' },
+    { ph: 2, self: 'rust', label: '定级结果与理由', sub: 'L0 / L1 / L2 / L3 + 可逆性', detail: '结果带 <code>requires_confirmation</code> 与 <code>reversible</code>，界面按字段显示而非按等级推断。前后端各算一遍，由夹具钉死一致性。' },
+
+    { phase: '④ 确认闸门', name: '确认闸门', ph: 3 },
+    { ph: 3, self: 'rust', label: 'Runner gate 判定', sub: '已确认 &gt; 全问 &gt; 免确认 &gt; 自动', detail: '「始终询问」走 <code>confirm_all_writes</code>，「自动执行」走 <code>auto_approve_l2</code>，高危豁免再放开 L3。「始终询问」优先级最高——更严者胜。' },
+    { ph: 3, from: 'rust', to: 'web', dashed: true, label: '挂起：等待确认', sub: 'awaitingConfirmation · planHash', detail: '仅当 gate = NeedsConfirmation。请求正文留在进程内存，落盘只走脱敏白名单。' },
+    { ph: 3, self: 'web', label: '渲染预览卡片', sub: '变更项 · 完整路径 · 可撤销性', detail: 'L1 也会走到这里（「始终询问」档）。前端必须在同一处拦住自动执行，否则会绕过内核的挂起。' },
+    { ph: 3, from: 'web', to: 'rust', label: '确认 + planHash', sub: 'confirmed · secondConfirmed', detail: '计划指纹不一致就拒绝执行——防"看到的是 A、执行的是 B"。删除另需二次确认。' },
+
+    { phase: '⑤ 落盘', name: '落盘', ph: 4 },
+    { ph: 4, from: 'rust', to: 'vault', label: '写前快照 + 串行执行', sub: 'operationId', detail: '先快照再落盘，失败可回滚。同 run 内写操作串行，不并发改同一文件。' },
+    { ph: 4, from: 'vault', to: 'rust', label: '逐项结果', sub: '成功 / 失败 / 跳过', detail: '部分失败不回滚已成功的项，交给用户与撤销入口处理。' },
+    { ph: 4, from: 'rust', to: 'web', label: '终态回传', sub: 'kernelWriteExecuted · 变更卡', detail: '前端按已执行 id 过滤，不再为这些调用构建执行预览，避免二次写入。' },
+
+    { phase: '⑥ 兜底', name: '兜底', ph: 5 },
+    { ph: 5, self: 'rust', label: 'L3 默认拦一道', sub: '删除 · 批量（外发类尚未接入）', detail: '免确认条件默认只放开 L2；L3 要用户显式开启高危豁免才放行。当前工具面只有删除与批量能触发 L3，删除有快照可撤销但不会自动提示找回。' },
+    { ph: 5, self: 'rust', label: '预算与幂等', sub: '24 次调用 · runId:callId:name', detail: '预算耗尽即停，不会"最后一个也放过去"；同 run 重复调用返回缓存结果，重试上限 3 次。' },
+    { ph: 5, from: 'web', to: 'vault', label: '撤销', sub: '按 operationId 回滚快照', detail: 'L3 中外发类 <code>reversible=false</code>，界面必须如实显示不可撤销。' }
+  ];
+
+  var list = steps.filter(function (s) { return s.phase === undefined; });
+  var total = list.length;
+
+  var body = root.querySelector('#af-body');
+  var diag = root.querySelector('#af-diag');
+  var svg = root.querySelector('#af-svg');
+  var statusEl = root.querySelector('#af-status');
+  var detailEl = root.querySelector('#af-detail');
+  var detailMain = root.querySelector('#af-detail-main');
+  var titleEl = root.querySelector('#af-detail-title');
+  var phaseChip = root.querySelector('#af-phase-chip');
+  var textEl = root.querySelector('#af-detail-text');
+  var progEl = root.querySelector('#af-progress');
+  var prevBtn = root.querySelector('#af-prev');
+  var nextBtn = root.querySelector('#af-next');
+  var playBtn = root.querySelector('#af-play');
+  var playText = root.querySelector('#af-play-text');
+  var icPlay = root.querySelector('#af-ic-play');
+  var icPause = root.querySelector('#af-ic-pause');
+
+  var cur = 1;
+  var timer = null;
+  var lastCur = -1;
+  var reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  /* ---------- build rows ---------- */
+  var html = '';
+  var blockOpen = false;
+  var stepNo = 0;
+
+  steps.forEach(function (s) {
+    if (s.phase !== undefined) {
+      if (blockOpen) { html += '</section>'; blockOpen = false; }
+      var p = PH[s.ph];
+      html += '<section class="phase-block" data-ph="' + s.ph + '" style="--pt:' + p.t + ';--dc:' + p.c + '">'
+        + '<div class="phase-row"><span>' + s.phase + '</span></div>';
+      blockOpen = true;
+      return;
+    }
+
+    stepNo += 1;
+    var p2 = PH[s.ph];
+    if (s.self) {
+      html += '<div class="row self-row" data-step="' + stepNo + '" data-ph="' + s.ph + '" data-at="' + s.self + '"'
+        + ' style="--dc:' + p2.c + ';--dt:' + p2.t + '">'
+        + '<div class="self-pill" style="margin-left:' + X[s.self] + '%">'
+        + '<div class="s-label">' + s.label + '</div><div class="s-sub">' + s.sub + '</div>'
+        + '</div></div>';
+    } else {
+      var a = X[s.from], b = X[s.to];
+      var left = Math.min(a, b), w = Math.abs(b - a);
+      html += '<div class="row msg-row" data-step="' + stepNo + '" data-ph="' + s.ph + '"'
+        + ' data-from="' + s.from + '" data-to="' + s.to + '" data-dashed="' + (s.dashed ? '1' : '0') + '"'
+        + ' style="--dc:' + p2.c + ';--dt:' + p2.t + '">'
+        + '<div class="m-label" style="margin-left:' + left + '%;width:' + w + '%"><span class="lbl">' + s.label + '</span></div>'
+        + '<div class="lane"></div>'
+        + '<div class="m-sub" style="margin-left:' + left + '%;width:' + w + '%">' + s.sub + '</div>'
+        + '</div>';
+    }
+  });
+  if (blockOpen) html += '</section>';
+  body.insertAdjacentHTML('beforeend', html);
+
+  var rows = Array.prototype.slice.call(root.querySelectorAll('.row[data-step]'));
+  var chips = {};
+  root.querySelectorAll('.chip').forEach(function (c) { chips[c.getAttribute('data-p')] = c; });
+  var lanes = {};
+  root.querySelectorAll('.lifeline').forEach(function (l) {
+    var k = l.getAttribute('data-lp');
+    lanes[k] = l;
+    l.style.setProperty('--lc', LANE_C[k]);
+  });
+
+  /* ---------- progress ticks ---------- */
+  var tickHtml = '';
+  list.forEach(function (s, i) {
+    var prev = i > 0 ? list[i - 1].ph : -1;
+    tickHtml += '<button class="af-tick' + (i > 0 && s.ph !== prev ? ' gap' : '') + '" type="button"'
+      + ' data-i="' + (i + 1) + '"'
+      + ' style="--tc:' + PH[s.ph].c + ';--tt:' + PH[s.ph].t + '"'
+      + ' title="' + (i + 1) + '. ' + s.label + '" aria-label="第 ' + (i + 1) + ' 步：' + s.label + '"></button>';
+  });
+  progEl.innerHTML = tickHtml;
+  var ticks = Array.prototype.slice.call(progEl.querySelectorAll('.af-tick'));
+  ticks.forEach(function (t) {
+    t.addEventListener('click', function () {
+      stopPlay();
+      cur = Number(t.getAttribute('data-i'));
+      update();
+    });
+  });
+
+  /* ---------- arrows ---------- */
+  function marker(id, color) {
+    return '<marker id="' + id + '" viewBox="0 0 9 9" refX="9" refY="4.5" markerWidth="8.5" markerHeight="8.5"'
+      + ' markerUnits="userSpaceOnUse" orient="auto-start-reverse">'
+      + '<path d="M0,0 L9,4.5 L0,9 Z" fill="' + color + '"></path></marker>';
+  }
+
+  function drawArrows(state) {
+    var dRect = diag.getBoundingClientRect();
+    var bRect = body.getBoundingClientRect();
+    var w = bRect.width, off = bRect.left - dRect.left, h = dRect.height;
+    if (!w || !h) return;
+    svg.setAttribute('viewBox', '0 0 ' + dRect.width + ' ' + h);
+
+    var defs = '<defs>' + PH.map(function (p, i) { return marker('af-arr-' + i, p.c); }).join('')
+      + marker('af-arr-m', '#aab5c4') + '</defs>';
+    var out = '';
+
+    rows.forEach(function (row) {
+      var to = row.getAttribute('data-to');
+      if (!to) return;
+      var i = Number(row.getAttribute('data-step'));
+      var phi = row.getAttribute('data-ph');
+      var ph = PH[Number(phi)] || PH[0];
+      var from = row.getAttribute('data-from');
+      var lane = row.querySelector('.lane');
+      if (!lane) return;
+      var lr = lane.getBoundingClientRect();
+      var y = Math.round(lr.top - dRect.top + lr.height / 2) + 0.5;
+
+      var x1 = off + w * X[from] / 100, x2 = off + w * X[to] / 100;
+      var dir = x2 >= x1 ? 1 : -1;
+      var xa = x1 + 5 * dir, xb = x2 - 2 * dir;
+
+      var active = i === state, past = i < state;
+      var color = active ? ph.c : '#aab5c4';
+      var op = active ? 1 : (past ? 0.62 : 0.5);
+      var sw = active ? 2 : 1.4;
+      var dashed = row.getAttribute('data-dashed') === '1';
+
+      out += '<line x1="' + xa + '" y1="' + y + '" x2="' + xb + '" y2="' + y + '"'
+        + ' stroke="' + color + '" stroke-width="' + sw + '" opacity="' + op + '" stroke-linecap="round"'
+        + (dashed ? ' stroke-dasharray="5 5"' : '')
+        + (active && dashed ? ' class="af-march"' : '')
+        + ' marker-end="url(#' + (active ? 'af-arr-' + phi : 'af-arr-m') + ')"></line>';
+
+      out += '<circle cx="' + xa + '" cy="' + y + '" r="' + (active ? 2.6 : 2) + '" fill="' + color
+        + '" opacity="' + op + '"></circle>';
+
+      if (active && !dashed && !reduceMotion) {
+        var dStart = xa + 2 * dir, dEnd = xb - 6 * dir;
+        out += '<circle cx="' + dStart + '" cy="' + y + '" r="3.2" fill="' + ph.c + '" stroke="#fff" stroke-width="1.5" opacity=".95">'
+          + '<animate attributeName="cx" values="' + dStart + ';' + dEnd + '" dur="1.1s" repeatCount="indefinite"></animate>'
+          + '</circle>';
+      }
+    });
+
+    svg.innerHTML = defs + out;
+  }
+
+  /* ---------- state ---------- */
+  function retrigger(el) {
+    el.classList.remove('anim');
+    void el.offsetWidth;
+    el.classList.add('anim');
+  }
+
+  function phaseOf(ph) {
+    for (var i = 0; i < steps.length; i++) {
+      if (steps[i].phase !== undefined && steps[i].ph === ph) return steps[i].name;
+    }
+    return '';
+  }
+
+  function update() {
+    rows.forEach(function (row) {
+      var i = Number(row.getAttribute('data-step'));
+      row.classList.remove('step-past', 'step-active', 'step-future');
+      row.classList.add(i < cur ? 'step-past' : (i === cur ? 'step-active' : 'step-future'));
+    });
+
+    var s = list[cur - 1];
+    var ph = PH[s.ph];
+
+    Object.keys(chips).forEach(function (k) { chips[k].classList.remove('hot'); });
+    Object.keys(lanes).forEach(function (k) { lanes[k].classList.remove('hot'); });
+    var involved = s.self ? [s.self] : [s.from, s.to];
+    involved.forEach(function (k) {
+      if (chips[k]) chips[k].classList.add('hot');
+      if (lanes[k]) lanes[k].classList.add('hot');
+    });
+
+    detailEl.style.setProperty('--dc', ph.c);
+    titleEl.textContent = s.label;
+    phaseChip.textContent = phaseOf(s.ph);
+    phaseChip.style.color = ph.c;
+    phaseChip.style.background = ph.t;
+    textEl.innerHTML = s.detail;
+    // 首屏直接呈现，避免打开页面时卡片停在淡入动画的半透明态。
+    if (cur !== lastCur && lastCur !== -1) retrigger(detailMain);
+    lastCur = cur;
+
+    ticks.forEach(function (t) {
+      var i = Number(t.getAttribute('data-i'));
+      t.classList.remove('is-past', 'is-active');
+      if (i === cur) t.classList.add('is-active');
+      else if (i < cur) t.classList.add('is-past');
+    });
+
+    statusEl.textContent = cur + ' / ' + total + ' · ' + phaseOf(s.ph);
+    prevBtn.disabled = cur <= 1;
+    nextBtn.disabled = cur >= total;
+    drawArrows(cur);
+  }
+
+  /* ---------- transport ---------- */
+  function stopPlay() {
+    if (timer) { clearInterval(timer); timer = null; }
+    icPlay.hidden = false;
+    icPause.hidden = true;
+    playText.textContent = '播放';
+    playBtn.setAttribute('aria-label', '播放');
+  }
+
+  prevBtn.addEventListener('click', function () { stopPlay(); if (cur > 1) { cur -= 1; update(); } });
+  nextBtn.addEventListener('click', function () { stopPlay(); if (cur < total) { cur += 1; update(); } });
+  playBtn.addEventListener('click', function () {
+    if (timer) { stopPlay(); return; }
+    if (cur >= total) cur = 1;
+    icPlay.hidden = true;
+    icPause.hidden = false;
+    playText.textContent = '暂停';
+    playBtn.setAttribute('aria-label', '暂停');
+    update();
+    timer = setInterval(function () {
+      if (cur >= total) { stopPlay(); update(); return; }
+      cur += 1;
+      update();
+    }, 1700);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); stopPlay(); if (cur < total) { cur += 1; update(); } }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); stopPlay(); if (cur > 1) { cur -= 1; update(); } }
+    else if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); playBtn.click(); }
+  });
+
+  if (typeof ResizeObserver !== 'undefined') {
+    var raf = null;
+    new ResizeObserver(function () {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(function () { update(); });
+    }).observe(diag);
+  }
+  window.addEventListener('resize', function () { update(); });
+
+  update();
+})();
+</script>
+
+</div>
+</body>
+</html>

@@ -78,6 +78,15 @@ pub struct RunnerInput<'a> {
     pub remaining_tool_calls: u32,
     /// viewer 角色为 false：一切写调用被拒绝
     pub writes_allowed: bool,
+    /// 专家写策略允许 L2 免确认（`writePolicy: auto` 或会话审批选「跳过审批」）。L3 永不免。
+    pub auto_approve_l2: bool,
+    /// 用户选择「始终询问」：连 L1 草稿也挂起等确认（优先级高于 auto_approve_l2）。
+    pub confirm_all_writes: bool,
+    /// 用户显式确认过的高危豁免：L3（删除/外发/权限/批量）也不再询问。
+    /// 默认 false；只有前端在「自动执行」档且用户开启开关时才会为 true。
+    pub allow_irreversible: bool,
+    /// 专家声明的写路径前缀黑名单（空表全放行）
+    pub write_scope_exclude: &'a [String],
     /// 用户已确认的调用 id（resume 后回填）
     pub confirmations_granted: &'a HashSet<String>,
 }
@@ -131,10 +140,27 @@ pub fn plan_execution(registry: &ToolRegistry, input: &RunnerInput) -> Execution
                     });
                     continue;
                 }
+                if !write_within_scope(input.write_scope_exclude, call) {
+                    plan.rejected.push(RejectedCall {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        reason: "超出专家允许的写入范围".to_owned(),
+                    });
+                    continue;
+                }
                 let assessment = classify_write_risk(&write_action_from(call));
                 let gate = if input.confirmations_granted.contains(&call.id) {
                     WriteGate::Granted
-                } else if assessment.requires_confirmation {
+                } else if input.confirm_all_writes {
+                    // 「始终询问」不看风险等级：新建草稿也要先给用户看预览。
+                    WriteGate::NeedsConfirmation {
+                        level: assessment.level,
+                        reason: assessment.reason.to_owned(),
+                    }
+                } else if assessment.requires_confirmation
+                    && !(input.auto_approve_l2 && assessment.level == RiskLevel::L2)
+                    && !(input.allow_irreversible && assessment.level == RiskLevel::L3)
+                {
                     WriteGate::NeedsConfirmation {
                         level: assessment.level,
                         reason: assessment.reason.to_owned(),
@@ -151,6 +177,33 @@ pub fn plan_execution(registry: &ToolRegistry, input: &RunnerInput) -> Execution
         }
     }
     plan
+}
+
+/// 写调用路径是否在专家允许范围内（scopeExclude 前缀黑名单；空表全放行）。
+/// 同时检查 `path` 与 `targetPath`（移动/复制的落点）。
+fn write_within_scope(scope_exclude: &[String], call: &PendingCall) -> bool {
+    if scope_exclude.is_empty() {
+        return true;
+    }
+    let input = call.input.as_object();
+    let path_allowed = |raw: Option<&str>| -> bool {
+        let Some(raw) = raw else {
+            return true;
+        };
+        let normalized = crate::ai::core::expert::normalize_scope_path(raw);
+        if normalized.is_empty() {
+            return true;
+        }
+        !scope_exclude
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix.as_str()))
+    };
+    path_allowed(input.and_then(|object| object.get("path")).and_then(Value::as_str))
+        && path_allowed(
+            input
+                .and_then(|object| object.get("targetPath"))
+                .and_then(Value::as_str),
+        )
 }
 
 fn write_action_from(call: &PendingCall) -> WriteAction<'_> {
@@ -202,6 +255,10 @@ mod tests {
                 calls,
                 remaining_tool_calls: remaining,
                 writes_allowed: true,
+                auto_approve_l2: false,
+                confirm_all_writes: false,
+                allow_irreversible: false,
+                write_scope_exclude: &[],
                 confirmations_granted: &HashSet::new(),
             },
         )
@@ -249,6 +306,10 @@ mod tests {
                 calls: &calls,
                 remaining_tool_calls: 5,
                 writes_allowed: true,
+                auto_approve_l2: false,
+                confirm_all_writes: false,
+                allow_irreversible: false,
+                write_scope_exclude: &[],
                 confirmations_granted: &granted,
             },
         );
@@ -274,6 +335,10 @@ mod tests {
                 calls: &calls,
                 remaining_tool_calls: 10,
                 writes_allowed: false,
+                auto_approve_l2: false,
+                confirm_all_writes: false,
+                allow_irreversible: false,
+                write_scope_exclude: &[],
                 confirmations_granted: &HashSet::new(),
             },
         );
@@ -281,5 +346,133 @@ mod tests {
         assert_eq!(plan.rejected.len(), 2);
         assert_eq!(plan.rejected[0].reason, "当前角色禁止写入");
         assert_eq!(plan.rejected[1].reason, "未注册的工具");
+    }
+
+    #[test]
+    fn expert_scope_rejects_out_of_range_writes() {
+        let registry = ToolRegistry::builtin();
+        let exclude = [".lattice/".to_owned(), "_templates/".to_owned()];
+        let calls = vec![
+            call("w-1", "lattice_file_operation", json!({ "type": "update", "path": ".lattice/experts/x.md" })),
+            call("w-2", "lattice_file_operation", json!({ "type": "move", "path": "a.md", "targetPath": "_templates/a.md" })),
+            call("w-3", "lattice_file_operation", json!({ "type": "update", "path": "notes/a.md" })),
+        ];
+        let plan = super::plan_execution(
+            &registry,
+            &RunnerInput {
+                calls: &calls,
+                remaining_tool_calls: 10,
+                writes_allowed: true,
+                auto_approve_l2: false,
+                confirm_all_writes: false,
+                allow_irreversible: false,
+                write_scope_exclude: &exclude,
+                confirmations_granted: &HashSet::new(),
+            },
+        );
+        assert_eq!(plan.writes.len(), 1);
+        assert_eq!(plan.writes[0].call.id, "w-3");
+        assert_eq!(plan.rejected.len(), 2);
+        assert!(plan.rejected.iter().all(|item| item.reason == "超出专家允许的写入范围"));
+    }
+
+    #[test]
+    fn auto_policy_releases_l2_but_never_l3() {
+        let registry = ToolRegistry::builtin();
+        let calls = vec![
+            call("w-1", "lattice_file_operation", json!({ "type": "update", "path": "a.md" })),
+            call("w-2", "lattice_file_operation", json!({ "type": "delete", "path": "b.md" })),
+            call("w-3", "lattice_file_operation", json!({ "type": "create", "path": "c.md" })),
+        ];
+        let plan = super::plan_execution(
+            &registry,
+            &RunnerInput {
+                calls: &calls,
+                remaining_tool_calls: 10,
+                writes_allowed: true,
+                auto_approve_l2: true,
+                confirm_all_writes: false,
+                allow_irreversible: false,
+                write_scope_exclude: &[],
+                confirmations_granted: &HashSet::new(),
+            },
+        );
+        // L2（update）在 auto 策略下直执；L3（delete）仍需确认；L0（create）本来就直执
+        assert_eq!(plan.writes[0].gate, WriteGate::Auto);
+        assert!(matches!(
+            plan.writes[1].gate,
+            WriteGate::NeedsConfirmation { level: RiskLevel::L3, .. }
+        ));
+        assert_eq!(plan.writes[2].gate, WriteGate::Auto);
+    }
+
+    #[test]
+    fn always_ask_gates_l1_and_overrides_auto_policy() {
+        let registry = ToolRegistry::builtin();
+        let calls = vec![
+            call("w-1", "lattice_file_operation", json!({ "type": "create", "path": "draft.md" })),
+            call("w-2", "lattice_file_operation", json!({ "type": "update", "path": "a.md" })),
+        ];
+        let plan = super::plan_execution(
+            &registry,
+            &RunnerInput {
+                calls: &calls,
+                remaining_tool_calls: 10,
+                writes_allowed: true,
+                auto_approve_l2: true,
+                confirm_all_writes: true,
+                allow_irreversible: false,
+                write_scope_exclude: &[],
+                confirmations_granted: &HashSet::new(),
+            },
+        );
+        // 「始终询问」压过 auto 策略：L1 草稿与 L2 改动都必须先给用户看预览。
+        assert!(matches!(
+            plan.writes[0].gate,
+            WriteGate::NeedsConfirmation { level: RiskLevel::L1, .. }
+        ));
+        assert!(matches!(
+            plan.writes[1].gate,
+            WriteGate::NeedsConfirmation { level: RiskLevel::L2, .. }
+        ));
+    }
+
+    #[test]
+    fn irreversible_opt_in_releases_l3_and_never_overrides_always_ask() {
+        let registry = ToolRegistry::builtin();
+        let calls = vec![
+            call("w-1", "lattice_file_operation", json!({ "type": "update", "path": "a.md" })),
+            call("w-2", "lattice_file_operation", json!({ "type": "delete", "path": "b.md" })),
+        ];
+        let granted_none: HashSet<String> = HashSet::new();
+        let base = |allow_irreversible: bool, confirm_all_writes: bool| RunnerInput {
+            calls: &calls,
+            remaining_tool_calls: 10,
+            writes_allowed: true,
+            auto_approve_l2: true,
+            confirm_all_writes,
+            allow_irreversible,
+            write_scope_exclude: &[],
+            confirmations_granted: &granted_none,
+        };
+
+        // 默认：L2 直执，L3 仍要确认。
+        let plan = super::plan_execution(&registry, &base(false, false));
+        assert_eq!(plan.writes[0].gate, WriteGate::Auto);
+        assert!(matches!(
+            plan.writes[1].gate,
+            WriteGate::NeedsConfirmation { level: RiskLevel::L3, .. }
+        ));
+
+        // 高危豁免开启：L3 也直执。
+        let plan = super::plan_execution(&registry, &base(true, false));
+        assert_eq!(plan.writes[1].gate, WriteGate::Auto);
+
+        // 「始终询问」压过高危豁免：用户说了每次都要问，就是每次都要问。
+        let plan = super::plan_execution(&registry, &base(true, true));
+        assert!(matches!(
+            plan.writes[1].gate,
+            WriteGate::NeedsConfirmation { level: RiskLevel::L3, .. }
+        ));
     }
 }

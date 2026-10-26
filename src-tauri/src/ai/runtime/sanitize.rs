@@ -156,6 +156,7 @@ pub fn redact_request_secrets(request: &Value) -> Value {
         "resumeRun",
         "preferModel",
         "autoApprove",
+        "allowIrreversible",
         "webSearch",
         "regenerate",
     ] {
@@ -163,7 +164,7 @@ pub fn redact_request_secrets(request: &Value) -> Value {
             copy_field(source, &mut persisted, key);
         }
     }
-    for key in ["actor", "role", "expertId"] {
+    for key in ["actor", "role", "expertId", "approvalPolicy"] {
         if source.get(key).and_then(Value::as_str).is_some() {
             copy_field(source, &mut persisted, key);
         }

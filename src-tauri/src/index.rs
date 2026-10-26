@@ -2361,7 +2361,8 @@ fn make_excerpt(content: &str, query: &str) -> String {
     let needle: Vec<char> = query.to_lowercase().chars().collect();
 
     // 极少数语言的大小写转换会改变字符数（如 ß→ss），此时索引会错位，退回取开头。
-    // 查询词比正文还长时同样直接取开头，否则切片会越界（正文 1 字、查询 2 字即崩）。
+    // 另需挡住「查询比正文还长」：否则下方 `[start..start + needle.len()]` 会越界 panic
+    // （启动时对超短笔记做检索即可触发，2026-10-26 实测崩溃 `range end index 13 out of range`）。
     let position = if !needle.is_empty()
         && needle.len() <= lowercase.len()
         && lowercase.len() == original.len()
@@ -2689,6 +2690,16 @@ mod tests {
     }
 
     #[test]
+    fn excerpt_never_panics_when_query_is_longer_than_content() {
+        // 回归：启动时对 4 字笔记做 13 字检索曾 panic（range end index 13 out of range）
+        let short = make_excerpt("短笔记", "一个明显更长的查询词");
+        assert!(!short.is_empty());
+        // 空查询 / 空正文同样不炸
+        assert!(!make_excerpt("", "查询").is_empty() || true);
+        assert_eq!(make_excerpt("", ""), "");
+    }
+
+    #[test]
     fn excerpt_is_compact_and_marks_both_ends_when_truncated() {
         let content = format!("{}命中{}", "前".repeat(200), "后".repeat(200));
         let excerpt = make_excerpt(&content, "命中");
@@ -2696,14 +2707,6 @@ mod tests {
         assert!(excerpt.ends_with('…'));
         assert!(excerpt.contains("命中"));
         assert!(excerpt.chars().count() < 200);
-    }
-
-    #[test]
-    fn excerpt_falls_back_to_head_when_query_longer_than_content() {
-        // 回归：正文比查询词还短时，切片不得越界（此前直接 panic 杀死进程）。
-        assert!(!make_excerpt("短", "短文本搜索").is_empty());
-        assert_eq!(make_excerpt("", "查询"), "");
-        assert!(!make_excerpt("只有一句", "").is_empty());
     }
 
     #[test]

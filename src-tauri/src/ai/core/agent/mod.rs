@@ -83,6 +83,11 @@ impl ToolRegistry {
         registry.register(ToolDescriptor::read("lattice_file_read", "读取指定文件内容"));
         registry.register(ToolDescriptor::read("lattice_note_read", "读取指定笔记内容"));
         registry.register(ToolDescriptor::read("lattice_file_list", "列出范围内文件"));
+        // E2 渐进披露的 L2：模型按目录里的 id 取技能全文（L0 只读、结果有界）。
+        registry.register(ToolDescriptor::read(
+            crate::ai::core::expert::SKILL_LOAD_TOOL,
+            "加载指定技能的完整方法正文",
+        ));
         registry.register(ToolDescriptor::write("lattice_file_operation", "创建/更新/移动/归档文件"));
         registry
     }
@@ -112,12 +117,13 @@ mod tests {
     #[test]
     fn builtin_registry_covers_current_tool_surface() {
         let registry = ToolRegistry::builtin();
-        assert_eq!(registry.len(), 6);
+        assert_eq!(registry.len(), 7);
         assert_eq!(registry.get("lattice_note_search").unwrap().kind, ToolKind::Read);
         assert_eq!(
             registry.get("lattice_file_operation").unwrap().kind,
             ToolKind::Write
         );
+        assert_eq!(registry.get("skill_load").unwrap().kind, ToolKind::Read);
         assert!(registry.get("not-a-tool").is_none());
     }
 }

@@ -71,5 +71,22 @@ test('builds a continuation request with tool calls and results', () => {
   assert.equal(plan.request.toolResults[0].result.operationId, 'op-1');
 });
 
+test('carries the approval policy and the irreversible opt-in across the request boundary', () => {
+  const plan = planAiRequest({
+    message: '整理这批笔记',
+    mode: 'task',
+    approvalPolicy: 'skip',
+    allowIrreversible: true,
+  });
+  assert.equal(plan.request.approvalPolicy, 'skip');
+  assert.equal(plan.request.allowIrreversible, true, '高危豁免必须随请求送到内核');
+});
+
+test('omits the irreversible opt-in when it was not granted', () => {
+  const plan = planAiRequest({ message: '整理这批笔记', mode: 'task', approvalPolicy: 'review' });
+  assert.equal(plan.request.approvalPolicy, 'review');
+  assert.equal(plan.request.allowIrreversible, undefined, '未开启时不传该字段');
+});
+
 console.log('AI controller tests passed');
 

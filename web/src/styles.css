@@ -14789,6 +14789,8 @@ body::after,
 .ai-assistant__menu button span { flex: 1; }
 .ai-assistant__menu button small { color: var(--text-tertiary); font-size: 10px; }
 .ai-assistant__menu button svg { flex: none; color: var(--accent); }
+/* 模型行的品牌 Logo（复用 .provider-logo）：缩到菜单行比例，并压回 span 默认的 flex:1 */
+.ai-assistant__menu .provider-logo { flex: none; width: 18px; height: 18px; border-radius: 5px; }
 .ai-assistant__menu .ai-assistant__menu-link { margin-top: 5px; padding-top: 7px; color: var(--accent); border-top: 1px solid var(--border); border-radius: 0; }
 
 /* Quiet Pro AI workspace: paper surface, document-like answers, and a compact topic rail. */
@@ -16069,6 +16071,7 @@ body::after,
 .expert-manager__list-head > div { display: grid; gap: 3px; min-width: 0; }
 .expert-manager__list-head strong { font-size: 12px; }
 .expert-manager__list-head small { color: var(--text-tertiary); font-size: 10px; }
+.expert-manager__list-actions { display: flex; align-items: center; gap: 2px; }
 .expert-manager__search { display: flex; align-items: center; gap: 7px; height: 32px; margin: 0 4px 10px; padding: 0 9px; color: var(--text-tertiary); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
 .expert-manager__search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .expert-manager__search input { width: 100%; min-width: 0; color: var(--text); font: inherit; font-size: 11px; background: transparent; border: 0; outline: 0; }
@@ -16142,6 +16145,43 @@ body::after,
 .expert-manager__empty-icon { display: grid; place-items: center; width: 42px; height: 42px; color: var(--accent); background: var(--accent-soft); border-radius: 8px; }
 .expert-manager__empty h2 { margin: 0; color: var(--text); font-size: 16px; }
 .expert-manager__empty p { max-width: 280px; margin: 0 0 6px; color: var(--text-tertiary); font-size: 11px; line-height: 1.55; }
+
+/* 能力地图（E1）：一屏讲清 专家 / Skill / MCP 的分工 */
+.expert-manager__map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px 14px; background: color-mix(in srgb, var(--bg) 55%, var(--bg-panel)); border-bottom: 1px solid var(--border); }
+.expert-manager__map-card { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding: 8px 10px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
+.expert-manager__map-card.is-active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.expert-manager__map-icon { display: grid; place-items: center; width: 24px; height: 24px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; }
+.expert-manager__map-card > div { display: grid; gap: 2px; min-width: 0; }
+.expert-manager__map-card strong { color: var(--text); font-size: 11px; }
+.expert-manager__map-card p { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
+.expert-manager__map-card small { color: var(--accent); font-size: 9px; }
+
+/* 专家编辑器四区分组 */
+.expert-form__section { padding: 12px !important; }
+.expert-form__section > legend { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 10px !important; font-weight: 600; letter-spacing: .04em; }
+.expert-form__section > legend span { display: grid; place-items: center; min-width: 18px; height: 16px; color: var(--accent); font-size: 9px; background: var(--accent-soft); border-radius: 3px; }
+.expert-form__inline { padding: 8px !important; border-style: dashed !important; }
+.expert-form__meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; color: var(--text-tertiary); font-size: 10px; }
+.expert-form__meta small { line-height: 1.5; }
+.expert-form__meta code { padding: 1px 3px; font-size: 9px; background: var(--bg-hover); border-radius: 3px; }
+.expert-form__meta .is-warn { color: var(--danger, #d9534f); font-weight: 600; }
+
+/* 技能绑定行（勾选 + 加载模式） */
+.expert-manager__bindings { display: grid; gap: 6px; }
+.expert-manager__binding { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.expert-manager__binding.is-checked { border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 45%, var(--bg)); }
+.expert-manager__binding-main { display: flex; align-items: flex-start; gap: 8px; min-width: 0; cursor: pointer; }
+.expert-manager__binding-main input { width: 13px; height: 13px; margin-top: 2px; accent-color: var(--accent); }
+.expert-manager__binding-main span { display: grid; gap: 2px; min-width: 0; }
+.expert-manager__binding-main strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.expert-manager__binding-main small { overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.expert-manager__binding select { height: 26px; padding: 0 6px; font-size: 10px; }
+.expert-manager__tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.expert-manager__tag { padding: 3px 6px; color: var(--accent); font-size: 10px; background: var(--accent-soft); border-radius: 4px; }
+.expert-manager__tag.is-off { color: var(--text-tertiary); background: var(--bg-hover); text-decoration: line-through; }
+.expert-manager__hint { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.55; }
+
+@media (max-width: 900px) { .expert-manager__map { grid-template-columns: 1fr; } }
 
 @media (max-width: 760px) {
   .modal.expert-manager-modal { width: calc(100vw - 20px); height: calc(100vh - 20px); max-width: none; max-height: none; }
@@ -16970,6 +17010,38 @@ body::after,
 .ai-assistant-layer--workspace .ai-assistant__menu { z-index: 50; min-width: 250px; padding: 6px; background: #fff; border: 1px solid #e2e1de; border-radius: 11px; box-shadow: 0 10px 30px rgba(0, 0, 0, .13); }
 .ai-assistant-layer--workspace .ai-assistant__menu--attachments { bottom: 40px; left: -1px; }
 .ai-assistant-layer--workspace .ai-assistant__menu--workload { bottom: 38px; left: -7px; width: 350px; padding: 12px; }
+/* 高危豁免开关：与审批档位正交的独立一层，视觉上要像"另开一把锁"而不是第五个档位。 */
+.ai-assistant-layer--workspace .ai-assistant__menu-sep { height: 1px; margin: 9px 0 5px; background: var(--notion-line, #e9e9e7); }
+.ai-assistant-layer--workspace .ai-assistant__menu > button.ai-assistant__danger-toggle {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  min-height: 34px; padding: 0 9px; margin-top: 2px;
+  color: var(--notion-ink, #2f2f2f); font-size: 13px; line-height: 1.4; text-align: left;
+  background: transparent; border: 0; border-radius: 7px; cursor: pointer;
+}
+.ai-assistant-layer--workspace .ai-assistant__menu > button.ai-assistant__danger-toggle > span:first-of-type { flex: 1; }
+.ai-assistant-layer--workspace .ai-assistant__danger-toggle:hover:not(:disabled) { background: var(--notion-hover, #f1f1ef); }
+.ai-assistant-layer--workspace .ai-assistant__danger-toggle.is-disabled { opacity: .45; cursor: not-allowed; }
+.ai-assistant-layer--workspace .ai-assistant__danger-toggle.is-disabled:hover { background: transparent; }
+.ai-assistant-layer--workspace .ai-assistant__check-box {
+  position: relative; flex: none; width: 15px; height: 15px; border-radius: 4px;
+  border: 1px solid var(--notion-line, #c9c8c3); background: #fff;
+}
+.ai-assistant-layer--workspace .ai-assistant__danger-toggle.is-on .ai-assistant__check-box { background: #b42318; border-color: #b42318; }
+.ai-assistant-layer--workspace .ai-assistant__danger-toggle.is-on .ai-assistant__check-box::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid #fff; border-width: 0 1.7px 1.7px 0; transform: rotate(45deg);
+}
+.ai-assistant-layer--workspace .ai-assistant__danger-hint {
+  margin: 3px 9px 2px; font-size: 11.5px; line-height: 1.5; color: var(--notion-faint, #a4a19c);
+}
+/* 高危豁免确认弹窗 */
+.ai-assistant__irreversible-modal { max-width: 460px; }
+.ai-assistant__irreversible-body { display: grid; gap: 12px; padding: 4px 2px 2px; font-size: 13px; line-height: 1.7; color: var(--notion-ink, #2f2f2f); }
+.ai-assistant__irreversible-body p { margin: 0; }
+.ai-assistant__irreversible-body strong { font-weight: 600; }
+.ai-assistant__irreversible-warn { padding: 10px 12px; border-radius: 9px; background: #fdf3f2; border: 1px solid #f2d6d3; color: #8f1c13; }
+.ai-assistant__irreversible-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 2px; }
+.ai-assistant__irreversible-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
 .ai-assistant-layer--workspace .ai-assistant__menu--model { right: -5px; bottom: 38px; width: 290px; max-height: min(600px, 70vh); overflow-y: auto; }
 .ai-assistant-layer--workspace .ai-assistant__menu > button,
 .ai-assistant-layer--workspace .ai-assistant__menu-toggle { min-height: 38px; gap: 10px; padding: 0 9px; color: var(--notion-ink); font-size: 14px; border-radius: 7px; }
@@ -16977,6 +17049,10 @@ body::after,
 .ai-assistant-layer--workspace .ai-assistant__menu-toggle:hover { background: var(--notion-hover); }
 .ai-assistant-layer--workspace .ai-assistant__menu > button > span:first-of-type,
 .ai-assistant-layer--workspace .ai-assistant__menu-toggle > span:first-of-type { flex: 1; }
+/* 模型行品牌 Logo（.provider-logo）是第一位 span，会被上面的 span:first-of-type 拉伸：
+   收回固定尺寸，并让紧随其后的名称位接手 flex:1（状态文字保持右对齐）。 */
+.ai-assistant-layer--workspace .ai-assistant__menu > button > span.provider-logo:first-child { flex: none; width: 18px; height: 18px; border-radius: 5px; }
+.ai-assistant-layer--workspace .ai-assistant__menu > button > span.provider-logo + span { flex: 1; }
 .ai-assistant-layer--workspace .ai-assistant__menu > button small,
 .ai-assistant-layer--workspace .ai-assistant__menu-toggle small { color: var(--notion-faint); font-size: 12px; }
 .ai-assistant-layer--workspace .ai-assistant__menu > button.is-selected { background: #f2f2f0; }

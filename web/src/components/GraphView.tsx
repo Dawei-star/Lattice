@@ -568,7 +568,7 @@ export default function GraphView({
           </div>
         ) : null}
 
-        {settled && nodes.length <= 3 ? (
+        {settled && nodes.length > 0 && nodes.length <= 3 ? (
           <div className="graph__tip">
             在笔记正文里写 <code>[[另一篇笔记的标题]]</code>，图谱就会连起来。
           </div>

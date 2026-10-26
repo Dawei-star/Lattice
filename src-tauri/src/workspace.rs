@@ -4607,82 +4607,59 @@ pub struct FileState {
 }
 
 // ===========================================================================
-// experts/skills 注册表（契约 /api/experts/* → 9 命令；对齐 experts.registry.js）
-// 内置资源编译期嵌入（P1-09 删 Express 时需把 builtin 资源迁至 src-tauri，Δ9）；
-// 工作区层 <vault>/.lattice/experts/*.json 与 .lattice/skills/<id>/{skill.json,SKILL.md}，
-// 读取 workspace 优先于 builtin；保存/删除走 confirmed（删除另需 secondConfirmed）。
+// experts/skills 注册表（契约 /api/experts/* → 9 命令；E1 重构对齐专家 .md 格式）
+// 内置资源编译期嵌入；工作区层 <vault>/.lattice/experts/*.md（正文 = systemPrompt，
+// frontmatter 为扁平键，见 parse_expert_markdown），读取 workspace 优先于 builtin；
+// 保存/删除走 confirmed（删除另需 secondConfirmed）。旧 *.json 由
+// migrate_legacy_expert_json 一次性迁移为 .md（原文件保留为 .json.bak）。
 // ===========================================================================
 
-/// 内置专家（目录字典序，与 Express readdirSync 一致）。
+/// 内置专家（目录字典序，E1 起为 Markdown 格式：frontmatter + systemPrompt 正文）。
 const BUILTIN_EXPERTS: &[&str] = &[
-    include_str!("../resources/builtin/experts/decision-archivist.json"),
-    include_str!("../resources/builtin/experts/general.json"),
-    include_str!("../resources/builtin/experts/inbox-organizer.json"),
-    include_str!("../resources/builtin/experts/knowledge-curator.json"),
-    include_str!("../resources/builtin/experts/knowledge-researcher.json"),
-    include_str!("../resources/builtin/experts/note-editor.json"),
-    include_str!("../resources/builtin/experts/task-executor.json"),
+    include_str!("../resources/builtin/experts/decision-archivist.md"),
+    include_str!("../resources/builtin/experts/general.md"),
+    include_str!("../resources/builtin/experts/inbox-organizer.md"),
+    include_str!("../resources/builtin/experts/knowledge-curator.md"),
+    include_str!("../resources/builtin/experts/knowledge-researcher.md"),
+    include_str!("../resources/builtin/experts/note-editor.md"),
+    include_str!("../resources/builtin/experts/task-executor.md"),
 ];
 
-/// 内置技能（skill.json, SKILL.md），目录字典序。
-const BUILTIN_SKILLS: &[(&str, &str)] = &[
-    (
-        include_str!("../resources/builtin/skills/decision-capture/skill.json"),
-        include_str!("../resources/builtin/skills/decision-capture/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/inbox-triage/skill.json"),
-        include_str!("../resources/builtin/skills/inbox-triage/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/link-graph-analysis/skill.json"),
-        include_str!("../resources/builtin/skills/link-graph-analysis/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/note-structure-audit/skill.json"),
-        include_str!("../resources/builtin/skills/note-structure-audit/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/operation-plan/skill.json"),
-        include_str!("../resources/builtin/skills/operation-plan/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/task-batch-planner/skill.json"),
-        include_str!("../resources/builtin/skills/task-batch-planner/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/task-round-discipline/skill.json"),
-        include_str!("../resources/builtin/skills/task-round-discipline/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/vault-health-check/skill.json"),
-        include_str!("../resources/builtin/skills/vault-health-check/SKILL.md"),
-    ),
-    (
-        include_str!("../resources/builtin/skills/vault-search/skill.json"),
-        include_str!("../resources/builtin/skills/vault-search/SKILL.md"),
-    ),
+/// 内置技能（E2 起为单一 SKILL.md：frontmatter 规范 6 字段 + 正文），目录字典序。
+const BUILTIN_SKILLS: &[&str] = &[
+    include_str!("../resources/builtin/skills/decision-capture/SKILL.md"),
+    include_str!("../resources/builtin/skills/inbox-triage/SKILL.md"),
+    include_str!("../resources/builtin/skills/link-graph-analysis/SKILL.md"),
+    include_str!("../resources/builtin/skills/note-structure-audit/SKILL.md"),
+    include_str!("../resources/builtin/skills/operation-plan/SKILL.md"),
+    include_str!("../resources/builtin/skills/task-batch-planner/SKILL.md"),
+    include_str!("../resources/builtin/skills/task-round-discipline/SKILL.md"),
+    include_str!("../resources/builtin/skills/vault-health-check/SKILL.md"),
+    include_str!("../resources/builtin/skills/vault-search/SKILL.md"),
 ];
 
 impl WorkspaceService {
     /// 契约 GET /api/experts：内置 + 工作区（同 id 工作区覆盖），无效条目跳过。
     pub fn expert_list(&self) -> Result<Vec<serde_json::Value>, ServiceError> {
+        self.migrate_legacy_expert_json();
         let mut entries: Vec<serde_json::Value> = Vec::new();
         for raw in BUILTIN_EXPERTS {
-            if let Ok(document) = serde_json::from_str::<serde_json::Value>(raw)
-                && let Ok(expert) = expert_normalize(&document, &expert_file_stem(raw), "builtin")
+            if let Ok(document) = parse_expert_markdown(raw, "builtin")
+                && let Ok(expert) = expert_normalize(&document, &expert_builtin_id(raw), "builtin")
             {
                 entries.push(expert);
             }
         }
-        for path in expert_list_json_files(&self.experts_dir()) {
-            if let Ok(document) = serde_json::from_str::<serde_json::Value>(
+        for path in expert_list_markdown_files(&self.experts_dir()) {
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if let Ok(document) = parse_expert_markdown(
                 &fs::read_to_string(&path).unwrap_or_default(),
-            ) && let Ok(expert) = expert_normalize(
-                &document,
-                &path.file_stem().unwrap_or_default().to_string_lossy(),
-                "workspace",
-            ) {
+                &stem,
+            ) && let Ok(expert) = expert_normalize(&document, &stem, "workspace") {
                 if let Some(slot) = entries.iter_mut().find(|entry| entry["id"] == expert["id"]) {
                     *slot = expert;
                 } else {
@@ -4725,7 +4702,9 @@ impl WorkspaceService {
         Ok(expert)
     }
 
-    /// 契约 POST /api/experts 与 PUT /api/experts/:id（save 复用；新建禁覆盖内置专家）。
+    /// 契约 POST /api/experts 与 PUT /api/experts/:id（save 复用）。
+    /// 内置专家不可直接覆盖（含 update 路径）：必须先复制为工作区副本——
+    /// E1 修复旧版「编辑内置走 update 静默生成遮蔽文件」的暗坑。
     pub fn expert_save(
         &self,
         input: serde_json::Value,
@@ -4738,6 +4717,7 @@ impl WorkspaceService {
                 "文件变更必须先完成确认",
             ));
         }
+        self.migrate_legacy_expert_json();
         let id = match &existing_id {
             Some(existing) => expert_assert_id(existing)
                 .map_err(|error| ServiceError::new("VALIDATION", error))?,
@@ -4749,17 +4729,7 @@ impl WorkspaceService {
                         .unwrap_or(""),
                 )
                 .map_err(|error| ServiceError::new("VALIDATION", error))?;
-                if BUILTIN_EXPERTS.iter().any(|raw| {
-                    serde_json::from_str::<serde_json::Value>(raw)
-                        .ok()
-                        .and_then(|document| {
-                            document
-                                .get("id")
-                                .and_then(|value| value.as_str())
-                                .map(|value| value == requested)
-                        })
-                        .unwrap_or(false)
-                }) {
+                if builtin_expert_ids().iter().any(|builtin| builtin == &requested) {
                     return Err(ServiceError::new(
                         "CONFLICT",
                         "内置专家不可直接覆盖，请先复制为工作区版本",
@@ -4768,9 +4738,20 @@ impl WorkspaceService {
                 requested
             }
         };
+        // update 路径同样禁止指向内置：工作区不存在同 id 文件时按 CONFLICT 拒绝，
+        // 避免静默生成遮蔽副本。
+        if existing_id.is_some()
+            && !self.experts_dir().join(format!("{id}.md")).exists()
+            && builtin_expert_ids().iter().any(|builtin| builtin == &id)
+        {
+            return Err(ServiceError::new(
+                "CONFLICT",
+                "内置专家不可直接覆盖，请先复制为工作区版本",
+            ));
+        }
         let document = expert_normalize(&input, &id, "workspace")
             .map_err(|error| ServiceError::new("VALIDATION", error))?;
-        expert_write_json(&self.experts_dir().join(format!("{id}.json")), &document)?;
+        expert_write_markdown(&self.experts_dir().join(format!("{id}.md")), &document)?;
         self.expert_get(&id)
     }
 
@@ -4795,7 +4776,7 @@ impl WorkspaceService {
         }
         let resolved =
             expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
-        let path = self.experts_dir().join(format!("{resolved}.json"));
+        let path = self.experts_dir().join(format!("{resolved}.md"));
         if !path.exists() {
             return Err(ServiceError::new(
                 "NOT_FOUND",
@@ -4806,12 +4787,14 @@ impl WorkspaceService {
         Ok(serde_json::json!({ "id": resolved, "deleted": true }))
     }
 
-    /// 契约 POST /api/experts/route：关键词命中数 ≥ ceil(threshold×2) 即建议，score = 命中×100 + priority。
+    /// 契约 POST /api/experts/route：关键词命中数 ≥ EXPERT_ROUTE_MIN_KEYWORDS 即建议，
+    /// score = 命中×100 + priority。E1 起 threshold 字段退役，阈值改为显式常量。
     pub fn expert_route(
         &self,
         message: &str,
         exclude_id: Option<String>,
     ) -> Result<Vec<serde_json::Value>, ServiceError> {
+        const EXPERT_ROUTE_MIN_KEYWORDS: usize = 2;
         let text = message.to_lowercase();
         if text.trim().is_empty() {
             return Ok(Vec::new());
@@ -4846,11 +4829,7 @@ impl WorkspaceService {
                 .filter(|keyword| text.contains(keyword.as_str()))
                 .map(String::as_str)
                 .collect();
-            let threshold = expert["routing"]["confidenceThreshold"]
-                .as_f64()
-                .unwrap_or(0.72);
-            let required = ((threshold * 2.0).ceil() as usize).max(1);
-            if matched.len() < required {
+            if matched.len() < EXPERT_ROUTE_MIN_KEYWORDS {
                 continue;
             }
             let priority = expert["routing"]["priority"].as_i64().unwrap_or(50);
@@ -4875,17 +4854,13 @@ impl WorkspaceService {
     }
 
     /// 契约 GET /api/experts/skills：技能目录（builtin + workspace 覆盖；filePath + contentHash，不含 content）。
+    /// 契约 GET /api/experts/skills：内置 + 工作区（同 id 工作区覆盖），无效条目跳过。
     pub fn skill_list(&self) -> Result<Vec<serde_json::Value>, ServiceError> {
+        self.migrate_legacy_skill_json();
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        for (manifest, body) in BUILTIN_SKILLS {
-            if let Ok(document) = serde_json::from_str::<serde_json::Value>(manifest)
-                && let Some(skill) = skill_document(&document, body, "builtin")
-            {
-                if let Some(slot) = entries.iter_mut().find(|entry| entry["id"] == skill["id"]) {
-                    *slot = skill.clone();
-                } else {
-                    entries.push(skill.clone());
-                }
+        for raw in BUILTIN_SKILLS {
+            if let Some(skill) = skill_document_from_markdown(raw, "builtin", "<builtin>", "") {
+                upsert_skill(&mut entries, skill);
             }
         }
         if let Ok(directories) = fs::read_dir(self.skills_dir()) {
@@ -4894,14 +4869,7 @@ impl WorkspaceService {
                     continue;
                 }
                 if let Some(skill) = self.read_skill_dir(&entry.path(), "workspace") {
-                    if let Some(slot) = entries
-                        .iter_mut()
-                        .find(|existing| existing["id"] == skill["id"])
-                    {
-                        *slot = skill.clone();
-                    } else {
-                        entries.push(skill);
-                    }
+                    upsert_skill(&mut entries, skill);
                 }
             }
         }
@@ -4912,11 +4880,7 @@ impl WorkspaceService {
                 object.remove("path");
                 object.insert(
                     "filePath".into(),
-                    self.skills_dir()
-                        .join(&skill_id)
-                        .display()
-                        .to_string()
-                        .into(),
+                    self.skills_dir().join(&skill_id).display().to_string().into(),
                 );
             }
         }
@@ -4928,7 +4892,8 @@ impl WorkspaceService {
         self.read_skill(id, true)
     }
 
-    /// 契约 POST /api/experts/skills 与 PUT /api/experts/skills/:id（save 复用；新建禁覆盖内置技能）。
+    /// 契约 POST /api/experts/skills 与 PUT /api/experts/skills/:id（save 复用）。
+    /// E2 起落盘只有一份 `SKILL.md`：frontmatter 存元数据、正文存方法；不再写 skill.json。
     pub fn skill_save(
         &self,
         input: serde_json::Value,
@@ -4941,9 +4906,23 @@ impl WorkspaceService {
                 "文件变更必须先完成确认",
             ));
         }
+        self.migrate_legacy_skill_json();
+        let builtin_ids = builtin_skill_ids();
         let id = match &existing_id {
-            Some(existing) => expert_assert_id(existing)
-                .map_err(|error| ServiceError::new("VALIDATION", error))?,
+            Some(existing) => {
+                let resolved = expert_assert_id(existing)
+                    .map_err(|error| ServiceError::new("VALIDATION", error))?;
+                // update 指向内置且没有工作区目录 → 拒绝，避免静默生成遮蔽副本
+                if !self.skills_dir().join(&resolved).exists()
+                    && builtin_ids.iter().any(|builtin| builtin == &resolved)
+                {
+                    return Err(ServiceError::new(
+                        "CONFLICT",
+                        "内置 Skill 不可直接覆盖，请先复制为工作区版本",
+                    ));
+                }
+                resolved
+            }
             None => {
                 let requested = expert_assert_id(
                     input
@@ -4952,49 +4931,86 @@ impl WorkspaceService {
                         .unwrap_or(""),
                 )
                 .map_err(|error| ServiceError::new("VALIDATION", error))?;
-                if BUILTIN_SKILLS.iter().any(|(manifest, _)| {
-                    serde_json::from_str::<serde_json::Value>(manifest)
-                        .ok()
-                        .and_then(|document| {
-                            document
-                                .get("id")
-                                .and_then(|value| value.as_str())
-                                .map(|value| value == requested)
-                        })
-                        .unwrap_or(false)
-                }) {
+                if builtin_ids.iter().any(|builtin| builtin == &requested) {
                     return Err(ServiceError::new(
                         "CONFLICT",
-                        "内置Skill不可直接覆盖，请先复制为工作区版本",
+                        "内置 Skill 不可直接覆盖，请先复制为工作区版本",
                     ));
                 }
                 requested
             }
         };
-        let content = input
-            .get("content")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        if content.is_empty() {
-            return Err(ServiceError::new("VALIDATION", "Skill 内容不能为空"));
-        }
-        if content.chars().count() > SKILL_MAX_CHARS {
-            return Err(ServiceError::new(
-                "VALIDATION",
-                format!("Skill 内容不能超过 {SKILL_MAX_CHARS} 个字符"),
-            ));
-        }
-        let document = skill_normalize(&input, &id, "workspace")
+        let document = skill_normalize_input(&input, &id)
             .map_err(|error| ServiceError::new("VALIDATION", error))?;
         let directory = self.skills_dir().join(&id);
         fs::create_dir_all(&directory)
             .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
-        expert_write_json(&directory.join("skill.json"), &document)?;
-        fs::write(directory.join("SKILL.md"), format!("{content}\n"))
+        fs::write(directory.join("SKILL.md"), skill_to_markdown(&document))
             .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
+        // 旧清单已并入 frontmatter，改名保留现场（不删除）。
+        let legacy = directory.join("skill.json");
+        if legacy.exists() {
+            let _ = fs::rename(&legacy, legacy.with_extension("json.bak"));
+        }
         self.read_skill(&id, true)
+    }
+
+    /// 导入预览（E2）：把一段 SKILL.md 解析成待保存文档 + 规范化文本。
+    /// 只解析不落盘——保存仍走 `skill_save` 的确认流程，写入路径保持唯一。
+    pub fn skill_import_preview(
+        &self,
+        raw: &str,
+        id_hint: Option<&str>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        let hint = id_hint
+            .map(str::trim)
+            .filter(|hint| !hint.is_empty())
+            .unwrap_or("imported-skill");
+        let document = skill_document_from_markdown(raw, hint, "workspace", "").ok_or_else(|| {
+            ServiceError::new(
+                "VALIDATION",
+                "不是合法的 SKILL.md：需要以 `---` 包围的 frontmatter（至少 name 与 description）",
+            )
+        })?;
+        if document["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(ServiceError::new(
+                "VALIDATION",
+                "SKILL.md 只有 frontmatter，没有正文方法",
+            ));
+        }
+        Ok(serde_json::json!({
+            "document": document.clone(),
+            "markdown": skill_to_markdown(&document),
+        }))
+    }
+
+    /// 导出（E2）：返回 SKILL.md 全文与 `references/` 文件清单。
+    /// v1 不打包 zip（无压缩依赖，避免离线构建风险），把正文交给前端复制/另存。
+    pub fn skill_export(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
+        let skill = self.read_skill(id, true)?;
+        let resolved = skill["id"].as_str().unwrap_or_default().to_owned();
+        let markdown = skill_to_markdown(&skill);
+        let mut references: Vec<String> = Vec::new();
+        let reference_dir = self.skills_dir().join(&resolved).join("references");
+        if let Ok(entries) = fs::read_dir(&reference_dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    references.push(name.to_owned());
+                }
+            }
+        }
+        references.sort();
+        Ok(serde_json::json!({
+            "id": resolved,
+            "filename": format!("{}-SKILL.md", skill["id"].as_str().unwrap_or("skill")),
+            "markdown": markdown,
+            "references": references,
+        }))
     }
 
     /// 契约 DELETE /api/experts/skills/:id：仅删除工作区目录（双确认）。
@@ -5042,18 +5058,26 @@ impl WorkspaceService {
         self.read_skill(id, false).is_ok()
     }
 
-    /// 读专家文档：工作区优先，回落内置（对齐 readExpert）。
+    /// 读专家文档：工作区 .md 优先，回落内置 .md；迁移残留的旧 .json 仍可读（兜底）。
     fn read_expert(&self, id: &str) -> Result<serde_json::Value, ServiceError> {
+        self.migrate_legacy_expert_json();
         let resolved =
             expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
-        let workspace = self.experts_dir().join(format!("{resolved}.json"));
+        let workspace = self.experts_dir().join(format!("{resolved}.md"));
+        let legacy_json = self.experts_dir().join(format!("{resolved}.json"));
         let raw = if workspace.exists() {
-            fs::read_to_string(&workspace).ok()
+            parse_expert_markdown(&fs::read_to_string(&workspace).unwrap_or_default(), &resolved)
+                .ok()
+        } else if legacy_json.exists() {
+            serde_json::from_str::<serde_json::Value>(
+                &fs::read_to_string(&legacy_json).unwrap_or_default(),
+            )
+            .ok()
         } else {
             BUILTIN_EXPERTS
                 .iter()
                 .find(|raw| {
-                    serde_json::from_str::<serde_json::Value>(raw)
+                    parse_expert_markdown(raw, "builtin")
                         .ok()
                         .and_then(|document| {
                             document
@@ -5063,7 +5087,7 @@ impl WorkspaceService {
                         })
                         .unwrap_or(false)
                 })
-                .map(|raw| raw.to_string())
+                .and_then(|raw| parse_expert_markdown(raw, "builtin").ok())
         };
         let Some(raw) = raw else {
             return Err(ServiceError::new(
@@ -5071,32 +5095,28 @@ impl WorkspaceService {
                 format!("专家「{resolved}」不存在"),
             ));
         };
-        let document: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
-            ServiceError::new("VALIDATION", format!("无法读取配置文件：{error}"))
-        })?;
-        let source = if workspace.exists() {
+        let source = if workspace.exists() || legacy_json.exists() {
             "workspace"
         } else {
             "builtin"
         };
-        expert_normalize(&document, &resolved, source)
+        expert_normalize(&raw, &resolved, source)
             .map_err(|error| ServiceError::new("VALIDATION", error))
     }
 
-    /// 读技能文档（对齐 readSkill：workspace 优先；include_content 控制正文与 path 字段）。
+    /// 读技能文档（workspace 优先；include_content 控制正文与 path 字段）。
     fn read_skill(
         &self,
         id: &str,
         include_content: bool,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.migrate_legacy_skill_json();
         let resolved =
             expert_assert_id(id).map_err(|error| ServiceError::new("VALIDATION", error))?;
-        let workspace_dir = self.skills_dir().join(&resolved);
-        let workspace = self.read_skill_dir(&workspace_dir, "workspace");
-        let builtin = BUILTIN_SKILLS.iter().find_map(|(manifest, body)| {
-            let document = serde_json::from_str::<serde_json::Value>(manifest).ok()?;
-            let candidate = skill_document(&document, body, "builtin")?;
-            (candidate["id"].as_str() == Some(resolved.as_str())).then_some(candidate)
+        let workspace = self.read_skill_dir(&self.skills_dir().join(&resolved), "workspace");
+        let builtin = BUILTIN_SKILLS.iter().find_map(|raw| {
+            let document = skill_document_from_markdown(raw, "builtin", "<builtin>", "")?;
+            (document["id"].as_str() == Some(resolved.as_str())).then_some(document)
         });
         let skill = workspace
             .or(builtin)
@@ -5112,19 +5132,125 @@ impl WorkspaceService {
         Ok(summary)
     }
 
-    /// 读工作区技能目录（skill.json + SKILL.md 缺一不可；损坏条目返回 None 由目录剔除）。
+    /// 读工作区技能目录（只有 SKILL.md；缺 frontmatter 的旧目录先迁移再读）。
     fn read_skill_dir(&self, directory: &Path, source: &str) -> Option<serde_json::Value> {
-        let manifest_path = directory.join("skill.json");
-        let body_path = directory.join("SKILL.md");
-        if !manifest_path.exists() || !body_path.exists() {
-            return None;
+        let path = directory.join("SKILL.md");
+        let raw = fs::read_to_string(&path).ok()?;
+        let dir_id = directory
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        skill_document_from_markdown(&raw, &dir_id, source, &path.display().to_string())
+    }
+
+    /// E1 一次性迁移：`.lattice/experts/*.json` → 同名 `.md`（.md 已存在则跳过），
+    /// 原文件重命名为 `<id>.json.bak` 保留。幂等：目录里没有 .json 即无操作。
+    fn migrate_legacy_expert_json(&self) {
+        let directory = self.experts_dir();
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(document) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                // 损坏的旧文件不迁移也不删除，保留现场供用户排查。
+                continue;
+            };
+            let id = document
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let Ok(id) = expert_assert_id(&id) else {
+                continue;
+            };
+            let target = directory.join(format!("{id}.md"));
+            if target.exists() {
+                let _ = fs::rename(&path, path.with_extension("json.bak"));
+                continue;
+            }
+            let Ok(normalized) = expert_normalize(&document, &id, "workspace") else {
+                continue;
+            };
+            if expert_write_markdown(&target, &normalized).is_ok() {
+                let _ = fs::rename(&path, path.with_extension("json.bak"));
+                self.audit.record(
+                    "expert_migrate",
+                    &[
+                        ("id", id.as_str()),
+                        ("backup", "json.bak"),
+                    ],
+                );
+            }
         }
-        let body = fs::read_to_string(&body_path).ok()?;
-        let body: String = body.chars().take(SKILL_MAX_CHARS).collect();
-        let document =
-            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(manifest_path).ok()?)
-                .ok()?;
-        skill_document(&document, &body, source)
+    }
+
+    /// E2 一次性迁移：`.lattice/skills/<id>/{skill.json, SKILL.md}` → 单一 `SKILL.md`
+    /// （清单字段并入 frontmatter，原 skill.json 改名 `.json.bak` 保留）。
+    /// 幂等：没有 skill.json 的目录直接跳过；SKILL.md 已有 frontmatter 时只改名不覆盖正文。
+    fn migrate_legacy_skill_json(&self) {
+        let directory = self.skills_dir();
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let manifest = path.join("skill.json");
+            if !manifest.exists() {
+                continue;
+            }
+            let Some(id) = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+            else {
+                continue;
+            };
+            let Ok(id) = expert_assert_id(&id) else {
+                continue;
+            };
+            let body = fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+            let already_migrated = body
+                .trim_start_matches('\u{feff}')
+                .trim_start()
+                .starts_with("---\n");
+            if already_migrated {
+                let _ = fs::rename(&manifest, manifest.with_extension("json.bak"));
+                continue;
+            }
+            let Ok(raw_manifest) = fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let Ok(manifest_json) = serde_json::from_str::<serde_json::Value>(&raw_manifest) else {
+                // 损坏的旧清单不迁移也不删除，保留现场供用户排查。
+                continue;
+            };
+            let mut input = manifest_json.clone();
+            input["id"] = serde_json::json!(id);
+            input["content"] = serde_json::json!(body);
+            input["title"] = manifest_json
+                .get("name")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(id));
+            let Ok(document) = skill_normalize_input(&input, &id) else {
+                continue;
+            };
+            if fs::write(path.join("SKILL.md"), skill_to_markdown(&document)).is_ok() {
+                let _ = fs::rename(&manifest, manifest.with_extension("json.bak"));
+                self.audit.record(
+                    "skill_migrate",
+                    &[("id", id.as_str()), ("backup", "json.bak")],
+                );
+            }
+        }
     }
 }
 
@@ -5144,14 +5270,37 @@ fn expert_assert_id(value: &str) -> Result<String, String> {
     Ok(trimmed.to_owned())
 }
 
-fn expert_file_stem(raw: &str) -> String {
-    // include_str 路径仅用于 id 兜底；取最后一个 / 与 .json 之间的段
-    let path = raw;
-    let name = path.rsplit('/').next().unwrap_or(path);
-    name.strip_suffix(".json").unwrap_or(name).to_owned()
+/// 内置专家 id 清单（E1 起从 .md frontmatter 解析）。
+fn builtin_expert_ids() -> Vec<String> {
+    BUILTIN_EXPERTS
+        .iter()
+        .filter_map(|raw| {
+            parse_expert_markdown(raw, "builtin")
+                .ok()
+                .and_then(|document| {
+                    document
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned)
+                })
+        })
+        .collect()
 }
 
-fn expert_list_json_files(directory: &Path) -> Vec<PathBuf> {
+/// 内置条目的 id 兜底（frontmatter 缺 id 时用文件名 stem；正常内置不触发）。
+fn expert_builtin_id(raw: &str) -> String {
+    parse_expert_markdown(raw, "builtin")
+        .ok()
+        .and_then(|document| {
+            document
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
+}
+
+fn expert_list_markdown_files(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };
@@ -5162,7 +5311,7 @@ fn expert_list_json_files(directory: &Path) -> Vec<PathBuf> {
             path.is_file()
                 && path
                     .extension()
-                    .map(|extension| extension == "json")
+                    .map(|extension| extension == "md")
                     .unwrap_or(false)
         })
         .collect();
@@ -5170,20 +5319,237 @@ fn expert_list_json_files(directory: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn expert_write_json(path: &Path, value: &serde_json::Value) -> Result<(), ServiceError> {
+// ── 专家 Markdown 格式（E1）：frontmatter 扁平键 + 正文 = systemPrompt ──────
+//
+// 支持的 frontmatter 子集（够表达专家配置，刻意不做通用 YAML）：
+//   key: 标量            —— 布尔 / 整数 / 浮点按字面识别，其余（含去引号）按字符串
+//   key: [a, b, "c d"]   —— 内联字符串数组
+//   key:                 —— 后跟缩进的 `- 项` 块数组
+//   # 注释行忽略；未知键忽略（兼容用户手写扩展）。
+// 正文（frontmatter 结束行之后）整体作为 systemPrompt。
+
+/// frontmatter 标量 → JSON 值（带引号强制为字符串；数字/布尔按字面识别）。
+fn expert_frontmatter_scalar(raw: &str) -> serde_json::Value {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return serde_json::Value::String(trimmed[1..trimmed.len() - 1].to_owned());
+    }
+    match trimmed {
+        "true" => serde_json::Value::Bool(true),
+        "false" => serde_json::Value::Bool(false),
+        "null" | "~" => serde_json::Value::Null,
+        _ => {
+            if let Ok(number) = trimmed.parse::<i64>() {
+                serde_json::Value::Number(number.into())
+            } else if let Ok(number) = trimmed.parse::<f64>() {
+                serde_json::Number::from_f64(number)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or_else(|| serde_json::Value::String(trimmed.to_owned()))
+            } else {
+                serde_json::Value::String(trimmed.to_owned())
+            }
+        }
+    }
+}
+
+/// 内联数组元素拆分（逗号分隔；元素可带引号）。
+fn expert_split_inline_array(raw: &str) -> Vec<String> {
+    raw.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|item| {
+            let item = item.trim();
+            if item.len() >= 2
+                && ((item.starts_with('"') && item.ends_with('"'))
+                    || (item.starts_with('\'') && item.ends_with('\'')))
+            {
+                item[1..item.len() - 1].to_owned()
+            } else {
+                item.to_owned()
+            }
+        })
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// 解析专家 Markdown（frontmatter + 正文）。source 仅用于错误文案。
+fn parse_expert_markdown(raw: &str, source: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let Some(rest) = trimmed.strip_prefix("---\n") else {
+        return Err(format!("专家 {source} 缺少 frontmatter 起始行"));
+    };
+    let (frontmatter, body) = rest
+        .split_once("\n---\n")
+        .ok_or_else(|| format!("专家 {source} 缺少 frontmatter 结束行"))?;
+
+    let mut document = serde_json::Map::new();
+    let mut lines = frontmatter.lines().peekable();
+    while let Some(line) = lines.next() {
+        let line = line.trim_end();
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_owned();
+        let value = value.trim();
+        if value.is_empty() {
+            // 块数组：收集后续缩进的 `- 项` 行
+            let mut items = Vec::new();
+            while let Some(next) = lines.peek() {
+                let next = next.trim();
+                if let Some(item) = next.strip_prefix("- ") {
+                    items.push(expert_frontmatter_scalar(item).as_str().unwrap_or_default().to_owned());
+                    lines.next();
+                } else if next == "-" {
+                    items.push(String::new());
+                    lines.next();
+                } else {
+                    break;
+                }
+            }
+            document.insert(key, serde_json::Value::Array(
+                items.into_iter().map(serde_json::Value::String).collect(),
+            ));
+        } else if value.starts_with('[') {
+            let items = expert_split_inline_array(value);
+            document.insert(
+                key,
+                serde_json::Value::Array(
+                    items.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
+        } else {
+            document.insert(key, expert_frontmatter_scalar(value));
+        }
+    }
+    document.insert(
+        "systemPrompt".to_owned(),
+        serde_json::Value::String(body.trim().to_owned()),
+    );
+    Ok(serde_json::Value::Object(document))
+}
+
+/// 标量序列化：含 `:#[]"'` 或空白首尾时加双引号；数字/布尔原样。
+fn expert_format_scalar(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Bool(inner) => inner.to_string(),
+        serde_json::Value::Number(inner) => inner.to_string(),
+        serde_json::Value::String(inner) => {
+            let needs_quotes = inner.is_empty()
+                || inner.starts_with(' ')
+                || inner.ends_with(' ')
+                || inner.chars().any(|c| matches!(c, ':' | '#' | '[' | ']' | '"' | '\'' | '\n'));
+            if needs_quotes {
+                format!("\"{}\"", inner.replace('\\', "\\\\").replace('"', "\\\""))
+            } else {
+                inner.clone()
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+/// 归一化专家文档 → Markdown 文本（保存路径）。字段顺序固定，便于 diff 与人工审阅。
+fn expert_to_markdown(document: &serde_json::Value) -> String {
+    let scalar = |key: &str| document.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    // 归一化文档是嵌套契约（routing.*/capabilities.*），序列化时摊平回 frontmatter 扁平键。
+    let nested_array = |path: &str| -> Vec<String> {
+        document
+            .pointer(path)
+            .and_then(|value| value.as_array())
+            .map(|items| items.iter().map(expert_format_scalar).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let nested_scalar = |path: &str, fallback: serde_json::Value| -> serde_json::Value {
+        document.pointer(path).cloned().unwrap_or(fallback)
+    };
+    let skills = document
+        .get("skills")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map(|binding| {
+                    let id = binding.get("id").and_then(|value| value.as_str()).unwrap_or_default();
+                    let mode = binding
+                        .get("mode")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("preload");
+                    if mode == "discoverable" {
+                        format!("{id}@discoverable")
+                    } else {
+                        id.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let scope_exclude = nested_array("/capabilities/scopeExclude");
+
+    let mut frontmatter = String::new();
+    for (key, value) in [
+        ("id", scalar("id")),
+        ("name", scalar("name")),
+        ("description", scalar("description")),
+        ("version", scalar("version")),
+        ("icon", scalar("icon")),
+        ("enabled", scalar("enabled")),
+    ] {
+        frontmatter.push_str(&format!("{key}: {}\n", expert_format_scalar(&value)));
+    }
+    frontmatter.push_str(&format!(
+        "keywords: [{}]\n",
+        nested_array("/routing/keywords").join(", ")
+    ));
+    frontmatter.push_str(&format!(
+        "priority: {}\n",
+        expert_format_scalar(&nested_scalar("/routing/priority", serde_json::Value::Number(50.into())))
+    ));
+    frontmatter.push_str(&format!(
+        "context: [{}]\n",
+        nested_array("/capabilities/context").join(", ")
+    ));
+    frontmatter.push_str(&format!(
+        "tools: [{}]\n",
+        nested_array("/capabilities/tools").join(", ")
+    ));
+    frontmatter.push_str(&format!(
+        "writePolicy: {}\n",
+        expert_format_scalar(&nested_scalar(
+            "/capabilities/writePolicy",
+            serde_json::Value::String("confirm".into())
+        ))
+    ));
+    frontmatter.push_str(&format!(
+        "maxRounds: {}\n",
+        expert_format_scalar(&nested_scalar(
+            "/capabilities/maxRounds",
+            serde_json::Value::Number(6.into())
+        ))
+    ));
+    frontmatter.push_str(&format!("skills: [{}]\n", skills.join(", ")));
+    frontmatter.push_str(&format!("scopeExclude: [{}]\n", scope_exclude.join(", ")));
+
+    let system_prompt = document
+        .get("systemPrompt")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    format!("---\n{frontmatter}---\n{system_prompt}\n")
+}
+
+fn expert_write_markdown(path: &Path, document: &serde_json::Value) -> Result<(), ServiceError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?;
     }
-    fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(value)
-                .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))?
-        ),
-    )
-    .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))
+    fs::write(path, expert_to_markdown(document))
+        .map_err(|error| ServiceError::new("IO_ERROR", error.to_string()))
 }
 
 /// 字符串归一：trim + 按 Unicode 码点截断（JS slice(0, N) 的 BMP 等价）。
@@ -5229,7 +5595,12 @@ fn expert_clamp(value: Option<f64>, fallback: f64, min: f64, max: f64) -> f64 {
     }
 }
 
-/// 专家文档归一（对齐 normalizeExpert：默认值/截断/绑定收敛）。
+/// 专家文档归一（E1 契约）。
+/// 输入接受两种形态：.md 解析产物（扁平键 keywords/priority/context/tools/…）
+/// 与 IPC 保存文档（嵌套 routing{} / capabilities{}）；输出统一为嵌套契约：
+/// 新增 `skills[].mode`（preload=会话即注入全文 / discoverable=仅目录按需加载）
+/// 与 `capabilities.scopeExclude`（写路径前缀黑名单）；退役 `scope`、
+/// `skills[].priority/config`、`routing.confidenceThreshold`（读取时忽略，不再输出）。
 fn expert_normalize(
     value: &serde_json::Value,
     id_hint: &str,
@@ -5241,56 +5612,52 @@ fn expert_normalize(
             .and_then(|item| item.as_str())
             .unwrap_or(id_hint),
     )?;
+    // 双形态取值：嵌套路径优先，扁平键兜底（.md 解析产物）。
+    let pick = |nested: &[&str], flat: &str| -> Option<&serde_json::Value> {
+        let mut cursor = value;
+        for key in nested {
+            cursor = match cursor.get(*key) {
+                Some(next) if !next.is_null() => next,
+                _ => return value.get(flat).filter(|item| !item.is_null()),
+            };
+        }
+        Some(cursor)
+    };
     let bindings = value
         .get("skills")
         .and_then(|item| item.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .take(40)
-                .filter_map(|item| {
-                    let (skill_id, enabled, priority, config) = if let Some(text) = item.as_str() {
-                        (text, true, 50, serde_json::json!({}))
-                    } else {
-                        (
-                            item.get("id")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or_default(),
-                            item.get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true),
-                            expert_clamp(
-                                item.get("priority").and_then(|value| value.as_f64()),
-                                50.0,
-                                0.0,
-                                100.0,
-                            ) as i64,
-                            item.get("config")
-                                .filter(|value| value.is_object())
-                                .cloned()
-                                .unwrap_or_else(|| serde_json::json!({})),
-                        )
-                    };
-                    expert_assert_id(skill_id).ok().map(|skill_id| {
-                        serde_json::json!({
-                            "id": skill_id,
-                            "enabled": enabled,
-                            "priority": priority,
-                            "config": config,
-                        })
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
+        .map(|items| items.iter().take(40).filter_map(expert_normalize_binding).collect::<Vec<_>>())
         .unwrap_or_default();
-    let capabilities = value.get("capabilities").filter(|item| item.is_object());
-    let routing = value.get("routing").filter(|item| item.is_object());
-    let write_policy = capabilities
-        .and_then(|item| item.get("writePolicy"))
+    let capabilities = [
+        pick(&["capabilities", "context"], "context"),
+        pick(&["capabilities", "tools"], "tools"),
+        pick(&["capabilities", "writePolicy"], "writePolicy"),
+        pick(&["capabilities", "maxRounds"], "maxRounds"),
+        pick(&["capabilities", "scopeExclude"], "scopeExclude"),
+    ];
+    let routing = [
+        pick(&["routing", "keywords"], "keywords"),
+        pick(&["routing", "priority"], "priority"),
+    ];
+    let write_policy = capabilities[2]
         .and_then(|item| item.as_str())
         .map(str::to_owned)
         .filter(|policy| ["disabled", "confirm", "auto"].contains(&policy.as_str()))
         .unwrap_or_else(|| "confirm".into());
+    let scope_exclude = match capabilities[4].and_then(|item| item.as_array()) {
+        Some(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .filter(|item| !item.trim().is_empty())
+            .take(40)
+            .map(|item| item.chars().take(200).collect::<String>())
+            .collect::<Vec<_>>(),
+        None => vec![
+            ".lattice/".to_owned(),
+            "_templates/".to_owned(),
+            ".fc/".to_owned(),
+        ],
+    };
     Ok(serde_json::json!({
         "id": id,
         "version": value.get("version").and_then(|item| item.as_str()).unwrap_or("1.0.0").chars().take(40).collect::<String>(),
@@ -5299,91 +5666,393 @@ fn expert_normalize(
         "icon": expert_clean_string(value.get("icon").and_then(|item| item.as_str()), "sparkles", 40),
         "enabled": value.get("enabled").and_then(|item| item.as_bool()).unwrap_or(true),
         "systemPrompt": value.get("systemPrompt").and_then(|item| item.as_str()).unwrap_or_default().chars().take(EXPERT_MAX_PROMPT_CHARS).collect::<String>(),
-        "scope": {
-            "include": expert_string_array_strict(value.get("scope").and_then(|item| item.get("include")).and_then(|item| item.as_array()), 40),
-            "exclude": expert_string_array_strict(value.get("scope").and_then(|item| item.get("exclude")).and_then(|item| item.as_array()), 40),
-        },
         "skills": bindings,
         "capabilities": {
-            "context": expert_string_array(capabilities.and_then(|item| item.get("context")).and_then(|item| item.as_array()), vec!["current-note".into(), "project".into(), "vault".into()], 20),
-            "tools": expert_string_array(capabilities.and_then(|item| item.get("tools")).and_then(|item| item.as_array()), vec!["read".into(), "search".into()], 60),
+            "context": expert_string_array(capabilities[0].and_then(|item| item.as_array()), vec!["current-note".into(), "project".into(), "vault".into()], 20),
+            "tools": expert_string_array(capabilities[1].and_then(|item| item.as_array()), vec!["read".into(), "search".into()], 60),
             "writePolicy": write_policy,
-            "maxRounds": expert_clamp(capabilities.and_then(|item| item.get("maxRounds")).and_then(|item| item.as_f64()), 6.0, 1.0, 12.0) as i64,
+            "maxRounds": expert_clamp(capabilities[3].and_then(|item| item.as_f64()), 6.0, 1.0, 12.0) as i64,
+            "scopeExclude": scope_exclude,
         },
         "routing": {
-            "keywords": expert_string_array_strict(routing.and_then(|item| item.get("keywords")).and_then(|item| item.as_array()), 40),
-            "priority": expert_clamp(routing.and_then(|item| item.get("priority")).and_then(|item| item.as_f64()), 50.0, 0.0, 100.0) as i64,
-            "confidenceThreshold": expert_clamp(routing.and_then(|item| item.get("confidenceThreshold")).and_then(|item| item.as_f64()), 0.72, 0.0, 1.0),
+            "keywords": expert_string_array_strict(routing[0].and_then(|item| item.as_array()), 40),
+            "priority": expert_clamp(routing[1].and_then(|item| item.as_f64()), 50.0, 0.0, 100.0) as i64,
         },
         "source": source,
     }))
+}
+
+/// 技能绑定归一：`"id"` / `"id@preload"` / `"id@discoverable"` 字符串简写，
+/// 或 `{id, enabled?, mode?}` 对象；旧版 `{id, priority, config}` 字段读取时忽略。
+fn expert_normalize_binding(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let (id, enabled, mode) = if let Some(text) = item.as_str() {
+        let (id, mode) = match text.split_once('@') {
+            Some((id, mode)) => (id, mode),
+            None => (text, "preload"),
+        };
+        (
+            id,
+            true,
+            if mode == "discoverable" { "discoverable" } else { "preload" },
+        )
+    } else {
+        (
+            item.get("id").and_then(|value| value.as_str()).unwrap_or_default(),
+            item.get("enabled").and_then(|value| value.as_bool()).unwrap_or(true),
+            match item.get("mode").and_then(|value| value.as_str()) {
+                Some("discoverable") => "discoverable",
+                _ => "preload",
+            },
+        )
+    };
+    expert_assert_id(id).ok().map(|skill_id| {
+        serde_json::json!({
+            "id": skill_id,
+            "enabled": enabled,
+            "mode": mode,
+        })
+    })
 }
 
 /// 技能文档（manifest + content/contentHash/path，对齐 readSkillFromDir）。
-fn skill_document(
-    manifest: &serde_json::Value,
-    body: &str,
-    source: &str,
-) -> Option<serde_json::Value> {
-    let normalized = skill_normalize(
-        manifest,
-        manifest
-            .get("id")
-            .and_then(|item| item.as_str())
-            .unwrap_or(""),
-        source,
-    )
-    .ok()?;
-    Some(serde_json::json!({
-        "id": normalized["id"],
-        "version": normalized["version"],
-        "name": normalized["name"],
-        "description": normalized["description"],
-        "triggers": normalized["triggers"],
-        "tools": normalized["tools"],
-        "permissions": normalized["permissions"],
-        "inputSchema": normalized["inputSchema"],
-        "outputSchema": normalized["outputSchema"],
-        "enabled": normalized["enabled"],
-        "source": source,
-        "content": body,
-        "contentHash": fc_sha256_hex(body.as_bytes()),
-        "path": format!("<builtin>/skills/{}/SKILL.md", normalized["id"].as_str().unwrap_or_default()),
-    }))
+// ── 技能 Markdown 格式（E2，对齐 Agent Skills 开放标准）──────────────────
+//
+// 一个 Skill = 一个目录 + 一份 `SKILL.md`：
+//   ---
+//   name: vault-search            # 必填，须与目录名一致
+//   description: 做什么 + 何时用   # 必填，路由与目录展示都是它
+//   license / compatibility       # 可选
+//   allowed-tools: [a, b]         # 可选，语义是「预批准」不是限制
+//   metadata:                     # 可选映射；Lattice 扩展放 metadata.lattice.*
+//     lattice.title: 知识库检索
+//     lattice.version: 2.0.0
+//   ---
+//   正文 = 方法（进上下文的部分）
+//
+// 未知顶层字段静默忽略（导入第三方 SKILL.md 不报错）；`triggers` / `permissions` /
+// `inputSchema` / `outputSchema` 这些旧清单字段已退役，不再读写。
+
+/// frontmatter 子集解析：标量 / 内联数组 / 块数组 / 一层缩进映射。
+/// 与专家解析共用同一套标量规则，但多支持一层嵌套（`metadata:`）。
+fn parse_skill_frontmatter(raw: &str) -> Option<(serde_json::Map<String, serde_json::Value>, String)> {
+    let trimmed = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let rest = trimmed.strip_prefix("---\n")?;
+    let (frontmatter, body) = rest.split_once("\n---\n")?;
+
+    let mut document = serde_json::Map::new();
+    let mut lines = frontmatter.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_owned();
+        let value = value.trim();
+        if !value.is_empty() {
+            if value.starts_with('[') {
+                let items = expert_split_inline_array(value);
+                document.insert(
+                    key,
+                    serde_json::Value::Array(
+                        items.into_iter().map(serde_json::Value::String).collect(),
+                    ),
+                );
+            } else {
+                document.insert(key, expert_frontmatter_scalar(value));
+            }
+            continue;
+        }
+        // 空值：向后收集缩进块（`- 项` 数组 或 `子键: 值` 映射）
+        let mut array: Vec<String> = Vec::new();
+        let mut nested = serde_json::Map::new();
+        while let Some(next) = lines.peek() {
+            let trimmed_next = next.trim();
+            if trimmed_next.is_empty() {
+                lines.next();
+                continue;
+            }
+            if !next.starts_with(' ') {
+                break;
+            }
+            if let Some(item) = trimmed_next.strip_prefix("- ") {
+                array.push(
+                    expert_frontmatter_scalar(item)
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                lines.next();
+            } else if let Some((sub_key, sub_value)) = trimmed_next.split_once(':') {
+                nested.insert(
+                    sub_key.trim().to_owned(),
+                    expert_frontmatter_scalar(sub_value),
+                );
+                lines.next();
+            } else {
+                lines.next();
+            }
+        }
+        if !array.is_empty() {
+            document.insert(
+                key,
+                serde_json::Value::Array(
+                    array.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
+        } else if !nested.is_empty() {
+            document.insert(key, serde_json::Value::Object(nested));
+        }
+    }
+    Some((document, body.trim().to_owned()))
 }
 
-/// 技能清单归一（对齐 normalizeSkillManifest）。
-fn skill_normalize(
-    value: &serde_json::Value,
+/// `allowed-tools` 既可能是数组，也可能是逗号/空格分隔的字符串（第三方写法不一）。
+fn skill_allowed_tools(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .take(40)
+            .map(str::to_owned)
+            .collect(),
+        Some(serde_json::Value::String(text)) => text
+            .split([',', ' ', '\t'])
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .take(40)
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// SKILL.md → 服务端文档（含正文）。未知顶层字段忽略；目录名/`name` 必须是合法 id。
+fn skill_document_from_markdown(
+    raw: &str,
     id_hint: &str,
     source: &str,
-) -> Result<serde_json::Value, String> {
-    let id = expert_assert_id(
-        value
-            .get("id")
-            .and_then(|item| item.as_str())
-            .unwrap_or(id_hint),
-    )?;
-    let schema = |key: &str| {
-        value
+    path: &str,
+) -> Option<serde_json::Value> {
+    let (frontmatter, body) = parse_skill_frontmatter(raw)?;
+    let declared = frontmatter
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    let id = expert_assert_id(if declared.is_empty() { id_hint } else { declared })
+        .or_else(|_| expert_assert_id(id_hint))
+        .ok()?;
+    let metadata = frontmatter
+        .get("metadata")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let meta_text = |key: &str| {
+        metadata
             .get(key)
-            .filter(|item| item.is_object())
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({ "type": "object" }))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
     };
-    Ok(serde_json::json!({
+    let title = meta_text("lattice.title").unwrap_or_else(|| id.clone());
+    let version = meta_text("lattice.version").unwrap_or_else(|| "1.0.0".to_owned());
+    let enabled = metadata
+        .get("lattice.enabled")
+        .and_then(|value| value.as_bool())
+        .or_else(|| frontmatter.get("enabled").and_then(|value| value.as_bool()))
+        .unwrap_or(true);
+    let content: String = body.chars().take(SKILL_MAX_CHARS).collect();
+    let mut document = serde_json::json!({
         "id": id,
-        "version": value.get("version").and_then(|item| item.as_str()).unwrap_or("1.0.0").chars().take(40).collect::<String>(),
-        "name": expert_clean_string(value.get("name").and_then(|item| item.as_str()), &id, 120),
-        "description": expert_clean_string(value.get("description").and_then(|item| item.as_str()), "", 500),
-        "triggers": expert_string_array(value.get("triggers").and_then(|item| item.as_array()), Vec::new(), 30),
-        "tools": expert_string_array(value.get("tools").and_then(|item| item.as_array()), Vec::new(), 40),
-        "permissions": expert_string_array(value.get("permissions").and_then(|item| item.as_array()), vec!["read".into()], 20),
-        "inputSchema": schema("inputSchema"),
-        "outputSchema": schema("outputSchema"),
-        "enabled": value.get("enabled").and_then(|item| item.as_bool()).unwrap_or(true),
+        "name": id,
+        "title": title,
+        "description": expert_clean_string(
+            frontmatter.get("description").and_then(|value| value.as_str()),
+            "",
+            800,
+        ),
+        "license": frontmatter.get("license").and_then(|value| value.as_str()).map(|value| value.chars().take(120).collect::<String>()),
+        "compatibility": frontmatter.get("compatibility").and_then(|value| value.as_str()).map(|value| value.chars().take(120).collect::<String>()),
+        "allowedTools": skill_allowed_tools(frontmatter.get("allowed-tools")),
+        "metadata": metadata,
+        "version": version,
+        "enabled": enabled,
         "source": source,
-    }))
+        "content": content.clone(),
+        "contentHash": fc_sha256_hex(content.as_bytes()),
+        "path": if path.is_empty() {
+            format!("<builtin>/skills/{id}/SKILL.md")
+        } else {
+            path.to_owned()
+        },
+    });
+    // 可选字段缺省时不输出 null（契约更干净，第三方 SKILL.md 也不会凭空多出字段）
+    if let Some(object) = document.as_object_mut() {
+        object.retain(|_, value| !value.is_null());
+    }
+    Some(document)
+}
+
+/// 保存入参 → 统一文档。兼容旧清单字段（`name` 当标题、`tools` 当 allowed-tools），
+/// 但输出只保留规范字段 + `metadata.lattice.*`。
+fn skill_normalize_input(value: &serde_json::Value, id: &str) -> Result<serde_json::Value, String> {
+    let content = value
+        .get("content")
+        .and_then(|item| item.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if content.is_empty() {
+        return Err("Skill 内容不能为空".to_owned());
+    }
+    if content.chars().count() > SKILL_MAX_CHARS {
+        return Err(format!("Skill 内容不能超过 {SKILL_MAX_CHARS} 个字符"));
+    }
+    let mut metadata = value
+        .get("metadata")
+        .and_then(|item| item.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let title = value
+        .get("title")
+        .and_then(|item| item.as_str())
+        .or_else(|| {
+            value
+                .get("name")
+                .and_then(|item| item.as_str())
+                .filter(|name| name.trim() != id)
+        })
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(id)
+        .to_owned();
+    let version = value
+        .get("version")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .unwrap_or("2.0.0")
+        .to_owned();
+    let enabled = value
+        .get("enabled")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(true);
+    metadata.insert("lattice.title".to_owned(), serde_json::json!(title));
+    metadata.insert("lattice.version".to_owned(), serde_json::json!(version));
+    metadata.insert("lattice.enabled".to_owned(), serde_json::json!(enabled));
+
+    let allowed_tools = skill_allowed_tools(value.get("allowedTools").or_else(|| value.get("tools")));
+    let mut document = serde_json::json!({
+        "id": id,
+        "name": id,
+        "title": title,
+        "description": expert_clean_string(value.get("description").and_then(|item| item.as_str()), "", 800),
+        "license": value.get("license").and_then(|item| item.as_str()).map(|item| item.trim().chars().take(120).collect::<String>()).filter(|item| !item.is_empty()),
+        "compatibility": value.get("compatibility").and_then(|item| item.as_str()).map(|item| item.trim().chars().take(120).collect::<String>()).filter(|item| !item.is_empty()),
+        "allowedTools": allowed_tools,
+        "metadata": metadata,
+        "version": version,
+        "enabled": enabled,
+        "source": "workspace",
+        "content": content.clone(),
+        "contentHash": fc_sha256_hex(content.as_bytes()),
+    });
+    if let Some(object) = document.as_object_mut() {
+        object.retain(|_, value| !value.is_null());
+    }
+    Ok(document)
+}
+
+/// 文档 → SKILL.md 文本。字段顺序固定（name → description → license → compatibility →
+/// allowed-tools → metadata），便于 git diff 与人工审阅。
+fn skill_to_markdown(document: &serde_json::Value) -> String {
+    let id = document
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let mut frontmatter = String::new();
+    frontmatter.push_str(&format!("name: {id}\n"));
+    for key in ["description", "license", "compatibility"] {
+        if let Some(value) = document
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            frontmatter.push_str(&format!("{key}: {}\n", expert_format_scalar(&serde_json::Value::String(value.to_owned()))));
+        }
+    }
+    let allowed_tools = document
+        .get("allowedTools")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !allowed_tools.is_empty() {
+        frontmatter.push_str(&format!(
+            "allowed-tools: [{}]\n",
+            allowed_tools
+                .iter()
+                .map(|item| expert_format_scalar(&serde_json::Value::String(item.clone())))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let metadata = document
+        .get("metadata")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    if !metadata.is_empty() {
+        frontmatter.push_str("metadata:\n");
+        let mut keys: Vec<&String> = metadata.keys().collect();
+        keys.sort();
+        for key in keys {
+            let value = &metadata[key];
+            let rendered = match value {
+                serde_json::Value::String(text) => expert_format_scalar(&serde_json::Value::String(text.clone())),
+                other => other.to_string(),
+            };
+            frontmatter.push_str(&format!("  {key}: {rendered}\n"));
+        }
+    }
+    let content = document
+        .get("content")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    format!("---\n{frontmatter}---\n{}\n", content.trim())
+}
+
+fn builtin_skill_ids() -> Vec<String> {
+    BUILTIN_SKILLS
+        .iter()
+        .filter_map(|raw| {
+            skill_document_from_markdown(raw, "builtin", "<builtin>", "")
+                .and_then(|document| document["id"].as_str().map(str::to_owned))
+        })
+        .collect()
+}
+
+/// 同 id 覆盖工作区版本（列表口径：内置在前、工作区替换同位）。
+fn upsert_skill(entries: &mut Vec<serde_json::Value>, skill: serde_json::Value) {
+    if let Some(slot) = entries
+        .iter_mut()
+        .find(|existing| existing["id"] == skill["id"])
+    {
+        *slot = skill;
+    } else {
+        entries.push(skill);
+    }
 }
 
 // ===========================================================================
@@ -7187,6 +7856,9 @@ pub struct CanvasDeleteResult {
 #[cfg(test)]
 mod tests {
     use super::{BUILTIN_EXPERTS, BUILTIN_SKILLS};
+    use super::parse_expert_markdown;
+    use super::skill_document_from_markdown;
+    use super::builtin_skill_ids;
     use super::{FileAction, SNAPSHOT_LIMIT, ServiceError, WorkspaceService, fc_batch_outcome};
 
     fn open_service(directory: &Path) -> WorkspaceService {
@@ -7944,15 +8616,16 @@ mod tests {
             9,
             "builtin skills 资源数量必须与迁移基线一致"
         );
+        // E1：内置专家是 Markdown（frontmatter + 正文），不再是 JSON
         assert!(
             BUILTIN_EXPERTS
                 .iter()
-                .all(|raw| serde_json::from_str::<serde_json::Value>(raw).is_ok())
+                .all(|raw| parse_expert_markdown(raw, "builtin").is_ok())
         );
         assert!(
             BUILTIN_SKILLS
                 .iter()
-                .all(|(manifest, body)| !manifest.is_empty() && !body.is_empty())
+                .all(|raw| skill_document_from_markdown(raw, "builtin", "<builtin>", "").is_some())
         );
         assert!(
             listed
@@ -7961,24 +8634,386 @@ mod tests {
                     && expert["source"] == serde_json::json!("builtin"))
         );
         let builtin_count = listed.len();
+        // 内置专家的正文进了 systemPrompt（E1 的核心：正文就是提示词）
+        let task_executor = listed
+            .iter()
+            .find(|expert| expert["id"] == serde_json::json!("task-executor"))
+            .unwrap();
+        assert!(
+            task_executor["systemPrompt"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("诚实高于顺滑"),
+            "内置专家正文必须解析进 systemPrompt"
+        );
+        assert_eq!(task_executor["capabilities"]["writePolicy"], serde_json::json!("confirm"));
+        assert!(task_executor["routing"]["confidenceThreshold"].is_null(), "threshold 已退役");
 
-        // 更新内置专家：写入工作区版本（读取时覆盖视图，builtin 原件不动）
-        let updated = service
+        // 内置不可直接 update（E1 起强制另存副本，避免静默遮蔽）
+        let conflict = service
             .expert_save(
                 serde_json::json!({ "name": "通用助手", "description": "工作区覆盖版" }),
                 Some("general".into()),
                 true,
             )
+            .unwrap_err();
+        assert_eq!(conflict.code, "CONFLICT");
+
+        // 副本：同内容换 id → 工作区条目，内置仍是 builtin
+        service
+            .expert_save(
+                serde_json::json!({ "id": "general-custom", "name": "通用助手副本", "description": "工作区覆盖版" }),
+                None,
+                true,
+            )
             .unwrap();
-        assert_eq!(updated["source"], serde_json::json!("workspace"));
-        assert_eq!(updated["description"], serde_json::json!("工作区覆盖版"));
         let listed = service.expert_list().unwrap();
-        assert_eq!(listed.len(), builtin_count, "同 id 覆盖不新增条目");
+        assert_eq!(listed.len(), builtin_count + 1, "副本是新增条目");
         let general = listed
             .iter()
             .find(|expert| expert["id"] == serde_json::json!("general"))
             .unwrap();
-        assert_eq!(general["source"], serde_json::json!("workspace"));
+        assert_eq!(general["source"], serde_json::json!("builtin"));
+        assert!(directory.path().join(".lattice/experts/general-custom.md").exists());
+    }
+
+    #[test]
+    fn expert_runtime_injects_persona_tool_face_and_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let mut request = serde_json::json!({
+            "expertId": "task-executor",
+            "tools": [
+                { "name": "lattice_note_search", "inputSchema": {} },
+                { "name": "lattice_file_operation", "inputSchema": {} }
+            ],
+            "budget": { "maxSteps": 12 }
+        });
+        let runtime = crate::ai::core::expert::apply_request(&service, &mut request)
+            .expect("内置 task-executor 必须可解析");
+
+        // ① 正文真的进了 system（E1 修复「配置界面完好、模型什么都没收到」）
+        let system = request["system"].as_str().unwrap_or_default();
+        assert!(system.contains("诚实高于顺滑"), "人格正文必须注入：{system}");
+        // ② 预载技能全文也在（task-executor 绑定三份，其中纪律条款常驻）
+        assert!(system.contains("技能："), "预载技能必须拼进 system");
+        assert!(
+            system.contains("连续两轮都没有实质进展"),
+            "task-round-discipline 的纪律条款必须真实进提示词：{system}"
+        );
+        assert!(
+            runtime.prompt_versions.iter().any(|item| item.starts_with("expert:task-executor@")),
+            "专家版本要进 trace：{:?}",
+            runtime.prompt_versions
+        );
+        assert!(
+            runtime.prompt_versions.iter().any(|item| item.starts_with("skill:")),
+            "技能版本要进 trace：{:?}",
+            runtime.prompt_versions
+        );
+        // ③ 工具面按 writePolicy/能力词表过滤（task-executor 允许写，所以写工具保留）
+        assert_eq!(request["tools"].as_array().unwrap().len(), 2);
+        // ④ maxRounds 收紧会话预算且不放大小值
+        assert_eq!(request["budget"]["maxSteps"], serde_json::json!(6));
+        assert_eq!(request["budget"]["maxToolCalls"], serde_json::Value::Null, "未涉及的预算字段不凭空生成");
+        assert!(!runtime.system_preview().is_empty());
+        assert_eq!(runtime.system_hash().len(), 16);
+
+        // 只读专家：写工具被剥离
+        let mut readonly = serde_json::json!({
+            "expertId": "knowledge-researcher",
+            "tools": [
+                { "name": "lattice_note_read", "inputSchema": {} },
+                { "name": "lattice_file_operation", "inputSchema": {} }
+            ]
+        });
+        let read_runtime = crate::ai::core::expert::apply_request(&service, &mut readonly).unwrap();
+        assert!(!read_runtime.writes_allowed());
+        assert_eq!(readonly["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(readonly["tools"][0]["name"], serde_json::json!("lattice_note_read"));
+
+        // 停用的专家不注入：行为回到 E1 之前
+        service
+            .expert_save(
+                serde_json::json!({ "id": "off-expert", "name": "停用", "enabled": false }),
+                None,
+                true,
+            )
+            .unwrap();
+        let mut disabled = serde_json::json!({ "expertId": "off-expert" });
+        assert!(crate::ai::core::expert::apply_request(&service, &mut disabled).is_none());
+        assert!(disabled.get("system").is_none());
+
+        // 未知/空 expertId 同样不注入
+        let mut unknown = serde_json::json!({ "expertId": "not-exists" });
+        assert!(crate::ai::core::expert::apply_request(&service, &mut unknown).is_none());
+        let mut none = serde_json::json!({});
+        assert!(crate::ai::core::expert::apply_request(&service, &mut none).is_none());
+    }
+
+    #[test]
+    fn expert_markdown_roundtrip_keeps_bindings_and_scope() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        service
+            .expert_save(
+                serde_json::json!({
+                    "id": "roundtrip",
+                    "name": "往返专家",
+                    "description": "检查 md 序列化",
+                    "systemPrompt": "第一段。\n\n第二段带 {{vaultName}} 变量。",
+                    "skills": [
+                        { "id": "vault-search", "mode": "discoverable" },
+                        { "id": "task-round-discipline", "mode": "preload" }
+                    ],
+                    "capabilities": {
+                        "context": ["vault"],
+                        "tools": ["read", "search"],
+                        "writePolicy": "disabled",
+                        "maxRounds": 5,
+                        "scopeExclude": [".lattice/", "_templates/"]
+                    },
+                    "routing": { "keywords": ["往返", "测试"], "priority": 66 }
+                }),
+                None,
+                true,
+            )
+            .unwrap();
+        let raw = fs::read_to_string(directory.path().join(".lattice/experts/roundtrip.md")).unwrap();
+        assert!(raw.starts_with("---\nid: roundtrip\n"), "frontmatter 字段顺序固定便于 diff");
+        assert!(raw.contains("skills: [vault-search@discoverable, task-round-discipline]"), "preload 为默认不写后缀");
+        assert!(raw.ends_with("第二段带 {{vaultName}} 变量。\n"));
+
+        // 重新读回：正文、绑定模式、范围黑名单、路由全部等价
+        let read = service.expert_get("roundtrip").unwrap();
+        assert_eq!(read["systemPrompt"], serde_json::json!("第一段。\n\n第二段带 {{vaultName}} 变量。"));
+        assert_eq!(read["skills"][0]["mode"], serde_json::json!("discoverable"));
+        assert_eq!(read["skills"][1]["mode"], serde_json::json!("preload"));
+        assert_eq!(read["capabilities"]["scopeExclude"][0], serde_json::json!(".lattice/"));
+        assert_eq!(read["capabilities"]["maxRounds"], serde_json::json!(5));
+        assert_eq!(read["routing"]["keywords"][0], serde_json::json!("往返"));
+        assert_eq!(read["routing"]["priority"], serde_json::json!(66));
+    }
+
+    #[test]
+    fn discoverable_skill_exposes_catalog_and_loader_tool() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        service
+            .expert_save(
+                serde_json::json!({
+                    "id": "skill-explorer",
+                    "name": "技能探索",
+                    "skills": [
+                        { "id": "vault-search", "mode": "discoverable" },
+                        { "id": "vault-health-check", "mode": "preload" }
+                    ],
+                    "capabilities": { "tools": ["read", "search"], "writePolicy": "disabled" }
+                }),
+                None,
+                true,
+            )
+            .unwrap();
+
+        let mut request = serde_json::json!({
+            "expertId": "skill-explorer",
+            "tools": [
+                { "name": "lattice_note_read", "inputSchema": {} },
+                { "name": "lattice_file_operation", "inputSchema": {} }
+            ]
+        });
+        let runtime = crate::ai::core::expert::apply_request(&service, &mut request).unwrap();
+        let system = request["system"].as_str().unwrap_or_default();
+
+        // L1：目录常驻（id + 标题 + 说明），但正文不进 system
+        assert!(system.contains("可用技能"), "目录块必须注入：{system}");
+        assert!(system.contains("vault-search"));
+        assert!(system.contains("知识库检索"));
+        assert!(
+            !system.contains("先使用搜索动作获取候选笔记"),
+            "discoverable 技能不得预载正文"
+        );
+        // preload 的另一份技能正文照常注入
+        assert!(system.contains("对整个知识库做只读体检"), "preload 技能正文应在 system 里");
+        assert_eq!(runtime.exposed_skills.len(), 1);
+        assert_eq!(runtime.exposed_skills[0].id, "vault-search");
+
+        // 工具面：只读专家（writePolicy=disabled）没有写工具，但多了 skill_load
+        let names: Vec<&str> = request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(names.contains(&"skill_load"));
+        assert!(!names.contains(&"lattice_file_operation"));
+
+        // L2：模型调用 skill_load 拿到全文（有界），失败给可读错误
+        let call = crate::ai::core::agent::PendingCall {
+            id: "c1".into(),
+            name: "skill_load".into(),
+            input: serde_json::json!({ "id": "vault-search" }),
+        };
+        let loaded = crate::ai::core::agent::tools::execute_read_call(&service, &call);
+        assert_eq!(loaded["status"], serde_json::json!("completed"));
+        assert!(loaded["content"].as_str().unwrap_or_default().contains("先使用搜索动作"));
+        assert_eq!(loaded["truncated"], serde_json::json!(false));
+
+        let missing = crate::ai::core::agent::tools::execute_read_call(
+            &service,
+            &crate::ai::core::agent::PendingCall {
+                id: "c2".into(),
+                name: "skill_load".into(),
+                input: serde_json::json!({ "id": "not-exists" }),
+            },
+        );
+        assert_eq!(missing["status"], serde_json::json!("failed"));
+
+        // 目录 token 预算：9 个内置技能全绑成 discoverable 也在上限内
+        let mut many = serde_json::json!({});
+        many["skills"] = serde_json::Value::Array(
+            super::builtin_skill_ids()
+                .into_iter()
+                .map(|id| serde_json::json!({ "id": id, "mode": "discoverable" }))
+                .collect(),
+        );
+        service
+            .expert_save(
+                serde_json::json!({
+                    "id": "all-skills",
+                    "name": "全技能",
+                    "skills": many["skills"].clone(),
+                }),
+                None,
+                true,
+            )
+            .unwrap();
+        let mut request = serde_json::json!({ "expertId": "all-skills" });
+        let runtime = crate::ai::core::expert::apply_request(&service, &mut request).unwrap();
+        assert_eq!(runtime.exposed_skills.len(), 9);
+        let catalog = crate::ai::core::expert::build_skill_catalog(&runtime.exposed_skills);
+        assert!(
+            catalog.chars().count() <= crate::ai::core::expert::EXPERT_SKILL_CATALOG_MAX_CHARS,
+            "目录超预算：{}",
+            catalog.chars().count()
+        );
+    }
+
+    #[test]
+    fn legacy_skill_json_migrates_into_single_markdown() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let skill_dir = directory.path().join(".lattice/skills/old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("skill.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "old-skill",
+                "version": "1.4.0",
+                "name": "旧技能",
+                "description": "E1 之前的清单形态",
+                "triggers": ["旧触发"],
+                "tools": ["read", "search"],
+                "permissions": ["read"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# 旧技能\n\n正文方法。").unwrap();
+
+        let listed = service.skill_list().unwrap();
+        let migrated = listed
+            .iter()
+            .find(|skill| skill["id"] == serde_json::json!("old-skill"))
+            .unwrap();
+        assert_eq!(migrated["title"], serde_json::json!("旧技能"));
+        assert_eq!(migrated["version"], serde_json::json!("1.4.0"));
+        assert!(skill_dir.join("skill.json.bak").exists(), "旧清单改名保留");
+        assert!(!skill_dir.join("skill.json").exists());
+
+        // 单文件：frontmatter + 正文；读取等价
+        let raw = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(raw.starts_with("---\nname: old-skill\n"));
+        assert!(raw.contains("lattice.title: 旧技能"));
+        let detail = service.skill_get("old-skill").unwrap();
+        assert_eq!(detail["content"], serde_json::json!("# 旧技能\n\n正文方法。"));
+        // 退役字段不再输出
+        assert!(detail.get("triggers").is_none());
+        assert!(detail.get("permissions").is_none());
+        assert!(detail.get("inputSchema").is_none());
+
+        // 幂等：再列一次不会重建 skill.json
+        let _ = service.skill_list().unwrap();
+        assert!(!skill_dir.join("skill.json").exists());
+    }
+
+    #[test]
+    fn third_party_skill_markdown_is_accepted_with_unknown_fields() {
+        // anthropics/skills 风格：只有规范字段 + 宿主不认识的扩展
+        let raw = "---\nname: pdf-processing\ndescription: Extract text and tables from PDFs. Use when the user uploads a PDF or asks to fill a form.\nlicense: MIT\ncompatibility: claude-code\nallowed-tools: Read, Grep\nunknown-field: something\nversion: 9.9.9\n---\n# PDF\n\n1. Read the file.\n";
+        let document = skill_document_from_markdown(raw, "pdf-processing", "workspace", "/tmp/SKILL.md")
+            .expect("第三方 SKILL.md 必须可解析");
+        assert_eq!(document["id"], serde_json::json!("pdf-processing"));
+        assert_eq!(document["license"], serde_json::json!("MIT"));
+        assert_eq!(document["compatibility"], serde_json::json!("claude-code"));
+        // allowed-tools 支持逗号/空格字符串写法
+        assert_eq!(document["allowedTools"], serde_json::json!(["Read", "Grep"]));
+        // 未知顶层字段静默忽略（version 也不从顶层读，只认 metadata.lattice.version）
+        assert!(document.get("unknown-field").is_none());
+        assert_eq!(document["version"], serde_json::json!("1.0.0"));
+        assert!(document["content"].as_str().unwrap().contains("Read the file."));
+
+        // 缺 description 也能解析（目录里显示空说明），但缺 name 时用目录名兜底
+        let minimal = skill_document_from_markdown("---\ndescription: x\n---\nbody", "dir-name", "workspace", "")
+            .unwrap();
+        assert_eq!(minimal["id"], serde_json::json!("dir-name"));
+    }
+
+    #[test]
+    fn legacy_expert_json_migrates_to_markdown_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = open_service(directory.path());
+        let experts_dir = directory.path().join(".lattice/experts");
+        fs::create_dir_all(&experts_dir).unwrap();
+        fs::write(
+            experts_dir.join("legacy-one.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "legacy-one",
+                "name": "旧专家",
+                "description": "从 Electron 时代迁移",
+                "systemPrompt": "旧正文。",
+                "skills": [{ "id": "vault-search", "priority": 50, "config": {} }],
+                "capabilities": {
+                    "context": ["vault"],
+                    "tools": ["read", "search", "update"],
+                    "writePolicy": "confirm",
+                    "maxRounds": 6
+                },
+                "routing": { "keywords": ["旧"], "priority": 40, "confidenceThreshold": 0.72 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let listed = service.expert_list().unwrap();
+        assert!(listed.iter().any(|expert| expert["id"] == serde_json::json!("legacy-one")));
+        assert!(experts_dir.join("legacy-one.md").exists(), "应生成 md");
+        assert!(experts_dir.join("legacy-one.json.bak").exists(), "旧文件改名保留");
+        assert!(!experts_dir.join("legacy-one.json").exists());
+
+        // 幂等：再列一次不会重复迁移，也不再生出 .json
+        let _ = service.expert_list().unwrap();
+        assert!(!experts_dir.join("legacy-one.json").exists());
+        let read = service.expert_get("legacy-one").unwrap();
+        assert_eq!(read["systemPrompt"], serde_json::json!("旧正文。"));
+        assert!(read["routing"]["confidenceThreshold"].is_null());
+
+        // 回滚：删掉 .md、把 .bak 改回 .json，下次读取会重新迁移而不是报「专家不存在」
+        fs::remove_file(experts_dir.join("legacy-one.md")).unwrap();
+        fs::rename(experts_dir.join("legacy-one.json.bak"), experts_dir.join("legacy-one.json")).unwrap();
+        let restored = service.expert_get("legacy-one").unwrap();
+        assert_eq!(restored["systemPrompt"], serde_json::json!("旧正文。"));
+        assert!(experts_dir.join("legacy-one.md").exists(), "回滚后应重新生成 md");
     }
 
     #[test]
@@ -8056,8 +9091,8 @@ mod tests {
                 true,
             )
             .unwrap();
-        // SKILL.md 落盘带尾换行（对齐 Express `${content}\n`），读回即含 \n
-        assert_eq!(skill["content"], serde_json::json!("技能正文\n"));
+        // E2：正文按 trim 落盘（frontmatter 之后就是方法本体，不再补尾换行）
+        assert_eq!(skill["content"], serde_json::json!("技能正文"));
         let detail = service.skill_get("my-skill").unwrap();
         assert_eq!(detail["contentHash"], skill["contentHash"]);
         assert!(
@@ -8126,7 +9161,7 @@ mod tests {
         assert!(
             !directory
                 .path()
-                .join(".lattice/experts/temp-expert.json")
+                .join(".lattice/experts/temp-expert.md")
                 .exists()
         );
         assert!(

@@ -110,6 +110,34 @@ pub fn execute_read_call(workspace: &WorkspaceService, call: &PendingCall) -> Va
                 .unwrap_or_else(|error| failed(error.to_string())),
             Err(error) => failed(error.message),
         },
+        "skill_load" => {
+            let Some(id) = string_field("id") else {
+                return failed("skill_load 缺少 id".to_owned());
+            };
+            match workspace.skill_get(&id) {
+                Ok(skill) => {
+                    let content = skill
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if content.trim().is_empty() {
+                        return failed(format!("技能「{id}」正文为空"));
+                    }
+                    let bounded: String = content
+                        .chars()
+                        .take(crate::ai::core::expert::SKILL_LOAD_MAX_CHARS)
+                        .collect();
+                    json!({
+                        "status": "completed",
+                        "id": id,
+                        "title": skill.get("title").and_then(Value::as_str).unwrap_or(&id),
+                        "content": bounded,
+                        "truncated": content.chars().count() > bounded.chars().count(),
+                    })
+                }
+                Err(error) => failed(error.message),
+            }
+        }
         other => failed(format!("未注册的读工具：{other}")),
     }
 }

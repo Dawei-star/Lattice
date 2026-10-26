@@ -172,6 +172,9 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
     args: (ctx) => ({ id: asString(ctx.params.id), version: asString(ctx.params.version) }) },
   { method: 'GET', path: /^\/notes\/(?<id>(?!templates$|from-template$|daily$)[^/]+)$/, command: 'note_get',
     args: (ctx) => ({ id: asString(ctx.params.id) }) },
+  { method: 'GET', path: /^\/experts\/skills\/(?<id>[^/]+)\/export$/, command: 'skill_export',
+    args: (ctx) => ({ id: asString(ctx.params.id) }),
+    note: '导出 = 规范化 SKILL.md 全文 + references 清单；打包成 zip 留待后续' },
   { method: 'GET', path: /^\/experts\/skills\/(?<id>[^/]+)$/, command: 'skill_get',
     args: (ctx) => ({ id: asString(ctx.params.id) }) },
   { method: 'GET', path: /^\/experts\/(?<id>[^/]+)$/, command: 'expert_get',
@@ -358,6 +361,9 @@ export const IPC_ROUTES: readonly IpcRoute[] = [
       const body = obj(ctx);
       return { message: asString(body.message), excludeId: optionalString(body.excludeId) };
     } },
+  { method: 'POST', path: '/experts/skills/import', command: 'skill_import_preview',
+    args: (ctx) => ({ source: asString(obj(ctx).source), value: asString(obj(ctx).value) }),
+    note: '只解析预览，不落盘；保存仍走 skill_save 的确认流程' },
   { method: 'POST', path: '/experts/skills', command: 'skill_save',
     args: (ctx) => ({ skill: ctx.body, confirmed: flag(obj(ctx).confirmed) }),
     note: '整体载荷作为 skill 传入；confirmed 由 Rust 白名单化，不会落盘' },

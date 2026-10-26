@@ -10,7 +10,7 @@ use crate::ai::core::agent::PendingCall;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 /// W7c：挂起等确认的写批次。仅存进程内存（正文/凭据不入库），
 /// 应用重启丢失后由前端恢复流程按「重新生成计划」路径处理。
@@ -130,7 +130,7 @@ impl AiRuntimeState {
 pub async fn ai_chat_stream(
     app: AppHandle,
     state: State<'_, AiRuntimeState>,
-    request: Value,
+    mut request: Value,
 ) -> Result<Value, String> {
     let run_id = request
         .get("runId")
@@ -138,6 +138,14 @@ pub async fn ai_chat_stream(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "AI 请求缺少 runId".to_owned())?
         .to_owned();
+    // E1：直连通道（非 durable 队列）同样注入专家策略——两条入口共用同一份
+    // 解析逻辑，避免「面板直连时专家又不生效」的第二处断线。
+    {
+        let workspace_state = app.state::<crate::WorkspaceState>();
+        if let Ok(workspace) = workspace_state.0.read() {
+            crate::ai::core::expert::apply_request(&workspace, &mut request);
+        }
+    }
     state.start(&run_id)?;
     let result = stream_provider(app, state.inner().clone(), run_id.clone(), request, None).await;
     state.finish(&run_id);

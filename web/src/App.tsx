@@ -612,7 +612,8 @@ export default function App() {
       if (!confirmNavigation()) return;
       const tab = tabs.find((t) => t.id === tabId);
       if (tab) {
-        setAiOpen(false);
+        // AI 工作区打开时，点周围的知识库标签只在后台切换，不打断当前 AI 会话；
+        // 关闭走显式出口：AI 面板「返回知识库」、Lattice AI 标签 ×、Ctrl+J。
         activateTab(tab);
       }
     },
@@ -627,7 +628,6 @@ export default function App() {
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
     setActiveNote(null);
-    setAiOpen(false);
   }, [tabs, activeTabId, aiOpen, confirmNavigation, setActiveNote]);
 
   const handleSelectAiTab = useCallback((tabId?: number) => {

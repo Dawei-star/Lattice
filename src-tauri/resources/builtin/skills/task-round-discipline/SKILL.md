@@ -1,3 +1,10 @@
+---
+name: task-round-discipline
+description: 在多轮工具循环里保持「计划」与「事实」一致：核对上一轮真实结果、按需接续、不重复已完成动作，收尾时如实报 done / remaining / blockers。凡处于任务模式且还有未完成步骤时使用；连续两轮无实质进展必须停下说明，不得编造完成。
+metadata:
+  lattice.title: 任务模式多轮推进
+  lattice.version: 2.0.0
+---
 # 任务模式多轮推进
 
 任务模式的循环上限是 **6 轮**，单轮动作上限 30 个、自动读取上限 5 个。

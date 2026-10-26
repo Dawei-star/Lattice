@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 
 /// 当前 Schema 版本，存于 `PRAGMA user_version`，用于增量迁移。
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// 001：索引投影初版。
 ///
@@ -221,6 +221,13 @@ CREATE TABLE ai_trace (
 CREATE INDEX ix_ai_trace_task ON ai_trace (task_type, created_at DESC);
 "#;
 
+/// 013：E1 专家溯源——run 用了哪个专家、注入了哪些提示词/技能版本。
+/// 只存标识与版本串（正文永不入库），与 `ai_trace` 既有计量语义一致。
+const MIGRATION_013: &str = r#"
+ALTER TABLE ai_trace ADD COLUMN expert TEXT;
+ALTER TABLE ai_trace ADD COLUMN prompt_versions TEXT;
+"#;
+
 /// 打开索引库并把 Schema 迁移到最新版本。
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -303,6 +310,7 @@ pub fn migrate(connection: &Connection) -> Result<(), String> {
         (10, MIGRATION_010),
         (11, MIGRATION_011),
         (12, MIGRATION_012),
+        (13, MIGRATION_013),
     ];
     for &(target, script) in steps {
         if version < target {

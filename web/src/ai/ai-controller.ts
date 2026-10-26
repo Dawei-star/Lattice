@@ -13,7 +13,15 @@ export interface AiControllerInput extends Omit<AiRequest, 'runId' | 'budget' | 
   runId?: string;
   attachments?: AiAttachment[];
   preferModel?: boolean;
+  /** @deprecated 语义等价于 approvalPolicy === 'skip'，保留仅供旧内核兼容。 */
   autoApprove?: boolean;
+  /** 写操作审批策略：内核据此决定 L2 是否免确认（L3 永不免）。 */
+  approvalPolicy?: 'always' | 'review' | 'skip';
+  /**
+   * 高危豁免：用户显式确认后，允许 L3（删除/外发/权限/批量）也不询问。
+   * 与审批档位正交，仅在「自动执行」档下由前端置为 true。
+   */
+  allowIrreversible?: boolean;
   webSearch?: boolean;
   actor?: string;
   role?: string;
@@ -98,6 +106,8 @@ export function planAiRequest(input: AiControllerInput): AiControllerPlan {
     budget,
     preferModel: input.preferModel,
     autoApprove: input.autoApprove,
+    approvalPolicy: input.approvalPolicy,
+    allowIrreversible: input.allowIrreversible,
     webSearch: input.webSearch,
     actor: input.actor,
     role: input.role,

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAiProvider, getActiveAiProvider, getActiveAiProviderRuntime, getAiProviderRouteRuntime, getSmallModelProviderRuntime, hasEmbeddingAi, hasExternalAi, loadAiSettings, saveAiSettings } from '../src/settings/aiSettings.ts';
+import { createAiProvider, getActiveAiProvider, getActiveAiProviderRuntime, getAiProviderRouteRuntime, getSmallModelProviderRuntime, hasEmbeddingAi, hasExternalAi, loadAiSettings, normalizeApprovalPolicy, saveAiSettings } from '../src/settings/aiSettings.ts';
 import { isLocalOllamaEndpoint } from '../src/settings/aiProviders.ts';
 
 const values = new Map();
@@ -145,4 +145,65 @@ test('normalize keeps the server keyAvailable flag on hydration', () => {
   }));
   const settings = loadAiSettings();
   assert.equal(settings.providers[0].keyAvailable, true, '服务端实测标记随 hydrate 保留');
+});
+
+// --- 审批策略：独立于交互模式与模型选择的事实源 ------------------------------
+test('approval policy defaults to review and survives a save/load round trip', () => {
+  values.clear();
+  assert.equal(loadAiSettings().approvalPolicy, 'review', '默认不允许自动跳过 L2 确认');
+
+  const saved = saveAiSettings({ ...loadAiSettings(), interactionMode: 'task', approvalPolicy: 'always' });
+  assert.equal(saved.approvalPolicy, 'always');
+  assert.equal(loadAiSettings().approvalPolicy, 'always', '重启后保持用户选择');
+  assert.equal(loadAiSettings().interactionMode, 'task');
+});
+
+test('legacy autoApprove migrates to skip without touching already-stored policy', () => {
+  assert.equal(normalizeApprovalPolicy({ autoApprove: true }), 'skip', '老的全自动用户升级后仍是全自动');
+  assert.equal(normalizeApprovalPolicy({ autoApprove: false }), 'review', '老的手动用户升级后不放大权限');
+  assert.equal(normalizeApprovalPolicy({ approvalPolicy: 'skip', autoApprove: false }), 'skip', '新字段优先于旧布尔');
+  assert.equal(normalizeApprovalPolicy({ approvalPolicy: 'nonsense' }), 'review', '非法值 fail closed');
+  assert.equal(normalizeApprovalPolicy({}), 'review');
+});
+
+test('switching approval policy does not silently change the model preference', () => {
+  values.clear();
+  const before = saveAiSettings({ ...loadAiSettings(), preferModel: false, interactionMode: 'quick', approvalPolicy: 'review' });
+  assert.equal(before.preferModel, false);
+
+  // 菜单只改审批策略（+ 写入所需的交互模式），不再顺带把 preferModel 打开。
+  const after = saveAiSettings({ ...loadAiSettings(), interactionMode: 'task', approvalPolicy: 'skip' });
+  assert.equal(after.preferModel, false, '跳过审批不应改动模型选择');
+});
+
+test('chat-only stays selectable while a legacy autoApprove flag is still stored', () => {
+  values.clear();
+  values.set('lattice-ai-settings-v1', JSON.stringify({
+    providers: [{ id: 'p1', name: 'n', endpoint: 'https://example.com/chat/completions', model: 'm', apiKey: 'masked:abcd' }],
+    activeProviderId: 'p1',
+    interactionMode: 'task',
+    autoApprove: true,
+  }));
+
+  const migrated = loadAiSettings();
+  assert.equal(migrated.approvalPolicy, 'skip', '旧布尔迁移成跳过审批');
+  assert.equal(migrated.interactionMode, 'task');
+
+  const saved = saveAiSettings({ ...migrated, interactionMode: 'quick' });
+  assert.equal(saved.interactionMode, 'quick', '旧布尔不能把用户拉回任务模式');
+  assert.equal(loadAiSettings().interactionMode, 'quick');
+  assert.equal(loadAiSettings().approvalPolicy, 'skip', '审批选择在只对话状态下保留');
+});
+
+test('irreversible opt-in is off by default and only persists when enabled', () => {
+  values.clear();
+  assert.equal(loadAiSettings().allowIrreversible, false, '默认不放弃最后一道防线');
+
+  const enabled = saveAiSettings({ ...loadAiSettings(), interactionMode: 'task', approvalPolicy: 'skip', allowIrreversible: true });
+  assert.equal(enabled.allowIrreversible, true);
+  assert.equal(loadAiSettings().allowIrreversible, true, '重启后仍保持开启');
+
+  const disabled = saveAiSettings({ ...loadAiSettings(), allowIrreversible: false });
+  assert.equal(disabled.allowIrreversible, false);
+  assert.equal(loadAiSettings().allowIrreversible, false);
 });
